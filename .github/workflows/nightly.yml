@@ -1,7 +1,8 @@
-# Nightly image pipeline (PLAN §6). M0 scope: validate the mkosi profile
-# parses on a Linux runner. The full build → QEMU+swtpm boot test → channel
-# publish pipeline is the M0→M1 backlog (Appendix D); the boot test gates
-# the M0 acceptance block.
+# Nightly image pipeline (PLAN §6). Builds the Track I image and
+# boot-checks it in QEMU. Runs inside a real Arch container (rootful
+# podman, privileged) so mkosi uses Arch's own pacman — the default
+# Debian tools tree on Ubuntu runners ships a pacman without its cache
+# dir. swtpm + the A/B sysupdate rollback demo complete the M0 gate.
 
 name: nightly-image
 
@@ -15,26 +16,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # mkosi is not on PyPI; its repo ships the official setup action
-      # (also grants unprivileged /dev/kvm access for the boot check).
-      - name: Install mkosi
-        uses: systemd/mkosi@v26
-      - name: Validate image profile
-        run: mkosi --directory os/mkosi summary
-      - name: Build image
-        run: mkosi --directory os/mkosi build
-      # M0 acceptance forerunner: the image must boot. Direct-kernel boot
-      # to poweroff.target proves kernel + initrd + root mount + systemd;
-      # a hang is caught by the timeout.
-      - name: Boot check (QEMU)
+      - name: Expose /dev/kvm
         run: |
-          timeout 600 mkosi --directory os/mkosi \
-            --kernel-command-line-extra="systemd.unit=poweroff.target" \
-            qemu
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; else echo "no KVM; QEMU will fall back to TCG"; fi
+      - name: Build and boot-check in Arch container
+        run: |
+          KVMFLAG=""
+          [ -e /dev/kvm ] && KVMFLAG="--device /dev/kvm"
+          sudo podman run --rm --privileged $KVMFLAG \
+            -v "$PWD":/src -w /src docker.io/library/archlinux:latest bash -ec '
+              # pacman >= 7 sandbox cannot apply inside the container
+              sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+              pacman -Syu --noconfirm mkosi qemu-base edk2-ovmf
+              mkosi --directory os/mkosi summary
+              mkosi --directory os/mkosi build
+              timeout 900 mkosi --directory os/mkosi \
+                --kernel-command-line-extra="systemd.unit=poweroff.target" \
+                qemu
+            '
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
           name: lisa-image
-          path: os/mkosi/lisa.raw
+          path: os/mkosi/lisa*.raw
           if-no-files-found: warn
           retention-days: 7
