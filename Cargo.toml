@@ -9,7 +9,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-license = "TBD"
+license = "GPL-2.0-only"
 repository = "https://github.com/flakerimi/lisa-os"
 
 [workspace.dependencies]

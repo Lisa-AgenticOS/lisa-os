@@ -62,6 +62,6 @@ perf, ACL fuzz).
 
 ## License
 
-Not yet chosen (tracked as an open question for M0/M1 — the intent is a
-standard OSI license; model licenses are reviewed per-entry in the
-catalog).
+[GPL-2.0](LICENSE) — the same license as the Linux kernel this
+distribution ships (ADR-0005). Model licenses are separate and reviewed
+per-entry in the catalog before anything is offered for download.
