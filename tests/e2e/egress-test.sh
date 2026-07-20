@@ -17,6 +17,11 @@ BIN=$(realpath "${1:-target/debug/lisa-inferenced}")
 }
 PROBE_URL="http://example.com"
 
+# The sandbox hides /home and /tmp (ProtectHome, PrivateTmp), so the
+# binary must live somewhere the service can still see.
+RUN_BIN=/usr/local/bin/lisa-egress-test-bin
+sudo install -m755 "$BIN" "$RUN_BIN"
+
 # The unit's network-relevant sandbox, mirrored exactly.
 SANDBOX=(
     -p DynamicUser=yes
@@ -29,14 +34,17 @@ SANDBOX=(
     -p PrivateTmp=yes
 )
 
-cleanup() { sudo systemctl stop lisa-egress-daemon.service 2>/dev/null || true; }
+cleanup() {
+    sudo systemctl stop lisa-egress-daemon.service 2>/dev/null || true
+    sudo rm -f "$RUN_BIN"
+}
 trap cleanup EXIT
 
 echo "== control: egress works OUTSIDE the sandbox (else this test is vacuous)"
 sudo systemd-run --wait --pipe -p DynamicUser=yes curl -sf -m 15 "$PROBE_URL" >/dev/null
 
 echo "== start daemon under the unit's sandbox"
-sudo systemd-run --unit=lisa-egress-daemon "${SANDBOX[@]}" "$BIN"
+sudo systemd-run --unit=lisa-egress-daemon "${SANDBOX[@]}" "$RUN_BIN"
 for _ in $(seq 1 50); do
     curl -sf 127.0.0.1:7777/health >/dev/null 2>&1 && break
     sleep 0.2
