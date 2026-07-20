@@ -15,7 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # mkosi is not on PyPI; its repo ships the official setup action.
       - name: Install mkosi
-        run: pipx install mkosi
+        uses: systemd/mkosi@v26
       - name: Validate image profile
         run: mkosi --directory os/mkosi summary
