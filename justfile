@@ -55,3 +55,29 @@ layer-install:
 
 layer-uninstall:
     bash os/layer/uninstall.sh
+
+# Full layer e2e in an Arch container (podman). Uses Arch Linux ARM on
+# Apple silicon — the official archlinux image is amd64-only and systemd
+# segfaults under emulation.
+layer-e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IMG=docker.io/library/archlinux:latest
+    case "$(uname -m)" in arm64|aarch64) IMG=docker.io/menci/archlinuxarm:latest ;; esac
+    podman rm -f lisa-e2e 2>/dev/null || true
+    podman run -d --name lisa-e2e --systemd=always -v "$PWD":/src:ro "$IMG" /usr/lib/systemd/systemd
+    sleep 4
+    podman exec lisa-e2e bash /src/tests/e2e/layer-test.sh
+    podman rm -f lisa-e2e
+
+# Egress sandbox verification — needs a Linux systemd host (CI does this;
+# locally: bash tests/e2e/egress-test.sh inside the podman machine VM).
+egress-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname)" != "Linux" ]; then
+        echo "egress-test needs a Linux systemd host; CI runs it on every push." >&2
+        exit 1
+    fi
+    cargo build -p lisa-inferenced
+    bash tests/e2e/egress-test.sh target/debug/lisa-inferenced
