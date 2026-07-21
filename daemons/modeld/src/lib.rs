@@ -6,6 +6,7 @@
 
 pub mod catalog;
 pub mod fetch;
+pub mod profile;
 pub mod store;
 
 pub use store::{ModelStore, RefEntry, StoreError, VerifyReport};

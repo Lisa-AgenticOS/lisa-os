@@ -3,7 +3,7 @@
 //! catalog refresh loop land in M1 (`docs/PLAN.md` §5.2).
 
 use clap::Parser;
-use lisa_modeld::{ModelStore, catalog};
+use lisa_modeld::{ModelStore, catalog, profile};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -36,7 +36,12 @@ fn main() -> anyhow::Result<()> {
 
     let refs = store.list()?;
     let report = store.verify()?;
-    println!("lisa-modeld {} (M0 scaffold)", env!("CARGO_PKG_VERSION"));
+    println!("lisa-modeld {}", env!("CARGO_PKG_VERSION"));
+    let hw = profile::profile();
+    println!(
+        "hardware: {}/{} ram={}GiB unified={} gpu_nodes={} npu_nodes={} => tier {}",
+        hw.os, hw.arch, hw.total_ram_gb, hw.unified_memory, hw.gpu_nodes, hw.npu_nodes, hw.tier
+    );
     println!("store: {}", store.root().display());
     println!(
         "refs: {}  blobs ok: {}  corrupt: {}",

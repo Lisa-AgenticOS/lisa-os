@@ -106,6 +106,8 @@ enum ModelsCmd {
         #[arg(long)]
         blake3: String,
     },
+    /// Print the hardware profile and PLAN §8 tier.
+    Profile,
     /// Print the blake3 of a local file (for catalog pinning).
     Hash { file: PathBuf },
     /// Import a local file into the store (copied, source untouched).
@@ -356,6 +358,10 @@ fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
                 entry.size as f64 / (1 << 30) as f64,
                 entry.blake3
             );
+        }
+        ModelsCmd::Profile => {
+            let p = lisa_modeld::profile::profile();
+            println!("{}", serde_json::to_string_pretty(&p)?);
         }
         ModelsCmd::Hash { file } => {
             println!("{}", ModelStore::hash_file(&file)?);

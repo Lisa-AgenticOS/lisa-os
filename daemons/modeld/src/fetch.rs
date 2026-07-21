@@ -21,6 +21,10 @@ pub enum FetchError {
 /// Download `url` into the store as `name`, verifying the pinned blake3
 /// before anything becomes visible. No pin, no pull — hash pinning is
 /// policy (PLAN §5.10), not an option.
+///
+/// Interrupted downloads resume with an HTTP Range request: the partial
+/// temp file persists across attempts and only missing bytes are
+/// re-fetched (§5.2). A hash mismatch discards the partial entirely.
 pub fn pull(
     store: &ModelStore,
     url: &str,
@@ -29,15 +33,32 @@ pub fn pull(
 ) -> Result<RefEntry, FetchError> {
     let tmp = store.tmp_dir().join(format!("download-{name}"));
     let result = (|| -> Result<RefEntry, FetchError> {
-        let mut response = ureq::get(url).call().map_err(Box::new)?;
+        let offset = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        let mut request = ureq::get(url);
+        if offset > 0 {
+            request = request.header("Range", format!("bytes={offset}-"));
+        }
+        let mut response = request.call().map_err(Box::new)?;
+        let resumed = response.status() == 206;
         let mut reader = response.body_mut().as_reader();
-        let mut file = fs::File::create(&tmp)?;
+        let mut file = if resumed {
+            fs::OpenOptions::new().append(true).open(&tmp)?
+        } else {
+            // Server ignored the range (or fresh start): full download.
+            fs::File::create(&tmp)?
+        };
         io::copy(&mut reader, &mut file)?;
         file.sync_all()?;
         Ok(store.add_file_verified(&tmp, name, expected_blake3)?)
     })();
-    // Best-effort cleanup of the partial/ingested temp file either way.
-    let _ = fs::remove_file(&tmp);
+    match &result {
+        // Success or corruption: the temp file must not survive. A
+        // network error keeps the partial for the next resume.
+        Ok(_) | Err(FetchError::Store(_)) => {
+            let _ = fs::remove_file(&tmp);
+        }
+        Err(_) => {}
+    }
     result
 }
 
