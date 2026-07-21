@@ -73,7 +73,8 @@ jobs:
       - name: Stage A/B demo UKIs in the ESP (mtools, no rebuild)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils >/dev/null
+          sudo apt-get install -qq -y --no-install-recommends \
+            mtools fdisk jq binutils systemd-ukify systemd-boot-efi >/dev/null
           ls -l lisa*.raw
           # ESP = partition 1; mtools addresses it as an offset into the raw.
           OFF=$(( $(sfdisk -J lisa.raw | jq -r '.partitiontable.partitions[0].start') * 512 ))
@@ -81,15 +82,21 @@ jobs:
           NAME=$(mdir -b -i "$ESP" ::/EFI/Linux/ | grep -o 'lisa-[^/]*\.efi' | head -1)
           echo "good UKI: $NAME (ESP offset $OFF)"
           mcopy -i "$ESP" "::/EFI/Linux/$NAME" good.efi
+          # The mkosi UKI carries no .cmdline section, so rebuild demo
+          # variants properly with ukify from its kernel + initrd.
+          objcopy --dump-section .linux=vmlinuz --dump-section .initrd=initrd.img good.efi /dev/null
+          UKIFY=$(command -v ukify || echo /usr/lib/systemd/ukify)
           # Good entry: serial console + clean poweroff so QEMU exits on
           # success. No try counters = permanently valid entry.
-          printf 'root=/dev/vda2 rw console=ttyS0 lisa_demo=good systemd.unit=poweroff.target' >good.cmdline
-          objcopy --update-section .cmdline=good.cmdline good.efi good-demo.efi
+          "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
+            --cmdline='root=/dev/vda2 rw console=ttyS0 lisa_demo=good systemd.unit=poweroff.target' \
+            --output=good-demo.efi
           # Bad entry: version 99 outranks the good entry; nonexistent
           # root forces an initrd timeout; rd.emergency=reboot turns the
           # failure into a reboot so the +2 try counter decrements.
-          printf 'root=PARTUUID=00000000-0000-0000-0000-000000000000 rw console=ttyS0 lisa_demo=bad rd.emergency=reboot panic=5' >bad.cmdline
-          objcopy --update-section .cmdline=bad.cmdline good.efi bad-demo.efi
+          "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
+            --cmdline='root=PARTUUID=00000000-0000-0000-0000-000000000000 rw console=ttyS0 lisa_demo=bad rd.emergency=reboot panic=5' \
+            --output=bad-demo.efi
           mcopy -o -i "$ESP" good-demo.efi "::/EFI/Linux/$NAME"
           mcopy -i "$ESP" bad-demo.efi "::/EFI/Linux/lisa-99+2.efi"
           mdir -i "$ESP" ::/EFI/Linux/
