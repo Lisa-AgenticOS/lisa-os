@@ -23,6 +23,12 @@ struct Args {
     /// Override the bind address (default 127.0.0.1:7777).
     #[arg(long)]
     bind: Option<String>,
+    /// Override the engine: stub | llama.
+    #[arg(long)]
+    engine: Option<String>,
+    /// Model path for the llama engine (implies --engine llama).
+    #[arg(long)]
+    model: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -37,6 +43,16 @@ async fn main() -> anyhow::Result<()> {
     let mut cfg = Config::load(args.config.as_deref())?;
     if let Some(bind) = args.bind {
         cfg.bind = config::Bind(bind);
+    }
+    if let Some(model) = args.model {
+        cfg.llama.model_path = Some(model);
+        cfg.engine = EngineKind::Llama;
+    }
+    match args.engine.as_deref() {
+        Some("stub") => cfg.engine = EngineKind::Stub,
+        Some("llama") => cfg.engine = EngineKind::Llama,
+        Some(other) => anyhow::bail!("unknown engine `{other}` (stub | llama)"),
+        None => {}
     }
 
     let engine: Arc<dyn Engine> = match cfg.engine {

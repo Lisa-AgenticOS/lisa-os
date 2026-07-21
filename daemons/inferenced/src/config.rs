@@ -45,6 +45,8 @@ pub struct LlamaConfig {
     pub model_path: Option<PathBuf>,
     /// Port the supervised child listens on (loopback only).
     pub port: u16,
+    /// Extra llama-server arguments (e.g. ["-ngl", "99"] for GPU offload).
+    pub extra_args: Vec<String>,
 }
 
 impl Default for LlamaConfig {
@@ -53,6 +55,7 @@ impl Default for LlamaConfig {
             server_bin: PathBuf::from("llama-server"),
             model_path: None,
             port: 7778,
+            extra_args: Vec::new(),
         }
     }
 }

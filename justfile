@@ -18,6 +18,17 @@ fmt:
 # What CI runs on every PR.
 ci: lint test
 
+# Real-model smoke: needs llama-server on PATH and a model in the store
+# (see `lisa models pull/add`; the catalog pins qwen3-0.6b-instruct-q8).
+smoke-real name="qwen3-0.6b-instruct-q8":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build -p lisa-inferenced -p lisa >/dev/null
+    ./target/debug/lisa-inferenced --model "$HOME/.local/share/lisa/models/refs/{{name}}" & D=$!
+    trap 'kill $D 2>/dev/null || true' EXIT
+    for _ in $(seq 1 120); do curl -sf 127.0.0.1:7777/health >/dev/null 2>&1 && break; sleep 0.5; done
+    ./target/debug/lisa ask "write a haiku about entropy"
+
 # End-to-end smoke: daemon up → streamed ask → health → daemon down.
 smoke:
     #!/usr/bin/env bash

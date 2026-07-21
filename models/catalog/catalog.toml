@@ -9,6 +9,17 @@
 catalog_version = 1
 
 [[model]]
+id = "qwen3-0.6b-instruct-q8"
+task = "system"
+tiers = [0]
+license = "Apache-2.0"
+engine = "llama-server"
+source = "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf"
+blake3 = "9be9143c23d8d0cded83d943e28ab2619b014390c33ca8f13238eedd3b5f8c9c"
+min_ram_gb = 2
+notes = "Dev/test model — the first pinned artifact (verified 2026-07-21). Not a shipping tier default."
+
+[[model]]
 id = "qwen3-8b-instruct-q4"
 task = "system"
 tiers = [2]

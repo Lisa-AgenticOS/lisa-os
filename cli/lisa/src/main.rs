@@ -79,6 +79,16 @@ enum ModelsCmd {
         #[arg(long)]
         blake3: String,
     },
+    /// Print the blake3 of a local file (for catalog pinning).
+    Hash { file: PathBuf },
+    /// Import a local file into the store (copied, source untouched).
+    Add {
+        file: PathBuf,
+        name: String,
+        /// Refuse unless the file's blake3 matches.
+        #[arg(long)]
+        blake3: Option<String>,
+    },
 }
 
 fn main() {
@@ -140,6 +150,9 @@ fn ask(
     let mut out = stdout.lock();
     if no_stream {
         let json: serde_json::Value = response.body_mut().read_json()?;
+        if let Some(err) = json["error"]["message"].as_str() {
+            bail!("inference error: {err}");
+        }
         let content = json["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or_default();
@@ -237,6 +250,21 @@ fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
             let entry = fetch::pull(&store, &url, &name, &blake3)?;
             println!(
                 "pulled `{}` ({:.2} GiB, blake3 {})",
+                entry.name,
+                entry.size as f64 / (1 << 30) as f64,
+                entry.blake3
+            );
+        }
+        ModelsCmd::Hash { file } => {
+            println!("{}", ModelStore::hash_file(&file)?);
+        }
+        ModelsCmd::Add { file, name, blake3 } => {
+            let entry = match blake3 {
+                Some(expected) => store.add_file_verified(&file, &name, &expected)?,
+                None => store.add_file(&file, &name)?,
+            };
+            println!(
+                "added `{}` ({:.2} GiB, blake3 {})",
                 entry.name,
                 entry.size as f64 / (1 << 30) as f64,
                 entry.blake3
