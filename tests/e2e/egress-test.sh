@@ -25,6 +25,7 @@ sudo install -m755 "$BIN" "$RUN_BIN"
 # The unit's network-relevant sandbox, mirrored exactly.
 SANDBOX=(
     -p DynamicUser=yes
+    -p StateDirectory=lisa
     -p IPAddressDeny=any
     -p IPAddressAllow=localhost
     -p RestrictAddressFamilies="AF_UNIX AF_INET AF_INET6"

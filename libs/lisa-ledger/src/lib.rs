@@ -107,9 +107,14 @@ impl Ledger {
         })
     }
 
-    /// Default location: /var/lib/lisa/ledger.db when it exists (image /
-    /// layer installs), else per-user under ~/.local/share/lisa.
+    /// Default location, in order: systemd's STATE_DIRECTORY (the
+    /// hardened unit passes StateDirectory=lisa), /var/lib/lisa when it
+    /// exists (image / layer installs), else per-user under
+    /// ~/.local/share/lisa.
     pub fn default_path() -> PathBuf {
+        if let Some(state) = std::env::var_os("STATE_DIRECTORY") {
+            return PathBuf::from(state).join("ledger.db");
+        }
         let system = PathBuf::from("/var/lib/lisa");
         if system.is_dir() {
             return system.join("ledger.db");
