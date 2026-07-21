@@ -62,6 +62,16 @@ enum Command {
     Undo,
     /// Query the audit ledger (lands in M2, PLAN §5.7.6).
     Ledger,
+    /// Embed text into a vector (reads stdin when piped).
+    Embed {
+        text: Vec<String>,
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:7777",
+            env = "LISA_INFERENCE_URL"
+        )]
+        url: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -120,6 +130,7 @@ fn run() -> anyhow::Result<()> {
             bail!("the Agent Bus lands in M5 — see docs/PLAN.md §5.4")
         }
         Command::Ledger => bail!("the Ledger lands in M2 — see docs/PLAN.md §5.7.6"),
+        Command::Embed { text, url } => embed(text, &url),
     }
 }
 
@@ -209,6 +220,31 @@ fn ask(
 }
 
 use std::io::IsTerminal;
+
+fn embed(text: Vec<String>, url: &str) -> anyhow::Result<()> {
+    let mut text = text.join(" ");
+    if !std::io::stdin().is_terminal() {
+        let mut piped = String::new();
+        std::io::stdin().read_to_string(&mut piped)?;
+        if !piped.trim().is_empty() {
+            text = piped;
+        }
+    }
+    if text.trim().is_empty() {
+        bail!("empty input — usage: lisa embed \"some text\"");
+    }
+    let endpoint = format!("{}/v1/embeddings", url.trim_end_matches('/'));
+    let mut response = ureq::post(&endpoint)
+        .send_json(&serde_json::json!({ "input": text }))
+        .with_context(|| format!("request to {endpoint} failed — is lisa-inferenced running?"))?;
+    let json: serde_json::Value = response.body_mut().read_json()?;
+    if let Some(err) = json["error"]["message"].as_str() {
+        bail!("embeddings error: {err}");
+    }
+    let vector = &json["data"][0]["embedding"];
+    println!("{vector}");
+    Ok(())
+}
 
 fn default_store_root() -> PathBuf {
     let system = PathBuf::from("/var/lib/lisa/models");

@@ -80,6 +80,11 @@ impl Inner {
             .arg("127.0.0.1")
             .arg("--port")
             .arg(self.cfg.port.to_string())
+            // Serve /v1/embeddings alongside chat (§5.1 embed API); the
+            // OAI-compatible endpoint requires a pooling mode.
+            .arg("--embeddings")
+            .arg("--pooling")
+            .arg("mean")
             .args(&self.cfg.extra_args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -146,6 +151,54 @@ impl Inner {
 impl Engine for LlamaEngine {
     fn name(&self) -> &'static str {
         "llama"
+    }
+
+    fn embed(
+        &self,
+        texts: Vec<String>,
+    ) -> futures::future::BoxFuture<'static, Result<Vec<Vec<f32>>, EngineError>> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            inner.ensure_running().await?;
+            let url = format!("http://127.0.0.1:{}/v1/embeddings", inner.cfg.port);
+            let response = inner
+                .client
+                .post(&url)
+                .json(&serde_json::json!({ "input": texts }))
+                .send()
+                .await
+                .map_err(|e| EngineError::Unavailable(format!("embeddings request: {e}")))?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(EngineError::Unavailable(format!(
+                    "llama-server embeddings returned {status}: {}",
+                    body.chars().take(200).collect::<String>()
+                )));
+            }
+            let v: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| EngineError::Unavailable(format!("embeddings parse: {e}")))?;
+            v["data"]
+                .as_array()
+                .ok_or_else(|| EngineError::Unavailable("embeddings: no data array".into()))?
+                .iter()
+                .map(|d| {
+                    d["embedding"]
+                        .as_array()
+                        .ok_or_else(|| {
+                            EngineError::Unavailable("embeddings: missing vector".into())
+                        })
+                        .map(|xs| {
+                            xs.iter()
+                                .filter_map(|x| x.as_f64())
+                                .map(|x| x as f32)
+                                .collect()
+                        })
+                })
+                .collect()
+        })
     }
 
     fn generate(&self, req: GenerateRequest) -> TokenStream {

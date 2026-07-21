@@ -26,7 +26,45 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/embeddings", post(embeddings))
         .with_state(state)
+}
+
+async fn embeddings(State(state): State<AppState>, Json(req): Json<serde_json::Value>) -> Response {
+    // OpenAI shape: input is a string or an array of strings.
+    let texts: Vec<String> = match &req["input"] {
+        serde_json::Value::String(s) => vec![s.clone()],
+        serde_json::Value::Array(xs) => xs
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    };
+    if texts.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": {"message": "input must be a string or array of strings"}})),
+        )
+            .into_response();
+    }
+    match state.engine.embed(texts).await {
+        Ok(vectors) => Json(serde_json::json!({
+            "object": "list",
+            "model": state.model_name,
+            "data": vectors.iter().enumerate().map(|(i, v)| serde_json::json!({
+                "object": "embedding",
+                "index": i,
+                "embedding": v,
+            })).collect::<Vec<_>>(),
+            "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": {"message": e.to_string()}})),
+        )
+            .into_response(),
+    }
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {

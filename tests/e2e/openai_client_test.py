@@ -33,5 +33,10 @@ streamed = "".join(
 )
 assert "openai-stream-canary" in streamed, streamed
 
+emb = client.embeddings.create(model="lisa-system-stub", input=["alpha", "alpha", "beta"])
+assert len(emb.data) == 3, emb
+assert emb.data[0].embedding == emb.data[1].embedding
+assert emb.data[0].embedding != emb.data[2].embedding
+
 print("OPENAI CLIENT: PASS")
 sys.exit(0)

@@ -67,9 +67,11 @@ async fn main() -> anyhow::Result<()> {
     };
     info!(engine = engine.name(), "engine initialized");
 
-    // D-Bus is opt-in during M0; never fatal.
+    let scheduler = Arc::new(lisa_inferenced::scheduler::Scheduler::new(1));
+
+    // D-Bus is opt-in until the portal lands; never fatal.
     let _dbus_conn = if cfg.dbus {
-        match dbus::serve().await {
+        match dbus::serve(Arc::clone(&engine), Arc::clone(&scheduler)).await {
             Ok(conn) => {
                 info!("org.lisa.Inference1 registered on the session bus");
                 Some(conn)
@@ -95,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let state = api::AppState {
         engine,
-        scheduler: Arc::new(lisa_inferenced::scheduler::Scheduler::new(1)),
+        scheduler,
         model_name,
     };
     let listener = tokio::net::TcpListener::bind(&cfg.bind.0).await?;

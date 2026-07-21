@@ -5,6 +5,7 @@
 
 use crate::openai::ChatMessage;
 use futures::Stream;
+use futures::future::BoxFuture;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -30,6 +31,8 @@ pub struct GenerateRequest {
 pub trait Engine: Send + Sync {
     fn name(&self) -> &'static str;
     fn generate(&self, req: GenerateRequest) -> TokenStream;
+    /// Embed texts into vectors (§5.1 `Session.Embed` / /v1/embeddings).
+    fn embed(&self, texts: Vec<String>) -> BoxFuture<'static, Result<Vec<Vec<f32>>, EngineError>>;
 }
 
 /// Deterministic echo engine: proves the full plumbing (HTTP, SSE, CLI)
@@ -60,6 +63,27 @@ impl Engine for StubEngine {
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 yield Ok(t);
             }
+        })
+    }
+
+    fn embed(&self, texts: Vec<String>) -> BoxFuture<'static, Result<Vec<Vec<f32>>, EngineError>> {
+        // Deterministic 8-dim vectors from an FNV-1a rolling hash: enough
+        // to test plumbing, dimensionality, and determinism modelless.
+        Box::pin(async move {
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    let mut h: u64 = 0xcbf29ce484222325;
+                    let mut v = Vec::with_capacity(8);
+                    for (i, b) in t.bytes().chain(0u8..8).enumerate() {
+                        h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+                        if i >= t.len() {
+                            v.push((h % 2000) as f32 / 1000.0 - 1.0);
+                        }
+                    }
+                    v
+                })
+                .collect())
         })
     }
 }
