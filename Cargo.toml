@@ -5,7 +5,7 @@ members = [
     "libs/lisa-ledger",
     "daemons/inferenced",
     "daemons/modeld",
-    "cli/lisa", "libs/lisa-ledger",
+    "cli/lisa", "libs/lisa-ledger", "daemons/contextd",
 ]
 
 [workspace.package]

@@ -72,6 +72,19 @@ enum Command {
         #[arg(long, env = "LISA_LEDGER_DB")]
         db: Option<PathBuf>,
     },
+    /// Context fabric: index and search your files (PLAN §5.3).
+    Context {
+        #[command(subcommand)]
+        cmd: ContextCmd,
+    },
+    /// Per-app durable memory (PLAN §5.3).
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCmd,
+        /// App namespace (per-app isolation is the point).
+        #[arg(long, default_value = "host", global = true)]
+        app: String,
+    },
     /// Embed text into a vector (reads stdin when piped).
     Embed {
         text: Vec<String>,
@@ -81,6 +94,35 @@ enum Command {
             env = "LISA_INFERENCE_URL"
         )]
         url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ContextCmd {
+    /// Index text files under a directory (incremental).
+    Index { dir: PathBuf },
+    /// Search the index (FTS5; hybrid ranking arrives with embeddings).
+    Search {
+        query: Vec<String>,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryCmd {
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: String,
+    },
+    List,
+    /// Remove every key in this app's namespace (asks first).
+    Wipe {
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -143,6 +185,8 @@ fn run() -> anyhow::Result<()> {
         }
         Command::Ledger { tail, json, db } => ledger_cmd(tail, json, db),
         Command::Embed { text, url } => embed(text, &url),
+        Command::Context { cmd } => context_cmd(cmd),
+        Command::Memory { cmd, app } => memory_cmd(cmd, &app),
     }
 }
 
@@ -232,6 +276,76 @@ fn ask(
 }
 
 use std::io::IsTerminal;
+
+fn context_store() -> anyhow::Result<lisa_contextd::ContextStore> {
+    let path = std::env::var_os("LISA_CONTEXT_DB")
+        .map(PathBuf::from)
+        .unwrap_or_else(lisa_contextd::ContextStore::default_path);
+    Ok(lisa_contextd::ContextStore::open(path)?)
+}
+
+fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
+    let store = context_store()?;
+    match cmd {
+        ContextCmd::Index { dir } => {
+            let report = store.index_dir(&dir)?;
+            println!(
+                "indexed {} file(s) ({} chunks), {} unchanged",
+                report.indexed, report.chunks, report.skipped_unchanged
+            );
+        }
+        ContextCmd::Search { query, limit } => {
+            let query = query.join(" ");
+            // Every retrieval is ledgered (PLAN §5.3) — query hash, not text.
+            let ledger = lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path())?;
+            ledger.append(&lisa_ledger::Event {
+                kind: "context.search".into(),
+                app_id: "host".into(),
+                input_hash: blake3::hash(query.as_bytes()).to_hex().to_string(),
+                status: "ok".into(),
+                ..Default::default()
+            })?;
+            for hit in store.search(&query, limit)? {
+                println!(
+                    "[{}] {}
+    {}",
+                    hit.provenance, hit.source, hit.snippet
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn memory_cmd(cmd: MemoryCmd, app: &str) -> anyhow::Result<()> {
+    let store = context_store()?;
+    match cmd {
+        MemoryCmd::Get { key } => match store.memory_get(app, &key)? {
+            Some(v) => println!("{v}"),
+            None => bail!("no value for `{key}` in namespace `{app}`"),
+        },
+        MemoryCmd::Set { key, value } => store.memory_set(app, &key, &value)?,
+        MemoryCmd::List => {
+            for (k, v) in store.memory_list(app)? {
+                println!("{k}	{v}");
+            }
+        }
+        MemoryCmd::Wipe { yes } => {
+            if !yes {
+                eprint!("wipe ALL memory for namespace `{app}`? [y/N] ");
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer)?;
+                if !matches!(answer.trim(), "y" | "Y" | "yes") {
+                    println!("aborted");
+                    return Ok(());
+                }
+            }
+            let removed = store.memory_wipe(app)?;
+            println!("wiped {removed} key(s) from `{app}`");
+        }
+    }
+    Ok(())
+}
 
 fn ledger_cmd(tail: usize, json: bool, db: Option<PathBuf>) -> anyhow::Result<()> {
     let path = db.unwrap_or_else(lisa_ledger::Ledger::default_path);

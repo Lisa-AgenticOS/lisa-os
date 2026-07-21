@@ -951,12 +951,28 @@ name = "lisa"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
+ "lisa-contextd",
  "lisa-ledger",
  "lisa-modeld",
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "lisa-contextd"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "lisa-ledger",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "walkdir",
 ]
 
 [[package]]
