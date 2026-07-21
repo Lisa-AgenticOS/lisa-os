@@ -29,6 +29,8 @@ jobs:
               mkosi --directory os/mkosi summary
               mkosi --directory os/mkosi build
             '
+          # Outputs were written by root inside the container.
+          sudo chown -R "$USER:" os/mkosi
       # Boot on the runner host with plain QEMU (mkosi qemu needs a
       # systemd host, which the container is not). Direct kernel boot to
       # poweroff.target: reaching poweroff exits QEMU cleanly; a hang is
