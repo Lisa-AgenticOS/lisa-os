@@ -19,21 +19,33 @@ jobs:
       - name: Expose /dev/kvm
         run: |
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; else echo "no KVM; QEMU will fall back to TCG"; fi
-      - name: Build and boot-check in Arch container
+      - name: Build image in Arch container
         run: |
-          KVMFLAG=""
-          [ -e /dev/kvm ] && KVMFLAG="--device /dev/kvm"
-          sudo podman run --rm --privileged $KVMFLAG \
+          sudo podman run --rm --privileged \
             -v "$PWD":/src -w /src docker.io/library/archlinux:latest bash -ec '
               # pacman >= 7 sandbox cannot apply inside the container
               sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
-              pacman -Syu --noconfirm mkosi qemu-base edk2-ovmf
+              pacman -Syu --noconfirm mkosi
               mkosi --directory os/mkosi summary
               mkosi --directory os/mkosi build
-              timeout 900 mkosi --directory os/mkosi \
-                --kernel-command-line-extra="systemd.unit=poweroff.target" \
-                qemu
             '
+      # Boot on the runner host with plain QEMU (mkosi qemu needs a
+      # systemd host, which the container is not). Direct kernel boot to
+      # poweroff.target: reaching poweroff exits QEMU cleanly; a hang is
+      # caught by the timeout; "Welcome to" proves systemd came up from
+      # the image's own initrd + root.
+      - name: Boot check (QEMU)
+        run: |
+          set -o pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends qemu-system-x86 >/dev/null
+          timeout 600 qemu-system-x86_64 \
+            -machine q35 -accel kvm -accel tcg -m 4G -nographic -no-reboot \
+            -kernel os/mkosi/lisa.vmlinuz -initrd os/mkosi/lisa.initrd \
+            -append "console=ttyS0 systemd.unit=poweroff.target systemd.show_status=1" \
+            -drive file=os/mkosi/lisa.raw,format=raw,if=virtio \
+            | tee boot-console.log
+          grep -q "Welcome to" boot-console.log
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
