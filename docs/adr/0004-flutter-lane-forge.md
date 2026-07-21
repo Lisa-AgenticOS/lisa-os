@@ -39,3 +39,28 @@ documented here; the OS itself never depends on Flutter (native lane).
   version; confirm GTK embedder under Wayland; fcitx5 IM round-trip in a
   Flutter text field; D-Bus call to `inferenced` from Dart. Findings
   land as an appendix to this ADR.
+
+## Appendix: spike findings (2026-07-21, macOS half)
+
+**Pinned:** Flutter 3.44.7 stable (framework 84fc5cbb22, 2026-07-17;
+engine 7076f47b1d1a). The repo snapshot pins this per the governance
+hedge.
+
+**Proven on the dev host:**
+
+- `libs/lisa_ui` seed builds and tests on **core widgets only** — no
+  material/cupertino import anywhere. Tokens (`LisaTokens`/`LisaTheme`,
+  seeded from docs/notes/design-direction.md), `LisaStreamText`
+  (token-stream accumulation, stop affordance, provenance footnotes),
+  `ConsentChip` — all under widget tests.
+- `libs/lisa_flutter` fallback transport is **live against
+  lisa-inferenced**: streaming ask (SSE parse under unit test) and
+  embeddings round-trip with zero package dependencies (`dart:io`).
+  Guided generation rides the same call (`jsonSchema` parameter).
+
+**Remaining (needs a Linux desktop; target: the iMac runner):** GTK
+embedder under Wayland; fcitx5 IM round-trip in a Flutter text field;
+the primary D-Bus transport via package:dbus against
+`org.lisa.Inference1` — the server side of that surface already exists
+and is tested (fd-passed token streams), so the Dart side is a client
+exercise.
