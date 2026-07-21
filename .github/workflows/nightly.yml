@@ -102,6 +102,7 @@ jobs:
           mcopy -o -i "$ESP" good-demo.efi "::/EFI/Linux/$NAME"
           mcopy -i "$ESP" bad-demo.efi "::/EFI/Linux/lisa-99+2.efi"
           mdir -i "$ESP" ::/EFI/Linux/
+          echo "ESP=$ESP" >>"$GITHUB_ENV"
       - name: Boot-counting rollback demo (UEFI QEMU)
         run: |
           set -o pipefail
@@ -116,10 +117,17 @@ jobs:
             -drive file=lisa.raw,format=raw,if=virtio \
             | tee console.log
           echo "--- assertions"
-          grep -q "lisa_demo=bad" console.log
-          grep -q "lisa_demo=good" console.log
-          BAD=$(grep -n "lisa_demo=bad" console.log | head -1 | cut -d: -f1)
-          GOOD=$(grep -n "lisa_demo=good" console.log | head -1 | cut -d: -f1)
-          [ "$BAD" -lt "$GOOD" ]
+          # Two failed tries (bad entry reboots), then the good entry
+          # powers off — in that order.
+          RESTARTS=$(grep -c "reboot: Restarting system" console.log)
+          [ "$RESTARTS" -eq 2 ]
+          grep -q "reboot: Power down" console.log
+          LAST_RESTART=$(grep -n "reboot: Restarting system" console.log | tail -1 | cut -d: -f1)
+          POWEROFF=$(grep -n "reboot: Power down" console.log | tail -1 | cut -d: -f1)
+          [ "$LAST_RESTART" -lt "$POWEROFF" ]
           grep -q "Welcome to" console.log
-          echo "ROLLBACK DEMO: PASS (bad tried first at line $BAD, good booted at line $GOOD)"
+          # The smoking gun: systemd-boot renamed the bad entry's try
+          # counters to +0-2 (two tries used, none left) in the ESP.
+          mdir -b -i "$ESP" ::/EFI/Linux/ | tee esp-after.txt
+          grep -q 'lisa-99+0-2.efi' esp-after.txt
+          echo "ROLLBACK DEMO: PASS (2 failed tries, counters exhausted to +0-2, good entry booted and powered off)"
