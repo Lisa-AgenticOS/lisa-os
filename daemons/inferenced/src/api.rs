@@ -25,15 +25,17 @@ pub struct AppState {
 
 /// Dataflow rule 4 (PLAN §4): the ledger entry precedes the action —
 /// if the ledger cannot record it, the action must not happen.
-fn ledger_gate(ledger: &Ledger, event: &LedgerEvent) -> Result<i64, Response> {
+fn ledger_gate(ledger: &Ledger, event: &LedgerEvent) -> Result<i64, Box<Response>> {
     ledger.append(event).map_err(|e| {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": {
-                "message": format!("refusing to run without a ledger entry: {e}"),
-            }})),
+        Box::new(
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": {
+                    "message": format!("refusing to run without a ledger entry: {e}"),
+                }})),
+            )
+                .into_response(),
         )
-            .into_response()
     })
 }
 
@@ -79,7 +81,7 @@ async fn embeddings(State(state): State<AppState>, Json(req): Json<serde_json::V
         },
     ) {
         Ok(id) => id,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     match state.engine.embed(texts).await {
         Ok(vectors) => {
@@ -208,7 +210,7 @@ async fn chat_completions(
         },
     ) {
         Ok(id) => id,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     if req.stream {
