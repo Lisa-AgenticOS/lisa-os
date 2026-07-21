@@ -79,3 +79,6 @@ Run `just lint && just test` before every commit; CI enforces both.
 - Track L (pacman layer on stock Arch/Omarchy) ships from `os/layer/`;
   Track I (immutable mkosi image) from `os/mkosi/`. Track L is the
   distribution channel while Track I matures (ADR-0003).
+
+- `git config core.hooksPath .githooks` once per clone: the pre-push
+  hook runs the lint gate so an unverified push cannot slip out.

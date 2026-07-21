@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Enforce the CLAUDE.md rule mechanically: no push without a green lint.
+# Enable once per clone:  git config core.hooksPath .githooks
+set -euo pipefail
+echo ">> pre-push: cargo fmt --check + clippy -D warnings"
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
