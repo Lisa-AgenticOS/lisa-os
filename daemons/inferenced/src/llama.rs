@@ -69,9 +69,10 @@ impl Inner {
             return self.wait_healthy().await;
         }
 
-        let model = self.cfg.model_path.as_ref().ok_or_else(|| {
-            EngineError::Unavailable("llama.model_path not configured".into())
-        })?;
+        let model =
+            self.cfg.model_path.as_ref().ok_or_else(|| {
+                EngineError::Unavailable("llama.model_path not configured".into())
+            })?;
         info!(model = %model.display(), port = self.cfg.port, "spawning llama-server");
         let child = Command::new(&self.cfg.server_bin)
             .arg("--model")
