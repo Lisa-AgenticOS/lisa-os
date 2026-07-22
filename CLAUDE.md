@@ -12,6 +12,7 @@ is the living "where are we" snapshot — read it first to catch up.
 |---|---|
 | Build everything | `just build` (cargo build --workspace) |
 | Run all tests | `just test` |
+| Shell/IME unit tests | `just shell-test`, `just ime-test` (any dev host) |
 | Lint (CI gate) | `just lint` (fmt --check + clippy -D warnings) |
 | Format | `just fmt` |
 | Local smoke test | `just smoke` (daemon + `lisa ask` round-trip) |

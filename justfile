@@ -15,8 +15,35 @@ lint:
 fmt:
     cargo fmt --all
 
+# Shell-surface unit tests (PLAN §5.7): pure-logic modules under
+# shell/*/tests. Runtime-agnostic — first JS runtime found wins:
+# gjs (Linux/image), node (CI), jsc (macOS ships it).
+shell-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    JSC=/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc
+    if command -v gjs >/dev/null; then RUN=(gjs -m)
+    elif command -v node >/dev/null; then RUN=(node)
+    elif [ -x "$JSC" ]; then RUN=("$JSC" -m)
+    else echo "no JS runtime found (gjs, node, or macOS jsc)" >&2; exit 1; fi
+    for t in shell/*/tests/*.test.js; do
+        echo "== $t"
+        "${RUN[@]}" "$t"
+    done
+
+# fcitx5-lisa protocol tests (PLAN §5.7.3, ADR-0007). Pure C++/POSIX —
+# runs anywhere; the addon itself compiles against fcitx5 in CI.
+ime-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(mktemp -d)
+    trap 'rm -rf "$out"' EXIT
+    c++ -std=c++17 -Wall -Wextra -Iime/fcitx5-lisa/src -o "$out/http_test" \
+        ime/fcitx5-lisa/tests/http_test.cpp ime/fcitx5-lisa/src/http.cpp
+    "$out/http_test"
+
 # What CI runs on every PR.
-ci: lint test
+ci: lint test shell-test ime-test
 
 # Real-model smoke: needs llama-server on PATH and a model in the store
 # (see `lisa models pull/add`; the catalog pins qwen3-0.6b-instruct-q8).

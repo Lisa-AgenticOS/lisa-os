@@ -16,6 +16,8 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       layer: ${{ steps.filter.outputs.layer }}
+      shell: ${{ steps.filter.outputs.shell }}
+      ime: ${{ steps.filter.outputs.ime }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -41,6 +43,12 @@ jobs:
               - 'models/**'
               - 'tests/e2e/**'
               - '.github/workflows/ci.yml'
+            shell:
+              - 'shell/**'
+              - '.github/workflows/ci.yml'
+            ime:
+              - 'ime/**'
+              - '.github/workflows/ci.yml'
 
   lint:
     runs-on: ubuntu-latest
@@ -64,6 +72,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+
+  # PLAN §5.7 shell surfaces: pure-logic unit tests (overlay envelope,
+  # launcher ranking, ledger view-model) — runtime-agnostic modules run
+  # under node here, gjs on the image, jsc on macOS dev hosts.
+  shell-tests:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          for t in shell/*/tests/*.test.js; do
+            echo "== $t"
+            node "$t"
+          done
+
+  # PLAN §5.7.3 layer 2 (ADR-0007): compile the fcitx5 addon against
+  # real Fcitx5Core headers in an Arch container and run the protocol
+  # unit tests.
+  ime-build:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.ime == 'true'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build addon + run protocol tests in Arch
+        run: |
+          sudo podman run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
+            pacman -Sy --noconfirm --needed base-devel cmake fcitx5 >/dev/null
+            cmake -S /src/ime/fcitx5-lisa -B /tmp/build
+            cmake --build /tmp/build
+            cd /tmp/build && ctest --output-on-failure'
 
   # PLAN §5.1 acceptance forerunner: unmodified OpenAI Python client
   # against the OpenAI-compat endpoint.

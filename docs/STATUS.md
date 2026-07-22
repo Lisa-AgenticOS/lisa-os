@@ -99,8 +99,14 @@ Pantheon. Feeds the M4 shell ADR.
   + consent on top of the Ledger; `liblisa` SDK guided-gen samples.
 - **M3 next:** embedding pipeline + hybrid ranking (sqlite-vec), file
   watchers, ACL fuzz suite, the portal Context/Memory surfaces.
-- **M4:** shell surfaces (overlay, launcher, Ledger app) — need a Linux
-  desktop session (the iMac).
+- **M4:** first passes landed (branch `m4-shell`): overlay backend
+  (`org.lisa.Overlay1`) + GNOME extension, launcher search provider
+  (qalc + context lanes), Ledger app (GTK4/GJS), fcitx5-lisa proofread
+  addon (ADR-0007) — pure logic unit-tested everywhere (`just
+  shell-test`/`ime-test`); live verification and the §5.7 budget runs
+  still need a Linux desktop session (the iMac). Deferred within M4:
+  voice v1 (§5.7.5), writing-tools layer 1 (GTK module), wlr-layer-shell
+  overlay frontend, bus-action launcher lane (M5).
 - **Hardening gaps (noted in releases):** sysupdate `Verify=no` until
   signed manifests (M1); `/etc` not overlaid yet; Arch base not yet
   snapshot-pinned in release builds (`os/repo-tools/snapshot.sh` exists).
