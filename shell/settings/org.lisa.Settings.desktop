@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lisa Settings
+GenericName=Intelligence Settings
+Comment=Remote providers, credentials, and per-scope control over what may leave your hardware.
+Exec=gjs -m /usr/share/lisa/shell/settings/lisa-settings.js
+Icon=preferences-system-symbolic
+Categories=Settings;System;GTK;
+Keywords=lisa;ai;providers;privacy;offload;remote;
+StartupNotify=true

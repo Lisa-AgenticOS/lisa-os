@@ -38,3 +38,6 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0006](0006-monorepo-staged-extraction.md) — Monorepo with staged extraction (split triggers, not dates)
 - [ADR-0007](0007-fcitx5-addon-cxx.md) — fcitx5-lisa is a thin C++ addon; logic stays daemon-side
 - [ADR-0008](0008-portal-standalone-service.md) — Portal is a standalone session service; consent stays in the shell
+- [ADR-0010](0010-remote-providers.md) — BYO remote providers via the `lisa-remoted` egress broker
+
+(ADR-0009 is reserved for the Agent Bus / agentd PR still in flight.)

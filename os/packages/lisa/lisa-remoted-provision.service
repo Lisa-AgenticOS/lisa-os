@@ -1,0 +1,27 @@
+# lisa-remoted-provision — field-test key import from the ESP
+# (ADR-0008 §6; provisional, superseded by the M7 installer OOBE).
+#
+# The dev machine stages provider API keys on the FAT ESP — the only
+# partition writable from macOS — at /efi/lisa-provision/<provider>.key.
+# FAT is world-readable, so the ESP is a staging area, never the store:
+# this oneshot imports each staged key into the broker's 0600 credential
+# store, overwrites the staged file with zeros, and removes it before
+# the broker starts. Runs as root because the ESP is root-mounted; the
+# imported keys land under /var/lib/lisa/remoted owned mode 0600.
+
+[Unit]
+Description=Lisa OS provider-key import from the ESP (field-test provisioning)
+Documentation=https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/adr/0008-remote-providers.md
+ConditionPathIsDirectory=/efi/lisa-provision
+Before=lisa-remoted.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/lisa-remoted --state-dir /var/lib/lisa/remoted --import-esp /efi
+# Ownership: the broker unit's DynamicUser+StateDirectory handling
+# remaps /var/lib/lisa/remoted to its transient user on start, so
+# root-written 0600 keys become broker-owned 0600 keys.
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -3,10 +3,13 @@ resolver = "3"
 members = [
     "libs/liblisa",
     "libs/lisa-ledger",
+    "libs/forge-harness",
     "daemons/inferenced",
     "daemons/modeld",
-    "cli/lisa", "libs/lisa-ledger", "daemons/contextd", "libs/forge-harness",
+    "daemons/contextd",
+    "daemons/remoted",
     "portals/xdg-desktop-portal-lisa",
+    "cli/lisa",
 ]
 
 [workspace.package]

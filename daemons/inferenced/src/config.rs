@@ -14,6 +14,7 @@ pub struct Config {
     /// M0 — the full D-Bus surface is an M1 deliverable.
     pub dbus: bool,
     pub llama: LlamaConfig,
+    pub remote: RemoteConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -63,6 +64,37 @@ impl Default for LlamaConfig {
     }
 }
 
+/// The `remote:byo` tier surface (PLAN §5.11, ADR-0008). inferenced
+/// itself never gets network (CLAUDE.md rule 5): remote requests are
+/// handed to the lisa-remoted broker over a local unix socket. This is
+/// config/routing surface only — the wiring that forwards requests
+/// lands with the broker integration; nothing here opens a network
+/// connection.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteConfig {
+    /// Off by default: with the tier disabled, `remote:byo:*` model
+    /// hints are refused locally and nothing can leave the device.
+    pub enabled: bool,
+    /// lisa-remoted's unix socket (AF_UNIX — already permitted by the
+    /// hardened unit's RestrictAddressFamilies).
+    pub socket: Option<PathBuf>,
+}
+
+/// Model hints of this shape route to the broker:
+/// `remote:byo:<provider>:<model>` (e.g. `remote:byo:tinker:tinker://...`).
+pub const REMOTE_BYO_PREFIX: &str = "remote:byo:";
+
+/// Split a `remote:byo:` model hint into (provider, model), if it is one.
+pub fn parse_remote_hint(hint: &str) -> Option<(&str, &str)> {
+    let rest = hint.strip_prefix(REMOTE_BYO_PREFIX)?;
+    let (provider, model) = rest.split_once(':')?;
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some((provider, model))
+}
+
 impl Config {
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         match path {
@@ -99,5 +131,38 @@ mod tests {
     #[test]
     fn unknown_keys_are_rejected() {
         assert!(toml::from_str::<Config>("no_such_key = 1\n").is_err());
+    }
+
+    #[test]
+    fn remote_tier_is_disabled_by_default_and_parses_from_toml() {
+        let c = Config::default();
+        assert!(!c.remote.enabled, "nothing leaves the device by default");
+        assert!(c.remote.socket.is_none());
+
+        let c: Config =
+            toml::from_str("[remote]\nenabled = true\nsocket = \"/run/lisa/remoted.sock\"\n")
+                .unwrap();
+        assert!(c.remote.enabled);
+        assert_eq!(
+            c.remote.socket.as_deref(),
+            Some(Path::new("/run/lisa/remoted.sock"))
+        );
+    }
+
+    #[test]
+    fn remote_byo_model_hints_parse_provider_and_model() {
+        assert_eq!(
+            parse_remote_hint("remote:byo:openai:gpt-x"),
+            Some(("openai", "gpt-x"))
+        );
+        // Tinker models are URIs containing colons; only the first
+        // separator after the provider splits.
+        assert_eq!(
+            parse_remote_hint("remote:byo:tinker:tinker://run:train:0/w/5"),
+            Some(("tinker", "tinker://run:train:0/w/5"))
+        );
+        assert_eq!(parse_remote_hint("qwen3-0.6b"), None);
+        assert_eq!(parse_remote_hint("remote:byo:"), None);
+        assert_eq!(parse_remote_hint("remote:byo:openai"), None);
     }
 }

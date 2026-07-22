@@ -1,0 +1,62 @@
+# lisa-remoted — BYO remote-provider egress broker (ADR-0008, PLAN §5.11).
+#
+# This is one of exactly two units allowed network egress (the other is
+# lisa-modeld, for model traffic). inferenced/contextd/agentd stay
+# no-egress; they reach this broker over its unix socket only. Every
+# request through here is ledgered with the `remote.` "leaves your
+# hardware" marking before it egresses, and per-scope offload consent
+# defaults to deny. (Hardening follow-up: pin IPAddressAllow/nftables to
+# the hosts of the configured provider registry.)
+
+[Unit]
+Description=Lisa OS remote-provider egress broker
+Documentation=https://github.com/Lisa-AgenticOS/lisa-os/blob/main/daemons/remoted/README.md
+After=network-online.target lisa-remoted-provision.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/lisa-remoted
+Restart=on-failure
+RestartSec=2
+
+# --- Identity & state (0700 dir; keys are 0600 inside) ---
+DynamicUser=yes
+StateDirectory=lisa lisa/remoted
+StateDirectoryMode=0700
+Environment=STATE_DIRECTORY=/var/lib/lisa/remoted
+
+# --- Network: egress permitted (that is this daemon's whole job) ---
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# --- Filesystem ---
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+# --- Privileges ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+
+# --- Kernel surface ---
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
