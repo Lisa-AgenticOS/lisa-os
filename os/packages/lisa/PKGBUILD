@@ -5,7 +5,7 @@
 # the hosted repo (M1) ships signed packages instead (PLAN §5.10).
 
 pkgbase=lisa
-pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell)
+pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-portal)
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Lisa OS AI layer: local inference as a system service"
@@ -56,6 +56,19 @@ package_lisa-modeld() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     # The daemon loop + D-Bus service land in M1; binary ships for
     # store/catalog operations via the lisa CLI meanwhile.
+}
+
+package_lisa-portal() {
+    pkgdesc="Lisa OS trust-boundary portal (PLAN §5.5)"
+    depends=(gcc-libs)
+    cd "$pkgbase-$pkgver"
+    install -Dm755 target/release/xdg-desktop-portal-lisa \
+        "$pkgdir/usr/bin/xdg-desktop-portal-lisa"
+    install -Dm644 os/packages/lisa/xdg-desktop-portal-lisa.service \
+        "$pkgdir/usr/lib/systemd/user/xdg-desktop-portal-lisa.service"
+    install -Dm644 os/packages/lisa/org.lisa.Portal.service \
+        "$pkgdir/usr/share/dbus-1/services/org.lisa.Portal.service"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
 package_lisa-cli() {

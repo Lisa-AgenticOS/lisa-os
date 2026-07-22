@@ -95,8 +95,13 @@ Pantheon. Feeds the M4 shell ADR.
   token minted at the machine); unlocks perf gates + the Flutter Linux
   spike half + real M4 desktop work.
 - **M1 remainder:** LoRA hot-swap; latency budgets on reference hardware.
-- **M2 next:** the portal (`xdg-desktop-portal-lisa`) — per-app identity
-  + consent on top of the Ledger; `liblisa` SDK guided-gen samples.
+- **M2:** portal core landed (branch `portal-m2`, §5.5/ADR-0008):
+  `org.lisa.Portal` session service — per-app identity, first-use
+  consent (fail-closed), append-only grant store, quotas, Ledger
+  attribution, revoke-kills-live-session; tested over zbus p2p incl.
+  end-to-end against `org.lisa.Inference1`. Still open: Flatpak demo
+  app on a live desktop, shell consent dialog (M4), Settings UI;
+  `liblisa` SDK guided-gen samples.
 - **M3 next:** embedding pipeline + hybrid ranking (sqlite-vec), file
   watchers, ACL fuzz suite, the portal Context/Memory surfaces.
 - **M4:** first passes landed (branch `m4-shell`): overlay backend

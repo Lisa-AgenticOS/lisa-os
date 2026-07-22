@@ -1,0 +1,38 @@
+# xdg-desktop-portal-lisa — the trust boundary (PLAN §5.5, ADR-0008).
+#
+# A per-user *session* service (systemd --user), unlike the system
+# daemons: grants, consent, and the per-user ledger are per-user by
+# construction. D-Bus-activated via org.lisa.Portal; apps reach it on
+# the session bus, it reaches org.lisa.Inference1 the same way. The
+# portal itself needs no network — it brokers fds, it never carries
+# model traffic.
+
+[Unit]
+Description=Lisa OS trust-boundary portal
+Documentation=https://github.com/Lisa-AgenticOS/lisa-os/blob/main/portals/xdg-desktop-portal-lisa/README.md
+
+[Service]
+Type=dbus
+BusName=org.lisa.Portal
+ExecStart=/usr/bin/xdg-desktop-portal-lisa
+Restart=on-failure
+RestartSec=2
+
+# --- Hardening (user-service subset; no DynamicUser in --user scope) ---
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# Grants + per-user ledger live under ~/.local/share/lisa.
+ReadWritePaths=%h/.local/share/lisa
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=default.target
