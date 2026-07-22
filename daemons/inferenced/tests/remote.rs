@@ -5,8 +5,8 @@
 
 use futures::StreamExt;
 use lisa_inferenced::engine::{GenerateRequest, StubEngine};
-use lisa_inferenced::pool::{EngineProvider, SingleEngine};
 use lisa_inferenced::openai::ChatMessage;
+use lisa_inferenced::pool::{EngineProvider, SingleEngine};
 use lisa_inferenced::remote::RemoteRouter;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -82,7 +82,10 @@ async fn remote_model_routes_through_the_broker_socket() {
         .join("");
 
     assert!(text.contains("routed via huggingface"), "got: {text}");
-    assert!(text.contains("scopes=[prompt]"), "scope header missing: {text}");
+    assert!(
+        text.contains("scopes=[prompt]"),
+        "scope header missing: {text}"
+    );
 }
 
 #[tokio::test]
@@ -126,9 +129,10 @@ async fn broker_denial_surfaces_as_an_error() {
         .collect()
         .await;
     assert!(
-        results.iter().any(|r| r.as_ref().err().is_some_and(|e| e
-            .to_string()
-            .contains("not consented"))),
+        results.iter().any(|r| r
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_string().contains("not consented"))),
         "denial should surface: {results:?}"
     );
 }

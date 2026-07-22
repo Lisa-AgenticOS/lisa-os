@@ -104,6 +104,12 @@ enum Command {
         #[arg(long)]
         reboot: bool,
     },
+    /// Manage BYO remote model providers (PLAN §5.11). Inference uses
+    /// them via `lisa ask --model remote:<provider>:<model>`.
+    Remote {
+        #[command(subcommand)]
+        cmd: RemoteCmd,
+    },
     /// Embed text into a vector (reads stdin when piped).
     Embed {
         text: Vec<String>,
@@ -113,6 +119,27 @@ enum Command {
             env = "LISA_INFERENCE_URL"
         )]
         url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RemoteCmd {
+    /// List providers and consent (may-offload) state.
+    List,
+    /// Add a custom OpenAI-compat provider.
+    Add {
+        id: String,
+        display_name: String,
+        url: String,
+    },
+    /// Store an API key for a provider (reads the key from stdin).
+    Key { provider: String },
+    /// Set per-scope offload consent (default: everything OFF).
+    Consent {
+        /// prompt | files | mail | calendar | screen | memory
+        scope: String,
+        /// on | off
+        state: String,
     },
 }
 
@@ -213,6 +240,7 @@ fn run() -> anyhow::Result<()> {
         Command::Embed { text, url } => embed(text, &url),
         Command::Install { target, from, yes } => install_cmd(&target, from, yes),
         Command::Update { reboot } => update_cmd(reboot),
+        Command::Remote { cmd } => remote_cmd(cmd),
         Command::Context { cmd } => context_cmd(cmd),
         Command::Memory { cmd, app } => memory_cmd(cmd, &app),
     }
@@ -389,6 +417,119 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
         written as f64 / (1u64 << 30) as f64,
         target.display()
     );
+    Ok(())
+}
+
+fn remoted_socket() -> PathBuf {
+    std::env::var_os("LISA_REMOTED_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/lisa/remoted/remoted.sock"))
+}
+
+/// Minimal sync HTTP/1.1 over the broker's unix socket (Connection:
+/// close). The broker is loopback-only; the CLI never touches the
+/// network — egress stays the broker's job (rule 5).
+fn broker_request(method: &str, path: &str, body: Option<&str>) -> anyhow::Result<(u16, String)> {
+    use std::os::unix::net::UnixStream;
+    let sock = remoted_socket();
+    let mut stream = UnixStream::connect(&sock).with_context(|| {
+        format!(
+            "lisa-remoted socket {} — is the broker running? (systemctl start lisa-remoted)",
+            sock.display()
+        )
+    })?;
+    let body = body.unwrap_or("");
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: lisa-remoted\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream.write_all(req.as_bytes())?;
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw)?;
+    let (head, resp) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("malformed broker response"))?;
+    let status = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    Ok((status, resp.trim().to_string()))
+}
+
+fn remote_cmd(cmd: RemoteCmd) -> anyhow::Result<()> {
+    match cmd {
+        RemoteCmd::List => {
+            let (st, body) = broker_request("GET", "/v1/providers", None)?;
+            if st != 200 {
+                bail!("broker: {body}");
+            }
+            let v: serde_json::Value = serde_json::from_str(&body)?;
+            println!("providers:");
+            for p in v["providers"].as_array().cloned().unwrap_or_default() {
+                println!(
+                    "  {:<14} {}",
+                    p["id"].as_str().unwrap_or("?"),
+                    p["base_url"].as_str().unwrap_or("(unset)")
+                );
+            }
+            if let Ok((_, c)) = broker_request("GET", "/v1/consent", None) {
+                println!("\nconsent (may offload — default off):\n  {c}");
+            }
+            println!(
+                "\nSet a key:   lisa remote key <provider>\n\
+                 Allow scope: lisa remote consent prompt on\n\
+                 Use it:      lisa ask --model remote:<provider>:<model>"
+            );
+        }
+        RemoteCmd::Add {
+            id,
+            display_name,
+            url,
+        } => {
+            let b = serde_json::json!({"id": id, "display_name": display_name, "base_url": url})
+                .to_string();
+            let (st, body) = broker_request("POST", "/v1/providers", Some(&b))?;
+            if st != 200 {
+                bail!("broker: {body}");
+            }
+            println!("added provider `{id}` -> {url}");
+        }
+        RemoteCmd::Key { provider } => {
+            eprintln!(
+                "paste the API key for `{provider}` and press Enter (input is stored encrypted, write-only):"
+            );
+            let mut key = String::new();
+            std::io::stdin().read_line(&mut key)?;
+            let key = key.trim();
+            if key.is_empty() {
+                bail!("empty key");
+            }
+            let b = serde_json::json!({ "key": key }).to_string();
+            let (st, body) =
+                broker_request("PUT", &format!("/v1/providers/{provider}/key"), Some(&b))?;
+            if st != 200 {
+                bail!("broker: {body}");
+            }
+            println!("key stored for `{provider}`");
+        }
+        RemoteCmd::Consent { scope, state } => {
+            let allowed = matches!(state.as_str(), "on" | "yes" | "true" | "allow");
+            let b = serde_json::json!({"scope": scope, "allowed": allowed}).to_string();
+            let (st, body) = broker_request("PUT", "/v1/consent", Some(&b))?;
+            if st != 200 {
+                bail!("broker: {body}");
+            }
+            println!(
+                "{scope} offload: {}",
+                if allowed { "ALLOWED" } else { "denied" }
+            );
+        }
+    }
     Ok(())
 }
 
