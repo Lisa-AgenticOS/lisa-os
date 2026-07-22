@@ -98,11 +98,13 @@ egress ledgered in the "leaves your hardware" marking.
 ## What's left — the path to a real Lisa
 
 **Near term (M2–M3 completion):**
-- Merge the agentd PR (#5) → Agent Bus: MCP wire transport, `libs/mcp-bus`,
-  `lisa tools/call/undo` verbs, full 500-attempt injection corpus.
-- Context fabric: embedding pipeline + hybrid ranking (sqlite-vec),
-  file/mail/calendar sources, watchers, ACL fuzz suite (0 cross-scope
-  leaks), Settings › Intelligence panel.
+- Agent Bus follow-ups (agentd landed): MCP wire transport, `libs/mcp-bus`,
+  `lisa tools/call/undo` verbs, full 500-attempt injection corpus, first
+  first-party app that exposes tools.
+- Context fabric: sqlite-vec at scale, file/mail/calendar sources,
+  watchers, scoped-ACL retrieval + the ACL fuzz suite (0 cross-scope
+  leaks), Settings › Intelligence panel. (Embedding pipeline + hybrid
+  ranking done.)
 - liblisa SDK: session/tasks/memory bindings + the <40-line recipe
   sample; the OpenAI-compat zero-dep path is already documented.
 
