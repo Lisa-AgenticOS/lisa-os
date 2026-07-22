@@ -15,4 +15,5 @@ enable NetworkManager.service
 enable iwd.service
 enable systemd-resolved.service
 enable bluetooth.service
+enable sshd.service
 enable systemd-sysupdate.timer
