@@ -8,10 +8,13 @@ M0 acceptance: fresh clone → `just image` → bootable qcow2; update →
 rollback demonstrated in the QEMU test.
 
 Status: **building, booting, and rolling back in CI.** `mkosi.conf` is
-a minimal bootable Arch profile (ToolsTree=default so it builds on
-Ubuntu runners); `mkosi.repart/` has ESP (1G, sized for the A/B UKI
-pair) + root + var — the root-b + verity partitions are the next
-backlog item. Nightly CI:
+a bootable Arch profile (ToolsTree=default so it builds on Ubuntu
+runners) that boots into a **GNOME desktop session** (PLAN §3 desktop
+strategy: GNOME base, patched not forked); `mkosi.repart/` has ESP
+(1G, sized for the A/B UKI pair) + two 8G root slots + var — 19 GiB
+total, so USB media must be 32 GB+; the smallest field target disk
+(28,000,002,048 bytes ≈ 26 GiB) holds it with room for /var to grow.
+Verity partitions are the next backlog item. Nightly CI:
 
 - `image` job: validates, builds, and boot-checks the image in QEMU
   (direct-kernel boot to `poweroff.target`); uploads `lisa.raw`.
@@ -26,6 +29,25 @@ backlog item. Nightly CI:
   (relabeled `root_2`), reboots, and v2 boots from slot B to a clean
   poweroff. The PLAN §10 "A/B update + rollback demonstrated" line is
   closed.
+
+Desktop (M4 §5.7 host): gdm + gnome-shell + a hand-picked supporting
+set (each justified inline in `mkosi.conf` — no `gnome` group). The
+release build folds in `lisa-shell` (os/packages/lisa), which installs
+and default-enables the assistant overlay + semantic launcher
+extensions and the Ledger app, and moves GNOME's input-source switcher
+to Super+Shift+Space so the assistant owns Super+Space (§5.7.1).
+Networking on desktop images is NetworkManager over the iwd backend
+(the GNOME shell network indicator only speaks NM; iwd stays the
+supplicant) — the field test proved a CLI-only Wi-Fi story is a dead
+end. Non-NM images keep the networkd DHCP profile path.
+
+**PROVISIONAL field-test login** (on the record, replace with the M7
+first-boot OOBE, PLAN §6): user `lisa`, password `lisa`, in `wheel`
+with password sudo (`mkosi.extra/etc/sudoers.d/10-wheel`), GDM
+autologin (`mkosi.extra/etc/gdm/custom.conf`). The home directory
+lives on the root slot (no /home partition yet), so an A/B update does
+not carry it over — acceptable for field-test sticks, not for real
+installs.
 
 Field hardware (first target: iMac18,2): explicit
 `linux-firmware-amdgpu` / `linux-firmware-broadcom` (Radeon Pro 560

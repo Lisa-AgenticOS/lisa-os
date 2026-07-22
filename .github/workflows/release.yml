@@ -34,7 +34,9 @@ jobs:
           sudo podman run --rm --privileged -v "$PWD":/src -w /src -e VER="$VER" \
             docker.io/library/archlinux:latest bash -ec '
               sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
-              pacman -Syu --noconfirm base-devel rust git mkosi
+              # glib2: lisa-shell makedepends (build-packages.sh runs
+              # makepkg without -s, so makedepends must be preinstalled).
+              pacman -Syu --noconfirm base-devel rust git mkosi glib2
 
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build
@@ -57,6 +59,7 @@ jobs:
           Packages=lisa-inferenced
                    lisa-modeld
                    lisa-cli
+                   lisa-shell
           ExtraTrees=/build/extra
           Autologin=yes
           EOF
@@ -121,10 +124,15 @@ jobs:
           Lisa OS image ${VER} (pre-alpha, runs-from-USB — not an installer).
 
           **Boot it:** decompress \`lisa-usb-${VER}.raw.zst\` (zstd -d), write to a
-          16 GB+ USB stick (\`dd\` / Etcher), boot an Intel Mac holding ⌥ Option →
-          "EFI Boot". Console autologin (dev image — no secrets on the stick).
-          Includes lisa-inferenced (append-only ledger, stub engine by default),
-          the \`lisa\` CLI, DHCP on ethernet.
+          32 GB+ USB stick (\`dd\` / Etcher — the 19 GiB A/B layout outgrew 16 GB
+          sticks when the desktop landed), boot an Intel Mac holding ⌥ Option →
+          "EFI Boot". Boots into a GNOME session: assistant overlay
+          (Super+Space), semantic launcher, Ledger app preinstalled; Wi-Fi and
+          ethernet via the GNOME network UI (NetworkManager on iwd).
+          PROVISIONAL field-test login: user \`lisa\`, password \`lisa\`, GDM
+          autologin (dev image — no secrets on the stick). Includes
+          lisa-inferenced (append-only ledger, stub engine by default) and the
+          \`lisa\` CLI.
 
           **Self-update:** installed systems track this repo's releases —
           \`lisa update\` (or \`systemd-sysupdate update\`) pulls the newest

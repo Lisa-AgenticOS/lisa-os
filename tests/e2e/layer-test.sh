@@ -22,7 +22,9 @@ say "provision build deps"
 # pacman >= 7's Landlock/alpm-user download sandbox cannot apply inside a
 # rootless container; disabling it is container-only (real hosts keep it).
 grep -q '^DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-pacman -Syu --noconfirm --needed base-devel rust git curl
+# glib2: lisa-shell makedepends (makepkg runs without -s here, so
+# makedepends must be preinstalled).
+pacman -Syu --noconfirm --needed base-devel rust git curl glib2
 
 say "container-only sandbox relaxation for the service"
 # Rootless containers cannot create mount namespaces or attach cgroup BPF
