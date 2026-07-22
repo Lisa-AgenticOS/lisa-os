@@ -27,6 +27,15 @@ backlog item. Nightly CI:
   poweroff. The PLAN §10 "A/B update + rollback demonstrated" line is
   closed.
 
+Field hardware (first target: iMac18,2): explicit
+`linux-firmware-amdgpu` / `linux-firmware-broadcom` (Radeon Pro 560
+display, BCM43602 Wi-Fi), bluez for Magic input pairing, `hid_apple`
+fnmode=2. Boot diagnosis: the journal is persistent, and
+`lisa-boot-report.service` (also wanted by emergency/rescue) dumps the
+current and previous boot's journal to `lisa-debug/` on the FAT ESP —
+readable on any machine the stick is plugged into; the kernel command
+line keeps unit status on the console so a hang names its unit.
+
 Remaining for the full Track I story: dm-verity on the root slots,
 swtpm in the boot test, signed sysupdate sources (M1 repo).
 

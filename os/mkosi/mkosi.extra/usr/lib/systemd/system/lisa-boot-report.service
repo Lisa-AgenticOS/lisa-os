@@ -1,0 +1,37 @@
+# Field diagnosis without a working OS: dump this boot's journal (and
+# the previous boot's, from the persistent journal) onto the ESP. The
+# ESP is FAT — readable when the stick is plugged into any machine,
+# including macOS, even though the btrfs root is not.
+#
+# Wanted by emergency/rescue as well as multi-user so a boot that only
+# limps into a shell still leaves a report behind.
+[Unit]
+Description=Dump boot journal to the ESP for offline diagnosis
+DefaultDependencies=no
+After=systemd-journald.service local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '\
+  esp=""; \
+  for d in /efi /boot /boot/efi; do \
+    if mountpoint -q "$d"; then esp="$d"; break; fi; \
+  done; \
+  if [ -z "$esp" ]; then \
+    for l in esp ESP; do \
+      if [ -e "/dev/disk/by-partlabel/$l" ]; then \
+        mkdir -p /run/lisa-esp; \
+        mount "/dev/disk/by-partlabel/$l" /run/lisa-esp && esp=/run/lisa-esp; \
+        break; \
+      fi; \
+    done; \
+  fi; \
+  [ -n "$esp" ] || exit 0; \
+  mkdir -p "$esp/lisa-debug"; \
+  journalctl -b -o short-precise --no-pager > "$esp/lisa-debug/boot-current.log" 2>&1 || true; \
+  journalctl -b -1 -o short-precise --no-pager > "$esp/lisa-debug/boot-previous.log" 2>&1 || true; \
+  sync'
+
+[Install]
+WantedBy=multi-user.target emergency.target rescue.target

@@ -8,6 +8,18 @@ if [ -f /usr/lib/systemd/system/lisa-inferenced.service ]; then
     systemctl enable lisa-inferenced.service
 fi
 
+# Boot diagnosis: every boot (including one that only reaches
+# emergency/rescue) dumps its journal to the FAT ESP, readable from any
+# machine the stick is plugged into.
+if [ -f /usr/lib/systemd/system/lisa-boot-report.service ]; then
+    systemctl enable lisa-boot-report.service
+fi
+
+# Bluetooth for Apple Magic input devices when the stack is present.
+if [ -f /usr/lib/systemd/system/bluetooth.service ]; then
+    systemctl enable bluetooth.service
+fi
+
 # Network out of the box when networkd config is present (USB images
 # ship a DHCP profile via ExtraTrees).
 if [ -f /etc/systemd/network/80-dhcp.network ]; then
