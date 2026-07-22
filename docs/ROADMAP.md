@@ -3,7 +3,7 @@
 Where the whole project stands against `docs/PLAN.md`, and the path from
 here to a real, shippable Lisa. Companion to `docs/STATUS.md` (component
 detail) and `docs/PLAN.md` (scope, source of truth).
-**Updated: 2026-07-23 (overnight full-cycle session).**
+**Updated: 2026-07-23 (overnight full-cycle session — both open PRs landed, providers + hybrid retrieval + Gemma).**
 
 ## The one-paragraph state
 
@@ -24,10 +24,10 @@ with automatic rollback.
 | **M0** Bootstrap | done (polish left) | image builds → boots → A/B update + rollback + sysupdate; release channel live |
 | **M1** Inference core | ✅ done (LoRA + perf left) | real inference, crash recovery, guided-gen 1000/1000, scheduler, D-Bus, embeddings, multi-model residency |
 | **M2** Trust boundary + SDK | 🟠 mostly | portal ✅, Ledger ✅; liblisa guided-gen ✅, sessions/tasks bindings partial |
-| **M3** Context fabric | 🟠 core done | FTS5 index + provenance + per-app memory ✅; embeddings/hybrid/watchers/sources left |
+| **M3** Context fabric | 🟠 core+hybrid | FTS5 + provenance + per-app memory ✅; embedding pipeline + hybrid (BM25+cosine) retrieval ✅; watchers/sources/scoped-ACL left |
 | **M4** Surfaces | 🟠 landed, needs polish | overlay + launcher + Ledger app + fcitx5 running on GNOME/hardware; writing-tools/voice/budgets left |
-| **M5** Agent Bus | 🟡 on a branch | agentd registry/tiers/undo/injection-gate exist in PR #5 (unmerged); MCP transport + CLI left |
-| **§5.11** Remote providers | 🟠 landing tonight | lisa-remoted broker ✅ + HF ✅ + hardware-aware fit ✅; routing + CLI verbs in progress |
+| **M5** Agent Bus | 🟠 landed | lisa-agentd on main: MCP manifests, registry, tier enforcement at the bus, undo journal, injection gate ✅; MCP wire transport + `lisa tools/call/undo` verbs left |
+| **§5.11** Remote providers | 🟠 landed | lisa-remoted broker ✅ (openai/anthropic/hf/tinker/together/fireworks + custom), routing ✅, `lisa remote` CLI ✅, hardware-aware fit ✅; image packaging + socket bridge left (Linux-verify) |
 | **M6** Apps + Forge | 🟡 seeds | forge-harness + lisa_ui + lisa_flutter skeletons; app suite + Forge app left |
 | **M7** Personal node + installer | 🟡 groundwork | remote broker = PCN groundwork; `lisa install` proto-installer; OOBE + WireGuard pairing left |
 | **M8** Public alpha ISO | 🟡 channel exists | releases publish; docs site + eval dashboard + security review left |
@@ -71,18 +71,29 @@ OpenAI/Anthropic/Tinker/Together/Fireworks/**HuggingFace** + custom
 URLs, encrypted per-key creds, per-scope consent defaulting OFF, every
 egress ledgered in the "leaves your hardware" marking.
 
-## In progress right now (this overnight session)
+## Done this overnight session (2026-07-22 → 07-23)
 
-1. ✅ HuggingFace provider (verified router URL).
-2. ✅ Hardware-aware `lisa models catalog` (runs-here vs offload).
-3. ⏳ **Routing**: `inferenced` forwards `remote:<provider>:<model>` to
-   the broker so `lisa ask --model remote:…` works.
-4. ⏳ **`lisa remote` CLI verbs** (list/add/set-key/consent/use).
-5. ⏳ **Small local model** (Gemma) pinned in the catalog so the iMac
-   gets on-device inference too.
-6. ⏳ **Package** `lisa-remoted` + Settings into the image.
-7. ⏳ Release so the iMac can `lisa update` into a Lisa that thinks —
-   local *and* remote.
+- ✅ **Both open PRs landed**: M5 Agent Bus (#5) and §5.11 remote
+  providers (#6), rebased onto main, ADRs 0009/0010 reconciled.
+- ✅ **HuggingFace** provider (verified router) + openai/anthropic/
+  tinker/together/fireworks; `lisa remote` CLI (list/add/key/consent),
+  live-tested against the real broker.
+- ✅ **Remote routing**: `lisa ask --model remote:<provider>:<model>`
+  proxies to the broker over its unix socket (round-trip tested).
+- ✅ **Hardware-aware** `lisa models catalog` (runs-here vs offload).
+- ✅ **Gemma 3 1B** pinned in the catalog (verified load+generate) +
+  `lisa models get <id>` — the iMac gets local inference in one command.
+- ✅ **M3 hybrid retrieval**: embedding pipeline + BM25+cosine ranking
+  in contextd; `lisa context index --embed`, `search --hybrid`.
+- ✅ **Device fixes** (from field photos): boots to GNOME
+  (graphical.target), NetworkManager auto-enabled, Settings app shipped,
+  openssh for headless access.
+
+### Deferred (needs Linux verification, not done blind)
+- Package `lisa-remoted` + Settings into the image + the cross-daemon
+  socket bridge (design in `daemons/remoted/README.md`).
+- `lisa tools/call/undo` verbs over `org.lisa.Agent1` (async D-Bus
+  client in the CLI).
 
 ## What's left — the path to a real Lisa
 
