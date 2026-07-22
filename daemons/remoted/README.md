@@ -52,3 +52,26 @@ cargo run -p lisa-remoted -- --state-dir /tmp/lisa-remoted --import-esp /Volumes
 
 Units: `os/packages/lisa/lisa-remoted.service`,
 `os/packages/lisa/lisa-remoted-provision.service`.
+
+## Packaging & the socket bridge (TODO — needs Linux verification)
+
+The broker is complete and tested; wiring it into the image is deferred
+because the unix-socket permission story spans DynamicUser services and
+must be verified on real systemd (not macOS). Design:
+
+- A static `lisa` system group; `lisa-inferenced`, `lisa-remoted`, and
+  the login `lisa` user all join it (SupplementaryGroups / sysusers.d).
+- Prefer **socket activation**: a `lisa-remoted.socket` unit with
+  `ListenStream=/run/lisa/remoted.sock`, `SocketGroup=lisa`,
+  `SocketMode=0660`; systemd creates the socket with correct group/mode
+  before the daemon starts and passes the fd (small `sd_listen_fds`
+  change to `main.rs`). This lets `inferenced` (routing), the Settings
+  app, and `lisa remote` all reach it, while egress stays broker-only.
+- Then: add `lisa-remoted` + the Settings app to `os/packages/lisa`
+  (PKGBUILD), enable `lisa-remoted.service` in `00-lisa.preset`, and add
+  a Linux CI job asserting `inferenced` reaches the socket end to end
+  (a `remote:mock:*` model routes through a stub broker under the
+  packaged perms). Verify on the field iMac.
+
+Until then: the management plane + routing are fully usable in dev where
+all components share a user (see `Run (dev)` above and `lisa remote`).
