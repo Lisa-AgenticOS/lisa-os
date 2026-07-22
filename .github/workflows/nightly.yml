@@ -52,7 +52,7 @@ jobs:
             -tpmdev emulator,id=tpm0,chardev=chrtpm \
             -device tpm-tis,tpmdev=tpm0 \
             -kernel os/mkosi/lisa.vmlinuz -initrd os/mkosi/lisa.initrd \
-            -append "root=/dev/vda2 rw console=ttyS0 systemd.unit=poweroff.target systemd.show_status=1" \
+            -append "root=PARTLABEL=root_1 rw console=ttyS0 systemd.unit=poweroff.target systemd.show_status=1" \
             -drive file=os/mkosi/lisa.raw,format=raw,if=virtio \
             | tee boot-console.log
           grep -q "Welcome to" boot-console.log

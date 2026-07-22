@@ -45,6 +45,7 @@ jobs:
               # Versioned USB/release profile outside the host mount.
               cp -r /src/os/mkosi /build/mkosi
               sed -i "s/^Label=root_1$/Label=root_${VER}/" /build/mkosi/mkosi.repart/10-root.conf
+              sed -i "s/PARTLABEL=root_1/PARTLABEL=root_${VER}/" /build/mkosi/mkosi.conf
               mkdir -p /build/pkgs /build/extra/etc/systemd/network
               cp /build/repo-out/*.pkg.tar.* /build/pkgs/
               printf "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n" \
@@ -82,7 +83,7 @@ jobs:
           timeout 600 qemu-system-x86_64 \
             -machine q35 -accel kvm -accel tcg -m 4G -nographic -no-reboot \
             -kernel vmlinuz -initrd initrd.img \
-            -append "root=/dev/vda2 rw console=ttyS0 systemd.unit=poweroff.target" \
+            -append "root=PARTLABEL=root_${{ steps.ver.outputs.ver }} rw console=ttyS0 systemd.unit=poweroff.target" \
             -drive file=lisa-usb.raw,format=raw,if=virtio \
             | tee boot-console.log
           grep -q "Welcome to" boot-console.log
