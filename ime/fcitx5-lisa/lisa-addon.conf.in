@@ -1,0 +1,9 @@
+[Addon]
+Name=Lisa Writing Tools
+Comment=Proofread and rewrite in any app that accepts text (Lisa OS, PLAN §5.7.3)
+Category=Module
+Library=lisa
+Type=SharedLibrary
+OnDemand=False
+Configurable=True
+Version=@PROJECT_VERSION@
