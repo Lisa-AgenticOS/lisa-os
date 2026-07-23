@@ -176,7 +176,10 @@ mod tests {
         std::fs::write(dir.path().join("qwen3-0.6b-instruct-q8"), b"x").unwrap();
         std::fs::write(dir.path().join("gemma-3-1b-it-q8"), b"x").unwrap();
         std::fs::create_dir(dir.path().join("blobs")).unwrap(); // dirs skipped
-        assert_eq!(first_model_in(dir.path()).as_deref(), Some("gemma-3-1b-it-q8"));
+        assert_eq!(
+            first_model_in(dir.path()).as_deref(),
+            Some("gemma-3-1b-it-q8")
+        );
     }
 
     #[test]
