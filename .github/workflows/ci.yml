@@ -19,6 +19,7 @@ jobs:
       shell: ${{ steps.filter.outputs.shell }}
       ime: ${{ steps.filter.outputs.ime }}
       gnome_panel: ${{ steps.filter.outputs.gnome_panel }}
+      llama: ${{ steps.filter.outputs.llama }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -52,6 +53,9 @@ jobs:
               - '.github/workflows/ci.yml'
             gnome_panel:
               - 'os/packages/gnome-control-center-lisa/**'
+              - '.github/workflows/ci.yml'
+            llama:
+              - 'os/packages/llama.cpp/**'
               - '.github/workflows/ci.yml'
 
   lint:
@@ -138,6 +142,31 @@ jobs:
             pacman -Qlp "$pkg" | grep -q gnome-lisa-panel.desktop \
               && echo "OK: Intelligence panel .desktop present" \
               || { echo "FAIL: panel .desktop missing from package"; exit 1; }'
+
+  # PLAN §5.1: build the local inference engine (llama.cpp / llama-server)
+  # from source in x86 Arch — it's AUR-only, so this is the build gate.
+  # Path-filtered (heavy C++ compile). Asserts the server binary lands.
+  llama-build:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.llama == 'true'
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: makepkg llama.cpp in Arch
+        run: |
+          sudo podman run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
+            pacman -Syu --noconfirm --needed base-devel git cmake >/dev/null
+            useradd -m builder
+            printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
+            cp -r /src/os/packages/llama.cpp /home/builder/pkg
+            chown -R builder:builder /home/builder/pkg
+            su builder -c "cd ~/pkg && makepkg -s --nocheck --skippgpcheck --noconfirm"
+            pkg=$(ls /home/builder/pkg/llama.cpp-*.pkg.tar.*)
+            echo "built: $pkg"
+            pacman -Qlp "$pkg" | grep -q usr/bin/llama-server \
+              && echo "OK: llama-server present" \
+              || { echo "FAIL: llama-server missing from package"; exit 1; }'
 
   # PLAN §5.1 acceptance forerunner: unmodified OpenAI Python client
   # against the OpenAI-compat endpoint.

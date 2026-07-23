@@ -1,0 +1,39 @@
+# llama.cpp — the local inference engine (llama-server) for
+# lisa-inferenced (PLAN §5.1). Not in Arch's official repos, so we build
+# it from source into the image. MIT-licensed.
+#
+# CPU build, portable across x86_64 (GGML_NATIVE=OFF → no -march=native,
+# so the same binary runs on any release target; Gemma-1B runs fine on
+# CPU). A Vulkan/AMD variant for the iMac's Radeon is a follow-up
+# (-DGGML_VULKAN=ON + vulkan deps).
+pkgname=llama.cpp
+pkgver=b10093
+pkgrel=1
+pkgdesc="LLM inference in C/C++ — llama-server, the Lisa OS local engine"
+arch=(x86_64)
+url="https://github.com/ggml-org/llama.cpp"
+license=(MIT)
+depends=(gcc-libs glibc)
+makedepends=(cmake git)
+source=("git+https://github.com/ggml-org/llama.cpp.git#tag=${pkgver}")
+b2sums=('SKIP')
+
+build() {
+  cmake -B build -S llama.cpp \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_NATIVE=OFF \
+    -DGGML_BACKEND_DL=OFF \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DLLAMA_CURL=OFF \
+    -DLLAMA_BUILD_SERVER=ON \
+    -DLLAMA_BUILD_TESTS=OFF \
+    -DLLAMA_BUILD_EXAMPLES=OFF \
+    -DLLAMA_BUILD_TOOLS=ON
+  cmake --build build --config Release -j"$(nproc)" --target llama-server
+}
+
+package() {
+  # A single self-contained binary (static libs) is all inferenced needs.
+  install -Dm755 build/bin/llama-server "$pkgdir/usr/bin/llama-server"
+  install -Dm644 llama.cpp/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
