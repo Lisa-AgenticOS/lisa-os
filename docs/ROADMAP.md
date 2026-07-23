@@ -91,6 +91,19 @@ egress ledgered in the "leaves your hardware" marking.
   openssh for headless access.
 
 ### Done this session (2026-07-23, day 2)
+- 🟠 **Settings › Intelligence (native GNOME panel)**: decided (ADR-0012)
+  to ship our own `gnome-control-center` (pinned 50.3) with a native
+  **Intelligence** panel in the sidebar — g-c-c has no plugin API, so a
+  thin maintained patch (panel dir + two anchored edits) is the only way
+  in. Scaffolded `os/packages/gnome-control-center-lisa`: the C panel
+  (`CcPanel`/libadwaita, local models via `lisa models catalog --json` +
+  a providers bridge), PKGBUILD, and integration — written against the
+  fetched 50.3 API; the sed integration is verified against real upstream
+  files. **Builds in CI/container, not yet compiled** (macOS host can't
+  build g-c-c); not yet wired into the image.
+- ✅ **AI panel (standalone, GJS)**: `org.lisa.Settings` two sections
+  (Local models + Providers with per-provider model routing); the panel
+  the native g-c-c one bridges to. `lisa models catalog/list --json`.
 - ✅ **Scoped-ACL retrieval** (M3 §5.3 acceptance): `contextd::acl` maps a
   granted portal scope to allowed provenance and filters *at the query*, so
   a disallowed chunk can't leak through ranking — a `documents`-scoped

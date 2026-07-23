@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Intelligence
+Comment=Local models, model providers, and what may leave this machine
+Exec=gnome-control-center lisa
+# Translators: Do NOT translate or transliterate this text (this is an icon file name)!
+Icon=preferences-system-symbolic
+Terminal=false
+Type=Application
+NoDisplay=true
+StartupNotify=true
+Categories=GNOME;GTK;Settings;DesktopSettings;X-GNOME-Settings-Panel;X-GNOME-SystemSettings;
+OnlyShowIn=GNOME;
+# Translators: Search terms to find the Intelligence panel. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
+Keywords=AI;Intelligence;Lisa;Model;Models;LLM;Provider;Assistant;Offload;Privacy;
