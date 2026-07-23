@@ -14,7 +14,10 @@ pkgname=(
   gnome-keybindings
 )
 pkgver=50.3
-pkgrel=1
+# pkgrel bumped past Arch's stock 50.3-1 so pacman/mkosi deterministically
+# pick THIS package (with the Intelligence panel) over [extra]'s — not just
+# by local-repo order. Re-pin (pkgver + this) when GNOME moves.
+pkgrel=2
 pkgdesc="GNOME's main interface to configure various aspects of the desktop (Lisa build: + Intelligence panel)"
 url="https://apps.gnome.org/Settings/"
 license=(GPL-2.0-or-later)

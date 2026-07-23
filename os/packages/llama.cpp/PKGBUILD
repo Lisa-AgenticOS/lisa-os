@@ -15,6 +15,7 @@ url="https://github.com/ggml-org/llama.cpp"
 license=(MIT)
 depends=(gcc-libs glibc)
 makedepends=(cmake git)
+options=(!debug)
 source=("git+https://github.com/ggml-org/llama.cpp.git#tag=${pkgver}")
 b2sums=('SKIP')
 

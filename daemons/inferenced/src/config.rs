@@ -44,7 +44,7 @@ pub struct LlamaConfig {
     /// llama-server binary; resolved via PATH by default.
     pub server_bin: PathBuf,
     pub model_path: Option<PathBuf>,
-    /// The model store's refs dir (e.g. /var/lib/lisa/models/refs). When
+    /// The model store's refs dir (e.g. /var/lib/lisa-models/refs). When
     /// set — and no explicit `model_path` — inferenced serves ANY model
     /// in it *by name*, lazily. This is the "download it in Settings and
     /// it's just there" path: no restart, no config per model.
@@ -160,12 +160,12 @@ mod tests {
     #[test]
     fn models_dir_and_default_parse_and_first_model_is_deterministic() {
         let c: Config = toml::from_str(
-            "engine = \"llama\"\n[llama]\nmodels_dir = \"/var/lib/lisa/models/refs\"\n",
+            "engine = \"llama\"\n[llama]\nmodels_dir = \"/var/lib/lisa-models/refs\"\n",
         )
         .unwrap();
         assert_eq!(
             c.llama.models_dir.as_deref(),
-            Some(Path::new("/var/lib/lisa/models/refs"))
+            Some(Path::new("/var/lib/lisa-models/refs"))
         );
         assert!(c.llama.default_model.is_none());
 

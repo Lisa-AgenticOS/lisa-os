@@ -147,6 +147,17 @@ impl ModelStore {
             let tmp = self.tmp_dir().join(format!("ingest-{hash}"));
             fs::copy(src, &tmp).map_err(|e| io_err(&tmp, e))?;
             fs::rename(&tmp, &blob_path).map_err(|e| io_err(&blob_path, e))?;
+            // Model weights aren't secret, and the DynamicUser
+            // lisa-inferenced (not in group `lisa`) reads them via the world
+            // bit — so force 0644 rather than depend on the downloader's
+            // umask (a hardened 0077 would produce 0600 blobs the daemon
+            // can't load, and inference would silently fail).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&blob_path, fs::Permissions::from_mode(0o644))
+                    .map_err(|e| io_err(&blob_path, e))?;
+            }
         }
         fs::hard_link(&blob_path, &ref_path).map_err(|e| io_err(&ref_path, e))?;
 

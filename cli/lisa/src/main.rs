@@ -1082,11 +1082,12 @@ fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
                 entry.task, entry.license
             );
             let e = fetch::pull(&store, source, &id, hash)?;
+            let ref_path = store.root().join("refs").join(&e.name);
             println!(
-                "installed `{}` ({:.2} GiB) — run it: lisa-inferenced --model $HOME/.local/share/lisa/models/refs/{}",
+                "installed `{}` ({:.2} GiB) at {}",
                 e.name,
                 e.size as f64 / (1 << 30) as f64,
-                e.name
+                ref_path.display()
             );
         }
         ModelsCmd::Hash { file } => {

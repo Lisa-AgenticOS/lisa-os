@@ -118,13 +118,24 @@ async fn main() -> anyhow::Result<()> {
                 "stub".to_string(),
             )
         };
-    // Wrap the local provider so `remote:<provider>:<model>` names route
-    // to the lisa-remoted broker (§5.11); local models pass through
-    // unchanged. inferenced stays network-free — the broker owns egress.
-    let engines: Arc<dyn EngineProvider> = Arc::new(lisa_inferenced::remote::RemoteRouter::new(
-        engines,
-        lisa_inferenced::remote::default_socket(),
-    ));
+    // The BYO remote tier is OFF by default (CLAUDE.md rule 5: nothing
+    // leaves the device). Only when it's enabled do we wrap the provider so
+    // `remote:<provider>:<model>` names route to the lisa-remoted broker
+    // (§5.11) — and honor the configured socket. Disabled → a `remote:` name
+    // simply isn't found locally and is refused; inferenced stays
+    // network-free either way (the broker owns egress).
+    let engines: Arc<dyn EngineProvider> = if cfg.remote.enabled {
+        let socket = cfg
+            .remote
+            .socket
+            .clone()
+            .unwrap_or_else(lisa_inferenced::remote::default_socket);
+        info!(socket = %socket.display(), "BYO remote tier enabled — routing remote: names to the broker");
+        Arc::new(lisa_inferenced::remote::RemoteRouter::new(engines, socket))
+    } else {
+        info!("BYO remote tier disabled — nothing leaves this device");
+        engines
+    };
     info!("engine provider initialized (remote routing enabled)");
 
     let scheduler = Arc::new(lisa_inferenced::scheduler::Scheduler::new(1));
@@ -202,9 +213,14 @@ fn llama_refs_and_default(cfg: &config::LlamaConfig) -> anyhow::Result<(PathBuf,
         return Ok((refs, name));
     }
     if let Some(dir) = cfg.models_dir.clone() {
+        // Prefer the configured default — but only if it's actually in the
+        // store; a stale/typo'd default would otherwise spawn a doomed
+        // llama-server on a nonexistent path. Else use the first model
+        // present.
         let default = cfg
             .default_model
             .clone()
+            .filter(|m| dir.join(m).exists())
             .or_else(|| config::first_model_in(&dir))
             .unwrap_or_else(|| "lisa-system".to_string());
         return Ok((dir, default));
