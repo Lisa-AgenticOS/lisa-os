@@ -162,7 +162,8 @@ jobs:
             cp -r /src/os/packages/llama.cpp /home/builder/pkg
             chown -R builder:builder /home/builder/pkg
             su builder -c "cd ~/pkg && makepkg -s --nocheck --skippgpcheck --noconfirm"
-            pkg=$(ls /home/builder/pkg/llama.cpp-*.pkg.tar.*)
+            # makepkg also emits a -debug package; select only the main one.
+            pkg=$(ls /home/builder/pkg/llama.cpp-*.pkg.tar.* | grep -v -- -debug- | head -1)
             echo "built: $pkg"
             pacman -Qlp "$pkg" | grep -q usr/bin/llama-server \
               && echo "OK: llama-server present" \

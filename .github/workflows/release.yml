@@ -36,13 +36,18 @@ jobs:
               sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
               # glib2: lisa-shell makedepends (build-packages.sh runs
               # makepkg without -s, so makedepends must be preinstalled).
-              pacman -Syu --noconfirm base-devel rust git mkosi glib2
+              # cmake: the llama.cpp (llama-server) engine build.
+              pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake
 
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build
               useradd -m builder
               chown -R builder /build
               sudo -u builder bash -c "cd /build && bash os/repo-tools/build-packages.sh /build/repo-out"
+              # The local inference engine (llama-server) — AUR-only, built
+              # from source into the same repo the lisa packages use.
+              sudo -u builder bash -c "cd /build/os/packages/llama.cpp && makepkg --nocheck --skippgpcheck --noconfirm"
+              cp /build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.* /build/repo-out/
 
               # Versioned USB/release profile outside the host mount.
               cp -r /src/os/mkosi /build/mkosi
@@ -63,6 +68,7 @@ jobs:
                    lisa-modeld
                    lisa-cli
                    lisa-shell
+                   llama.cpp
           ExtraTrees=/build/extra
           Autologin=yes
           EOF

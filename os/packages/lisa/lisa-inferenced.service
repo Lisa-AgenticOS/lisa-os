@@ -12,7 +12,11 @@ Documentation=https://github.com/Lisa-AgenticOS/lisa-os/blob/main/daemons/infere
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/lisa-inferenced
+# Serve the shared model store (/var/lib/lisa-models) with the llama
+# engine: whatever the user downloads in Settings is served by name,
+# lazily. Starts fine with an empty store (a request errors until a
+# model exists). llama-server ships in the image (llama.cpp package).
+ExecStart=/usr/bin/lisa-inferenced --engine llama --models-dir /var/lib/lisa-models/refs
 Restart=on-failure
 RestartSec=2
 
