@@ -19,6 +19,31 @@ if [ -f /etc/locale.gen ]; then
     locale-gen
 fi
 
+# Brand as Lisa OS. Settings › About, hostnamectl, the login MOTD and
+# scripts all read os-release, which the base image inherits from Arch.
+# Rewrite the identity fields *in place* so BUILD_ID and mkosi's appended
+# IMAGE_ID/IMAGE_VERSION survive. /etc/os-release symlinks here, so every
+# reader follows it. LOGO=lisa-logo resolves to the mark shipped under
+# hicolor (mkosi.extra); GNOME's About panel renders it. ID_LIKE=arch
+# keeps arch-aware tooling working.
+if [ -f /usr/lib/os-release ]; then
+    _repo=https://github.com/Lisa-AgenticOS/lisa-os
+    sed -i \
+        -e 's|^NAME=.*|NAME="Lisa OS"|' \
+        -e 's|^PRETTY_NAME=.*|PRETTY_NAME="Lisa OS"|' \
+        -e 's|^ID=.*|ID=lisa|' \
+        -e "s|^HOME_URL=.*|HOME_URL=\"$_repo\"|" \
+        -e "s|^DOCUMENTATION_URL=.*|DOCUMENTATION_URL=\"$_repo\"|" \
+        -e "s|^SUPPORT_URL=.*|SUPPORT_URL=\"$_repo/issues\"|" \
+        -e "s|^BUG_REPORT_URL=.*|BUG_REPORT_URL=\"$_repo/issues\"|" \
+        -e 's|^LOGO=.*|LOGO=lisa-logo|' \
+        -e 's|^ANSI_COLOR=.*|ANSI_COLOR="1;38;2;238;91;59"|' \
+        -e '/^PRIVACY_POLICY_URL=/d' \
+        /usr/lib/os-release
+    grep -q '^ID_LIKE=' /usr/lib/os-release || \
+        sed -i '/^ID=lisa/a ID_LIKE=arch' /usr/lib/os-release
+fi
+
 # Boot diagnosis: every boot (including one that only reaches
 # emergency/rescue) dumps its journal to the FAT ESP, readable from any
 # machine the stick is plugged into.

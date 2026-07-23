@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 220" width="760" height="220" role="img" aria-label="Lisa OS">
+  <title>Lisa OS</title>
+  <defs>
+    <linearGradient id="wmBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF9E7A"/>
+      <stop offset="1" stop-color="#EE5B3B"/>
+    </linearGradient>
+    <radialGradient id="wmOrb" cx="0.40" cy="0.34" r="0.85">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.62" stop-color="#FFF1E9"/>
+      <stop offset="1" stop-color="#FFDECC"/>
+    </radialGradient>
+    <clipPath id="wmClip"><circle cx="110" cy="112" r="52"/></clipPath>
+  </defs>
+  <!-- Mark -->
+  <rect x="10" y="12" width="200" height="200" rx="57" fill="url(#wmBg)"/>
+  <circle cx="110" cy="112" r="52" fill="url(#wmOrb)"/>
+  <g clip-path="url(#wmClip)"><circle cx="138" cy="135" r="57" fill="#F2683F" opacity="0.15"/></g>
+  <ellipse cx="92" cy="90" rx="17" ry="12" fill="#FFFFFF" opacity="0.6"/>
+  <!-- Wordmark -->
+  <text x="252" y="146" font-family="'SF Pro Display','Cantarell','Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="120" letter-spacing="-3">
+    <tspan font-weight="700" fill="#2B2320">Lisa</tspan><tspan font-weight="500" fill="#EE5B3B"> OS</tspan>
+  </text>
+</svg>

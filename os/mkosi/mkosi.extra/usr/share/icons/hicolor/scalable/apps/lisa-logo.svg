@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Lisa OS">
+  <title>Lisa OS</title>
+  <defs>
+    <linearGradient id="lisaBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF9E7A"/>
+      <stop offset="1" stop-color="#EE5B3B"/>
+    </linearGradient>
+    <radialGradient id="lisaOrb" cx="0.40" cy="0.34" r="0.85">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.62" stop-color="#FFF1E9"/>
+      <stop offset="1" stop-color="#FFDECC"/>
+    </radialGradient>
+    <clipPath id="lisaOrbClip">
+      <circle cx="256" cy="250" r="120"/>
+    </clipPath>
+  </defs>
+  <!-- Warm squircle: humane, not cold tech -->
+  <rect x="24" y="24" width="464" height="464" rx="132" fill="url(#lisaBg)"/>
+  <!-- A warm presence — yours, on your machine -->
+  <circle cx="256" cy="250" r="120" fill="url(#lisaOrb)"/>
+  <!-- Gentle crescent depth, clipped to the orb -->
+  <g clip-path="url(#lisaOrbClip)">
+    <circle cx="322" cy="304" r="132" fill="#F2683F" opacity="0.15"/>
+  </g>
+  <!-- Soft highlight -->
+  <ellipse cx="214" cy="206" rx="40" ry="28" fill="#FFFFFF" opacity="0.6"/>
+</svg>
