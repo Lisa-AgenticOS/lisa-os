@@ -80,7 +80,7 @@ package_lisa-cli() {
 }
 
 package_lisa-shell() {
-    pkgdesc="Lisa OS shell surfaces: assistant overlay, semantic launcher, Ledger app (PLAN §5.7)"
+    pkgdesc="Lisa OS shell surfaces: assistant overlay, semantic launcher, Ledger app, AI settings (PLAN §5.7, §5.11)"
     # Pure GJS — no compiled code, so one package serves every arch.
     arch=(any)
     # gjs runs the overlay backend + Ledger app; libadwaita (pulls gtk4)
@@ -96,7 +96,7 @@ package_lisa-shell() {
     # activation file and the desktop entry already reference.
     local share="$pkgdir/usr/share/lisa/shell"
     install -d "$share"
-    cp -a shell/overlay-extension shell/launcher shell/ledger-app "$share/"
+    cp -a shell/overlay-extension shell/launcher shell/ledger-app shell/settings "$share/"
     rm -rf "$share"/*/tests
     # Compile the overlay keybinding schema in place so the extension's
     # getSettings() resolves from its own schemas/ directory.
@@ -117,6 +117,11 @@ package_lisa-shell() {
     # Ledger app launcher entry (§5.7.6).
     install -Dm644 shell/ledger-app/org.lisa.LedgerApp.desktop \
         "$pkgdir/usr/share/applications/org.lisa.LedgerApp.desktop"
+    # AI settings launcher entry (§5.11). Also the target the native
+    # gnome-control-center Intelligence panel opens for provider/key
+    # management (ADR-0012) — it resolves this desktop id.
+    install -Dm644 shell/settings/org.lisa.Settings.desktop \
+        "$pkgdir/usr/share/applications/org.lisa.Settings.desktop"
     # Session defaults: extensions enabled, input-source switcher off
     # Super+Space so the assistant owns it (§5.7.1). glib2's pacman
     # hook folds this into the compiled system schemas on install.
