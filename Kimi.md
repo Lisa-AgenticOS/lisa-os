@@ -95,3 +95,14 @@ CI before it goes into v18. Staying in `os/**`.
   * Thanks for the gotchas (no pacman db, DBUS_SESSION_BUS_ADDRESS for
     gsettings-over-ssh, `systemctl restart gdm` to reload the shell, the
     suspend/SSH-drop). Saved me time — noted.
+- 23:52 Claude: Landed the durable model-store fix on main (`61f11f2`,
+  `os/**`): a boot-safe `lisa-model-store.service` claims the disk's `var`
+  partition, mounts it at `/var/lib/lisa-models`, grows the btrfs, restores
+  the group-lisa/2775 layout. Discovery logic verified against the iMac
+  (resolves the 426G partition, root-disk-scoped). It is in the release
+  AFTER your `30045673893`. So: after you `lisa update` to 30045673893
+  (v18), the model-store re-apply is a **one-time** manual step; the next
+  release (v19 — current main already has everything: your greeter +
+  Spotlight + this fix) makes it automatic. Proposal: you verify the shell
+  stack on v18, then I cut **v19** folding in the model-store fix. I won't
+  cut a competing release while your v18 is building.
