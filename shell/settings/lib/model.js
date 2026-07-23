@@ -1,9 +1,15 @@
-// Lisa Settings — Providers page view-model (PLAN §5.11, ADR-0008).
+// Lisa Settings — AI/Intelligence view-model (PLAN §5.3 Settings panel,
+// §5.11, §8; ADR-0008).
 //
-// Pure logic over the broker's org.lisa.Remote1 `State` JSON:
-// {providers: [{id, display_name, base_url, auth, dialect, notes,
-// builtin, has_credential, oauth_available}], may_offload: {scope:
-// bool}}. No GTK imports — unit-tests under gjs/node/jsc.
+// Pure logic (no GTK imports; unit-tests under gjs/node/jsc) over two
+// data sources:
+//   • the broker's org.lisa.Remote1 `State` JSON — {providers:[{id,
+//     display_name, base_url, auth, dialect, notes, builtin,
+//     has_credential, oauth_available}], may_offload:{scope:bool}};
+//   • `lisa models catalog --json` — {profile:{total_ram_gb, tier, …},
+//     models:[{id, task, license, engine, min_ram_gb, fit, fit_label,
+//     note, installed, available}]} — local models annotated by what
+//     THIS machine can run (§8 hardware-aware fit).
 
 /** The distinct "leaves your hardware" color (§5.11, ADR-0008 §5). */
 export const EGRESS_COLOR = '#E66100';
@@ -133,4 +139,125 @@ export function validateCustomProvider({id, displayName, baseUrl}, existingIds =
     if (!baseUrl || !(baseUrl.startsWith('https://') || baseUrl.startsWith('http://')))
         errors.push('Base URL must start with https:// (or http:// for local endpoints).');
     return errors;
+}
+
+// ---------------------------------------------------------------------
+// Local models (§8 hardware-aware fit) — over `lisa models catalog
+// --json`. Local inference never leaves the machine, so nothing here is
+// egress-marked; the fit tells you what runs here vs what needs a
+// provider.
+// ---------------------------------------------------------------------
+
+/**
+ * Parse `lisa models catalog --json`. Defensive: bad/missing input
+ * renders as no profile and no models (the app then shows "modeld
+ * unavailable" rather than lying about capacity).
+ *
+ * @param {string|object} raw
+ * @returns {{profile: object|null, models: object[]}}
+ */
+export function parseCatalog(raw) {
+    let d = raw;
+    if (typeof raw === 'string') {
+        try {
+            d = JSON.parse(raw);
+        } catch {
+            d = {};
+        }
+    }
+    return {
+        profile: d?.profile ?? null,
+        models: Array.isArray(d?.models) ? d.models : [],
+    };
+}
+
+/** A model's local-fit badge: what runs here, in plain words. */
+export function fitBadge(model) {
+    if (model?.installed === true)
+        return {label: 'installed', kind: 'installed'};
+    switch (model?.fit) {
+        case 'runs':
+            return {label: 'runs on this Mac', kind: 'runs'};
+        case 'tight':
+            return {label: 'tight fit', kind: 'tight'};
+        case 'toobig':
+            return {label: 'too big — use a provider', kind: 'toobig'};
+        default:
+            return {label: 'unknown fit', kind: 'unknown'};
+    }
+}
+
+/** Human subtitle: task · license · size. */
+export function localModelSubtitle(model) {
+    const parts = [];
+    if (model?.task)
+        parts.push(model.task);
+    if (model?.license)
+        parts.push(model.license);
+    if (typeof model?.min_ram_gb === 'number')
+        parts.push(`needs ~${model.min_ram_gb} GiB`);
+    return parts.join(' · ');
+}
+
+/**
+ * Rows for the local-model list, ordered by usefulness on THIS machine:
+ * installed first, then models that run, then tight, then remote-only;
+ * ties broken by id. A model is gettable when it has a pinned artifact,
+ * isn't installed, and actually fits locally.
+ *
+ * @param {object[]} models @returns {object[]}
+ */
+export function localModelRows(models) {
+    const rank = m =>
+        m.installed === true ? 0
+            : m.fit === 'runs' ? 1
+                : m.fit === 'tight' ? 2
+                    : 3;
+    return [...(Array.isArray(models) ? models : [])]
+        .sort((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : 1))
+        .map(m => ({
+            id: m.id,
+            title: m.id,
+            subtitle: localModelSubtitle(m),
+            note: m.note ?? '',
+            installed: m.installed === true,
+            canGet: m.available === true && m.installed !== true && m.fit !== 'toobig',
+            // Available but too big to run here: honest about why "Get"
+            // is absent (it would only run through a provider).
+            remoteOnly: m.fit === 'toobig',
+            badge: fitBadge(m),
+        }));
+}
+
+/** One-line hardware summary for the header/overview (or a fallback). */
+export function profileSummary(profile) {
+    if (!profile || typeof profile.total_ram_gb !== 'number')
+        return 'Hardware profile unavailable (is lisa-modeld installed?).';
+    const bits = [`${profile.total_ram_gb} GiB RAM`, `tier ${profile.tier}`];
+    if (profile.gpu_nodes > 0)
+        bits.push(`${profile.gpu_nodes} GPU`);
+    if (profile.npu_nodes > 0)
+        bits.push(`${profile.npu_nodes} NPU`);
+    if (profile.unified_memory)
+        bits.push('unified memory');
+    return `This machine: ${bits.join(' · ')}.`;
+}
+
+/**
+ * Per-provider model-routing help. The broker doesn't enumerate a
+ * provider's models (that would need egress + a key), and rule 8 forbids
+ * inventing a model list — so we surface the real routing format and the
+ * provider's own registry `notes` (which carry model-id guidance, e.g.
+ * HuggingFace's `openai/gpt-oss-120b:cheapest`). `null` for local-only.
+ *
+ * @param {object} provider @returns {{route: string, hint: string}}
+ */
+export function providerModelHelp(provider) {
+    const id = provider?.id ?? '';
+    return {
+        route: `remote:${id}:<model-id>`,
+        hint: provider?.notes?.trim()
+            ? provider.notes.trim()
+            : `Reference any model this provider serves as remote:${id}:<model-id>.`,
+    };
 }

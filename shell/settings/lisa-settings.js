@@ -1,15 +1,20 @@
 #!/usr/bin/env -S gjs -m
-// Lisa Settings — Providers page v1 (PLAN §5.11, §5.3 Settings panel;
-// ADR-0008).
+// Lisa Settings — AI / Intelligence panel (PLAN §5.3 Settings panel,
+// §5.11, §8; ADR-0008). A two-section libadwaita window:
 //
-// Manages the lisa-remoted broker over D-Bus (org.lisa.Remote1):
-// bring-your-own provider accounts (list/add/remove, key entry, Sign in
-// with Claude), and the per-scope "may offload" switches. Everything
-// that can leave the machine is rendered in the distinct amber
-// "leaves your hardware" color; the default state — and the state shown
-// whenever the broker is unreachable — is "Nothing leaves this
-// machine." Keys are write-only: this app can store or clear them,
-// never read them back (the broker refuses by construction).
+//   • Local models — the §8 hardware-aware catalog from
+//     `lisa models catalog --json`: what runs on THIS machine, what's
+//     installed, and a one-click Get for pinned models that fit. Local
+//     inference never leaves the machine, so nothing here is
+//     egress-marked.
+//   • Providers — the lisa-remoted broker over D-Bus (org.lisa.Remote1):
+//     bring-your-own accounts (list/add/remove, key entry, Sign in with
+//     Claude), per-provider model routing help, and the per-scope
+//     "may offload" switches. Everything that can leave the machine is
+//     rendered in the distinct amber "leaves your hardware" color; the
+//     default — and the state shown whenever the broker is unreachable —
+//     is "Nothing leaves this machine." Keys are write-only: this app
+//     stores or clears them, never reads them back.
 
 import Adw from 'gi://Adw?version=1';
 import Gdk from 'gi://Gdk?version=4.0';
@@ -20,6 +25,7 @@ import Gtk from 'gi://Gtk?version=4.0';
 import {
     EGRESS_CSS_CLASS, parseState, providerRows, consentRows,
     anythingLeaves, offloadSummary, validateCustomProvider,
+    parseCatalog, localModelRows, profileSummary, providerModelHelp,
 } from './lib/model.js';
 
 const BUS_NAME = 'org.lisa.Remoted';
@@ -92,17 +98,66 @@ class RemoteService {
     }
 }
 
+/**
+ * Local-model access via the `lisa` CLI (the documented, no-egress data
+ * source for modeld — §8). We shell out rather than reimplement the
+ * hardware-fit logic, keeping one source of truth in Rust.
+ */
+class LocalModels {
+    /** Run `lisa <args…>`, resolving {ok, stdout, stderr}. */
+    _run(args) {
+        return new Promise((resolve, reject) => {
+            let proc;
+            try {
+                proc = Gio.Subprocess.new(
+                    ['lisa', ...args],
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+            } catch (e) {
+                reject(e);
+                return;
+            }
+            proc.communicate_utf8_async(null, null, (p, res) => {
+                try {
+                    const [, stdout, stderr] = p.communicate_utf8_finish(res);
+                    resolve({ok: p.get_successful(), stdout, stderr});
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        });
+    }
+
+    /** The §8 catalog annotated by this machine's fit, or null if the
+     *  CLI/daemon is unavailable (the page then says so). */
+    async catalog() {
+        const {ok, stdout} = await this._run(['models', 'catalog', '--json']);
+        if (!ok)
+            return null;
+        return parseCatalog(stdout);
+    }
+
+    /** Download a pinned catalog model. Long-running (GiB); the caller
+     *  shows progress. Rejects with stderr on failure. */
+    async get(id) {
+        const {ok, stderr} = await this._run(['models', 'get', id]);
+        if (!ok)
+            throw new Error(stderr.trim() || `could not get ${id}`);
+    }
+}
+
 class SettingsWindow {
     constructor(app) {
         this.service = new RemoteService();
+        this.models = new LocalModels();
         this.state = parseState(null); // safe default: nothing leaves
         this.offline = true;
+        this.catalog = null;           // null until modeld answers
 
         this.window = new Adw.ApplicationWindow({
             application: app,
             title: 'Lisa Settings',
-            default_width: 720,
-            default_height: 760,
+            default_width: 760,
+            default_height: 800,
         });
 
         const provider = new Gtk.CssProvider();
@@ -112,26 +167,53 @@ class SettingsWindow {
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
         this.toasts = new Adw.ToastOverlay();
-        const header = new Adw.HeaderBar({
-            title_widget: new Adw.WindowTitle({
-                title: 'Lisa Settings',
-                subtitle: 'Providers',
-            }),
-        });
-        const refresh = Gtk.Button.new_from_icon_name('view-refresh-symbolic');
-        refresh.tooltip_text = 'Reload from the broker';
-        refresh.connect('clicked', () => this.reload());
-        header.pack_end(refresh);
 
+        // Two top-level sections, switched from the header (and a bottom
+        // bar when the window is narrow) — the libadwaita idiom for a
+        // small settings app.
+        this.stack = new Adw.ViewStack();
+        this.localPage = new Adw.PreferencesPage();
+        this.providersPage = new Adw.PreferencesPage();
         this.banner = new Adw.Banner({revealed: true});
         this.banner.add_css_class(EGRESS_CSS_CLASS);
 
-        this.page = new Adw.PreferencesPage();
-        const box = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
-        box.append(this.banner);
-        box.append(this.page);
-        const view = new Adw.ToolbarView({content: box});
+        // The egress banner belongs to Providers (the only egress path);
+        // Local models get their own scrolling page with no banner.
+        const providersBox = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
+        providersBox.append(this.banner);
+        providersBox.append(this.providersPage);
+
+        const localItem = this.stack.add_titled(
+            this.localPage, 'local', 'Local models');
+        localItem.icon_name = 'application-x-firmware-symbolic';
+        const provItem = this.stack.add_titled(
+            providersBox, 'providers', 'Providers');
+        provItem.icon_name = 'network-transmit-receive-symbolic';
+
+        const header = new Adw.HeaderBar({
+            title_widget: new Adw.ViewSwitcher({
+                stack: this.stack,
+                policy: Adw.ViewSwitcherPolicy.WIDE,
+            }),
+        });
+        const refresh = Gtk.Button.new_from_icon_name('view-refresh-symbolic');
+        refresh.tooltip_text = 'Reload models and providers';
+        refresh.connect('clicked', () => this.reload());
+        header.pack_end(refresh);
+
+        // Narrow-window fallback switcher, revealed by a breakpoint.
+        const switcherBar = new Adw.ViewSwitcherBar({stack: this.stack});
+        const view = new Adw.ToolbarView({content: this.stack});
         view.add_top_bar(header);
+        view.add_bottom_bar(switcherBar);
+
+        const breakpoint = new Adw.Breakpoint({
+            condition: Adw.BreakpointCondition.parse('max-width: 550px'),
+        });
+        breakpoint.add_setter(header.title_widget, 'visible', false);
+        breakpoint.add_setter(switcherBar, 'reveal', true);
+        this.window.add_breakpoint(breakpoint);
+
         this.toasts.child = view;
         this.window.content = this.toasts;
 
@@ -143,6 +225,8 @@ class SettingsWindow {
     }
 
     async reload() {
+        // Providers/consent over D-Bus; local catalog over the CLI. The
+        // two are independent — one being down never blanks the other.
         try {
             this.state = await this.service.state();
             this.offline = false;
@@ -151,15 +235,25 @@ class SettingsWindow {
             this.offline = true;
             logError?.(e, 'lisa-remoted unreachable');
         }
+        try {
+            this.catalog = await this.models.catalog();
+        } catch (e) {
+            this.catalog = null;
+            logError?.(e, 'lisa models catalog failed');
+        }
         this._render();
     }
 
     _render() {
-        // Rebuild the page from the view-model.
-        if (this._groups)
-            for (const g of this._groups)
-                this.page.remove(g);
-        this._groups = [];
+        this._renderProviders();
+        this._renderLocalModels();
+    }
+
+    _renderProviders() {
+        if (this._provGroups)
+            for (const g of this._provGroups)
+                this.providersPage.remove(g);
+        this._provGroups = [];
 
         this.banner.title = this.offline
             ? 'lisa-remoted is not running — showing defaults; nothing leaves this machine.'
@@ -169,10 +263,19 @@ class SettingsWindow {
         else if (!this.offline)
             this.banner.add_css_class(EGRESS_CSS_CLASS);
 
-        this._groups.push(this._providerGroup());
-        this._groups.push(this._consentGroup());
-        for (const g of this._groups)
-            this.page.add(g);
+        this._provGroups.push(this._providerGroup());
+        this._provGroups.push(this._consentGroup());
+        for (const g of this._provGroups)
+            this.providersPage.add(g);
+    }
+
+    _renderLocalModels() {
+        if (this._localGroups)
+            for (const g of this._localGroups)
+                this.localPage.remove(g);
+        this._localGroups = [this._localModelGroup()];
+        for (const g of this._localGroups)
+            this.localPage.add(g);
     }
 
     _providerGroup() {
@@ -190,7 +293,7 @@ class SettingsWindow {
         group.header_suffix = add;
 
         for (const row of providerRows(this.state.providers)) {
-            const item = new Adw.ActionRow({
+            const item = new Adw.ExpanderRow({
                 title: GLib.markup_escape_text(row.title, -1),
                 subtitle: GLib.markup_escape_text(row.subtitle, -1),
             });
@@ -253,9 +356,91 @@ class SettingsWindow {
                 });
                 item.add_suffix(remove);
             }
+
+            // Expanded: how to address this provider's models. The broker
+            // doesn't enumerate them (that needs egress + a key), and we
+            // never invent a model list (rule 8) — so we show the real
+            // routing format and the provider's own notes.
+            const raw = this.state.providers.find(p => p.id === row.id) ?? {id: row.id};
+            const help = providerModelHelp(raw);
+            const routeRow = new Adw.ActionRow({
+                title: 'Use models as',
+                subtitle: GLib.markup_escape_text(help.route, -1),
+                subtitle_selectable: true,
+            });
+            const copy = Gtk.Button.new_from_icon_name('edit-copy-symbolic');
+            copy.valign = Gtk.Align.CENTER;
+            copy.tooltip_text = 'Copy the routing prefix';
+            copy.connect('clicked', () => {
+                this.window.get_clipboard().set(help.route);
+                this.toast('Routing prefix copied');
+            });
+            routeRow.add_suffix(copy);
+            item.add_row(routeRow);
+            if (help.hint && help.hint !== help.route)
+                item.add_row(new Adw.ActionRow({
+                    title: 'Notes',
+                    subtitle: GLib.markup_escape_text(help.hint, -1),
+                    subtitle_selectable: true,
+                }));
             group.add(item);
         }
         return group;
+    }
+
+    _localModelGroup() {
+        const group = new Adw.PreferencesGroup({
+            title: 'Local models',
+            description: this.catalog
+                ? `${profileSummary(this.catalog.profile)} Local inference never ` +
+                    'leaves this machine.'
+                : 'Could not read the local catalog (`lisa models catalog --json`). ' +
+                    'Is the lisa CLI on PATH and up to date?',
+        });
+        if (!this.catalog)
+            return group;
+
+        for (const row of localModelRows(this.catalog.models)) {
+            const item = new Adw.ActionRow({
+                title: GLib.markup_escape_text(row.title, -1),
+                subtitle: GLib.markup_escape_text(row.subtitle, -1),
+            });
+            const badge = new Gtk.Label({
+                label: row.badge.label,
+                valign: Gtk.Align.CENTER,
+            });
+            badge.add_css_class('caption');
+            badge.add_css_class(row.installed ? 'success' : 'dim-label');
+            item.add_suffix(badge);
+
+            if (row.canGet) {
+                const get = new Gtk.Button({
+                    label: 'Get',
+                    valign: Gtk.Align.CENTER,
+                    tooltip_text: 'Download this model to run it locally',
+                });
+                get.add_css_class('suggested-action');
+                get.connect('clicked', () => this._getModel(row, get));
+                item.add_suffix(get);
+            }
+            group.add(item);
+        }
+        return group;
+    }
+
+    async _getModel(row, button) {
+        button.sensitive = false;
+        button.label = 'Downloading…';
+        this.toast(`Downloading ${row.id} — this can take a while.`);
+        try {
+            await this.models.get(row.id);
+            this.toast(`${row.id} installed`);
+        } catch (e) {
+            this.toast(e.message);
+            button.sensitive = true;
+            button.label = 'Get';
+        }
+        this.reload();
     }
 
     _consentGroup() {

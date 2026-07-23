@@ -257,7 +257,11 @@ enum MemoryCmd {
 #[derive(Subcommand)]
 enum ModelsCmd {
     /// List installed models.
-    List,
+    List {
+        /// Machine-readable JSON (for Settings / scripts).
+        #[arg(long)]
+        json: bool,
+    },
     /// Recompute hashes for every stored blob.
     Verify,
     /// Remove blobs no model name references anymore.
@@ -284,6 +288,10 @@ enum ModelsCmd {
         /// Only show models that run (or run tight) on this machine.
         #[arg(long)]
         runnable: bool,
+        /// Machine-readable JSON: {profile, models:[{…,fit,installed,
+        /// available}]} — the data source for the Settings AI panel.
+        #[arg(long)]
+        json: bool,
     },
     /// Download a catalog model by id (resolves its pinned source+hash).
     Get { id: String },
@@ -912,21 +920,37 @@ fn default_store_root() -> PathBuf {
 }
 
 fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
+    use serde_json::{Value, json};
     let root = store_root.unwrap_or_else(default_store_root);
     let store = ModelStore::open(&root)?;
     match cmd {
-        ModelsCmd::List => {
+        ModelsCmd::List { json } => {
             let refs = store.list()?;
-            if refs.is_empty() {
-                println!("no models installed (store: {})", store.root().display());
-            }
-            for r in refs {
-                println!(
-                    "{}\t{:.2} GiB\t{}",
-                    r.name,
-                    r.size as f64 / (1 << 30) as f64,
-                    r.blake3
-                );
+            if json {
+                let installed: Vec<Value> = refs
+                    .iter()
+                    .map(|r| {
+                        json!({
+                            "name": r.name,
+                            "size_bytes": r.size,
+                            "size_gib": r.size as f64 / (1 << 30) as f64,
+                            "blake3": r.blake3,
+                        })
+                    })
+                    .collect();
+                println!("{}", json!({"installed": installed}));
+            } else {
+                if refs.is_empty() {
+                    println!("no models installed (store: {})", store.root().display());
+                }
+                for r in refs {
+                    println!(
+                        "{}\t{:.2} GiB\t{}",
+                        r.name,
+                        r.size as f64 / (1 << 30) as f64,
+                        r.blake3
+                    );
+                }
             }
         }
         ModelsCmd::Verify => {
@@ -974,10 +998,48 @@ fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
             let p = lisa_modeld::profile::profile();
             println!("{}", serde_json::to_string_pretty(&p)?);
         }
-        ModelsCmd::Catalog { runnable } => {
+        ModelsCmd::Catalog { runnable, json } => {
             use lisa_modeld::recommend::Fit;
             let hw = lisa_modeld::profile::profile();
-            let recs = lisa_modeld::recommend::recommend(&lisa_modeld::seed_catalog(), &hw);
+            let catalog = lisa_modeld::seed_catalog();
+            let recs = lisa_modeld::recommend::recommend(&catalog, &hw);
+            if json {
+                // Installed = a store ref named after the catalog id
+                // (how `lisa models get` names it).
+                let installed: std::collections::HashSet<String> =
+                    store.list()?.into_iter().map(|r| r.name).collect();
+                let models: Vec<Value> = recs
+                    .iter()
+                    .filter(|r| !(runnable && r.fit == Fit::TooBig))
+                    .map(|r| {
+                        let entry = catalog.models.iter().find(|m| m.id == r.id);
+                        json!({
+                            "id": r.id,
+                            "task": r.task,
+                            "license": r.license,
+                            "engine": entry.map(|e| e.engine.clone()),
+                            "min_ram_gb": r.min_ram_gb,
+                            "fit": r.fit,
+                            "fit_label": r.fit.label(),
+                            "note": r.note,
+                            "installed": installed.contains(&r.id),
+                            // Downloadable now: a pinned source+hash exists
+                            // and it isn't revoked.
+                            "available": entry
+                                .map(|e| !e.revoked && e.source.is_some() && e.blake3.is_some())
+                                .unwrap_or(false),
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    json!({
+                        "profile": hw,
+                        "models": models,
+                    })
+                );
+                return Ok(());
+            }
             println!(
                 "your machine: {} GiB RAM, tier {} — local model fit:\n",
                 hw.total_ram_gb, hw.tier

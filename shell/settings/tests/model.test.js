@@ -4,6 +4,8 @@ import {
     EGRESS_COLOR, SCOPES, parseState, describeProvider, providerRows,
     claudeSignInState, consentRows, anythingLeaves, offloadSummary,
     validateCustomProvider,
+    parseCatalog, fitBadge, localModelSubtitle, localModelRows,
+    profileSummary, providerModelHelp,
 } from '../lib/model.js';
 
 const sampleState = {
@@ -110,6 +112,81 @@ test('custom provider validation matches the broker rules', () => {
 
 test('the egress color is the ADR-0008 amber', () => {
     assertEq(EGRESS_COLOR, '#E66100');
+});
+
+// --- Local models (§8 hardware-aware fit) -----------------------------
+
+const sampleCatalog = {
+    profile: {os: 'linux', arch: 'x86_64', total_ram_gb: 8, tier: 1,
+        unified_memory: false, gpu_nodes: 1, npu_nodes: 0},
+    models: [
+        {id: 'gemma-3-1b-it-q8', task: 'system', license: 'Gemma-Terms',
+            min_ram_gb: 2, fit: 'runs', installed: true, available: true, note: 'n'},
+        {id: 'whisper-base-en', task: 'asr', license: 'MIT',
+            min_ram_gb: 1, fit: 'runs', installed: false, available: true, note: 'stt'},
+        {id: 'qwen3-8b-instruct-q4', task: 'system', license: 'Apache-2.0',
+            min_ram_gb: 8, fit: 'tight', installed: false, available: false, note: ''},
+        {id: 'big-70b', task: 'system', license: 'x',
+            min_ram_gb: 48, fit: 'toobig', installed: false, available: true, note: ''},
+    ],
+};
+
+test('parseCatalog is defensive: garbage → no profile, no models', () => {
+    for (const raw of ['nope', '{}', null, undefined, '[]']) {
+        const c = parseCatalog(raw);
+        assertEq(c.models, [], `models for ${raw}`);
+        assert(c.profile === null || c.profile === undefined, `no profile for ${raw}`);
+    }
+});
+
+test('parseCatalog round-trips the profile and models', () => {
+    const c = parseCatalog(JSON.stringify(sampleCatalog));
+    assertEq(c.profile.total_ram_gb, 8);
+    assertEq(c.models.length, 4);
+});
+
+test('localModelRows order: installed, then runs, then tight, then remote', () => {
+    const rows = localModelRows(sampleCatalog.models);
+    assertEq(rows.map(r => r.id),
+        ['gemma-3-1b-it-q8', 'whisper-base-en', 'qwen3-8b-instruct-q4', 'big-70b']);
+});
+
+test('canGet only when pinned, not installed, and it fits locally', () => {
+    const rows = localModelRows(sampleCatalog.models);
+    const by = id => rows.find(r => r.id === id);
+    assertEq(by('gemma-3-1b-it-q8').canGet, false, 'already installed');
+    assertEq(by('whisper-base-en').canGet, true, 'pinned, fits, not installed');
+    assertEq(by('qwen3-8b-instruct-q4').canGet, false, 'no pinned artifact');
+    assertEq(by('big-70b').canGet, false, 'too big to run locally');
+    assertEq(by('big-70b').remoteOnly, true);
+});
+
+test('fitBadge prefers installed, then names the local fit', () => {
+    assertEq(fitBadge({installed: true, fit: 'runs'}).kind, 'installed');
+    assertEq(fitBadge({fit: 'runs'}).kind, 'runs');
+    assertEq(fitBadge({fit: 'tight'}).kind, 'tight');
+    assertEq(fitBadge({fit: 'toobig'}).kind, 'toobig');
+    assertEq(fitBadge({}).kind, 'unknown');
+});
+
+test('localModelSubtitle joins task, license, ram', () => {
+    assertEq(localModelSubtitle(sampleCatalog.models[0]),
+        'system · Gemma-Terms · needs ~2 GiB');
+});
+
+test('profileSummary states capacity, or a clear fallback', () => {
+    assert(profileSummary(sampleCatalog.profile).includes('8 GiB RAM'));
+    assert(profileSummary(sampleCatalog.profile).includes('tier 1'));
+    assert(profileSummary(null).toLowerCase().includes('unavailable'));
+});
+
+test('providerModelHelp surfaces the route and real notes, never invents models', () => {
+    const hf = providerModelHelp({id: 'huggingface', notes: 'openai/gpt-oss-120b:cheapest'});
+    assertEq(hf.route, 'remote:huggingface:<model-id>');
+    assert(hf.hint.includes('gpt-oss-120b'), 'uses the registry notes');
+    const bare = providerModelHelp({id: 'openai'});
+    assertEq(bare.route, 'remote:openai:<model-id>');
+    assert(bare.hint.includes('remote:openai:'), 'falls back to the routing format');
 });
 
 finish('settings/model');
