@@ -1,0 +1,41 @@
+# Zen browser — a calm, Firefox-based browser bundled in the image so the
+# desktop has a real browser out of the box (user request, 2026-07-23).
+# Repackages the upstream x86_64 release tarball (no compilation).
+# NOTE: sha256 is SKIP for now — pin the release digest as a hardening
+# follow-up (the tag pins the version; download is HTTPS from GitHub).
+pkgname=zen-browser
+pkgver=1.21.8b
+pkgrel=1
+pkgdesc="Zen — a calm, Firefox-based browser"
+arch=(x86_64)
+url="https://zen-browser.app"
+license=(MPL-2.0)
+depends=(gtk3 libxt mime-types dbus-glib nss ffmpeg)
+options=(!strip)
+source=("zen-${pkgver}.tar.xz::https://github.com/zen-browser/desktop/releases/download/${pkgver}/zen.linux-x86_64.tar.xz")
+sha256sums=('SKIP')
+
+package() {
+  # The tarball unpacks to a top-level `zen/` dir.
+  install -d "$pkgdir/opt"
+  cp -a zen "$pkgdir/opt/zen"
+
+  install -d "$pkgdir/usr/bin"
+  ln -s /opt/zen/zen "$pkgdir/usr/bin/zen-browser"
+
+  # Launcher entry (the tarball ships no .desktop).
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/zen-browser.desktop" <<'EOF'
+[Desktop Entry]
+Name=Zen Browser
+GenericName=Web Browser
+Comment=Browse the web calmly
+Exec=/usr/bin/zen-browser %U
+Icon=/opt/zen/browser/chrome/icons/default/default128.png
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=zen
+EOF
+}

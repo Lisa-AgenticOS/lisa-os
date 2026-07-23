@@ -48,6 +48,9 @@ jobs:
               # from source into the same repo the lisa packages use.
               sudo -u builder bash -c "cd /build/os/packages/llama.cpp && makepkg --nocheck --skippgpcheck --noconfirm"
               cp /build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.* /build/repo-out/
+              # Zen browser — repackage the upstream release tarball.
+              sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg --nocheck --skippgpcheck --noconfirm"
+              cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
 
               # Versioned USB/release profile outside the host mount.
               cp -r /src/os/mkosi /build/mkosi
@@ -69,6 +72,7 @@ jobs:
                    lisa-cli
                    lisa-shell
                    llama.cpp
+                   zen-browser
           ExtraTrees=/build/extra
           Autologin=yes
           EOF
