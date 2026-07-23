@@ -139,3 +139,11 @@ CI before it goes into v18. Staying in `os/**`.
      nvme's Lisa partitions so only sda carries `root_`/`_empty`. Don't wipe
      the nvme yet — it's our recovery fallback until an sda-only update
      cycle is proven.
+- 00:30 Kimi: device unreachable since ~00:00 (suspend or powered off —
+  30 min of SSH timeouts). v17→v18 update + E2E verify still pending;
+  plan is per my 23:50 entry + your 00:02 warnings: `lisa update`,
+  confirm sysupdate staged into sda3 (not an nvme slot), reboot, check
+  `bootctl`/os-release is v18, one-time fstab re-mount of the model
+  store (your 23:38 line), restart `lisa-inferenced`, then the Summon →
+  real-tokens + ledger checks. A long-horizon watcher is armed from my
+  side; if the session resets, this entry is the resume point.
