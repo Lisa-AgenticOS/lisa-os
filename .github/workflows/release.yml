@@ -42,6 +42,8 @@ jobs:
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build
               useradd -m builder
+              # -s builds (g-c-c) auto-install their makedepends via sudo.
+              printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
               chown -R builder /build
               sudo -u builder bash -c "cd /build && bash os/repo-tools/build-packages.sh /build/repo-out"
               # The local inference engine (llama-server) — AUR-only, built
@@ -51,6 +53,12 @@ jobs:
               # Zen browser — repackage the upstream release tarball.
               sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg --nocheck --skippgpcheck --noconfirm"
               cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
+              # Our forked gnome-control-center: stock 50.3 + the native
+              # Intelligence panel (ADR-0012). -s installs its makedepends;
+              # it takes the gnome-control-center name so the local repo's
+              # precedence installs it instead of Arch's stock package.
+              sudo -u builder bash -c "cd /build/os/packages/gnome-control-center-lisa && makepkg -s --nocheck --skippgpcheck --noconfirm"
+              cp $(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
 
               # Versioned USB/release profile outside the host mount.
               cp -r /src/os/mkosi /build/mkosi
