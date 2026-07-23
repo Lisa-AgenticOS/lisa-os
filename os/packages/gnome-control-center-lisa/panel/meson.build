@@ -26,6 +26,9 @@ panels_libs += static_library(
   cappletname,
   sources: sources,
   include_directories: [ top_inc, common_inc ],
-  dependencies: common_deps + [ dependency('json-glib-1.0') ],
+  dependencies: common_deps + [
+    dependency('json-glib-1.0'),
+    dependency('gio-unix-2.0'),   # GDesktopAppInfo (providers bridge)
+  ],
   c_args: cflags
 )
