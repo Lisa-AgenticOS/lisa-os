@@ -9,6 +9,7 @@
 # minimal CI boot-check) are simply skipped.
 
 enable lisa-inferenced.service
+enable lisa-model-store.service
 enable lisa-boot-report.service
 enable gdm.service
 enable NetworkManager.service

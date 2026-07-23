@@ -1,0 +1,19 @@
+# Mount the disk's `var` partition as the Lisa model store before the
+# inference daemons start. See /usr/lib/lisa/mount-model-store.sh for why
+# (systemd's machine-id≠partition-UUID rule leaves the `var` partition
+# unmounted on every `lisa install`). Boot-safe: failure is a no-op and the
+# store falls back to the root filesystem.
+[Unit]
+Description=Claim the disk's var partition as the Lisa model store
+After=local-fs.target
+Before=lisa-inferenced.service lisa-modeld.service
+# Skip if something already mounted the store (idempotent re-runs).
+ConditionPathIsMountPoint=!/var/lib/lisa-models
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/lisa/mount-model-store.sh
+
+[Install]
+WantedBy=multi-user.target
