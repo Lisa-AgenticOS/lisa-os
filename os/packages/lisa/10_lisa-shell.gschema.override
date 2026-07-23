@@ -4,14 +4,18 @@
 #
 # - The M4 surfaces (PLAN §5.7) are live on first login: both Shell
 #   extensions default-enabled.
-# - The assistant owns Super+Space (§5.7.1); GNOME's input-source
-#   switcher — whose default collides — moves to Super+Shift+Space, as
-#   shell/overlay-extension/schemas/ prescribes. The backward binding's
-#   default was Super+Shift+Space, so it is cleared rather than left to
-#   collide in turn.
+# - macOS-style summon keys: Super+Space is the Spotlight-style search
+#   (§5.7.2 — GNOME's default Super-only overview also keeps working);
+#   Super+Shift+Space is the assistant overlay (§5.7.1, as
+#   shell/overlay-extension/schemas/ prescribes). GNOME's input-source
+#   switcher — whose Super+Space default collides — moves to
+#   Ctrl+Super+Space, and the backward binding is cleared.
 
 [org.gnome.shell]
 enabled-extensions=['lisa-overlay@lisa-os.org', 'lisa-launcher@lisa-os.org']
+
+[org.gnome.shell.keybindings]
+toggle-overview=['<Super>space']
 
 # The Lisa OS interface font: Rubik (a warm, slightly-rounded geometric
 # sans, OFL — shipped under /usr/share/fonts/rubik). Monospace is left at
@@ -19,7 +23,11 @@ enabled-extensions=['lisa-overlay@lisa-os.org', 'lisa-launcher@lisa-os.org']
 [org.gnome.desktop.interface]
 font-name='Rubik 11'
 document-font-name='Rubik 11'
+# Lisa violet accent (de-Arch the blue). GNOME's accent palette is a
+# fixed enum; 'purple' is the nearest to Lisa violet (#6D45C9). Exact-hex
+# accent would need a libadwaita CSS override — a follow-up.
+accent-color='purple'
 
 [org.gnome.desktop.wm.keybindings]
-switch-input-source=['<Shift><Super>space']
+switch-input-source=['<Control><Super>space']
 switch-input-source-backward=[]

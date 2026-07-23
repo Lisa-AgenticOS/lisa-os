@@ -127,3 +127,12 @@ fi
 if [ -f /usr/lib/sysupdate.d/50-root.transfer ]; then
     systemctl enable systemd-sysupdate.timer || true
 fi
+
+# Compile the GDM greeter dconf DB — the Lisa wordmark + violet accent
+# ship as /etc/dconf/db/gdm.d/ via mkosi.extra; `dconf update` turns them
+# into the binary /etc/dconf/db/gdm the login screen actually reads.
+# Without this the greeter falls back to GNOME/Arch defaults (arch logo,
+# blue accent).
+if command -v dconf >/dev/null 2>&1 && [ -d /etc/dconf/db/gdm.d ]; then
+    dconf update || true
+fi

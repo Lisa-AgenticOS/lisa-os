@@ -2,10 +2,12 @@
 
 Spec: docs/PLAN.md §5.7.1. Milestone: M4.
 
-Super+Space translucent layer with per-invocation context toggles:
-[this window], [selection], [my stuff]. One headless D-Bus backend, thin
-frontends: GNOME Shell extension here; the wlr-layer-shell client
-(Omarchy/Hyprland, Track L) consumes the same backend interface.
+Super+Shift+Space translucent layer with per-invocation context toggles:
+[this window], [selection], [my stuff]. (Super+Space alone opens the
+Spotlight-style search — shell/launcher, §5.7.2.) One headless D-Bus
+backend, thin frontends: GNOME Shell extension here; the
+wlr-layer-shell client (Omarchy/Hyprland, Track L) consumes the same
+backend interface.
 
 ## Layout
 
@@ -44,7 +46,8 @@ Install (dev): symlink this directory into
 `~/.local/share/gnome-shell/extensions/lisa-overlay@lisa-os.org`, run
 `glib-compile-schemas schemas/`, install the service file, re-log.
 GNOME's input-source switcher also claims Super+Space; the image/layer
-remaps it (see `schemas/`).
+remaps it to Ctrl+Super+Space (see `schemas/` and
+os/packages/lisa/10_lisa-shell.gschema.override).
 
 Install (packaged): the `lisa-shell` package (os/packages/lisa) ships
 this tree under `/usr/share/lisa/shell/`, the extension as a symlink in

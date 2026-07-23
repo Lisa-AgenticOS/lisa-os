@@ -1,0 +1,8 @@
+# dconf profile for the GDM greeter (the login screen's own dconf user).
+# Canonical GNOME layout: the writable per-boot user db, then Lisa's
+# system defaults (gdm.d, compiled to /etc/dconf/db/gdm by `dconf update`),
+# then GNOME's shipped greeter defaults as the fallback. Lisa's db sits
+# above the shipped defaults, so our wordmark + violet accent win.
+user-db:user
+system-db:gdm
+file-db:/usr/share/gdm/greeter-dconf-defaults

@@ -1,0 +1,15 @@
+# Lisa branding for the GDM login screen — replaces GNOME/Arch defaults
+# (the archlinux logo + blue accent) with the Lisa wordmark and violet
+# accent. Compiled into the binary /etc/dconf/db/gdm by `dconf update`
+# (run in mkosi.postinst.chroot); the greeter reads that at startup.
+
+[org/gnome/login-screen]
+# White wordmark — the greeter background is dark, so the violet
+# lisa-logo.svg would vanish; this is the reversed (white) cut.
+logo='/usr/share/icons/hicolor/scalable/apps/lisa-wordmark-white.svg'
+
+[org/gnome/desktop/interface]
+# GNOME's accent palette is a fixed enum; 'purple' is the nearest to the
+# Lisa violet (#6D45C9). Exact-hex accent needs a libadwaita CSS override
+# (follow-up) — this kills the Arch blue, which is the point for now.
+accent-color='purple'

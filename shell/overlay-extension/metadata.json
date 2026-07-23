@@ -1,8 +1,8 @@
 {
     "uuid": "lisa-overlay@lisa-os.org",
     "name": "Lisa Assistant Overlay",
-    "description": "Super+Space translucent assistant layer (Lisa OS, PLAN §5.7.1): per-invocation context toggles, streamed answers, every session ledgered.",
-    "shell-version": ["46", "47", "48", "49"],
+    "description": "Super+Shift+Space translucent assistant layer (Lisa OS, PLAN §5.7.1): per-invocation context toggles, streamed answers, every session ledgered.",
+    "shell-version": ["46", "47", "48", "49", "50"],
     "settings-schema": "org.gnome.shell.extensions.lisa-overlay",
     "url": "https://github.com/Lisa-AgenticOS/lisa-os"
 }

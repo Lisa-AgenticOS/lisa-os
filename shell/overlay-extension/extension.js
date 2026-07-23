@@ -2,7 +2,8 @@
 //
 // Thin by design: all state and token streams live in the headless
 // backend (org.lisa.Overlay1, backend/lisa-overlayd.js); this
-// extension renders it. Summon with Super+Space — or programmatically
+// extension renders it. Summon with Super+Shift+Space (Super+Space is
+// the Spotlight-style search, §5.7.2) — or programmatically
 // via org.lisa.Overlay1.UI (the §5.7.2 launcher's "Ask Lisa" lane
 // hands queries over here): a translucent layer over the current
 // workspace with the three per-invocation context chips —

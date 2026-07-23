@@ -57,7 +57,7 @@ export const OVERLAY_OBJECT_PATH = '/org/lisa/Overlay1';
 //
 // Summon()'s options (a{sv}) accept the same chip booleans as Ask()
 // ("my_stuff", "window", "selection") to preset the toggles; an empty
-// prompt just shows the layer, exactly like Super+Space.
+// prompt just shows the layer, exactly like Super+Shift+Space.
 export const OVERLAY_UI_IFACE_XML = `
 <node>
   <interface name="org.lisa.Overlay1.UI">

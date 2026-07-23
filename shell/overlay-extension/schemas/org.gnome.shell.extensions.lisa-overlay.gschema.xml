@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Keybinding schema for the assistant overlay (PLAN §5.7.1: summon
-     with Super+Space). Compile with glib-compile-schemas at install;
+     with Super+Shift+Space — Super+Space alone is the Spotlight-style
+     search, §5.7.2). Compile with glib-compile-schemas at install;
      GNOME's input-source switcher also defaults to Super+Space — the
      image build (Track I) and layer install (Track L) remap that to
-     Super+Shift+Space so the assistant wins. -->
+     Ctrl+Super+Space so both Lisa surfaces win. -->
 <schemalist>
   <schema id="org.gnome.shell.extensions.lisa-overlay"
           path="/org/gnome/shell/extensions/lisa-overlay/">
     <key name="toggle-overlay" type="as">
-      <default><![CDATA[['<Super>space']]]></default>
+      <default><![CDATA[['<Shift><Super>space']]]></default>
       <summary>Summon or dismiss the assistant overlay</summary>
     </key>
   </schema>
