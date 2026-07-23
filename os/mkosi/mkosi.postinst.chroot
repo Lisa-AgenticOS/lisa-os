@@ -72,8 +72,12 @@ fi
 # (mkosi.extra/etc/gdm/custom.conf). The password still guards sudo and
 # the lock screen; wheel sudo drop-in ships in mkosi.extra. logind
 # grants seat access — no extra groups needed. See os/mkosi/README.md.
+# The `lisa` system group owns the shared model store (/var/lib/lisa-models,
+# created by tmpfiles). The login user joins it so downloading a model in
+# Settings writes there; lisa-inferenced reads the store world-readable.
+getent group lisa >/dev/null || groupadd -r lisa
 if [ -f /usr/lib/systemd/system/gdm.service ] && ! id lisa &>/dev/null; then
-    useradd -m -G wheel -s /bin/bash lisa
+    useradd -m -G wheel,lisa -s /bin/bash lisa
     echo 'lisa:lisa' | chpasswd
 fi
 

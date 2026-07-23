@@ -909,7 +909,13 @@ fn embed(text: Vec<String>, url: &str) -> anyhow::Result<()> {
 }
 
 fn default_store_root() -> PathBuf {
-    let system = PathBuf::from("/var/lib/lisa/models");
+    // Shared system store: the login user (member of group `lisa`)
+    // downloads here and lisa-inferenced reads it (world-readable). Kept
+    // OUTSIDE /var/lib/lisa — that's inferenced's private StateDirectory,
+    // and a DynamicUser would clash over ownership. Created 2775 root:lisa
+    // by tmpfiles.d/lisa-models.conf on the image; on a dev host (no such
+    // dir) we fall back to the user's home store.
+    let system = PathBuf::from("/var/lib/lisa-models");
     if system.is_dir() {
         return system;
     }
