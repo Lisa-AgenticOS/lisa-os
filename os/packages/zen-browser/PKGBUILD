@@ -10,8 +10,9 @@ pkgdesc="Zen — a calm, Firefox-based browser"
 arch=(x86_64)
 url="https://zen-browser.app"
 license=(MPL-2.0)
-depends=(gtk3 libxt mime-types dbus-glib nss ffmpeg)
-options=(!strip)
+depends=(gtk3 libxt mailcap nss)
+optdepends=('ffmpeg: video and audio playback')
+options=(!strip !debug)
 source=("zen-${pkgver}.tar.xz::https://github.com/zen-browser/desktop/releases/download/${pkgver}/zen.linux-x86_64.tar.xz")
 sha256sums=('SKIP')
 
