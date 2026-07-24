@@ -94,9 +94,13 @@ prepare() {
   # .desktop makes GNOME 50 treat `lisa` as a `system` subpage — the
   # sidebar row shows but activating it redirects to `system lisa` and
   # dies with "Invalid subpage: 'lisa'". Must stay a top-level category.
-  grep -q 'X-GNOME-PersonalizationSettings' panels/lisa/gnome-lisa-panel.desktop.in \
+  # Check the Categories= line only — the file's comment mentions the bad
+  # token deliberately, and must not trip the guard.
+  grep '^Categories=' panels/lisa/gnome-lisa-panel.desktop.in \
+    | grep -q 'X-GNOME-PersonalizationSettings' \
     || { echo "lisa panel .desktop must use a top-level category, not SystemSettings" >&2; return 1; }
-  ! grep -q 'X-GNOME-SystemSettings' panels/lisa/gnome-lisa-panel.desktop.in \
+  ! grep '^Categories=' panels/lisa/gnome-lisa-panel.desktop.in \
+    | grep -q 'X-GNOME-SystemSettings' \
     || { echo "lisa panel .desktop has X-GNOME-SystemSettings — breaks activation (ADR-0012)" >&2; return 1; }
 
   # Register it: build the panel lib, declare the GType, and list it.
