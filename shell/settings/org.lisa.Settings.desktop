@@ -8,3 +8,4 @@ Icon=preferences-system-symbolic
 Categories=Settings;System;GTK;
 Keywords=lisa;ai;providers;privacy;offload;remote;
 StartupNotify=true
+NoDisplay=true
