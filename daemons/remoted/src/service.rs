@@ -8,7 +8,7 @@
 use crate::consent::{Consent, ConsentError};
 use crate::oauth::{self, AuthorizeRequest, OauthEndpoints, OauthError, Pkce};
 use crate::proxy::{self, ProxyError};
-use crate::registry::{AuthStyle, Registry, RegistryError};
+use crate::registry::{AuthStyle, Dialect, Registry, RegistryError};
 use crate::secrets::{SecretStore, SecretsError};
 use lisa_ledger::{Event, Ledger, preview_of};
 use serde_json::{Value, json};
@@ -214,6 +214,61 @@ impl Broker {
                 Ok((token, AuthStyle::AnthropicOauth))
             }
         }
+    }
+
+    /// The provider's own live model list — its `/models` endpoint, never
+    /// an invented catalogue (rule 8) — so Settings can offer a real model
+    /// dropdown instead of a free-text box (construct's pattern, ADR-0010
+    /// follow-up). Requires a stored credential. This is a metadata read,
+    /// not a generation, so it is not ledgered as `remote.generate`.
+    pub async fn list_models(&self, provider_id: &str) -> Result<Vec<String>, BrokerError> {
+        let spec = self
+            .registry
+            .lock()
+            .expect("registry lock")
+            .get(provider_id)?;
+        let base = spec.base_url.clone().ok_or_else(|| ProxyError::Upstream {
+            status: 0,
+            body: "provider has no configured endpoint".into(),
+        })?;
+        let (credential, auth) = self.credential_for(provider_id, spec.auth)?;
+        let base = base.trim_end_matches('/');
+        // OpenAI-compat base_urls already carry /v1; Anthropic's does not.
+        let url = match spec.dialect {
+            Dialect::AnthropicMessages => format!("{base}/v1/models"),
+            Dialect::OpenaiCompat => format!("{base}/models"),
+        };
+        let req = self.http.get(&url);
+        let req = match auth {
+            AuthStyle::AnthropicApiKey => req
+                .header("x-api-key", &credential)
+                .header("anthropic-version", "2023-06-01"),
+            AuthStyle::AnthropicOauth => req
+                .header("authorization", format!("Bearer {credential}"))
+                .header("anthropic-version", "2023-06-01"),
+            AuthStyle::Bearer => req.header("authorization", format!("Bearer {credential}")),
+        };
+        let resp = req.send().await.map_err(ProxyError::Http)?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProxyError::Upstream {
+                status: status.as_u16(),
+                body,
+            }
+            .into());
+        }
+        let body: Value = resp.json().await.map_err(ProxyError::Http)?;
+        let mut ids: Vec<String> = body["data"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m["id"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        Ok(ids)
     }
 
     /// Proxy one chat completion. Ledger discipline (§5.11, dataflow

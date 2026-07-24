@@ -76,6 +76,13 @@ impl Remote1 {
     async fn claude_oauth_finish(&self, code: String) -> zbus::fdo::Result<()> {
         self.broker.oauth_finish(&code).await.map_err(fail)
     }
+
+    /// The provider's live model list (its own `/models`), as a JSON array
+    /// of ids — for the Settings model dropdown. Requires a stored key.
+    async fn list_models(&self, provider: String) -> zbus::fdo::Result<String> {
+        let ids = self.broker.list_models(&provider).await.map_err(fail)?;
+        Ok(serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()))
+    }
 }
 
 /// Register on the session bus (real systems; tests use p2p connections).
