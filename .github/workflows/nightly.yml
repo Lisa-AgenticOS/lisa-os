@@ -261,11 +261,27 @@ jobs:
           sudo rm "mnt-esp/EFI/Linux/$NAME"
           sudo cp lisa_1.efi mnt-esp/EFI/Linux/lisa_1.efi
 
+          # Diagnostics for the A/B UUID story (ADR-0018): what identifiers
+          # does the built image actually carry? If fs UUIDs repeat across
+          # nightly runs, real A/B updates would collide the same way the
+          # byte-copy below used to.
+          echo "--- baked /etc/fstab:"; sudo cat mnt-root/etc/fstab 2>/dev/null || echo "(no fstab)"
+          echo "--- filesystem/partition identifiers:"; sudo blkid | grep "$LOOP" || true
+
           sudo umount mnt-esp mnt-root
 
           # v2 root = byte-copy of slot A with a bumped version marker.
           sudo dd if="${LOOP}p2" of=root2.img bs=4M status=none
           sudo chown "$USER:" root2.img
+          # A byte-copy carries slot A's btrfs fsid; two same-fsid devices on
+          # one disk send the kernel's btrfs device-scan into chaos (the
+          # by-uuid device never shows up → emergency mode — exactly what a
+          # real cloned-slot update would do). btrfstune -m gives the copy a
+          # fresh metadata_uuid/fsid, the supported way to make a clone
+          # mountable next to its origin (needs btrfs-progs).
+          sudo apt-get install -qq -y --no-install-recommends btrfs-progs >/dev/null
+          sudo btrfstune -f -m root2.img
+          echo "--- v2 root identifiers after re-uuid:"; sudo blkid root2.img || true
           mkdir -p mnt-v2
           sudo mount -o loop root2.img mnt-v2
           echo 2 | sudo tee mnt-v2/etc/lisa-slot-version >/dev/null
