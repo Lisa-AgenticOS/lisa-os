@@ -31,3 +31,12 @@ accent-color='purple'
 [org.gnome.desktop.wm.keybindings]
 switch-input-source=['<Control><Super>space']
 switch-input-source-backward=[]
+
+# NO automatic suspend (field iMac 18,x: amdgpu cannot resume under
+# Linux — suspend is a hard power-off in practice, killing SSH and
+# stranding the machine until a power-button cycle). Blank the screen,
+# never sleep the box. Belt-and-braces with the masked systemd sleep
+# targets in the image (mkosi.extra).
+[org.gnome.settings-daemon.plugins.power]
+sleep-inactive-ac-type='nothing'
+sleep-inactive-battery-type='nothing'
