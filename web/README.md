@@ -1,22 +1,18 @@
-# web/ — Lisa OS sites
+# Lisa OS websites
 
-Two static sites, each a tiny nginx container deployed via Basepod (`bp`).
-See `docs/WEB_PLAN.md` for the strategy.
+- `web/app-nuxt` — **lisaos.app** (marketing). Nuxt 4 + Nuxt UI, statically
+  generated, served by nginx. Deploys as bp app `lisa-app`
+  (lisa-app.common.al until DNS points the real domain).
+- `web/dev-nuxt` — **lisaos.dev** (contributor portal). Nuxt 4 + Nuxt UI +
+  nuxt-auth-utils; a Nitro server (GitHub OAuth + the live good-first-issues
+  API). Deploys as bp app `lisa-dev`. Needs env (`bp env set lisa-dev …`):
+  `NUXT_SESSION_PASSWORD` (set), `NUXT_OAUTH_GITHUB_CLIENT_ID` /
+  `NUXT_OAUTH_GITHUB_CLIENT_SECRET` (pending a GitHub OAuth App on the
+  Lisa-AgenticOS org; login degrades gracefully until then).
+- `web/app`, `web/dev` — the retired static predecessors; superseded by the
+  Nuxt builds, kept until the swap has soaked.
 
-- `app/` → **lisa-app.common.al** — marketing landing ("A computer that's
-  genuinely yours to think with"). Later: `lisaos.app`.
-- `dev/` → **lisa-dev.common.al** — docs / install / SDK. Later:
-  `lisaos.dev` (this will move to a generated site over `docs/`).
-
-Both use the violet wordmark brand (`branding/`), are light/dark aware,
-and are self-contained (inline CSS + the wordmark paths).
-
-## Deploy
-
-```sh
-cd web/app && bp deploy      # → lisa-app on bp.common.al
-cd web/dev && bp deploy      # → lisa-dev on bp.common.al
-```
-
-`bp` needs a clean git tree (commit first). Content lives in `public/`;
-the `Dockerfile` serves it with nginx on :80.
+Deploy: `bp deploy web/app-nuxt` / `bp deploy web/dev-nuxt` (server
+bp.common.al). A scoped deploy token lives at
+`~/.config/basepod/deploy-token` (mode 600, NOT in the repo) for scripted
+CI/CD deploys via the HTTP API — prefer it over the account password.
