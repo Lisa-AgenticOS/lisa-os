@@ -2,6 +2,12 @@
 const colorMode = useColorMode()
 const toggle = () => { colorMode.preference = colorMode.value === 'dark' ? 'light' : 'dark' }
 const { loggedIn, user, clear } = useUserSession()
+const route = useRoute()
+const loginNote = computed(() => {
+  if (route.query.login === 'unavailable') return 'GitHub sign-in is being set up — check back soon.'
+  if (route.query.login === 'error') return 'GitHub sign-in failed — please try again.'
+  return ''
+})
 const { data: issues } = await useFetch('/api/good-first-issues', { default: () => [] })
 const repo = 'https://github.com/Lisa-AgenticOS/lisa-os'
 const releases = `${repo}/releases/latest`
@@ -60,7 +66,8 @@ const ghMark = 'M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.2 11.17.6.11.82-.
       </div>
       <div v-else class="board"><div class="empty">No open “good first issue” tickets right now — check <a :href="`${repo}/issues`">all issues</a> or open one.</div></div>
       <div v-if="!loggedIn" class="signin-cta">
-        <p><strong>Sign in with GitHub</strong> to claim issues and track your open PRs here.</p>
+        <p v-if="loginNote"><strong>{{ loginNote }}</strong></p>
+        <p v-else><strong>Sign in with GitHub</strong> to claim issues and track your open PRs here.</p>
         <a class="gh" href="/auth/github"><svg viewBox="0 0 24 24"><path :d="ghMark" /></svg> Sign in with GitHub</a>
       </div>
     </section>

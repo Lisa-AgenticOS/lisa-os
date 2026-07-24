@@ -1,4 +1,4 @@
-name: lisa-dev-next
+name: lisa-dev
 server: bp.common.al
 port: 3000
 build:

@@ -1,4 +1,4 @@
-name: lisa-next
+name: lisa-app
 server: bp.common.al
 port: 80
 build:
