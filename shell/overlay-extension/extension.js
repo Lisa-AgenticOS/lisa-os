@@ -9,6 +9,14 @@
 // workspace with the three per-invocation context chips —
 // [this window], [selection], [my stuff] — a prompt entry, and the
 // streamed answer. Escape cancels/dismisses.
+//
+// Agent Bus lane (M5, ADR-0013): actionable prompts execute via
+// org.lisa.Agent1 in the backend; when a call parks for consent the
+// backend raises ConfirmationNeeded and this layer renders it — a
+// chip-weight box for confirm-chip, a heavier modal-weight box for
+// confirm-modal (escalated/untrusted chains and destructive tiers call
+// out their warnings) — and answers via Respond(). Confirmations
+// parked by other clients (e.g. `lisa do`) surface in the same queue.
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -21,6 +29,7 @@ import St from 'gi://St';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+import {consentView} from './lib/agent.js';
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH,
     OVERLAY_UI_IFACE_XML, OVERLAY_UI_BUS_NAME, OVERLAY_UI_OBJECT_PATH}
     from './lib/iface.js';
@@ -83,12 +92,47 @@ class OverlayWidget extends St.BoxLayout {
         this._scroll.add_child(box);
         this.add_child(this._scroll);
 
+        // Consent surface (Agent Bus lane): one pending confirmation at
+        // a time, chip weight or modal weight per the spec's
+        // confirmation level; further requests queue behind it.
+        this._consents = []; // [{queryId, view}]
+        this._consentBox = new St.BoxLayout({
+            style_class: 'lisa-consent',
+            vertical: true,
+            visible: false,
+        });
+        this._consentTitle = new St.Label({style_class: 'lisa-consent-title'});
+        this._consentBox.add_child(this._consentTitle);
+        this._consentDescription = new St.Label({style_class: 'lisa-consent-description'});
+        this._consentDescription.clutter_text.line_wrap = true;
+        this._consentBox.add_child(this._consentDescription);
+        this._consentArgs = new St.Label({style_class: 'lisa-consent-args'});
+        this._consentArgs.clutter_text.line_wrap = true;
+        this._consentBox.add_child(this._consentArgs);
+        this._consentWarnings = new St.Label({style_class: 'lisa-consent-warnings'});
+        this._consentBox.add_child(this._consentWarnings);
+        const buttons = new St.BoxLayout({style_class: 'lisa-consent-buttons'});
+        this._allowButton = new St.Button({
+            style_class: 'lisa-consent-allow', label: 'Allow', can_focus: true,
+        });
+        this._allowButton.connect('clicked', () => this._answerConsent(true));
+        buttons.add_child(this._allowButton);
+        this._denyButton = new St.Button({
+            style_class: 'lisa-consent-deny', label: 'Deny', can_focus: true,
+        });
+        this._denyButton.connect('clicked', () => this._answerConsent(false));
+        buttons.add_child(this._denyButton);
+        this._consentBox.add_child(buttons);
+        this.add_child(this._consentBox);
+
         this._footer = new St.Label({style_class: 'lisa-overlay-footer', text: ''});
         this.add_child(this._footer);
 
         this._signalIds = [
             this._proxy.connectSignal('Started', (p, s, args) => this._onStarted(...args)),
             this._proxy.connectSignal('Token', (p, s, args) => this._onToken(...args)),
+            this._proxy.connectSignal('ConfirmationNeeded',
+                (p, s, args) => this._onConfirmationNeeded(...args)),
             this._proxy.connectSignal('Finished', (p, s, args) => this._onFinished(...args)),
         ];
     }
@@ -129,6 +173,11 @@ class OverlayWidget extends St.BoxLayout {
         const prompt = this._entry.get_text().trim();
         if (prompt === '')
             return;
+        // A new query replaces the live one ("new query wins", matching
+        // the launcher); its parked consent goes with it. Consents for
+        // other clients' calls (external query ids) stay up.
+        if (this._activeQuery !== 0)
+            this._dropConsents(id => id === this._activeQuery);
         this._response.text = '';
         this._footer.text = '…';
         const options = {};
@@ -151,6 +200,8 @@ class OverlayWidget extends St.BoxLayout {
             meta = JSON.parse(metaJson);
         } catch {}
         const parts = [];
+        if (meta.mode === 'agent' && meta.tool)
+            parts.push(`agent: ${meta.tool}`);
         if (meta.sources.length > 0)
             parts.push(`context: ${meta.sources.map(s => `${s.provenance} ${s.source}`).join(', ')}`);
         if (meta.unavailable.length > 0)
@@ -165,20 +216,95 @@ class OverlayWidget extends St.BoxLayout {
         this._response.text += text;
     }
 
+    // ConfirmationNeeded carries Agent1's spec_json (tool, args, tiers,
+    // escalation, chain) for a parked call — ours or another client's.
+    _onConfirmationNeeded(queryId, specJson) {
+        this._consents.push({queryId: Number(queryId), view: consentView(specJson)});
+        if (this._consents.length === 1)
+            this._renderConsent();
+    }
+
+    _renderConsent() {
+        const front = this._consents[0];
+        if (!front) {
+            this._consentBox.hide();
+            return;
+        }
+        const {view} = front;
+        this._consentBox.style_class =
+            `lisa-consent ${view.modal ? 'lisa-consent-modal' : 'lisa-consent-chip'}`;
+        this._consentTitle.text = view.title;
+        this._consentDescription.text = view.description;
+        this._consentDescription.visible = view.description !== '';
+        this._consentArgs.text = view.argsText;
+        this._consentArgs.visible = view.argsText !== '';
+        this._consentWarnings.text = view.warnings.join(' · ');
+        this._consentWarnings.visible = view.warnings.length > 0;
+        this._allowButton.set_reactive(true);
+        this._denyButton.set_reactive(true);
+        this._consentBox.show();
+    }
+
+    _answerConsent(approve) {
+        const front = this._consents[0];
+        if (!front)
+            return;
+        // One click only; the box closes on Finished for this query.
+        this._allowButton.set_reactive(false);
+        this._denyButton.set_reactive(false);
+        this._proxy.RespondRemote(front.queryId, approve, (res, error) => {
+            if (error) {
+                this._dropConsents(id => id === front.queryId);
+                this._footer.text = `confirm failed: ${error.message}`;
+            }
+        });
+    }
+
+    // Finished closes a consent (any lane) and reports external
+    // outcomes — the active query's own outcome is reported by the
+    // main branch below.
+    _dropConsents(match, outcome = null) {
+        const frontId = this._consents[0]?.queryId;
+        const dropped = this._consents.filter(c => match(c.queryId));
+        if (dropped.length === 0)
+            return;
+        this._consents = this._consents.filter(c => !match(c.queryId));
+        if (frontId !== this._consents[0]?.queryId)
+            this._renderConsent();
+        if (outcome && dropped.some(c => c.queryId !== this._activeQuery)) {
+            const [status, detail] = outcome;
+            if (status === 'executed')
+                this._footer.text = 'done · ledgered';
+            else if (status === 'denied')
+                this._footer.text = 'denied';
+            else if (status === 'failed' || status === 'error')
+                this._footer.text = `${status}: ${detail}`;
+        }
+    }
+
     _onFinished(queryId, status, detail) {
-        if (Number(queryId) !== this._activeQuery)
+        const id = Number(queryId);
+        this._dropConsents(c => c === id, [status, detail]);
+        if (id !== this._activeQuery)
             return;
         this._activeQuery = 0;
         if (status === 'error')
             this._footer.text = `error: ${detail}`;
         else if (status === 'cancelled')
             this._footer.text = 'cancelled';
+        else if (status === 'executed')
+            this._footer.text = detail === '' ? 'done · ledgered' : `done · ledger #${detail}`;
+        else if (status === 'failed')
+            this._footer.text = `action failed: ${detail}`;
+        else if (status === 'denied')
+            this._footer.text = `denied: ${detail}`;
     }
 
     destroy() {
         for (const id of this._signalIds)
             this._proxy.disconnectSignal(id);
         this._signalIds = [];
+        this._consents = [];
         super.destroy();
     }
 }

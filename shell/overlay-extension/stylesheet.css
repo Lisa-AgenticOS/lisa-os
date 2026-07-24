@@ -46,3 +46,68 @@
     color: rgba(255, 255, 255, 0.55);
     font-size: 9.5pt;
 }
+
+/* Consent surface (Agent Bus lane, ADR-0013): the chip weight is a
+   quiet inline box; the modal weight (destructive tier, escalated
+   chains) carries a warned border and a heavier background so it
+   cannot be mistaken for streamed text. */
+
+.lisa-consent {
+    border-radius: 12px;
+    padding: 10px 12px;
+    spacing: 8px;
+}
+
+.lisa-consent-chip {
+    background-color: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.lisa-consent-modal {
+    background-color: rgba(90, 30, 30, 0.45);
+    border: 2px solid rgba(255, 120, 120, 0.6);
+}
+
+.lisa-consent-title {
+    color: #ffffff;
+    font-size: 11.5pt;
+    font-weight: bold;
+}
+
+.lisa-consent-description {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 10pt;
+}
+
+.lisa-consent-args {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 10pt;
+    font-family: monospace;
+}
+
+.lisa-consent-warnings {
+    color: #ffb3b3;
+    font-size: 9.5pt;
+}
+
+.lisa-consent-buttons {
+    spacing: 8px;
+}
+
+.lisa-consent-allow {
+    border-radius: 999px;
+    padding: 4px 16px;
+    background-color: rgba(255, 255, 255, 0.22);
+    color: #ffffff;
+}
+
+.lisa-consent-modal .lisa-consent-allow {
+    background-color: rgba(255, 120, 120, 0.35);
+}
+
+.lisa-consent-deny {
+    border-radius: 999px;
+    padding: 4px 16px;
+    background-color: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.75);
+}

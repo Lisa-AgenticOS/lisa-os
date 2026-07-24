@@ -13,6 +13,20 @@
 //   "window"    → screen capture → VLM (PLAN §5.7.4 — lands M6, reported unavailable)
 //   "selection" → app resource / AT-SPI (PLAN §5.7.3 layer 3 — reported unavailable)
 // plus "model_hint" (s), forwarded to org.lisa.Inference1.
+//
+// Agent Bus lane (M5, ADR-0013): an actionable prompt routes to
+// org.lisa.Agent1 instead of inference. The result (or the denial /
+// failure reason) streams as Token signals and Finished carries the
+// Agent1 disposition as its status — "executed" (detail = ledger ref
+// or ''), "failed"/"denied" (detail = reason) — alongside the
+// inference-path "ok"/"cancelled"/"error". A parked call raises
+// ConfirmationNeeded(query_id, spec_json) — spec_json is Agent1's
+// typed-diff material — and the frontend answers with
+// Respond(query_id, approve). Confirmations parked by other clients
+// (e.g. `lisa do` without a TTY answer) surface the same way: the
+// backend subscribes to Agent1.ConfirmationRequested and gives each
+// external call a query id. Cancel() on a query awaiting consent
+// answers "deny".
 
 export const OVERLAY_IFACE_XML = `
 <node>
@@ -25,6 +39,10 @@ export const OVERLAY_IFACE_XML = `
     <method name="Cancel">
       <arg type="t" name="query_id" direction="in"/>
     </method>
+    <method name="Respond">
+      <arg type="t" name="query_id" direction="in"/>
+      <arg type="b" name="approve" direction="in"/>
+    </method>
     <method name="GetStatus">
       <arg type="a{sv}" name="status" direction="out"/>
     </method>
@@ -35,6 +53,10 @@ export const OVERLAY_IFACE_XML = `
     <signal name="Token">
       <arg type="t" name="query_id"/>
       <arg type="s" name="text"/>
+    </signal>
+    <signal name="ConfirmationNeeded">
+      <arg type="t" name="query_id"/>
+      <arg type="s" name="spec_json"/>
     </signal>
     <signal name="Finished">
       <arg type="t" name="query_id"/>

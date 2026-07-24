@@ -13,23 +13,41 @@ backend interface.
 
 - `backend/lisa-overlayd.js` — the headless backend (GJS). Owns
   `org.lisa.Overlay1` on the session bus: `Ask(prompt, options) →
-  query_id`, `Cancel`, `GetStatus`; signals `Started(id, meta_json)`,
-  `Token(id, text)`, `Finished(id, status, detail)`. Per Ask it runs
-  [my stuff] retrieval via `lisa context search` (ledgered by the CLI),
-  fences hits with provenance per Appendix C, opens an
-  `org.lisa.Inference1` session, and re-emits the token fd as signals.
+  query_id`, `Cancel`, `Respond(query_id, approve)`, `GetStatus`;
+  signals `Started(id, meta_json)`, `Token(id, text)`,
+  `ConfirmationNeeded(id, spec_json)`, `Finished(id, status, detail)`.
+  Per Ask it first tries the **Agent Bus lane** (M5, ADR-0013):
+  `org.lisa.Agent1.Discover(prompt)` scored by `lib/agent.js` (no
+  model in this lane); a confident, arg-fillable hit becomes
+  `RequestCall` with actor `overlay`, provenance `["user"]`. Results
+  and denial/failure reasons stream back as `Token` + `Finished`;
+  parked calls raise `ConfirmationNeeded` and wait for `Respond`.
+  Confirmations parked by *other* clients (`lisa do` without a TTY
+  answer) surface too, via Agent1's `ConfirmationRequested` signal
+  (own calls are filtered by actor — the signal precedes the
+  `RequestCall` reply, so id-matching would race). Prompts that don't
+  route keep the inference lane unchanged: [my stuff] retrieval via
+  `lisa context search` (ledgered by the CLI), Appendix C fencing,
+  `org.lisa.Inference1` session, token fd re-emitted as signals.
   `backend/org.lisa.Overlay1.service` provides D-Bus activation.
 - `extension.js` + `metadata.json` + `schemas/` + `stylesheet.css` —
   the GNOME Shell frontend (ESM, GNOME 46+): keybinding, chips, entry,
   streamed response, footer showing attached context and ledgering.
-  Also owns **`org.lisa.Overlay1.UI`** on the session bus
+  The Agent Bus lane renders as a consent surface: chip-weight box for
+  `confirm-chip`, heavier modal-weight box for `confirm-modal`
+  (escalated chains, destructive tiers, and non-undoable calls call
+  out their warnings), Allow/Deny answering via `Respond`; one consent
+  at a time, further requests queue. Also owns
+  **`org.lisa.Overlay1.UI`** on the session bus
   (`Summon(prompt, options)`, `Hide`, `GetVisible`) — the UI-control
   surface other shell surfaces use to summon the overlay
   programmatically; the §5.7.2 launcher's "Ask Lisa" lane hands its
   queries over here. Owned by the frontend because the headless
   backend has no UI; the wlr client can own the same name.
 - `lib/` — shared pure logic (`envelope.js`: Appendix C fencing, CLI
-  output parsing; `iface.js`: the D-Bus interface XML).
+  output parsing; `agent.js`: prompt→tool routing, schema-driven arg
+  filling, outcome formatting, consent-spec mapping; `iface.js`: the
+  D-Bus interface XML).
 - `tests/` — unit tests for `lib/` (`just shell-test`; runs under gjs,
   node, or macOS jsc).
 
@@ -37,10 +55,22 @@ backend interface.
 
 Working first pass: backend + GNOME frontend wired end-to-end against
 `org.lisa.Inference1` (needs a Linux/GNOME session to run; logic is
-unit-tested everywhere). [this window] waits on §5.7.4 screen context
-(M6); [selection] waits on §5.7.3 layer 3; both are reported
-`unavailable` in Started meta. M5 swaps the backend's direct inference
-call for Agent Bus (MCP) planning without changing the D-Bus surface.
+unit-tested everywhere). The Agent Bus lane routes actionable prompts
+to `org.lisa.Agent1` (read-tier calls with the trusted `["user"]`
+chain execute silently and render their result; write/destructive park
+for chip/modal consent per the tier table). [this window] waits on
+§5.7.4 screen context (M6); [selection] waits on §5.7.3 layer 3; both
+are reported `unavailable` in Started meta.
+
+Known gaps (Agent1 surface, reported — not worked around): no signal
+when a pending confirmation is answered elsewhere or expires, so a
+consent box for another client's call can linger until clicked (the
+stale `Confirm` then errors and the box closes honestly); `Discover`
+omits scores, so the overlay re-implements agentd's token-overlap
+ranking client-side to threshold it (kept in sync with
+`daemons/agentd/src/registry.rs` by hand); arg filling is a local
+heuristic — calls that need the intent-router model to split an
+utterance across several arguments stay on the inference lane.
 
 Install (dev): symlink this directory into
 `~/.local/share/gnome-shell/extensions/lisa-overlay@lisa-os.org`, run

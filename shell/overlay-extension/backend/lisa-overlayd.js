@@ -5,7 +5,16 @@
 // live here so frontends stay thin — the GNOME Shell extension and the
 // wlr-layer-shell client (Track L) both just render this service.
 //
-// Per Ask():
+// Per Ask(), the prompt first tries the Agent Bus lane (M5, ADR-0013):
+//   0. [action] → org.lisa.Agent1.Discover(prompt) scored by
+//      lib/agent.js (deterministic token overlap, no model in this
+//      lane); a confident, arg-fillable hit becomes RequestCall with
+//      actor "overlay", provenance ["user"]. "executed"/"failed"/
+//      "denied" stream back as Token + Finished; a parked call raises
+//      ConfirmationNeeded and waits for Respond(). Confirmations
+//      parked by other clients surface too, via Agent1's
+//      ConfirmationRequested signal.
+// Otherwise the inference lane runs unchanged:
 //   1. [my stuff] → `lisa context search` (Context Fabric, PLAN §5.3;
 //      retrieval is ledgered by the CLI) → provenance-fenced envelope
 //      (Appendix C via lib/envelope.js).
@@ -15,12 +24,11 @@
 //      ledgered by lisa-inferenced (dataflow rule 4).
 // [this window] (§5.7.4, M6) and [selection] (§5.7.3 layer 3) are
 // reported unavailable in Started meta until their layers land.
-//
-// M5 turns this into an Agent Bus (MCP) client; the D-Bus surface is
-// designed to survive that swap unchanged.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import {decideAction, formatExecuted, reasonText, safeParse}
+    from '../lib/agent.js';
 import {buildEnvelope, parseContextHits, classifyAffordances}
     from '../lib/envelope.js';
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH}
@@ -30,6 +38,11 @@ const INFERENCE_BUS = 'org.lisa.Inference1';
 const INFERENCE_PATH = '/org/lisa/Inference1';
 const INFERENCE_IFACE = 'org.lisa.Inference1';
 const SESSION_IFACE = 'org.lisa.Inference1.Session';
+const AGENT_BUS = 'org.lisa.Agent1';
+const AGENT_PATH = '/org/lisa/Agent1';
+const AGENT_IFACE = 'org.lisa.Agent1';
+const AGENT_ACTOR = 'overlay';
+const AGENT_PROVENANCE = ['user']; // typed prompts: a trusted chain (rule 6)
 const CONTEXT_HITS = 3;
 
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
@@ -42,7 +55,18 @@ class OverlayService {
         this._impl = Gio.DBusExportedObject.wrapJSObject(OVERLAY_IFACE_XML, this);
         this._impl.export(connection, OVERLAY_OBJECT_PATH);
         this._nextId = 1;
-        this._active = null; // {id, cancellable, sessionPath, stream}
+        this._active = null; // {id, cancellable, sessionPath, pendingCallId}
+        this._external = new Map(); // query id → Agent1 call id (other actors' calls)
+        // Consent for calls parked by other clients (`lisa do` without
+        // a TTY answer, scripts): surface them as first-class overlay
+        // queries. Own calls are filtered out by actor — agentd emits
+        // this signal before the RequestCall reply arrives, so
+        // id-tracking alone would race.
+        this._connection.signal_subscribe(
+            AGENT_BUS, AGENT_IFACE, 'ConfirmationRequested', AGENT_PATH, null,
+            Gio.DBusSignalFlags.NONE,
+            (conn, sender, path, iface, signal, params) =>
+                this._onConfirmationRequested(params));
     }
 
     // ---- D-Bus methods -------------------------------------------------
@@ -62,9 +86,27 @@ class OverlayService {
         if (!active || active.id !== Number(queryId))
             return;
         active.cancelled = true;
+        if (active.pendingCallId != null) {
+            // Awaiting consent: cancel answers "deny" and closes the turn.
+            const callId = active.pendingCallId;
+            active.pendingCallId = null;
+            this._agentCall('Confirm',
+                new GLib.Variant('(tb)', [callId, false]), '(ss)')
+                .catch(() => {});
+            this._finish(active.id, 'cancelled', '');
+            return;
+        }
         active.cancellable.cancel();
         if (active.sessionPath)
             this._sessionCall(active.sessionPath, 'Cancel', null).catch(() => {});
+    }
+
+    Respond(queryId, approve) {
+        this._respond(Number(queryId), Boolean(approve)).catch(e => {
+            // Confirm itself failed (unknown call — answered elsewhere,
+            // or expired after Agent1's TTL). Close the turn honestly.
+            this._finish(Number(queryId), 'error', String(e?.message ?? e));
+        });
     }
 
     GetStatus() {
@@ -88,9 +130,21 @@ class OverlayService {
 
     async _run(id, prompt, opts) {
         const cancellable = new Gio.Cancellable();
-        this._active = {id, cancellable, sessionPath: null, cancelled: false};
+        this._active = {
+            id, cancellable, sessionPath: null, cancelled: false,
+            pendingCallId: null,
+        };
 
         const {wanted, unavailable} = classifyAffordances(opts);
+
+        // Agent Bus lane: an actionable prompt becomes an Agent1 tool
+        // call; everything else keeps streaming inference below.
+        const action = await this._discoverAction(prompt, cancellable);
+        if (action) {
+            await this._runAgent(id, action, unavailable);
+            return;
+        }
+
         let hits = [];
         if (wanted.includes('my_stuff'))
             hits = await this._searchContext(prompt, cancellable);
@@ -129,6 +183,124 @@ class OverlayService {
             stream.close(null);
             this._sessionCall(sessionPath, 'Close', null).catch(() => {});
         }
+    }
+
+    // ---- Agent Bus lane (org.lisa.Agent1) -------------------------------
+
+    // Prompt → {tool, args, score} or null. Any failure (agentd not on
+    // the bus, no confident hit, unfillable args) means the inference
+    // lane takes the prompt — inference is the safe default.
+    async _discoverAction(prompt, cancellable) {
+        try {
+            const reply = await this._agentCall('Discover',
+                new GLib.Variant('(s)', [prompt]), '(s)', cancellable);
+            const [toolsJson] = reply.deepUnpack();
+            return decideAction(prompt, safeParse(toolsJson));
+        } catch (e) {
+            if (!this._active?.cancelled)
+                log(`lisa-overlayd: Agent1 unavailable (${e?.message ?? e}); inference lane`);
+            return null;
+        }
+    }
+
+    async _runAgent(id, action, unavailable) {
+        const {tool, args} = action;
+        this._emit('Started', new GLib.Variant('(ts)', [id, JSON.stringify({
+            sources: [], // the tool call is the retrieval; no context envelope
+            unavailable,
+            mode: 'agent',
+            tool: `${tool.app_id}::${tool.name}`,
+        })]));
+        const options = {
+            actor: GLib.Variant.new_string(AGENT_ACTOR),
+            provenance: new GLib.Variant('as', AGENT_PROVENANCE),
+        };
+        const reply = await this._agentCall('RequestCall',
+            new GLib.Variant('(sssa{sv})',
+                [tool.app_id, tool.name, JSON.stringify(args), options]),
+            '(tss)');
+        const [callId, disposition, detailJson] = reply.deepUnpack();
+        switch (disposition) {
+        case 'confirm-chip':
+        case 'confirm-modal':
+            if (this._active?.id === id) {
+                // Parked: Respond()/Cancel() drive it from here.
+                this._active.pendingCallId = Number(callId);
+                this._emit('ConfirmationNeeded',
+                    new GLib.Variant('(ts)', [id, detailJson]));
+            } else {
+                // Replaced by a newer query mid-flight — deny rather
+                // than leak a confirmation that expires unanswered.
+                this._agentCall('Confirm',
+                    new GLib.Variant('(tb)', [Number(callId), false]), '(ss)')
+                    .catch(() => {});
+            }
+            break;
+        case 'executed':
+        case 'failed':
+        case 'denied':
+            this._emitOutcome(id, disposition, detailJson);
+            break;
+        default:
+            this._finish(id, 'error', `unknown Agent1 disposition "${disposition}"`);
+        }
+    }
+
+    async _respond(queryId, approve) {
+        let callId = null;
+        const active = this._active;
+        if (active?.id === queryId && active.pendingCallId != null) {
+            callId = active.pendingCallId;
+            active.pendingCallId = null;
+        } else if (this._external.has(queryId)) {
+            callId = this._external.get(queryId);
+            this._external.delete(queryId);
+        }
+        if (callId === null)
+            return;
+        const reply = await this._agentCall('Confirm',
+            new GLib.Variant('(tb)', [callId, approve]), '(ss)');
+        const [status, detailJson] = reply.deepUnpack();
+        this._emitOutcome(queryId, status, detailJson);
+    }
+
+    // Agent1's ConfirmationRequested: surface calls parked by other
+    // actors. Own calls (actor "overlay") arrive through RequestCall's
+    // reply instead — the signal fires before that reply, so matching
+    // on actor sidesteps the race.
+    _onConfirmationRequested(params) {
+        const [callId, specJson] = params.deepUnpack();
+        if (safeParse(specJson)?.actor === AGENT_ACTOR)
+            return;
+        const id = this._nextId++;
+        this._external.set(id, Number(callId));
+        this._emit('Started', new GLib.Variant('(ts)', [id, JSON.stringify({
+            sources: [], unavailable: [], mode: 'agent', external: true,
+        })]));
+        this._emit('ConfirmationNeeded', new GLib.Variant('(ts)', [id, specJson]));
+    }
+
+    // Terminal outcome → response text (Token) + Finished. Status is
+    // Agent1's vocabulary: "executed" (detail = ledger ref), "failed"
+    // and "denied" (detail = reason).
+    _emitOutcome(id, status, detailJson) {
+        if (status === 'executed') {
+            const {text, ledgerRef} = formatExecuted(detailJson);
+            this._emit('Token',
+                new GLib.Variant('(ts)', [id, text === '' ? 'done' : text]));
+            this._finish(id, 'executed', ledgerRef === null ? '' : String(ledgerRef));
+        } else {
+            const reason = reasonText(detailJson);
+            this._emit('Token', new GLib.Variant('(ts)', [id, reason]));
+            this._finish(id, status, reason);
+        }
+    }
+
+    _agentCall(method, params, replyType, cancellable = null) {
+        return this._connection.call(
+            AGENT_BUS, AGENT_PATH, AGENT_IFACE, method, params,
+            replyType === null ? null : new GLib.VariantType(replyType),
+            Gio.DBusCallFlags.NONE, -1, cancellable);
     }
 
     async _searchContext(query, cancellable) {
