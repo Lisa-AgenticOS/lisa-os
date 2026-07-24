@@ -128,16 +128,38 @@ What Anthropic's public documentation supports today:
   reports indicate OAuth use is restricted to Anthropic's own clients
   by the Consumer ToS.
 
-Per rule 8 the broker therefore implements the *machinery* — PKCE
+Per rule 8 the broker implements the *machinery* — PKCE
 verifier/challenge (RFC 7636 S256), authorize-URL construction,
 form-encoded code exchange, refresh, token storage, and the
-`oauth-2025-04-20` bearer header on requests — but ships with the
-`authorize_url`, `token_url`, and `client_id` **explicitly unset**.
-They are config fields (`oauth.toml`), not guessed constants. The
-Settings button renders disabled with an explanatory subtitle until
-Anthropic publishes a registerable "Sign in with Claude" client (at
-which point filling three config values lights it up). API-key auth for
-Anthropic works today regardless.
+`oauth-2025-04-20` bearer header on requests.
+
+**Update (2026-07-24): the constants are no longer unset.** They are the
+*verified public* client IDs and endpoints of a shipping OAuth public
+client (Construct, `brain/oauth/`), not guessed values — so rule 8 is
+satisfied by citation, not by leaving the fields blank:
+
+- **Anthropic (Claude Pro/Max):** client `9d1c250a-e61b-44d9-88ed-5944d1962f5e`,
+  authorize `https://claude.ai/oauth/authorize`, token
+  `https://platform.claude.com/v1/oauth/token`, loopback
+  `http://localhost:53692/callback`, scopes `user:profile user:inference`.
+  Requests also carry `?beta=true` on `/v1/messages` and the Claude-Code
+  system marker (both required, or the API returns 429).
+- **OpenAI (ChatGPT Plus/Pro, "codex"):** client
+  `app_EMoamEEZ73f0CkXaXp7hrann`, authorize/token under
+  `https://auth.openai.com/oauth/...`, loopback
+  `http://localhost:1455/auth/callback`, scopes
+  `openid profile email offline_access`, `originator=lisa`.
+
+The broker (only daemon with egress) runs the whole flow on a
+**loopback-only** callback server; the Settings panel opens the authorize
+URL and reacts to `LoginCompleted`. A successful sign-in is a Ledgered
+`remote.grant` (egress capability); logout is the matching revoke. Only
+`anthropic` and `openai` are `oauth_capable`; every other provider stays
+key-only. API-key auth for Anthropic still works regardless, and takes
+second place to OAuth when both are present. Caveat: a ChatGPT
+subscription token authenticating the OpenAI *chat-completions* API is
+account-dependent — sign-in can succeed while requests are refused
+downstream; the broker surfaces that rather than masking it.
 
 ### 5. Ledger + consent: nothing leaves silently, nothing leaves by default
 
