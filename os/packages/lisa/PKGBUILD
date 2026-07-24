@@ -5,7 +5,7 @@
 # the hosted repo (M1) ships signed packages instead (PLAN §5.10).
 
 pkgbase=lisa
-pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-portal lisa-agentd lisa-notes)
+pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-portal lisa-agentd lisa-notes lisa-remoted)
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Lisa OS AI layer: local inference as a system service"
@@ -105,6 +105,25 @@ package_lisa-notes() {
     install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
     ln -s ../lisa-notes.service \
         "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-notes.service"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_lisa-remoted() {
+    pkgdesc="Lisa OS remote-provider broker: BYO cloud models (OpenAI, Claude, Moonshot, Gemini, …) with egress ledgered (ADR-0010)"
+    depends=(gcc-libs)
+    cd "$pkgbase-$pkgver"
+    install -Dm755 target/release/lisa-remoted "$pkgdir/usr/bin/lisa-remoted"
+    # Per-user session service: owns org.lisa.Remote1 on the session bus so
+    # Settings › Intelligence › Providers can add providers + keys. It is
+    # the only desktop component with network egress (CLAUDE.md rule 5).
+    install -Dm644 os/packages/lisa/lisa-remoted-user.service \
+        "$pkgdir/usr/lib/systemd/user/lisa-remoted.service"
+    install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
+    ln -s ../lisa-remoted.service \
+        "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-remoted.service"
+    # D-Bus session activation — Settings auto-starts the broker on first call.
+    install -Dm644 os/packages/lisa/org.lisa.Remoted.service \
+        "$pkgdir/usr/share/dbus-1/services/org.lisa.Remoted.service"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 

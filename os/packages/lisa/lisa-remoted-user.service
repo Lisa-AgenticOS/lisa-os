@@ -1,0 +1,37 @@
+# lisa-remoted (per-user) — the BYO remote-provider broker's management +
+# egress surface for the desktop (ADR-0010, PLAN §5.11). Runs in the user
+# session with --dbus so it owns org.lisa.Remoted on the SESSION bus, where
+# the Settings › Intelligence › Providers UI reaches it (add a provider,
+# store an API key, set per-scope offload consent). Keys live 0600 under
+# ~/.local/share/lisa/remoted.
+#
+# This is one of the two components allowed network egress (the other is
+# lisa-modeld); every remote request it makes is ledgered with the
+# `remote.` "leaves your hardware" marking and default-deny per-scope
+# consent (CLAUDE.md rule 5). D-Bus-activated on first call; also enabled
+# at login so an added provider is reachable without opening Settings.
+[Unit]
+Description=Lisa remote-provider broker (providers, credentials, egress)
+Documentation=https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/adr/0010-remote-providers.md
+After=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/lisa-remoted --dbus
+Restart=on-failure
+RestartSec=2
+StateDirectory=lisa/remoted
+StateDirectoryMode=0700
+# Egress permitted — that is this daemon's whole job.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

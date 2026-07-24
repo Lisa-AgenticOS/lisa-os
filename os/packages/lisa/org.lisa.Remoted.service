@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.lisa.Remoted
+Exec=/usr/bin/lisa-remoted --dbus
+SystemdService=lisa-remoted.service

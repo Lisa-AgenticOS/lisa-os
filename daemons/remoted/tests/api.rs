@@ -109,7 +109,15 @@ async fn providers_list_includes_builtins_and_custom_rows() {
             "tinker",
             "together",
             "fireworks",
-            "huggingface"
+            "huggingface",
+            "moonshot",
+            "google",
+            "deepseek",
+            "groq",
+            "mistral",
+            "xai",
+            "openrouter",
+            "perplexity",
         ]
     );
 

@@ -128,6 +128,92 @@ pub fn builtin_providers() -> Vec<ProviderSpec> {
                 .into(),
             builtin: true,
         },
+        ProviderSpec {
+            id: "moonshot".into(),
+            display_name: "Moonshot (Kimi)".into(),
+            // platform.moonshot.ai/docs/api — OpenAI-compatible (.cn for
+            // the China endpoint).
+            base_url: Some("https://api.moonshot.ai/v1".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "Kimi models (kimi-k2, moonshot-v1-*), OpenAI-compatible.".into(),
+            builtin: true,
+        },
+        ProviderSpec {
+            id: "google".into(),
+            display_name: "Google Gemini".into(),
+            // ai.google.dev/gemini-api/docs/openai — the OpenAI-compat shim
+            // over the Gemini API; the key is a bog-standard Bearer token.
+            base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "Gemini via its OpenAI-compatible endpoint (model ids like \
+                    gemini-2.5-flash)."
+                .into(),
+            builtin: true,
+        },
+        ProviderSpec {
+            id: "deepseek".into(),
+            display_name: "DeepSeek".into(),
+            // api-docs.deepseek.com — OpenAI-compatible.
+            base_url: Some("https://api.deepseek.com/v1".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "OpenAI-compatible (deepseek-chat, deepseek-reasoner).".into(),
+            builtin: true,
+        },
+        ProviderSpec {
+            id: "groq".into(),
+            display_name: "Groq".into(),
+            // console.groq.com/docs/openai — OpenAI-compatible, very fast.
+            base_url: Some("https://api.groq.com/openai/v1".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "OpenAI-compatible; low-latency inference.".into(),
+            builtin: true,
+        },
+        ProviderSpec {
+            id: "mistral".into(),
+            display_name: "Mistral".into(),
+            // docs.mistral.ai — OpenAI-compatible.
+            base_url: Some("https://api.mistral.ai/v1".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "OpenAI-compatible chat completions.".into(),
+            builtin: true,
+        },
+        ProviderSpec {
+            id: "xai".into(),
+            display_name: "xAI (Grok)".into(),
+            // docs.x.ai — OpenAI-compatible.
+            base_url: Some("https://api.x.ai/v1".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "Grok models, OpenAI-compatible.".into(),
+            builtin: true,
+        },
+        ProviderSpec {
+            id: "openrouter".into(),
+            display_name: "OpenRouter".into(),
+            // openrouter.ai/docs — OpenAI-compatible aggregator across
+            // many upstream providers.
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "Aggregator; model ids are vendor/model (e.g. anthropic/claude-3.5-sonnet)."
+                .into(),
+            builtin: true,
+        },
+        ProviderSpec {
+            id: "perplexity".into(),
+            display_name: "Perplexity".into(),
+            // docs.perplexity.ai — OpenAI-compatible (sonar models).
+            base_url: Some("https://api.perplexity.ai".into()),
+            auth: AuthStyle::Bearer,
+            dialect: Dialect::OpenaiCompat,
+            notes: "Sonar models, OpenAI-compatible.".into(),
+            builtin: true,
+        },
     ]
 }
 
@@ -258,7 +344,15 @@ mod tests {
                 "tinker",
                 "together",
                 "fireworks",
-                "huggingface"
+                "huggingface",
+                "moonshot",
+                "google",
+                "deepseek",
+                "groq",
+                "mistral",
+                "xai",
+                "openrouter",
+                "perplexity",
             ]
         );
         for p in builtin_providers() {

@@ -50,7 +50,7 @@ async fn state_reports_providers_and_default_deny_consent() {
     let reply = p.call_method("State", &()).await.unwrap();
     let (raw,): (String,) = reply.body().deserialize().unwrap();
     let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(state["providers"].as_array().unwrap().len(), 6);
+    assert_eq!(state["providers"].as_array().unwrap().len(), 14);
     assert_eq!(
         state["may_offload"]["prompt"], false,
         "nothing leaves by default"
