@@ -139,11 +139,20 @@ pub(crate) fn suggest_cmd(
     let content = crate::chat_completion(url, &body)?;
     let v: Value = serde_json::from_str(content.trim())
         .with_context(|| format!("model reply was not the JSON object: {content}"))?;
-    let command = v["command"].as_str().unwrap_or("").trim().to_string();
+    // Model output reaches the terminal AND (via the Ctrl+G hook) the shell
+    // line buffer — strip every control character (issue #15). The command
+    // additionally collapses to one line: a smuggled newline would split it
+    // into "the part you review" + "the part that runs on your Enter".
+    let command: String = crate::sanitize_terminal(v["command"].as_str().unwrap_or(""))
+        .replace(['\n', '\t'], " ")
+        .trim()
+        .to_string();
     if command.is_empty() {
         bail!("no command came back — try rewording the request");
     }
-    let explanation = v["explanation"].as_str().unwrap_or("").trim().to_string();
+    let explanation = crate::sanitize_terminal(v["explanation"].as_str().unwrap_or(""))
+        .trim()
+        .to_string();
     if json_out {
         println!(
             "{}",
@@ -296,5 +305,24 @@ mod tests {
                 Err(_) => eprintln!("skipping {shell} syntax check (shell not installed)"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use crate::sanitize_terminal;
+
+    #[test]
+    fn control_sequences_are_stripped_from_model_output() {
+        // ESC/CSI, CR, BEL, backspace all drop; text, newline, tab stay.
+        assert_eq!(
+            sanitize_terminal("safe\x1b[31mred\x1b[0m\rline\x07\x08!\nnext\ttab"),
+            "saferedline!\nnext\ttab"
+        );
+        assert_eq!(sanitize_terminal("plain"), "plain");
+        assert_eq!(sanitize_terminal(""), "");
+        // OSC titles and two-char escapes drop whole — no residue.
+        assert_eq!(sanitize_terminal("a\x1b]0;evil\x07b\x1bcc"), "abc");
+        assert_eq!(sanitize_terminal("tail\x1b"), "tail");
     }
 }

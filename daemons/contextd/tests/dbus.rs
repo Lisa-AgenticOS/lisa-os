@@ -169,6 +169,16 @@ async fn scoped_search_enforces_the_acl_at_the_bus() {
             .await
             .is_empty()
     );
+
+    // A present-but-EMPTY scopes list is still a scoped request: it must
+    // deny everything, never widen into an unscoped search (issue #14).
+    assert!(
+        search(&p, "budget revenue forecast", scopes(&[]))
+            .await
+            .is_empty(),
+        "empty scopes must match nothing"
+    );
+    assert_eq!(f.ledger.tail(1).unwrap()[0].kind, "context.search.scoped");
 }
 
 #[tokio::test]

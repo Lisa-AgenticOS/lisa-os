@@ -79,6 +79,12 @@ impl Context1 {
             .get("hybrid")
             .and_then(|v| v.downcast_ref::<bool>().ok())
             .unwrap_or(false);
+        // A present `scopes` key means the CALLER ASKED for scoped
+        // retrieval — honor that even when the list is empty or the variant
+        // is malformed (deny-by-default: empty scopes match nothing). The
+        // old fallthrough silently widened a failed scoped request into an
+        // UNSCOPED search (issue #14).
+        let scoped_requested = options.contains_key("scopes");
         let scopes: Vec<String> = options
             .get("scopes")
             .and_then(|v| Vec::<String>::try_from(v.clone()).ok())
@@ -86,7 +92,7 @@ impl Context1 {
 
         // Every retrieval is ledgered BEFORE it runs (PLAN §5.3,
         // dataflow rule 4) — query hash, not text. No append, no search.
-        let kind = if !scopes.is_empty() {
+        let kind = if scoped_requested {
             "context.search.scoped"
         } else if hybrid {
             "context.search.hybrid"
@@ -105,7 +111,7 @@ impl Context1 {
                 zbus::fdo::Error::Failed(format!("ledger append failed — refusing to search: {e}"))
             })?;
 
-        let hits = if !scopes.is_empty() {
+        let hits = if scoped_requested {
             let scopes: Vec<&str> = scopes.iter().map(String::as_str).collect();
             self.store.search_scoped(&query, &scopes, limit)
         } else if hybrid {

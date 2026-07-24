@@ -564,12 +564,64 @@ pub(crate) fn print_chat(
             bail!("inference error: {err}");
         }
         if let Some(token) = chunk["choices"][0]["delta"]["content"].as_str() {
-            write!(out, "{token}")?;
+            write!(out, "{}", sanitize_terminal(token))?;
             out.flush()?;
         }
     }
     writeln!(out)?;
     Ok(())
+}
+
+/// Strip terminal control characters and whole escape sequences from model
+/// output before printing. The model's reply (and, via `lisa explain`,
+/// whatever untrusted text was piped in to be explained) must not be able
+/// to emit ESC/CSI/OSC sequences, carriage returns, or other C0 controls
+/// into the user's terminal — issue #15. Newlines and tabs stay. CSI
+/// (`ESC [ … final`) and OSC (`ESC ] … BEL/ST`) are dropped in full so no
+/// printable residue like `[31m` leaks through; any other ESC drops with
+/// its immediate follower.
+pub(crate) fn sanitize_terminal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                Some('[') => {
+                    // CSI: parameters/intermediates until a final byte @–~.
+                    chars.next();
+                    for f in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&f) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    // OSC: until BEL or ST (ESC \). A lone trailing ESC ends it.
+                    chars.next();
+                    while let Some(f) = chars.next() {
+                        if f == '\u{7}' {
+                            break;
+                        }
+                        if f == '\u{1b}' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next(); // two-char sequence (ESC c, ESC 7, …)
+                }
+                None => {}
+            }
+            continue;
+        }
+        if !c.is_control() || c == '\n' || c == '\t' {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// One non-streaming completion against the local endpoint; returns the
