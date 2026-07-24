@@ -88,18 +88,22 @@ and a subtle comet spinner (`throbber-*.png`). `lisa` is the default via
 `themes/default.plymouth` symlink — no `plymouth-set-default-theme` run,
 deterministic in an immutable image.
 
-**Initrd.** The mkosi image builds its own systemd initrd
-(*mkosi-initrd*, not dracut), which does not carry Plymouth. Rather than
-inject a theme-less Plymouth there (which would flash a non-Lisa splash
-or text), Plymouth is started in the rooted system: a
-`usr/lib/systemd/system/sysinit.target.wants/plymouth-start.service`
-symlink brings the splash up at `sysinit.target`, well before GDM. The
-brief window between the Apple logo and `sysinit.target` shows a clean
-black framebuffer (no text — that is the point of `console=ttyS0`), not
-console scroll. `etc/dracut.conf.d/50-lisa-plymouth.conf` additionally
-pulls Plymouth + the `lisa` theme into any **dracut**-built initrd
-(installed-system regeneration, Track L `os/layer`), giving the splash
-from the initrd onward there. `plymouth-quit*.service` /
+**Initrd (ADR-0017).** The mkosi image builds its own systemd initrd
+(*mkosi-initrd*, not dracut). It now carries **Plymouth + the `lisa` theme**
+via the `mkosi.initrd/` overlay (`mkosi.initrd/mkosi.conf` adds `plymouth`;
+`mkosi.initrd/mkosi.extra/` ships the theme, `plymouthd.conf`, and a
+`sysinit.target.wants/plymouth-start.service` symlink), so the violet Lisa
+splash comes up **during the initrd phase — right after the Apple logo**, not
+only at `sysinit.target` in the rooted system. `simpledrm`
+(`KernelModulesInitrdInclude`) gives Plymouth the EFI framebuffer with no
+firmware blob; `amdgpu` (firmware-dependent) takes over later in the rooted
+system. Because the theme ships alongside, this is never the theme-less
+non-Lisa flash — the reason it used to be kept out. Earlier this was a
+rooted-system-only splash with a black window between the Apple logo and
+`sysinit`; on the field iMac that window was long enough to read as "powered
+off" (the reason for this change). `etc/dracut.conf.d/50-lisa-plymouth.conf`
+still pulls Plymouth + the `lisa` theme into any **dracut**-built initrd
+(installed-system regeneration, Track L `os/layer`). `plymouth-quit*.service` /
 `plymouth-read-write.service` are held enabled in `00-lisa.preset` so the
 handoff to GDM is not disabled by a stock `disable *` preset. A missing
 or failed splash never blocks boot — Plymouth degrades to blank/text.
