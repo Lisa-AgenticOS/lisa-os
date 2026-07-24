@@ -3,232 +3,275 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lisa OS — a computer that's genuinely yours to think with</title>
-<meta name="description" content="An AI-native Linux desktop. Intelligence built in, running locally by default. Nothing leaves your machine without your say-so — and everything it does is on the record.">
-<meta property="og:title" content="Lisa OS — a computer that's genuinely yours to think with">
+<title>Lisa OS — a computer that shows its work</title>
+<meta name="description" content="An AI-native Linux desktop. Intelligence built in, running locally by default. Nothing leaves your machine without your say-so — and every model call is written to a record you can read.">
+<meta property="og:title" content="Lisa OS — a computer that shows its work">
 <meta property="og:description" content="An AI-native Linux desktop. Local by default, private by mechanism, everything on the record.">
 <style>
   :root{
-    --violet:#5B3EA6; --violet-ui:#6D45C9; --violet-lite:#9B7BE8;
-    --ink:#1C1726; --ink2:#615978; --ink3:#948DA6;
-    --paper:#F7F5FB; --surface:#FFFFFF; --line:#EBE6F3; --amber:#E66100;
-    --black:#171320;
-    --shadow-sm:0 1px 2px rgba(28,23,38,.05);
-    --shadow:0 2px 6px rgba(28,23,38,.05),0 18px 44px -16px rgba(91,62,166,.28);
-    --shadow-lg:0 40px 90px -30px rgba(45,28,96,.5),0 8px 24px -12px rgba(28,23,38,.2);
-    --r:20px;
+    --paper:#FBFAF8; --ground:#FFFFFF; --ink:#17151C; --ink-soft:#6C6675;
+    --ink-faint:#9C97A6; --line:#ECE8F1; --line-2:#E2DCEC;
+    --violet:#6D45C9; --violet-ink:#5B36AD; --amber:#D75600;
+    --mono-bg:#F5F2FA; --mono-ink:#413A52;
+    --r:14px;
   }
+  :root[data-theme="dark"], html:not([data-theme="light"]){}
   @media (prefers-color-scheme: dark){
-    :root{ --ink:#F4F0FA; --ink2:#ABA2BC; --ink3:#7c7590;
-           --paper:#100C18; --surface:#1A1424; --line:#2A2238; --black:#0B0812;
-           --shadow:0 2px 6px rgba(0,0,0,.4),0 20px 44px -18px rgba(0,0,0,.6);
-           --shadow-lg:0 50px 100px -30px rgba(0,0,0,.75),0 8px 24px -12px rgba(0,0,0,.5);}
+    :root{
+      --paper:#0E0C12; --ground:#151220; --ink:#F3F0F8; --ink-soft:#A9A2BB;
+      --ink-faint:#736C85; --line:#241E31; --line-2:#2E273D;
+      --violet:#A183EC; --violet-ink:#B9A0F4; --amber:#FF8A3D;
+      --mono-bg:#171320; --mono-ink:#C7BEDC;
+    }
+  }
+  :root[data-theme="dark"]{
+      --paper:#0E0C12; --ground:#151220; --ink:#F3F0F8; --ink-soft:#A9A2BB;
+      --ink-faint:#736C85; --line:#241E31; --line-2:#2E273D;
+      --violet:#A183EC; --violet-ink:#B9A0F4; --amber:#FF8A3D;
+      --mono-bg:#171320; --mono-ink:#C7BEDC;
+  }
+  :root[data-theme="light"]{
+      --paper:#FBFAF8; --ground:#FFFFFF; --ink:#17151C; --ink-soft:#6C6675;
+      --ink-faint:#9C97A6; --line:#ECE8F1; --line-2:#E2DCEC;
+      --violet:#6D45C9; --violet-ink:#5B36AD; --amber:#D75600;
+      --mono-bg:#F5F2FA; --mono-ink:#413A52;
   }
   *{box-sizing:border-box;margin:0}
   html{scroll-behavior:smooth}
-  body{font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Rubik,Inter,Cantarell,sans-serif;
+  body{font:16px/1.62 system-ui,-apple-system,"Segoe UI",Rubik,Helvetica,Arial,sans-serif;
        color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-  a{color:var(--violet-ui);text-decoration:none}
-  h1,h2,h3{letter-spacing:-.03em;line-height:1.04}
-  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+  ::selection{background:color-mix(in srgb,var(--violet) 24%,transparent)}
+  a{color:var(--violet-ink);text-decoration:none}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--violet);outline-offset:3px;border-radius:4px}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 32px}
+  @media(max-width:560px){.wrap{padding:0 20px}}
+  h1,h2,h3{letter-spacing:-.028em;line-height:1.05;font-weight:800;text-wrap:balance}
+  .mono{font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  .eyebrow{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;font-weight:600;
+           letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
 
-  /* floating pill nav */
-  .navwrap{position:sticky;top:14px;z-index:20;padding:0 16px;margin-top:14px}
-  .nav{max-width:940px;margin:0 auto;display:flex;align-items:center;gap:18px;
-       background:color-mix(in srgb,var(--surface) 82%,transparent);backdrop-filter:blur(14px);
-       border:1px solid var(--line);border-radius:999px;padding:10px 12px 10px 22px;box-shadow:var(--shadow-sm),0 10px 30px -18px rgba(45,28,96,.4)}
-  .nav .brand{height:17px;display:block}.nav .brand .wm{fill:var(--ink)}
-  .nav .menu{display:flex;gap:22px;margin-left:8px}
-  .nav .menu a{color:var(--ink2);font-size:14.5px;font-weight:500}
+  /* nav */
+  .nav{display:flex;align-items:center;gap:26px;height:70px;border-bottom:1px solid var(--line)}
+  .nav .brand{height:16px}.nav .brand .wm{fill:var(--ink)}
+  .nav .menu{display:flex;gap:26px;margin-left:14px}
+  .nav .menu a{color:var(--ink-soft);font-size:14.5px;font-weight:500}
   .nav .menu a:hover{color:var(--ink)}
-  .nav .dl{margin-left:auto;background:var(--black);color:#fff;font-weight:600;font-size:14.5px;
-           padding:10px 18px;border-radius:999px;display:inline-flex;gap:7px;align-items:center}
-  .nav .dl:hover{filter:brightness(1.15)}
-  @media(max-width:680px){.nav .menu{display:none}}
+  .nav .right{margin-left:auto;display:flex;align-items:center;gap:20px}
+  .nav .ghost{color:var(--ink-soft);font-size:14.5px;font-weight:500}.nav .ghost:hover{color:var(--ink)}
+  .btn{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:14.5px;
+       padding:9px 17px;border-radius:9px;transition:background .14s,color .14s,transform .1s}
+  .btn.solid{background:var(--violet);color:#fff}
+  .btn.solid:hover{background:var(--violet-ink)}
+  @media(max-width:640px){.nav .menu,.nav .ghost{display:none}}
 
-  /* immersive hero */
-  .hero{position:relative;text-align:center;padding:74px 0 0;overflow:hidden}
-  .hero::before{content:"";position:absolute;inset:-10% -20% 40%;z-index:-1;
-    background:
-      radial-gradient(60% 55% at 50% 8%, color-mix(in srgb,var(--violet-lite) 55%,transparent), transparent 70%),
-      radial-gradient(45% 40% at 82% 30%, color-mix(in srgb,var(--amber) 18%,transparent), transparent 70%),
-      radial-gradient(50% 45% at 15% 34%, color-mix(in srgb,var(--violet-ui) 30%,transparent), transparent 72%);
-    filter:blur(10px)}
-  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--ink);
-           background:color-mix(in srgb,var(--surface) 70%,transparent);backdrop-filter:blur(8px);
-           border:1px solid var(--line);padding:7px 16px;border-radius:999px;box-shadow:var(--shadow-sm)}
-  .eyebrow .d{color:var(--violet-ui)}
-  h1.title{font-size:clamp(42px,8.2vw,86px);font-weight:800;margin:24px auto 0;max-width:13ch;
-           background:linear-gradient(180deg,var(--ink),color-mix(in srgb,var(--ink) 72%,var(--violet)));
-           -webkit-background-clip:text;background-clip:text;color:transparent}
-  .sub{font-size:clamp(17px,2.1vw,21px);color:var(--ink2);margin:22px auto 0;max-width:52ch;line-height:1.55}
-  .sub b{color:var(--ink);font-weight:600}
-  .cta{margin-top:34px}
-  .dlbtn{display:inline-flex;align-items:center;gap:10px;background:var(--black);color:#fff;
-         font-weight:650;font-size:17px;padding:17px 30px;border-radius:999px;
-         box-shadow:0 16px 34px -12px rgba(28,23,38,.5);transition:transform .12s,filter .12s}
-  .dlbtn:hover{transform:translateY(-2px);filter:brightness(1.12)}
-  .tags{display:flex;gap:8px 22px;justify-content:center;flex-wrap:wrap;margin:22px auto 0;color:var(--ink3);font-size:14px}
-  .tags span{position:relative;padding-left:22px}
-  .tags span::before{content:"";position:absolute;left:6px;top:50%;width:5px;height:5px;border-radius:50%;
-                     background:var(--violet-ui);transform:translateY(-50%)}
+  /* hero — left aligned, editorial */
+  .hero{padding:78px 0 20px;max-width:20ch}
+  .hero .eyebrow{display:block}
+  .hero h1{font-size:clamp(40px,6.4vw,68px);margin:20px 0 0;max-width:15ch}
+  .hero .lede{font-size:clamp(18px,2vw,21px);line-height:1.55;color:var(--ink-soft);margin:22px 0 0;max-width:none;width:min(560px,100%)}
+  .hero .lede b{color:var(--ink);font-weight:600}
+  .hero .row{display:flex;gap:14px;align-items:center;margin-top:32px;flex-wrap:wrap}
+  .btn.lg{font-size:16px;padding:14px 24px;border-radius:11px}
+  .btn.line{border:1px solid var(--line-2);color:var(--ink)}
+  .btn.line:hover{background:var(--ground);border-color:var(--ink-faint)}
 
-  /* product showcase */
-  .stage{position:relative;margin:46px auto 0;max-width:940px;padding-bottom:8px}
-  .win{background:var(--surface);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow-lg);
-       overflow:hidden;text-align:left}
-  .win .top{display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid var(--line)}
-  .win .top i{width:11px;height:11px;border-radius:50%;background:var(--line)}
-  .win .top .t{margin-left:8px;font-size:13px;font-weight:600;color:var(--ink3)}
-  .win .top .m{margin-left:auto;font-size:12.5px;font-weight:600;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:5px 13px}
-  .win .top .m .eg{color:var(--amber)}
-  .win .chat{padding:24px;display:flex;flex-direction:column;gap:14px}
-  .b{max-width:76%;padding:12px 16px;border-radius:16px;font-size:15px;line-height:1.5}
-  .b.you{align-self:flex-end;background:var(--violet-ui);color:#fff;border-bottom-right-radius:5px}
-  .b.lisa{align-self:flex-start;background:color-mix(in srgb,var(--ink) 5%,transparent);border-bottom-left-radius:5px}
-  .b .w{display:block;font-size:11px;font-weight:700;letter-spacing:.03em;opacity:.65;margin-bottom:5px}
-  .car{display:inline-block;width:7px;height:1.05em;vertical-align:-2px;margin-left:2px;background:var(--violet-ui);animation:bl 1.1s steps(1) infinite}
+  /* the statement — the thesis */
+  .stmt{margin:56px 0 0;background:var(--ground);border:1px solid var(--line);border-radius:var(--r);
+        box-shadow:0 1px 0 var(--line),0 24px 60px -34px rgba(30,20,60,.34);overflow:hidden}
+  .stmt .head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+              padding:16px 22px;border-bottom:1px solid var(--line)}
+  .stmt .head .l{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft)}
+  .stmt .head .r{font-size:13px;color:var(--ink-faint);font-variant-numeric:tabular-nums}
+  .stmt table{width:100%;border-collapse:collapse;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13.5px}
+  .stmt td{padding:11px 22px;border-bottom:1px solid var(--line);white-space:nowrap;color:var(--mono-ink)}
+  .stmt tr:last-child td{border-bottom:0}
+  .stmt .t{color:var(--ink-faint)}
+  .stmt .kind{color:var(--ink);font-weight:600}
+  .stmt .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-soft)}
+  .stmt .local{color:var(--violet-ink);font-weight:600}
+  .stmt .leaves{color:var(--amber);font-weight:700}
+  .stmt tr.egress{background:color-mix(in srgb,var(--amber) 7%,transparent)}
+  .stmt .foot{padding:13px 22px;font-size:12.5px;color:var(--ink-faint);display:flex;gap:8px;align-items:center;border-top:1px solid var(--line)}
+  .stmt .foot .amber{color:var(--amber);font-weight:600}
+  .stmt .wide{overflow-x:auto}
+  .caption{margin:14px 2px 0;font-size:13.5px;color:var(--ink-faint)}
+
+  /* section scaffold */
+  section{padding:88px 0;border-top:1px solid var(--line)}
+  .lead-2{max-width:34ch}
+  .lead-2 .eyebrow{display:block;margin-bottom:16px}
+  .lead-2 h2{font-size:clamp(28px,3.6vw,40px)}
+  .lead-2 p{color:var(--ink-soft);margin-top:14px;font-size:18px;line-height:1.55;max-width:52ch}
+
+  /* feature rows — hairline ledger of capabilities */
+  .rows{margin-top:40px;border-top:1px solid var(--line)}
+  .frow{display:grid;grid-template-columns:34px 1fr;gap:20px;padding:26px 0;border-bottom:1px solid var(--line);align-items:start}
+  .frow .mk{font-family:ui-monospace,Menlo,monospace;font-size:20px;line-height:1;color:var(--violet);margin-top:3px}
+  .frow .mk.amber{color:var(--amber)}
+  .frow h3{font-size:19px;font-weight:700}
+  .frow p{color:var(--ink-soft);font-size:15.5px;margin-top:7px;max-width:64ch;line-height:1.55}
+  @media(min-width:760px){.frow{grid-template-columns:34px 22ch 1fr;align-items:baseline}.frow p{margin-top:0}}
+
+  /* assistant — crisp product */
+  .win{margin-top:40px;background:var(--ground);border:1px solid var(--line);border-radius:16px;
+       box-shadow:0 30px 70px -34px rgba(30,20,60,.4);overflow:hidden}
+  .win .bar{display:flex;align-items:center;gap:7px;padding:13px 18px;border-bottom:1px solid var(--line)}
+  .win .bar i{width:10px;height:10px;border-radius:50%;background:var(--line-2)}
+  .win .bar .t{margin-left:8px;font-size:13px;font-weight:600;color:var(--ink-faint)}
+  .win .bar .m{margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink-soft);border:1px solid var(--line-2);border-radius:999px;padding:4px 12px}
+  .win .bar .m .a{color:var(--amber)}
+  .win .chat{padding:22px;display:flex;flex-direction:column;gap:13px}
+  .bub{max-width:74%;padding:11px 15px;border-radius:14px;font-size:15px;line-height:1.5}
+  .bub.you{align-self:flex-end;background:var(--violet);color:#fff;border-bottom-right-radius:4px}
+  .bub.lisa{align-self:flex-start;background:var(--mono-bg);color:var(--ink);border-bottom-left-radius:4px}
+  .bub .w{display:block;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;letter-spacing:.08em;opacity:.6;margin-bottom:4px}
+  .car{display:inline-block;width:2px;height:1.05em;vertical-align:-2px;margin-left:1px;background:currentColor;opacity:.8;animation:bl 1.1s steps(1) infinite}
   @keyframes bl{50%{opacity:0}}
+  @media(prefers-reduced-motion:reduce){.car{animation:none}}
 
-  /* the live "Lisa dock" widget bar — floating below the window */
-  .dock{position:relative;z-index:2;margin:-26px auto 0;width:min(760px,94%);display:flex;gap:10px;
-        background:var(--black);border:1px solid rgba(255,255,255,.08);border-radius:20px;
-        padding:12px;box-shadow:var(--shadow-lg);color:#EDE9F6}
-  .tile{background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.06);border-radius:13px;
-        padding:11px 14px;display:flex;flex-direction:column;justify-content:center;gap:3px}
-  .tile .k{font-size:11px;color:#A79FBE;font-weight:600;letter-spacing:.02em}
-  .tile .v{font-size:15px;font-weight:650;display:flex;align-items:center;gap:7px;white-space:nowrap}
-  .dot{width:8px;height:8px;border-radius:50%;flex:none}
-  .dot.g{background:#43D17A;box-shadow:0 0 8px #43d17a99}.dot.a{background:var(--amber);box-shadow:0 0 8px #e6610099}
-  .tile.grow{flex:1;min-width:0}
-  .ring{width:38px;height:38px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:12px;font-weight:700;
-        background:conic-gradient(#43D17A 72%, rgba(255,255,255,.12) 0)}
-  .ring b{width:28px;height:28px;border-radius:50%;background:var(--black);display:grid;place-items:center;font-size:11px}
-  @media(max-width:640px){.dock .hideS{display:none}}
+  /* status */
+  .status{margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:0}
+  @media(max-width:720px){.status{grid-template-columns:1fr}}
+  .status .col{padding:4px 0}
+  .status .col+.col{padding-left:44px;border-left:1px solid var(--line)}
+  @media(max-width:720px){.status .col+.col{padding-left:0;border-left:0;border-top:1px solid var(--line);padding-top:28px;margin-top:28px}}
+  .status h4{font-family:ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:18px}
+  .status ul{list-style:none;display:flex;flex-direction:column;gap:13px}
+  .status li{display:grid;grid-template-columns:16px 1fr;gap:12px;font-size:15.5px;line-height:1.45;align-items:start}
+  .status li .c{margin-top:5px;width:8px;height:8px;border-radius:2px;background:var(--violet)}
+  .status .soon li{color:var(--ink-soft)}
+  .status .soon li .c{background:var(--ink-faint);border-radius:50%;opacity:.6}
 
-  /* sections */
-  section{padding:92px 0}
-  .center{text-align:center;max-width:40ch;margin:0 auto 46px}
-  .center h2{font-size:clamp(28px,4vw,42px);font-weight:750}
-  .center p{color:var(--ink2);margin-top:14px;font-size:18px;line-height:1.55}
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
-  @media(max-width:820px){.grid{grid-template-columns:1fr}}
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:28px;box-shadow:var(--shadow)}
-  .card .ico{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;font-size:20px;
-             background:color-mix(in srgb,var(--violet-ui) 12%,transparent);color:var(--violet-ui);margin-bottom:16px}
-  .card .ico.amber{background:color-mix(in srgb,var(--amber) 13%,transparent);color:var(--amber)}
-  .card h3{font-size:19px;font-weight:680;margin-bottom:9px}
-  .card p{color:var(--ink2);font-size:15.5px;line-height:1.55}
-
-  .status{background:var(--surface);border:1px solid var(--line);border-radius:26px;padding:46px;box-shadow:var(--shadow);
-          display:grid;grid-template-columns:1fr 1fr;gap:40px}
-  @media(max-width:720px){.status{grid-template-columns:1fr;padding:30px;gap:26px}}
-  .status h3{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink3);margin-bottom:16px}
-  .status ul{list-style:none;display:flex;flex-direction:column;gap:11px}
-  .status li{display:flex;gap:11px;align-items:flex-start;font-size:15.5px}
-  .status li::before{content:"";flex:none;width:18px;height:18px;margin-top:1px;border-radius:50%;
-    background:color-mix(in srgb,var(--violet-ui) 14%,transparent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 18 18'%3E%3Cpath d='M5 9.2l2.6 2.6L13 6' fill='none' stroke='%236D45C9' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat}
-  .status .soon li{color:var(--ink2)}
-  .status .soon li::before{background:color-mix(in srgb,var(--ink3) 14%,transparent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 18 18'%3E%3Ccircle cx='9' cy='9' r='2.3' fill='%23948DA6'/%3E%3C/svg%3E") center/contain no-repeat}
-
-  .close{text-align:center;background:linear-gradient(160deg,var(--violet-lite),var(--violet) 88%);color:#fff;border-radius:30px;padding:70px 40px;position:relative;overflow:hidden}
-  .close h2{font-size:clamp(30px,4.4vw,44px);font-weight:780}
-  .close p{margin:16px auto 0;max-width:46ch;color:#EDE7FA;font-size:18px}
-  .close .dlbtn{background:#fff;color:var(--violet);margin-top:30px}
-  footer{border-top:1px solid var(--line);padding:36px 0;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;color:var(--ink3);font-size:14px}
-  footer a{color:var(--ink2)}
+  /* close */
+  .close{padding:96px 0}
+  .close h2{font-size:clamp(30px,4.6vw,50px);max-width:16ch}
+  .close p{color:var(--ink-soft);font-size:18px;margin-top:16px;max-width:48ch;line-height:1.55}
+  .close .row{margin-top:30px}
+  footer{border-top:1px solid var(--line);padding:34px 0 48px;display:flex;justify-content:space-between;
+         flex-wrap:wrap;gap:12px;color:var(--ink-faint);font-size:13.5px}
+  footer a{color:var(--ink-soft)}
+  footer .mono{font-size:12.5px}
 </style>
 </head>
 <body>
+<div class="wrap">
 
-  <div class="navwrap"><nav class="nav">
+  <nav class="nav">
     <svg class="brand" viewBox="0 0 24 7" xmlns="http://www.w3.org/2000/svg" aria-label="Lisa"><g class="wm"></g></svg>
     <div class="menu">
       <a href="#why">Why Lisa</a>
-      <a href="#status">What works</a>
+      <a href="#ledger">The Ledger</a>
+      <a href="#status">Status</a>
       <a href="https://lisa-dev.common.al">Docs</a>
     </div>
-    <a class="dl" href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">↓ Download</a>
-  </nav></div>
-
-  <div class="wrap">
-  <header class="hero">
-    <span class="eyebrow"><span class="d">◆</span> AI-native Linux · runs on your hardware</span>
-    <h1 class="title">A computer that's genuinely yours.</h1>
-    <p class="sub">The intelligence is built into the system and runs <b>locally, by default</b>. Nothing leaves your machine without your say-so — and everything it does is written to a plain-English record you can read.</p>
-    <div class="cta"><a class="dlbtn" href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">↓ Download Lisa OS</a></div>
-    <div class="tags">
-      <span>Free &amp; open source</span><span>Local by default</span>
-      <span>Private by mechanism</span><span>Alpha, on real hardware</span>
+    <div class="right">
+      <a class="ghost" href="https://github.com/Lisa-AgenticOS/lisa-os">GitHub</a>
+      <a class="btn solid" href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">Download</a>
     </div>
+  </nav>
 
-    <div class="stage">
-      <div class="win" role="img" aria-label="The Lisa Assistant chat window">
-        <div class="top"><i></i><i></i><i></i><span class="t">Lisa Assistant</span>
-          <span class="m">Claude · <span class="eg">leaves this machine</span></span></div>
-        <div class="chat">
-          <div class="b you"><span class="w">YOU</span>Summarize the three files I dropped in ~/notes today.</div>
-          <div class="b lisa"><span class="w">LISA</span>Across all three: the roadmap moved M6 up, the meeting settled on the ledger schema, and the spec adds an offline mode<span class="car"></span></div>
-        </div>
-      </div>
-      <div class="dock">
-        <div class="tile"><span class="k">On-device model</span><span class="v"><span class="dot g"></span>qwen3 · ready</span></div>
-        <div class="ring hideS"><b>72%</b></div>
-        <div class="tile hideS"><span class="k">Ledger today</span><span class="v">128 events</span></div>
-        <div class="tile grow"><span class="k">Egress</span><span class="v"><span class="dot a"></span>Claude · consented, on the record</span></div>
-      </div>
+  <header class="hero">
+    <span class="eyebrow">AI-native Linux · runs on your hardware</span>
+    <h1>A computer that shows its work.</h1>
+    <p class="lede">Lisa OS builds intelligence into the system, running <b>locally, by default</b>. Nothing leaves your machine without your say-so — and every model call, every file it reads, every action it takes is written to a record you can read.</p>
+    <div class="row">
+      <a class="btn solid lg" href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">Download Lisa OS</a>
+      <a class="btn line lg" href="https://lisa-dev.common.al">Read the docs</a>
     </div>
   </header>
+
+  <div id="ledger" class="stmt" role="img" aria-label="A Lisa Ledger statement: local calls stay on the machine; one remote call is flagged as leaving.">
+    <div class="head">
+      <span class="l">Ledger · session statement</span>
+      <span class="r mono">Thu 09:41 · 128 events today</span>
+    </div>
+    <div class="wide"><table>
+      <tr><td class="t">09:41:22</td><td class="kind">inference.generate</td><td>qwen3-0.6b</td><td class="local">on this machine</td><td class="num">420 tok</td></tr>
+      <tr><td class="t">09:41:22</td><td class="kind">context.search</td><td>~/notes</td><td class="local">on this machine</td><td class="num">3 hits</td></tr>
+      <tr class="egress"><td class="t">09:44:07</td><td class="kind">remote.generate</td><td>claude ↗</td><td class="leaves">LEAVES · consented</td><td class="num">1,240 tok</td></tr>
+      <tr><td class="t">09:44:09</td><td class="kind">remote.complete</td><td>claude</td><td class="local">ok</td><td class="num">—</td></tr>
+      <tr><td class="t">09:52:10</td><td class="kind">inference.embed</td><td>qwen3-0.6b</td><td class="local">on this machine</td><td class="num">1,024-dim</td></tr>
+    </table></div>
+    <div class="foot">Append-only · enforced by the system · the <span class="amber">amber row</span> is the only thing that left your hardware, and only because you allowed it.</div>
   </div>
+  <p class="caption">This is real: the Ledger gates every model call before it runs. No entry, no action.</p>
 
-  <div class="wrap">
-  <section id="why">
-    <div class="center">
-      <h2>The warmth of a personal assistant — without the cloud.</h2>
-      <p>An assistant that sees, hears, and helps, that lives on your hardware instead of someone else's data center. Private because of how it's built, not because of a promise.</p>
-    </div>
-    <div class="grid">
-      <div class="card"><div class="ico">◆</div><h3>Local by mechanism</h3><p>Models run on your machine. The daemons that read your context have no network access at all — privacy enforced by the system, not by policy.</p></div>
-      <div class="card"><div class="ico amber">↗</div><h3>Private by default</h3><p>Nothing offloads to a provider unless you switch it on, per scope. When something would leave your hardware, it's marked in a distinct amber — you always know.</p></div>
-      <div class="card"><div class="ico">≡</div><h3>Yours, on the record</h3><p>Every model call, every piece of context read, every action taken is written to an append-only Ledger you can read in plain English. No black box.</p></div>
-    </div>
-  </section>
+</div>
 
-  <section id="status">
-    <div class="center"><span class="eyebrow" style="margin-bottom:18px">Alpha, in the open</span>
-      <h2 style="margin-top:18px">What works today.</h2>
-      <p>We build in the open and we're honest about the state. Real, on real hardware, now:</p></div>
-    <div class="status">
-      <div><h3>Working now</h3><ul>
-        <li>Bootable, self-updating immutable OS (A/B slots, auto-rollback)</li>
-        <li>Local inference + guided generation as a system service</li>
-        <li>Append-only audit Ledger, enforced by the system</li>
-        <li>On-device context search with per-app permissions</li>
-        <li>Bring-your-own cloud providers — signed in, off by default</li>
-        <li>A chat assistant: local and cloud models, streaming, ledgered</li>
-      </ul></div>
-      <div><h3 style="color:var(--ink3)">On the way</h3><ul class="soon">
-        <li>Native AI panel in Settings for models &amp; providers</li>
-        <li>Always-on ambient assistant</li>
-        <li>Apps you can generate and install locally</li>
-        <li>Voice + wake-word loop, fully on device</li>
-      </ul></div>
-    </div>
-  </section>
+<section id="why"><div class="wrap">
+  <div class="lead-2">
+    <span class="eyebrow">Why Lisa</span>
+    <h2>Private because of how it's built — not because of a promise.</h2>
+    <p>The warmth of a personal assistant that sees, hears, and helps, living on your hardware instead of someone else's data center.</p>
+  </div>
+  <div class="rows">
+    <div class="frow"><span class="mk">◆</span><h3>Local by mechanism</h3><p>Models run on your machine. The daemons that read your context have no network access at all — privacy enforced by the system, not by policy. Turning it off isn't a setting; there's nothing to turn off.</p></div>
+    <div class="frow"><span class="mk amber">↗</span><h3>Private by default</h3><p>Nothing offloads to a cloud provider unless you switch it on, per scope. When something would leave your hardware it's marked in a distinct amber, in the interface and in the record — you always know.</p></div>
+    <div class="frow"><span class="mk">≡</span><h3>Yours, on the record</h3><p>Every model call, every piece of context read, every action taken lands in an append-only Ledger you can read in plain English. No black box, no telemetry you can't see.</p></div>
+  </div>
+</div></section>
 
-  <section>
-    <div class="close">
-      <h2>Take your computing home.</h2>
-      <p>Flash it to a USB stick, boot it, and try the alpha. It's free and open source — your machine, your models, your record.</p>
-      <a class="dlbtn" href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">↓ Download Lisa OS</a>
+<section><div class="wrap">
+  <div class="lead-2">
+    <span class="eyebrow">The assistant</span>
+    <h2>Talk to a local model — or your own cloud, on the record.</h2>
+    <p>Chat with the model that runs on your machine, or sign in to a provider you already pay for. Either way, the turn is streamed, and the egress is marked.</p>
+  </div>
+  <div class="win" role="img" aria-label="The Lisa Assistant chat window">
+    <div class="bar"><i></i><i></i><i></i><span class="t">Lisa Assistant</span>
+      <span class="m">claude · <span class="a">leaves this machine</span></span></div>
+    <div class="chat">
+      <div class="bub you"><span class="w">YOU</span>Summarize the three files I dropped in ~/notes today.</div>
+      <div class="bub lisa"><span class="w">LISA</span>Across all three: the roadmap moved M6 up, the meeting settled the ledger schema, and the spec adds an offline mode<span class="car"></span></div>
     </div>
-  </section>
+  </div>
+</div></section>
 
+<section id="status"><div class="wrap">
+  <div class="lead-2">
+    <span class="eyebrow">Alpha, in the open</span>
+    <h2>What works today.</h2>
+    <p>We build in the open and we're honest about the state. Real, on real hardware, now.</p>
+  </div>
+  <div class="status">
+    <div class="col">
+      <h4>Working now</h4>
+      <ul>
+        <li><span class="c"></span>Bootable, self-updating immutable OS — A/B slots, auto-rollback</li>
+        <li><span class="c"></span>Local inference + guided generation as a system service</li>
+        <li><span class="c"></span>Append-only audit Ledger, enforced by the system</li>
+        <li><span class="c"></span>On-device context search with per-app permissions</li>
+        <li><span class="c"></span>Bring-your-own cloud providers — signed in, off by default</li>
+        <li><span class="c"></span>A chat assistant: local and cloud models, streaming, ledgered</li>
+      </ul>
+    </div>
+    <div class="col soon">
+      <h4>On the way</h4>
+      <ul>
+        <li><span class="c"></span>Native AI panel in Settings for models &amp; providers</li>
+        <li><span class="c"></span>Always-on ambient assistant</li>
+        <li><span class="c"></span>Apps you can generate and install locally</li>
+        <li><span class="c"></span>Voice + wake-word loop, fully on device</li>
+      </ul>
+    </div>
+  </div>
+</div></section>
+
+<div class="wrap">
+  <div class="close">
+    <span class="eyebrow">Take your computing home</span>
+    <h2>Flash it, boot it, read the record.</h2>
+    <p>Try the alpha on real hardware. It's free and open source — your machine, your models, your record.</p>
+    <div class="row">
+      <a class="btn solid lg" href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">Download Lisa OS</a>
+      <a class="btn line lg" href="https://github.com/Lisa-AgenticOS/lisa-os">View the source</a>
+    </div>
+  </div>
   <footer>
-    <span>Lisa OS · GPL-2.0 · built in the open</span>
+    <span class="mono">LISA OS · GPL-2.0 · BUILT IN THE OPEN</span>
     <span><a href="https://github.com/Lisa-AgenticOS/lisa-os">GitHub</a> · <a href="https://lisa-dev.common.al">Docs</a> · lisaos.dev</span>
   </footer>
-  </div>
+</div>
 
 <script>
 var WM='<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 6.23758 17.7415 5.81867 17.4399 5.29084C17.1466 4.76302 17 4.16816 17 3.50628C17 2.83603 17.1508 2.23698 17.4524 1.70916C17.7624 1.18133 18.1813 0.766607 18.7092 0.464991C19.237 0.154997 19.8318 0 20.4937 0C21.1556 0 21.7463 0.154997 22.2657 0.464991C22.7935 0.766607 23.2083 1.18133 23.5099 1.70916C23.8199 2.23698 23.9791 2.83603 23.9874 3.50628L23.5978 3.8079C23.5978 4.41113 23.4554 4.95571 23.1706 5.44165C22.8941 5.91921 22.5129 6.30042 22.0269 6.58528C21.5494 6.86176 21.0048 7 20.3932 7ZM20.4937 6.12029C20.9797 6.12029 21.4111 6.00718 21.7882 5.78097C22.1735 5.55476 22.4752 5.24476 22.693 4.85099C22.9192 4.44883 23.0323 4.0006 23.0323 3.50628C23.0323 3.00359 22.9192 2.55536 22.693 2.16158C22.4752 1.7678 22.1735 1.45781 21.7882 1.2316C21.4111 0.997008 20.9797 0.879713 20.4937 0.879713C20.0162 0.879713 19.5847 0.997008 19.1993 1.2316C18.8139 1.45781 18.5081 1.7678 18.2819 2.16158C18.0557 2.55536 17.9425 3.00359 17.9425 3.50628C17.9425 4.0006 18.0557 4.44883 18.2819 4.85099C18.5081 5.24476 18.8139 5.55476 19.1993 5.78097C19.5847 6.00718 20.0162 6.12029 20.4937 6.12029ZM23.4973 6.93716C23.3549 6.93716 23.2376 6.89527 23.1454 6.81149C23.0533 6.71933 23.0072 6.60203 23.0072 6.4596V4.31059L23.246 3.31777L23.9874 3.50628V6.4596C23.9874 6.60203 23.9414 6.71933 23.8492 6.81149C23.757 6.89527 23.6397 6.93716 23.4973 6.93716Z"/><path d="M13.0366 7C12.4944 7 11.9569 6.91622 11.4239 6.74865C10.891 6.58109 10.4591 6.32974 10.1283 5.99461C10.0272 5.89408 9.98586 5.78097 10.0042 5.6553C10.0226 5.52962 10.0915 5.42071 10.211 5.32855C10.3396 5.24476 10.4729 5.21125 10.6107 5.22801C10.7485 5.24476 10.8634 5.29922 10.9553 5.39138C11.1758 5.62597 11.4653 5.8061 11.8236 5.93178C12.1912 6.05745 12.5955 6.12029 13.0366 6.12029C13.7166 6.12029 14.2082 6.01556 14.5114 5.8061C14.8146 5.58827 14.9708 5.32855 14.98 5.02693C14.98 4.72531 14.8238 4.47816 14.5114 4.28546C14.199 4.08438 13.6844 3.92938 12.9677 3.82047C12.0396 3.68642 11.3596 3.45183 10.9277 3.1167C10.4958 2.78157 10.2799 2.3836 10.2799 1.9228C10.2799 1.49551 10.404 1.13944 10.6521 0.854578C10.9002 0.569719 11.231 0.356075 11.6445 0.213645C12.058 0.0712149 12.5128 0 13.009 0C13.6247 0 14.153 0.0963495 14.5941 0.289048C15.0444 0.481747 15.4073 0.741472 15.683 1.06822C15.7749 1.17714 15.8116 1.29025 15.7933 1.40754C15.7749 1.52484 15.7014 1.62119 15.5727 1.69659C15.4624 1.75524 15.3338 1.77618 15.1868 1.75943C15.0489 1.73429 14.9295 1.67145 14.8284 1.57092C14.5987 1.32795 14.3322 1.152 14.029 1.04309C13.7257 0.925793 13.3766 0.867146 12.9814 0.867146C12.4761 0.867146 12.0717 0.963495 11.7685 1.15619C11.4653 1.34051 11.3137 1.5751 11.3137 1.85996C11.3137 2.05266 11.3688 2.22023 11.4791 2.36266C11.5985 2.50509 11.7961 2.63076 12.0717 2.73968C12.3566 2.84859 12.7517 2.94075 13.2571 3.01616C13.9463 3.1167 14.4884 3.2675 14.8835 3.46858C15.2879 3.66128 15.5727 3.89168 15.7381 4.15978C15.9127 4.41951 16 4.70437 16 5.01436C16 5.40814 15.8714 5.75583 15.6141 6.05745C15.366 6.35069 15.0168 6.58109 14.5665 6.74865C14.1255 6.91622 13.6155 7 13.0366 7Z"/><path d="M8.50649 7C8.35065 7 8.22511 6.95734 8.12987 6.87203C8.04329 6.77818 8 6.65448 8 6.50091V0.499086C8 0.345521 8.04329 0.226082 8.12987 0.140768C8.22511 0.0469228 8.35065 0 8.50649 0C8.65368 0 8.77056 0.0469228 8.85714 0.140768C8.95238 0.226082 9 0.345521 9 0.499086V6.50091C9 6.65448 8.95238 6.77818 8.85714 6.87203C8.77056 6.95734 8.65368 7 8.50649 7Z"/><path d="M3.14827 7C2.69853 7 2.58746 6.9825 2.16771 6.9825C1.74196 6.9825 1.36718 6.83375 1.04338 6.65875C0.71957 6.47792 0.464722 6.23 0.278833 5.915C0.0929441 5.59417 0 5.22958 0 4.82125V0.455C0 0.320833 0.0449729 0.212917 0.134919 0.13125C0.224865 0.04375 0.338797 0 0.476715 0C0.608636 0 0.71957 0.04375 0.809516 0.13125C0.893466 0.212917 0.935441 0.320833 0.935441 0.455V4.82125C0.935441 5.07208 1.00659 5.28576 1.11453 5.47826C1.21646 5.67076 1.3588 5.80417 1.54469 5.915C1.73058 6.02 1.92785 6.09875 2.16771 6.09875H2.93232C3.41719 6.09875 3.83178 6.0725 3.95778 6.0725C4.08377 6.0725 6.27221 6.09875 6.53005 6.09875C6.66797 6.09875 6.7789 6.11625 6.86285 6.20375C6.9528 6.28542 7 6.40931 7 6.54348C7 6.67181 6.9528 6.76375 6.86285 6.85125C6.7789 6.93875 6.66797 6.9825 6.53005 6.9825C6.1103 6.9825 4.94716 7 4.49746 7H3.14827Z"/>';
