@@ -12,6 +12,14 @@ enable lisa-inferenced.service
 enable lisa-model-store.service
 enable lisa-boot-report.service
 enable gdm.service
+# Boot-splash lifecycle: keep the units that quit Plymouth and hand the
+# framebuffer to GDM (a stock `disable *` preset would otherwise break the
+# handoff, leaving a black screen until Plymouth times out). plymouth-start
+# itself has no [Install]; it is wired into sysinit.target by a
+# mkosi.extra symlink instead.
+enable plymouth-quit.service
+enable plymouth-quit-wait.service
+enable plymouth-read-write.service
 enable NetworkManager.service
 enable iwd.service
 enable systemd-resolved.service

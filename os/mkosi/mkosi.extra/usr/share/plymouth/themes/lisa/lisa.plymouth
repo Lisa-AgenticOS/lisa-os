@@ -1,0 +1,46 @@
+# Lisa OS boot splash (PLAN §3/§6). Full-screen brand violet with the white
+# "Lisa" wordmark centred and a subtle spinner beneath — no kernel/terminal
+# text between the Mac's Apple logo and GDM.
+#
+# ModuleName=two-step is the same C module Arch's stock `spinner` theme uses:
+# it renders a solid background colour, a static `watermark.png`, and an
+# animated `throbber-*.png` spinner. No SVG — Plymouth only reads PNG.
+# If the theme ever fails to load, Plymouth falls back to text (`details`),
+# so a broken splash can never block boot.
+[Plymouth Theme]
+Name=Lisa
+Description=Lisa OS — violet boot splash with the Lisa wordmark
+ModuleName=two-step
+
+[two-step]
+ImageDir=/usr/share/plymouth/themes/lisa
+
+# Solid brand violet (#6D45C9 = RGB 109,69,201). Start == End: no gradient,
+# an even field the centred logo sits on. Matches os-release ANSI_COLOR.
+BackgroundStartColor=0x6D45C9
+BackgroundEndColor=0x6D45C9
+
+# The white Lisa wordmark, centred and slightly above the mid-line.
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=.45
+
+# The comet spinner (throbber-*.png), centred just below the wordmark.
+HorizontalAlignment=.5
+VerticalAlignment=.62
+
+# We own the whole screen — do not composite the firmware/BGRT logo.
+UseFirmwareBackground=false
+WatermarkAnimation=false
+
+# No boot text. Fonts only matter if a password/status line ever appears
+# (e.g. a future LUKS prompt); Rubik is the brand face, with a safe fallback.
+Font=Rubik 12
+TitleFont=Rubik 22
+DialogHorizontalAlignment=.5
+DialogVerticalAlignment=.75
+MessageHorizontalAlignment=.5
+MessageVerticalAlignment=.85
+
+Transition=none
+TransitionDuration=0.0
+ProgressBarShowPercentComplete=false

@@ -66,8 +66,55 @@ display, BCM43602 Wi-Fi), bluez for Magic input pairing, `hid_apple`
 fnmode=2. Boot diagnosis: the journal is persistent, and
 `lisa-boot-report.service` (also wanted by emergency/rescue) dumps the
 current and previous boot's journal to `lisa-debug/` on the FAT ESP —
-readable on any machine the stick is plugged into; the kernel command
-line keeps unit status on the console so a hang names its unit.
+readable on any machine the stick is plugged into. The kernel command
+line now routes all console output to `console=ttyS0` (serial) so the
+framebuffer is free for the boot splash; a hang is diagnosed from the
+ESP journal dump rather than the on-screen unit status it used to show.
+
+## Boot splash
+
+`quiet splash` + `console=ttyS0` (`mkosi.conf` `KernelCommandLine=`) hand
+the real display to **Plymouth** so boot shows the Lisa logo on brand
+violet — not scrolling kernel/unit text — between the Mac's Apple logo
+and GDM. All console/kernel/systemd text goes to the serial line, leaving
+tty0 (the framebuffer) clean for Plymouth.
+
+The theme lives in `mkosi.extra/usr/share/plymouth/themes/lisa/`
+(`lisa.plymouth`, `ModuleName=two-step` — the same module Arch's stock
+`spinner` theme uses): a solid `#6D45C9` background, the white `Lisa`
+wordmark (`watermark.png`, recolored from `branding/lisa-wordmark.svg`),
+and a subtle comet spinner (`throbber-*.png`). `lisa` is the default via
+`etc/plymouth/plymouthd.conf` (`Theme=lisa`) **and** the
+`themes/default.plymouth` symlink — no `plymouth-set-default-theme` run,
+deterministic in an immutable image.
+
+**Initrd.** The mkosi image builds its own systemd initrd
+(*mkosi-initrd*, not dracut), which does not carry Plymouth. Rather than
+inject a theme-less Plymouth there (which would flash a non-Lisa splash
+or text), Plymouth is started in the rooted system: a
+`usr/lib/systemd/system/sysinit.target.wants/plymouth-start.service`
+symlink brings the splash up at `sysinit.target`, well before GDM. The
+brief window between the Apple logo and `sysinit.target` shows a clean
+black framebuffer (no text — that is the point of `console=ttyS0`), not
+console scroll. `etc/dracut.conf.d/50-lisa-plymouth.conf` additionally
+pulls Plymouth + the `lisa` theme into any **dracut**-built initrd
+(installed-system regeneration, Track L `os/layer`), giving the splash
+from the initrd onward there. `plymouth-quit*.service` /
+`plymouth-read-write.service` are held enabled in `00-lisa.preset` so the
+handoff to GDM is not disabled by a stock `disable *` preset. A missing
+or failed splash never blocks boot — Plymouth degrades to blank/text.
+
+**CI is unaffected.** Both boot-checks direct-kernel-boot with their own
+`-append` (`nightly.yml`, `release.yml`) and never read this
+`KernelCommandLine=`; they keep `console=ttyS0` and still grep "Welcome
+to" on the serial log. Under `-nographic` Plymouth finds no DRM device
+and no-ops without touching the serial output.
+
+**Follow-up (needs a graphical boot to verify).** systemd-boot may show
+its menu with text before the splash; if the menu ever appears on the
+real display, set the loader `timeout` to 0 so the Apple logo hands
+straight to the splash. There is no on-disk `loader.conf` to edit here
+yet (mkosi assembles the ESP), so this is left as a verify-in-CI item.
 
 Remaining for the full Track I story: dm-verity on the root slots,
 swtpm in the boot test, signed sysupdate sources (M1 repo).

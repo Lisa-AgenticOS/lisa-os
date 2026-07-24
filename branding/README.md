@@ -50,6 +50,11 @@ competes with it.
   `ANSI_COLOR`, our URLs).
 - `os/mkosi/mkosi.extra/usr/share/icons/hicolor/scalable/apps/lisa-logo.svg`
   — the logo icon the About panel resolves.
+- `os/mkosi/mkosi.extra/usr/share/plymouth/themes/lisa/` — the **boot
+  splash** (Plymouth `two-step` theme): brand violet with the white
+  wordmark + a subtle spinner. `watermark.png` is rasterized from
+  `lisa-wordmark.svg` and recolored white-on-transparent (Plymouth reads
+  PNG, not SVG). See `os/mkosi/README.md` › Boot splash.
 
-This is a first identity pass. Next: GDM/greeter logo, a boot splash
-(Plymouth), and a default wallpaper in the same language.
+This is a first identity pass. Next: GDM/greeter logo and a default
+wallpaper in the same language.
