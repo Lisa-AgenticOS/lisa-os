@@ -101,13 +101,21 @@ export function claudeSignInState(provider) {
     };
 }
 
-/** Consent switch rows, in stable scope order. */
+/**
+ * Consent switch rows, in stable scope order. `prompt` is the primary
+ * scope — inferenced always sends it, so remote inference is refused
+ * while it is off; its row carries that explainer and a `primary` flag
+ * the UI uses to set it apart.
+ */
 export function consentRows(mayOffload) {
     return SCOPES.map(s => ({
         id: s.id,
         label: s.label,
-        description: s.description,
+        description: s.id === 'prompt'
+            ? `${s.description} — required for any remote request`
+            : s.description,
         active: mayOffload?.[s.id] === true,
+        primary: s.id === 'prompt',
     }));
 }
 
@@ -122,6 +130,42 @@ export function offloadSummary(mayOffload) {
     if (on.length === 0)
         return 'Nothing leaves this machine.';
     return `May leave your hardware: ${on.join(', ')}.`;
+}
+
+/**
+ * Can remote models actually be used? Both halves of the consent trap:
+ * some provider must have a stored credential AND the `prompt` scope
+ * must be on — inferenced always sends scope `prompt`, and the broker
+ * refuses a remote request unless every scope it carries is consented
+ * (default: off). A user can therefore add a provider and a key and
+ * still have every request refused; `reason` names what is missing.
+ *
+ * @param {{providers: object[], mayOffload: Object<string, boolean>}} state
+ * @returns {{usable: boolean, hasKeyedProvider: boolean,
+ *   promptAllowed: boolean, reason: 'no-key'|'prompt-off'|'ready'}}
+ */
+export function remoteReadiness(state) {
+    const hasKeyedProvider = (state?.providers ?? [])
+        .some(p => p.has_credential === true);
+    const promptAllowed = state?.mayOffload?.prompt === true;
+    const reason = !hasKeyedProvider ? 'no-key'
+        : !promptAllowed ? 'prompt-off'
+            : 'ready';
+    return {usable: reason === 'ready', hasKeyedProvider, promptAllowed, reason};
+}
+
+/**
+ * Why provider/consent edits are disabled, or null when they can be
+ * saved. Offline (broker unreachable) the page shows defaults and every
+ * write would just throw against a missing D-Bus name.
+ *
+ * @param {{offline: boolean}} state @returns {string|null}
+ */
+export function providersDisabledReason(state) {
+    return state?.offline === true
+        ? 'The lisa-remoted broker is not running yet — provider and ' +
+            'consent changes cannot be saved.'
+        : null;
 }
 
 /**

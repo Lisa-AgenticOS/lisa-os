@@ -3,7 +3,7 @@ import {test, assert, assertEq, finish} from '../../testing/harness.js';
 import {
     EGRESS_COLOR, SCOPES, parseState, describeProvider, providerRows,
     claudeSignInState, consentRows, anythingLeaves, offloadSummary,
-    validateCustomProvider,
+    validateCustomProvider, remoteReadiness, providersDisabledReason,
     parseCatalog, fitBadge, localModelSubtitle, localModelRows,
     profileSummary, providerModelHelp,
 } from '../lib/model.js';
@@ -94,6 +94,54 @@ test('offloadSummary states the measured egress condition', () => {
     assert(summary.includes('Screen'), summary);
     assert(!summary.includes('Mail'), summary);
     assert(anythingLeaves(s.mayOffload));
+});
+
+test('consentRows marks prompt as the primary scope with the explainer', () => {
+    const rows = consentRows(parseState(null).mayOffload);
+    assertEq(rows[0].id, 'prompt', 'prompt stays first');
+    assert(rows[0].primary, 'prompt is primary');
+    assert(rows[0].description.includes('required'), rows[0].description);
+    assert(!rows.slice(1).some(r => r.primary), 'only prompt is primary');
+});
+
+test('remoteReadiness: a key with prompt off is the consent trap', () => {
+    const r = remoteReadiness(parseState({
+        providers: [{id: 'openai', has_credential: true}],
+        may_offload: {prompt: false},
+    }));
+    assert(!r.usable, 'prompt off refuses every remote request');
+    assertEq(r.reason, 'prompt-off');
+    assert(r.hasKeyedProvider && !r.promptAllowed);
+});
+
+test('remoteReadiness: a key with prompt on is ready', () => {
+    const r = remoteReadiness(parseState({
+        providers: [{id: 'openai', has_credential: true}],
+        may_offload: {prompt: true},
+    }));
+    assert(r.usable);
+    assertEq(r.reason, 'ready');
+});
+
+test('remoteReadiness: without any stored key it is not usable', () => {
+    const r = remoteReadiness(parseState({
+        providers: [{id: 'openai', has_credential: false}],
+        may_offload: {prompt: true},
+    }));
+    assert(!r.usable);
+    assertEq(r.reason, 'no-key');
+    const empty = remoteReadiness(parseState(null));
+    assert(!empty.usable);
+    assertEq(empty.reason, 'no-key', 'defaults carry no credential');
+});
+
+test('providersDisabledReason: offline explains, online is silent', () => {
+    const reason = providersDisabledReason({offline: true});
+    assert(reason.includes('not running'), reason);
+    assert(reason.includes('cannot be saved'), reason);
+    assertEq(providersDisabledReason({offline: false}), null);
+    assertEq(providersDisabledReason({}), null);
+    assertEq(providersDisabledReason(null), null);
 });
 
 test('custom provider validation matches the broker rules', () => {

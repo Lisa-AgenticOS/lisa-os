@@ -10,11 +10,15 @@
 //   • Providers — the lisa-remoted broker over D-Bus (org.lisa.Remote1):
 //     bring-your-own accounts (list/add/remove, key entry, Sign in with
 //     Claude), per-provider model routing help, and the per-scope
-//     "may offload" switches. Everything that can leave the machine is
-//     rendered in the distinct amber "leaves your hardware" color; the
-//     default — and the state shown whenever the broker is unreachable —
-//     is "Nothing leaves this machine." Keys are write-only: this app
-//     stores or clears them, never reads them back.
+//     "may offload" switches. Because the broker refuses any remote
+//     request whose `prompt` scope is not consented (default: off), a
+//     keyed provider with `prompt` off raises a prominent amber warning;
+//     when the broker is unreachable the add/save actions are disabled
+//     with the reason instead of throwing. Everything that can leave the
+//     machine is rendered in the distinct amber "leaves your hardware"
+//     color; the default — and the state shown whenever the broker is
+//     unreachable — is "Nothing leaves this machine." Keys are
+//     write-only: this app stores or clears them, never reads them back.
 
 import Adw from 'gi://Adw?version=1';
 import Gdk from 'gi://Gdk?version=4.0';
@@ -26,6 +30,7 @@ import {
     EGRESS_CSS_CLASS, parseState, providerRows, consentRows,
     anythingLeaves, offloadSummary, validateCustomProvider,
     parseCatalog, localModelRows, profileSummary, providerModelHelp,
+    remoteReadiness, providersDisabledReason,
 } from './lib/model.js';
 
 const BUS_NAME = 'org.lisa.Remoted';
@@ -176,11 +181,20 @@ class SettingsWindow {
         this.providersPage = new Adw.PreferencesPage();
         this.banner = new Adw.Banner({revealed: true});
         this.banner.add_css_class(EGRESS_CSS_CLASS);
+        // The consent trap, made loud: a key is stored but the `prompt`
+        // scope is off, so every remote request is silently refused.
+        this.consentBanner = new Adw.Banner({
+            title: 'Add a key, then enable the ‘prompt’ scope below to ' +
+                'actually use remote models.',
+            revealed: false,
+        });
+        this.consentBanner.add_css_class(EGRESS_CSS_CLASS);
 
         // The egress banner belongs to Providers (the only egress path);
         // Local models get their own scrolling page with no banner.
         const providersBox = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
         providersBox.append(this.banner);
+        providersBox.append(this.consentBanner);
         providersBox.append(this.providersPage);
 
         const localItem = this.stack.add_titled(
@@ -255,15 +269,23 @@ class SettingsWindow {
                 this.providersPage.remove(g);
         this._provGroups = [];
 
+        const readiness = remoteReadiness(this.state);
+        const disabledReason = providersDisabledReason({offline: this.offline});
+
         this.banner.title = this.offline
-            ? 'lisa-remoted is not running — showing defaults; nothing leaves this machine.'
+            ? `${disabledReason} Showing defaults; nothing leaves this machine.`
             : offloadSummary(this.state.mayOffload);
         if (!this.offline && !anythingLeaves(this.state.mayOffload))
             this.banner.remove_css_class(EGRESS_CSS_CLASS);
         else if (!this.offline)
             this.banner.add_css_class(EGRESS_CSS_CLASS);
 
-        this._provGroups.push(this._providerGroup());
+        // Keyed provider but `prompt` consent off → every remote request
+        // is refused. Say so at the top of the page, not in a log.
+        this.consentBanner.revealed =
+            !this.offline && readiness.hasKeyedProvider && !readiness.promptAllowed;
+
+        this._provGroups.push(this._providerGroup(readiness, disabledReason));
         this._provGroups.push(this._consentGroup());
         for (const g of this._provGroups)
             this.providersPage.add(g);
@@ -278,16 +300,20 @@ class SettingsWindow {
             this.localPage.add(g);
     }
 
-    _providerGroup() {
+    _providerGroup(readiness, disabledReason) {
         const group = new Adw.PreferencesGroup({
             title: 'Remote providers',
             description: 'Bring-your-own accounts. Requests through a provider ' +
-                'leave your hardware and are marked in the Ledger.',
+                'leave your hardware and are marked in the Ledger.' +
+                (readiness.usable
+                    ? ' Ready: a key is set and the ‘prompt’ scope is on.'
+                    : ''),
         });
         const add = new Gtk.Button({
             icon_name: 'list-add-symbolic',
             valign: Gtk.Align.CENTER,
-            tooltip_text: 'Add an OpenAI-compatible endpoint',
+            sensitive: disabledReason === null,
+            tooltip_text: disabledReason ?? 'Add an OpenAI-compatible endpoint',
         });
         add.connect('clicked', () => this._addProviderDialog());
         group.header_suffix = add;
@@ -457,6 +483,16 @@ class SettingsWindow {
                 active: row.active,
                 sensitive: !this.offline,
             });
+            if (row.primary) {
+                // The scope every remote request carries; set it apart.
+                const badge = new Gtk.Label({
+                    label: 'required for remote',
+                    valign: Gtk.Align.CENTER,
+                });
+                badge.add_css_class('caption');
+                badge.add_css_class('dim-label');
+                item.add_suffix(badge);
+            }
             if (row.active)
                 item.add_css_class(EGRESS_CSS_CLASS);
             item.connect('notify::active', async () => {

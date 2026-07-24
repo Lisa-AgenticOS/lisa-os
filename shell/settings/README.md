@@ -29,8 +29,13 @@ header (and a bottom bar when narrow):
   (that needs egress + a key) and we never invent a model list.
   Below the list, **What may leave this machine**: per-scope switches
   (`prompt`, `files`, `mail`, `calendar`, `screen`, `memory`), default
-  all off; a banner states the measured condition. Broker unreachable →
-  defaults shown, switches inert.
+  all off; a banner states the measured condition. `prompt` is first and
+  marked *required for remote* — inferenced always sends it, so the
+  broker refuses every remote request while it is off: a keyed provider
+  with `prompt` off raises a prominent amber warning at the top of the
+  page, and key + `prompt` on shows a subtle *Ready* note. Broker
+  unreachable → defaults shown, switches and the add/save actions
+  disabled with the reason.
 
 ## Layout
 
@@ -40,8 +45,10 @@ header (and a bottom bar when narrow):
   logic — Rust, not reimplemented in JS).
 - `lib/model.js` — pure view-model: broker-state parsing with safe
   defaults, provider/consent rows, sign-in gating, form validation,
-  **plus** catalog parsing, local-model rows + fit badges, profile
-  summary, and per-provider routing help. No GTK imports.
+  remote-readiness (`remoteReadiness`) and offline
+  (`providersDisabledReason`) helpers, **plus** catalog parsing,
+  local-model rows + fit badges, profile summary, and per-provider
+  routing help. No GTK imports.
 - `tests/model.test.js` — unit tests via `shell/testing/harness.js`
   (`just shell-test`; runs under gjs, node, or macOS jsc).
 - `org.lisa.Settings.desktop` — launcher entry.
