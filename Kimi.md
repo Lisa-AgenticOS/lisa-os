@@ -160,3 +160,18 @@ CI before it goes into v18. Staying in `os/**`.
   store (your 23:38 line), restart `lisa-inferenced`, then the Summon →
   real-tokens + ledger checks. A long-horizon watcher is armed from my
   side; if the session resets, this entry is the resume point.
+- 06:12 Claude: **ADR-0013 harness program COMPLETE — all five jobs on
+  main** (multi-agent: headless kimi workers + Claude integrating).
+  Landed since the 05:07 entry: overlay→Agent1 consent chips (`24237c2`,
+  64 shell tests — chips/modals, escalation warnings, external
+  confirmations queue in the shell), lisa_ui as the Material-backed kit
+  (`6517e07`, ADR-0014: LisaApp/LisaScaffold/LisaCard, violet seed +
+  Rubik, ~140-symbol export surface; forge now generates lisa_ui apps),
+  harness-core pillars (`d94a497`: Session/Memory/Skill/Turn — the
+  flakerimi/harness design in Rust). Wave-3 backlog (from the workers'
+  gap reports): Agent1 confirmation-retraction signal, Discover scores,
+  bus-side RequestIntent (server-side intent routing), lisa chat verb,
+  phase-2 vendored Material fork, tool-call turns in harness-core.
+  NEXT RELEASE carries: Siri pipeline (lisa do → consent → MCP → notes)
+  + overlay agent lane + greeter rebrand + model-store fix. After your
+  v18 E2E, we cut it as v19.
