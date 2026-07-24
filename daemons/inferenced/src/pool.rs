@@ -49,7 +49,6 @@ type EngineFactory =
 pub struct ModelPool {
     default_model: String,
     refs_dir: PathBuf,
-    base_port: u16,
     max_resident: usize,
     factory: EngineFactory,
     inner: Mutex<PoolState>,
@@ -60,21 +59,36 @@ struct PoolState {
     engines: HashMap<String, Arc<dyn Engine>>,
     /// Least-recently-used order, most recent last.
     lru: Vec<String>,
-    next_port_offset: u16,
+}
+
+/// A free loopback port from the OS. Children used to get
+/// `base_port + offset`, but with TWO daemons (system API on 7777,
+/// per-user companion on 7778) the static scheme self-collided: the
+/// companion's first child was assigned the companion's OWN port and the
+/// system daemon's first child was assigned the companion's port — either
+/// way the child dies binding and every request hangs on a dead engine
+/// (found live on the field iMac, 2026-07-25). Ask the kernel instead.
+fn free_port() -> Result<u16, EngineError> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| EngineError::Unavailable(format!("no free loopback port: {e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| EngineError::Unavailable(format!("no free loopback port: {e}")))?
+        .port();
+    drop(listener); // tiny bind race with the child is acceptable in practice
+    Ok(port)
 }
 
 impl ModelPool {
     pub fn new(
         default_model: String,
         refs_dir: PathBuf,
-        base_port: u16,
         max_resident: usize,
         factory: EngineFactory,
     ) -> Self {
         Self {
             default_model,
             refs_dir,
-            base_port,
             max_resident: max_resident.max(1),
             factory,
             inner: Mutex::new(PoolState::default()),
@@ -126,8 +140,7 @@ impl ModelPool {
             }
         }
 
-        let port = self.base_port + state.next_port_offset;
-        state.next_port_offset = state.next_port_offset.wrapping_add(1);
+        let port = free_port()?;
         info!(model = name, port, "admitting model to the pool");
         let engine = (self.factory)(&name, path, port)?;
         state.engines.insert(name.clone(), Arc::clone(&engine));
@@ -199,7 +212,6 @@ mod tests {
         let pool = ModelPool::new(
             "default-model".into(),
             dir.to_path_buf(),
-            7800,
             cap,
             Box::new(move |_name, _path, _port| {
                 spawned.fetch_add(1, Ordering::SeqCst);
@@ -262,5 +274,20 @@ mod tests {
             Ok(_) => panic!("unknown model must be refused"),
         };
         assert!(err.to_string().contains("not in the store"));
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::free_port;
+
+    #[test]
+    fn free_ports_are_bindable_and_distinct_enough() {
+        let a = free_port().unwrap();
+        let l = std::net::TcpListener::bind(("127.0.0.1", a));
+        assert!(l.is_ok(), "port {a} from free_port() must be bindable");
+        // While `a` is held, a second allocation must not return `a`.
+        let b = free_port().unwrap();
+        assert_ne!(a, b, "kernel must not hand out a port that is in use");
     }
 }

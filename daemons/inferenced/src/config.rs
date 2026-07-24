@@ -23,7 +23,9 @@ pub struct Bind(pub String);
 
 impl Default for Bind {
     fn default() -> Self {
-        // The OpenAI-compat port from PLAN §5.1.
+        // Legacy child-port base — children now get kernel-allocated free
+        // ports (pool::free_port; a static base self-collided across the
+        // two daemons). Field kept so existing config files still parse.
         Self("127.0.0.1:7777".to_string())
     }
 }

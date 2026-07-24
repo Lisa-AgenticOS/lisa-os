@@ -97,10 +97,11 @@ async fn main() -> anyhow::Result<()> {
             let base = cfg.llama.clone();
             // One supervised llama-server child per resident model, lazily
             // spawned, LRU-evicted beyond max_resident (§5.1).
+            // Children get kernel-allocated free ports (pool::free_port) —
+            // a static base collided across the two daemons' APIs.
             let pool = ModelPool::new(
                 default_model.clone(),
                 refs_dir,
-                base.port,
                 base.max_resident,
                 Box::new(move |_name, path, port| {
                     let mut child_cfg = base.clone();
