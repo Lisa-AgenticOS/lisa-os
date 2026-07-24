@@ -3,64 +3,98 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lisa OS — docs, downloads &amp; SDK</title>
-<meta name="description" content="Install Lisa OS, read the architecture, and build on the local-first AI SDK.">
+<title>Lisa OS for developers — build against local intelligence</title>
+<meta name="description" content="Install Lisa OS, read the architecture, and build against on-device intelligence — an OpenAI-compatible endpoint on the machine, with guided generation that always parses.">
 <style>
   :root{
-    --violet:#4F378B; --violet-ui:#6D45C9; --violet-lite:#9B7BE8;
-    --ink:#2B2320; --ink2:#6E635C; --ink3:#9A8F88; --line:#E7DED8;
-    --paper:#FAF7F5; --surface:#FFFFFF; --code:#F3EFF6;
+    --violet:#5B3EA6; --violet-ui:#6D45C9; --violet-lite:#9B7BE8;
+    --ink:#221C2E; --ink2:#6A6178; --ink3:#9c95a6;
+    --paper:#FBFAFD; --surface:#FFFFFF; --line:#ECE7F3; --amber:#E66100;
+    --code:#F4F1FA; --code-ink:#3B3350;
+    --shadow:0 1px 2px rgba(34,28,46,.04),0 12px 32px -12px rgba(91,62,166,.18);
+    --radius:18px;
   }
   @media (prefers-color-scheme: dark){
-    :root{ --ink:#FFF1E9; --ink2:#B7ABA3; --ink3:#8B807A; --line:#3C3531;
-           --paper:#161311; --surface:#211D1B; --code:#241F2E; --violet-lite:#B79BF0; }
+    :root{ --ink:#F4F0FA; --ink2:#ABA2BC; --ink3:#7d7690;
+           --paper:#141019; --surface:#1D1726; --line:#2C2438;
+           --code:#0F0B16; --code-ink:#CFC7E0;
+           --shadow:0 1px 2px rgba(0,0,0,.3),0 20px 40px -16px rgba(0,0,0,.5);}
   }
   *{box-sizing:border-box;margin:0}
-  body{font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Cantarell,Inter,sans-serif;
+  html{scroll-behavior:smooth}
+  body{font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Rubik,Cantarell,Inter,sans-serif;
        color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased}
-  .wrap{max-width:900px;margin:0 auto;padding:0 24px}
   a{color:var(--violet-ui);text-decoration:none} a:hover{text-decoration:underline}
-  code,kbd{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:.9em}
-  .nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0;border-bottom:1px solid var(--line)}
-  .brand{height:20px}
-  .nav a{color:var(--ink2);font-size:15px;margin-left:22px}
-  header.top{padding:52px 0 8px}
-  .eyebrow{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--violet-ui);font-weight:700}
-  h1{font-size:clamp(30px,5vw,44px);letter-spacing:-.02em;margin:8px 0 12px;font-weight:700}
-  .lead{font-size:19px;color:var(--ink2);max-width:60ch}
-  section{padding:34px 0;border-top:1px solid var(--line)}
-  h2{font-size:24px;margin-bottom:6px} h3{font-size:16px;margin:18px 0 6px}
-  p{color:var(--ink2);max-width:66ch;margin-bottom:8px}
-  pre{background:var(--code);border:1px solid var(--line);border-radius:12px;padding:16px 18px;overflow-x:auto;margin:12px 0;color:var(--ink)}
-  pre code{color:var(--ink);font-size:14px;line-height:1.7}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:16px}
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px;display:block}
-  .card:hover{border-color:var(--violet-lite);text-decoration:none}
-  .card h3{margin:0 0 4px;color:var(--ink)} .card p{margin:0;font-size:14.5px}
-  .pill{display:inline-block;background:var(--code);color:var(--violet-ui);border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;margin-left:8px}
-  footer{padding:36px 0 60px;color:var(--ink3);font-size:14px;border-top:1px solid var(--line);margin-top:24px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 24px}
+  h1,h2,h3{letter-spacing:-.02em;line-height:1.12}
+
+  .nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+  .nav .brand{height:19px;display:block}.nav .brand .wm{fill:var(--ink)}
+  .nav .badge{font-size:12px;font-weight:700;color:var(--violet-ui);
+              background:color-mix(in srgb,var(--violet-ui) 11%,transparent);padding:3px 9px;border-radius:6px;margin-left:9px;vertical-align:2px}
+  .nav .links{display:flex;gap:22px;align-items:center}
+  .nav .links a{color:var(--ink2);font-size:15px;font-weight:500} .nav .links a:hover{color:var(--ink);text-decoration:none}
+
+  .hero{padding:56px 0 8px}
+  .eyebrow{display:inline-block;font-size:13px;font-weight:600;color:var(--violet-ui);
+           background:color-mix(in srgb,var(--violet-ui) 10%,transparent);padding:6px 14px;border-radius:999px}
+  .hero h1{font-size:clamp(30px,5.4vw,50px);font-weight:700;margin:20px 0 0;max-width:18ch}
+  .hero p{font-size:clamp(17px,2.2vw,20px);color:var(--ink2);margin-top:18px;max-width:60ch;line-height:1.55}
+  .hero .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:11px;font-weight:600;font-size:15.5px}
+  .btn.primary{background:var(--violet-ui);color:#fff}.btn.primary:hover{filter:brightness(1.06);text-decoration:none}
+  .btn.ghost{background:var(--surface);border:1px solid var(--line);color:var(--ink)}.btn.ghost:hover{text-decoration:none}
+
+  section{padding:44px 0;border-top:1px solid var(--line);margin-top:44px}
+  section:first-of-type{border-top:0;margin-top:0}
+  section h2{font-size:clamp(22px,3vw,30px);font-weight:700}
+  section > p{color:var(--ink2);margin-top:12px;max-width:64ch;line-height:1.55}
+  .anchor{scroll-margin-top:20px}
+
+  pre{background:var(--code);color:var(--code-ink);border:1px solid var(--line);border-radius:14px;
+      padding:20px 22px;margin-top:20px;overflow-x:auto;font:14px/1.7 ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,monospace}
+  pre code{white-space:pre}
+  .after{margin-top:16px;font-size:15px}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:22px}
+  @media(max-width:680px){.grid{grid-template-columns:1fr}}
+  a.card{display:block;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+         padding:22px;box-shadow:var(--shadow);transition:transform .12s ease}
+  a.card:hover{text-decoration:none;transform:translateY(-2px)}
+  a.card h3{font-size:17px;font-weight:650;color:var(--ink);display:flex;align-items:center;gap:8px}
+  a.card h3::after{content:"→";color:var(--violet-ui);margin-left:auto;font-weight:400}
+  a.card p{color:var(--ink2);font-size:14.5px;margin-top:6px;line-height:1.5}
+
+  footer{border-top:1px solid var(--line);margin-top:52px;padding:30px 0;color:var(--ink3);font-size:14px}
+  footer a{color:var(--ink2)}
 </style>
 </head>
 <body>
 <div class="wrap">
+
   <nav class="nav">
-    <svg class="brand" viewBox="0 0 24 7" xmlns="http://www.w3.org/2000/svg" aria-label="Lisa"><g fill="#6D45C9" class="wm"></g></svg>
-    <div>
+    <span><svg class="brand" viewBox="0 0 24 7" xmlns="http://www.w3.org/2000/svg" aria-label="Lisa" style="display:inline-block;vertical-align:middle"><g class="wm"></g></svg><span class="badge">DEV</span></span>
+    <div class="links">
       <a href="#install">Install</a>
       <a href="#sdk">SDK</a>
+      <a href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/PLAN.md">Architecture</a>
       <a href="https://github.com/Lisa-AgenticOS/lisa-os">GitHub</a>
     </div>
   </nav>
 
-  <header class="top">
-    <div class="eyebrow">Documentation</div>
-    <h1>Build on Lisa OS.</h1>
-    <p class="lead">The local-first AI desktop: install it, understand how it's put together, and write software against a system where intelligence is a service and privacy is a mechanism. <span class="pill">alpha</span></p>
+  <header class="hero">
+    <span class="eyebrow">◆ Build against local intelligence</span>
+    <h1>Lisa OS, for the people building on it.</h1>
+    <p>An AI-native, self-updating Linux distribution: local models as a system service, per-app durable context, an append-only Ledger, and an OpenAI-compatible endpoint right on the machine. Flash it, boot it, build against it.</p>
+    <div class="row">
+      <a class="btn primary" href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">Get the latest image →</a>
+      <a class="btn ghost" href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/PLAN.md">Read the plan</a>
+    </div>
   </header>
 
-  <section id="install">
+  <section id="install" class="anchor">
     <h2>Install</h2>
-    <p>Flash the latest USB image and boot it — it runs from the stick, then installs to disk when you're ready.</p>
+    <p>Flash the latest USB image and boot it — it runs from the stick, then installs to disk when you're ready. Updates are A/B with automatic rollback on a bad boot.</p>
     <pre><code># 1. Download lisa-usb-&lt;version&gt;.raw.zst from Releases, then:
 zstd -d lisa-usb-*.raw.zst -o lisa.raw
 sudo dd if=lisa.raw of=/dev/&lt;your-usb&gt; bs=4M status=progress oflag=sync
@@ -70,22 +104,12 @@ lisa install /dev/&lt;internal-disk&gt;
 
 # 3. Update in place later (A/B, auto-rollback on a bad boot):
 lisa update --reboot</code></pre>
-    <p><a href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">→ Latest release &amp; images</a></p>
+    <p class="after"><a href="https://github.com/Lisa-AgenticOS/lisa-os/releases/latest">→ Latest release &amp; images</a></p>
   </section>
 
-  <section id="learn">
-    <h2>Learn</h2>
-    <div class="grid">
-      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/PLAN.md"><h3>Architecture</h3><p>The plan &amp; the whole system design (source of truth).</p></a>
-      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/ROADMAP.md"><h3>Roadmap</h3><p>What's built, what's next, milestone by milestone.</p></a>
-      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/VISION.md"><h3>Vision</h3><p>"A computer that's genuinely yours to think with."</p></a>
-      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/tree/main/docs/adr"><h3>Decisions (ADRs)</h3><p>Why the OS is built the way it is.</p></a>
-    </div>
-  </section>
-
-  <section id="sdk">
+  <section id="sdk" class="anchor">
     <h2>SDK</h2>
-    <p>Intelligence is an OpenAI-compatible endpoint on the machine — build against it with zero Lisa-specific dependencies. Guided generation means typed output that always parses.</p>
+    <p>Intelligence is an OpenAI-compatible endpoint on the machine — build against it with zero Lisa-specific dependencies. Guided generation means typed output that always parses; the daemon compiles your JSON Schema into a grammar the model can't violate.</p>
     <pre><code>from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:7777/v1", api_key="local")
 
@@ -95,10 +119,21 @@ r = client.chat.completions.create(
     response_format={"type": "json_schema",
                      "json_schema": {"name": "recipe", "schema": SCHEMA}})
 # r.choices[0].message.content is always valid JSON for SCHEMA</code></pre>
-    <p><a href="https://github.com/Lisa-AgenticOS/lisa-os/tree/main/docs/sdk/samples">→ Sample apps</a> · <a href="https://github.com/Lisa-AgenticOS/lisa-os/tree/main/libs/lisa_flutter">Dart/Flutter SDK</a></p>
+    <p class="after"><a href="https://github.com/Lisa-AgenticOS/lisa-os/tree/main/docs/sdk/samples">→ Sample apps</a> · <a href="https://github.com/Lisa-AgenticOS/lisa-os/tree/main/libs/lisa_flutter">Dart/Flutter SDK</a></p>
   </section>
 
-  <section id="contribute">
+  <section id="learn" class="anchor">
+    <h2>Learn</h2>
+    <p>The design is the source of truth, and every non-obvious decision is written down.</p>
+    <div class="grid">
+      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/PLAN.md"><h3>Architecture</h3><p>The plan &amp; the whole system design (source of truth).</p></a>
+      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/ROADMAP.md"><h3>Roadmap</h3><p>What's built, what's next, milestone by milestone.</p></a>
+      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/VISION.md"><h3>Vision</h3><p>"A computer that's genuinely yours to think with."</p></a>
+      <a class="card" href="https://github.com/Lisa-AgenticOS/lisa-os/tree/main/docs/adr"><h3>Decisions (ADRs)</h3><p>Why the OS is built the way it is.</p></a>
+    </div>
+  </section>
+
+  <section id="contribute" class="anchor">
     <h2>Contribute</h2>
     <p>Lisa OS is GPL-2.0 and built entirely in the open. Issues, ideas, and patches welcome.</p>
     <div class="grid">
