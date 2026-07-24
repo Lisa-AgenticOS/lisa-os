@@ -3,7 +3,7 @@
 Living snapshot of where the build actually is, so any machine (or a
 fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
-"where are we on it" companion. **Last updated: 2026-07-22.**
+"where are we on it" companion. **Last updated: 2026-07-24.**
 
 ## TL;DR
 
@@ -13,8 +13,27 @@ complete; M2 (Ledger) and M3 (context fabric) have working cores. Every
 claim below is enforced by CI on `main`, not aspirational.
 
 - Repo: **github.com/Lisa-AgenticOS/lisa-os** · License: GPL-2.0-only (ADR-0005)
-- Latest release: **v20260722.6** (GNOME desktop image) (runs-from-USB image + sysupdate transfer set)
-- CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e; nightly image + A/B rollback + sysupdate; release pipeline)
+- Latest release: **v20260724.25** (GNOME desktop image) (runs-from-USB image + sysupdate transfer set)
+- CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
+
+**Recent (2026-07-24, after v25):**
+- **Intelligence panel** in the gnome-control-center fork works (fixed the
+  GNOME-50 subpage activation trap, ADR-0012) — subpages (Providers / Local
+  models), model providers, and **"Sign in with Claude / ChatGPT" OAuth** via
+  the lisa-remoted broker (ADR-0010/0015).
+- **Lisa Assistant** — a persistent GJS chat window (ADR-0015), a second
+  frontend of the overlay backend: local + cloud models, streaming, ledgered;
+  **Super+C** opens it. Cloud routing enabled on the per-user inferenced
+  companion.
+- **/home persistence** — backed by the durable var partition so settings /
+  wallpaper / SSH key survive A/B updates (boot-safe).
+- **Reverse-DNS rename** — `org.lisa.*` → **`dev.lisaos.*`** (OS/daemons) +
+  **`app.lisaos.*`** (apps), ADR-0016. Ships in the next release; v25 still
+  carries the old names.
+- **Websites** rebuilt in **Nuxt 4 + Nuxt UI** and live on staging:
+  lisa-app.common.al (marketing) + lisa-dev.common.al (a **contributor portal**
+  with GitHub login — needs a GitHub OAuth app before login functions — and a
+  live good-first-issues board). Real domains lisaos.app/dev await DNS.
 
 ## What works (verified)
 
