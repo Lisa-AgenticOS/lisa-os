@@ -8,6 +8,14 @@ actually usable: talk to a **local** model or your **signed-in cloud** models
 that leave the machine. It complements the transient Super+Shift+Space overlay
 (one-shot ask); it does not replace it.
 
+While a reply streams, **Send flips to Stop** (`Overlay1.Cancel` — the partial
+text stays, #11); the entry stays typeable, only sending is gated. The header
+bar **exports the conversation as Markdown** (#8) — cloud turns keep their
+"left this machine" note — and the conversation **persists across restarts**
+in `dev.lisaos.Context1` app memory (namespace `app.lisaos.Assistant`, key
+`conversation`; "New conversation" clears it). All Context1 calls fail soft:
+without `lisa-contextd` the app simply runs without persistence.
+
 ## How it fits
 
 A **second thin frontend of the `dev.lisaos.Overlay1` backend** (the overlay's
@@ -35,9 +43,11 @@ lisa-inferenced → (remote:*) → remoted broker → Claude / GPT
 
 ## Layout
 
-- `lisa-assistant.js` — the window (model picker, conversation, composer).
+- `lisa-assistant.js` — the window (model picker, conversation, composer,
+  Stop/export, Context1 persistence).
 - `lib/model.js` — pure view-model (model-list assembly, send payload, egress
-  marker); unit-tested in `tests/model.test.js`.
+  marker, Markdown export, conversation (de)serialization); unit-tested in
+  `tests/model.test.js`.
 - `app.lisaos.Assistant.desktop` + `lisa-assistant-symbolic.svg` — launcher entry.
 - The chat lane itself lives in the backend
   (`../overlay-extension/backend/lisa-overlayd.js`) with pure helpers in

@@ -9,6 +9,12 @@
 // dev.lisaos.Remote1 (providers that are signed in or hold a key → their
 // ListModels). Cloud turns route as `remote:<provider>:<model>` and are
 // ledgered `remote.*` by the broker. This app renders; the daemons enforce.
+//
+// The conversation persists across restarts in dev.lisaos.Context1 app
+// memory (namespace `app.lisaos.Assistant`, key `conversation`) — fail-soft
+// when contextd is absent. Send flips to Stop while a reply streams
+// (Overlay1.Cancel, #11); the header exports Markdown via a pure helper
+// (conversationMarkdown, #8).
 
 import Adw from 'gi://Adw?version=1';
 import Gio from 'gi://Gio';
@@ -21,7 +27,8 @@ import {
 } from '../overlay-extension/lib/iface.js';
 import {
     parseLocalModels, usableProviders, cloudEntries, mergeModelList,
-    historyPayload, isRemote,
+    historyPayload, isRemote, conversationMarkdown,
+    serializeConversation, deserializeConversation,
 } from './lib/model.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async');
@@ -32,6 +39,11 @@ const INFERENCED_URL =
 const REMOTED_NAME = 'dev.lisaos.Remoted';        // well-known name (≠ iface)
 const REMOTED_PATH = '/dev/lisaos/Remote1';
 const REMOTED_IFACE = 'dev.lisaos.Remote1';
+const CONTEXTD_NAME = 'dev.lisaos.Context1';      // name = iface (contextd)
+const CONTEXTD_PATH = '/dev/lisaos/Context1';
+const CONTEXTD_IFACE = 'dev.lisaos.Context1';
+const APP_ID = 'app.lisaos.Assistant';            // Context1 memory namespace
+const CONVERSATION_KEY = 'conversation';
 const EGRESS_COLOR = '#E66100';                 // the Ledger "leaves" colour
 
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
@@ -43,6 +55,7 @@ class AssistantWindow {
         this._model = null;     // selected model id
         this._activeQid = null; // in-flight query id
         this._current = null;   // the streaming assistant turn
+        this._persistWarned = false; // one note max when contextd is absent
 
         this._http = new Soup.Session();
         this.window = new Adw.ApplicationWindow({
@@ -65,6 +78,12 @@ class AssistantWindow {
         clear.connect('clicked', () => this._reset());
         header.pack_end(clear);
 
+        const exportBtn =
+            Gtk.Button.new_from_icon_name('document-save-symbolic');
+        exportBtn.tooltip_text = 'Export conversation as Markdown';
+        exportBtn.connect('clicked', () => this._export());
+        header.pack_end(exportBtn);
+
         // Conversation.
         this._log = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL, spacing: 10,
@@ -80,7 +99,13 @@ class AssistantWindow {
         this._sendBtn = new Gtk.Button({
             label: 'Send', css_classes: ['suggested-action'],
         });
-        this._sendBtn.connect('clicked', () => this._send());
+        this._sendBtn.connect('clicked', () => {
+            // Doubles as Stop while a reply streams (issue #11).
+            if (this._activeQid !== null)
+                this._stop();
+            else
+                this._send();
+        });
         const composer = new Gtk.Box({
             orientation: Gtk.Orientation.HORIZONTAL, spacing: 6,
             margin_top: 6, margin_bottom: 12, margin_start: 12, margin_end: 12,
@@ -97,9 +122,14 @@ class AssistantWindow {
         this.window.set_content(view);
 
         this._connectBackend();
-        this._loadModels().catch(e => logError(e, 'model list'));
         this._systemNote('Ask a local model, or sign in to a cloud provider ' +
             'in Settings → Intelligence for Claude / GPT.');
+        // Models first so restored headings resolve to picker labels;
+        // then the prior conversation from Context1 app memory.
+        this._loadModels()
+            .catch(e => logError(e, 'model list'))
+            .then(() => this._restoreConversation())
+            .catch(e => logError(e, 'restore conversation'));
     }
 
     // ---- backend (dev.lisaos.Overlay1) -----------------------------------
@@ -141,6 +171,7 @@ class AssistantWindow {
         this._current = null;
         this._setBusy(false);
         this._scrollToBottom();
+        this._persistConversation();
     }
 
     // ---- sending -------------------------------------------------------
@@ -170,8 +201,19 @@ class AssistantWindow {
             const [qid] = this._overlay.AskSync(prompt, options);
             this._activeQid = Number(qid);
         } catch (e) {
+            // Match the guard in _onFinished so the failure renders and
+            // the composer un-sticks.
+            this._activeQid = -1;
             this._onFinished(-1, 'error', e.message);
         }
+    }
+
+    _stop() {
+        if (this._activeQid === null || !this._overlay)
+            return;
+        // Fire-and-forget: the backend answers with Finished('cancelled'),
+        // which keeps the partial text and re-enables the composer.
+        this._overlay.CancelRemote(this._activeQid, () => {});
     }
 
     // ---- conversation widgets ------------------------------------------
@@ -197,7 +239,7 @@ class AssistantWindow {
         card.append(heading);
         card.append(body);
         this._log.append(card);
-        const turn = {role, text, widget: card, body};
+        const turn = {role, text, model: model ?? null, widget: card, body};
         this._turns.push(turn);
         this._scrollToBottom();
         return turn;
@@ -234,11 +276,40 @@ class AssistantWindow {
             this._log.remove(child);
             child = next;
         }
+        // An empty array, not MemoryWipe — wiping would nuke every key
+        // in the app's namespace, not just the conversation.
+        this._persistConversation();
     }
 
+    _export() {
+        const day = new Date().toISOString().slice(0, 10);
+        const dialog = new Gtk.FileDialog({
+            initial_name: `lisa-conversation-${day}.md`,
+        });
+        dialog.save(this.window, null, (d, res) => {
+            try {
+                const file = d.save_finish(res);
+                if (!file)
+                    return;
+                GLib.file_set_contents(file.get_path(),
+                    conversationMarkdown(this._turns, this._models));
+            } catch {
+                // Dismissed — nothing to do.
+            }
+        });
+    }
+
+    // The button flips Send ↔ Stop; the entry stays usable for typing the
+    // next message while a reply streams — only sending is gated (#11).
     _setBusy(busy) {
-        this._sendBtn.sensitive = !busy;
-        this._entry.sensitive = !busy;
+        this._sendBtn.label = busy ? 'Stop' : 'Send';
+        if (busy) {
+            this._sendBtn.remove_css_class('suggested-action');
+            this._sendBtn.add_css_class('destructive-action');
+        } else {
+            this._sendBtn.remove_css_class('destructive-action');
+            this._sendBtn.add_css_class('suggested-action');
+        }
     }
 
     _scrollToBottom() {
@@ -314,9 +385,49 @@ class AssistantWindow {
             replyType ? new GLib.VariantType(replyType) : null,
             Gio.DBusCallFlags.NONE, 4000, null);
     }
+
+    // ---- conversation history (dev.lisaos.Context1 app memory) ---------
+    //
+    // Every call fails soft: with lisa-contextd absent the app behaves
+    // exactly as before — no persistence, at most one system note.
+
+    async _restoreConversation() {
+        let json;
+        try {
+            const reply = await this._contextCall('MemoryGet',
+                new GLib.Variant('(ss)', [APP_ID, CONVERSATION_KEY]), '(s)');
+            [json] = reply.deepUnpack();
+        } catch {
+            return; // daemon absent or no saved conversation — start fresh
+        }
+        if (this._turns.length > 0)
+            return; // the user beat the restore to it — don't interleave
+        for (const t of deserializeConversation(json))
+            this._addTurn(t.role, t.text, t.model ?? undefined);
+    }
+
+    _persistConversation() {
+        const json = serializeConversation(this._turns);
+        this._contextCall('MemorySet',
+            new GLib.Variant('(sss)', [APP_ID, CONVERSATION_KEY, json]), null)
+            .catch(() => {
+                if (this._persistWarned)
+                    return;
+                this._persistWarned = true;
+                this._systemNote('Context daemon unavailable — this ' +
+                    'conversation will not survive a restart.');
+            });
+    }
+
+    _contextCall(method, params, replyType) {
+        return Gio.DBus.session.call(
+            CONTEXTD_NAME, CONTEXTD_PATH, CONTEXTD_IFACE, method, params,
+            replyType ? new GLib.VariantType(replyType) : null,
+            Gio.DBusCallFlags.NONE, 4000, null);
+    }
 }
 
-const app = new Adw.Application({application_id: 'app.lisaos.Assistant'});
+const app = new Adw.Application({application_id: APP_ID});
 app.connect('activate', () => {
     (app.activeWindow ?? new AssistantWindow(app).window).present();
 });

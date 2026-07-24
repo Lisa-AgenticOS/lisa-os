@@ -4,7 +4,8 @@
 import {test, assert, assertEq, finish} from '../../testing/harness.js';
 import {
     isRemote, parseLocalModels, usableProviders, cloudEntries,
-    mergeModelList, historyPayload,
+    mergeModelList, historyPayload, conversationMarkdown,
+    serializeConversation, deserializeConversation,
 } from '../lib/model.js';
 
 test('parseLocalModels reads /v1/models data ids', () => {
@@ -66,6 +67,84 @@ test('historyPayload maps completed turns to messages', () => {
 test('isRemote flags broker-routed ids', () => {
     assert(isRemote('remote:anthropic:claude'), 'remote: is remote');
     assert(!isRemote('qwen3-0.6b'), 'local is not remote');
+});
+
+// ---- conversationMarkdown (issue #8) --------------------------------
+
+const MODELS = [
+    {id: 'qwen', label: 'qwen', kind: 'local'},
+    {id: 'remote:anthropic:claude-x', label: 'Anthropic · claude-x',
+        kind: 'cloud', provider: 'anthropic'},
+];
+
+test('conversationMarkdown renders an empty conversation as empty', () => {
+    assertEq(conversationMarkdown([], MODELS), '');
+    assertEq(conversationMarkdown(null, MODELS), '');
+    assertEq(conversationMarkdown([{role: 'assistant', text: ''}], MODELS), '');
+});
+
+test('conversationMarkdown renders a local exchange', () => {
+    const turns = [
+        {role: 'user', text: 'hi'},
+        {role: 'assistant', text: 'hello', model: 'qwen'},
+    ];
+    assertEq(conversationMarkdown(turns, MODELS),
+        '**You:**\n\nhi\n\n**Lisa (qwen):**\n\nhello\n');
+});
+
+test('conversationMarkdown notes egress on cloud turns', () => {
+    const turns = [
+        {role: 'user', text: 'q'},
+        {role: 'assistant', text: 'a', model: 'remote:anthropic:claude-x'},
+    ];
+    assertEq(conversationMarkdown(turns, MODELS),
+        '**You:**\n\nq\n\n' +
+        '**Lisa (Anthropic · claude-x):**\n\na\n\n' +
+        '_↗ left this machine via Anthropic · claude-x_\n');
+});
+
+test('conversationMarkdown preserves multiline text', () => {
+    const turns = [{role: 'assistant', text: 'one\ntwo\n\nthree', model: null}];
+    assertEq(conversationMarkdown(turns, MODELS),
+        '**Lisa:**\n\none\ntwo\n\nthree\n');
+});
+
+// ---- Context1 persistence helpers -----------------------------------
+
+test('serializeConversation keeps only completed turns, no widgets', () => {
+    const turns = [
+        {role: 'user', text: 'hi', widget: {}, body: {}},
+        {role: 'assistant', text: 'hello', model: 'qwen', widget: {}},
+        {role: 'assistant', text: ''},   // in-flight — dropped
+    ];
+    assertEq(JSON.parse(serializeConversation(turns)), [
+        {role: 'user', text: 'hi', model: null},
+        {role: 'assistant', text: 'hello', model: 'qwen'},
+    ]);
+});
+
+test('deserializeConversation validates shape and drops junk', () => {
+    assertEq(deserializeConversation('not json'), []);
+    assertEq(deserializeConversation('{"role":"user"}'), []);
+    assertEq(deserializeConversation('[]'), []);
+    assertEq(deserializeConversation(JSON.stringify([
+        {role: 'user', text: 'ok'},
+        {role: 'tool', text: 'nope'},
+        {role: 'assistant', text: 42},
+        {role: 'assistant', text: 'fine', model: 7},
+        null,
+    ])), [
+        {role: 'user', text: 'ok', model: null},
+        {role: 'assistant', text: 'fine', model: null},
+    ]);
+});
+
+test('conversation persistence round-trips', () => {
+    const turns = [
+        {role: 'user', text: 'q', model: null},
+        {role: 'assistant', text: 'a', model: 'remote:anthropic:claude-x'},
+    ];
+    assertEq(deserializeConversation(serializeConversation(turns)), turns);
 });
 
 finish('assistant-model');

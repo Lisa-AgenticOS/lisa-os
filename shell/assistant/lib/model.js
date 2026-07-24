@@ -94,3 +94,78 @@ export function historyPayload(turns) {
             typeof t.text === 'string' && t.text !== '')
         .map(t => ({role: t.role, content: t.text}));
 }
+
+/**
+ * The conversation as portable Markdown (issue #8): `**You:**` /
+ * `**Lisa (label):**` per completed turn; a cloud turn carries the
+ * egress note, because an export must not launder that the text left
+ * the machine. `models` resolves ids to picker labels; an unknown id
+ * falls back to itself.
+ * @param {{role: string, text: string, model?: ?string}[]} turns
+ * @param {{id: string, label: string}[]} models
+ * @returns {string}  '' for an empty conversation
+ */
+export function conversationMarkdown(turns, models) {
+    const label = id => (models ?? []).find(m => m.id === id)?.label ?? id;
+    const blocks = [];
+    for (const t of turns ?? []) {
+        if (!t || (t.role !== 'user' && t.role !== 'assistant') ||
+            typeof t.text !== 'string' || t.text === '')
+            continue;
+        if (t.role === 'user') {
+            blocks.push(`**You:**\n\n${t.text}`);
+            continue;
+        }
+        const heading = t.model
+            ? `**Lisa (${label(t.model)}):**` : '**Lisa:**';
+        let block = `${heading}\n\n${t.text}`;
+        if (isRemote(t.model))
+            block += `\n\n_↗ left this machine via ${label(t.model)}_`;
+        blocks.push(block);
+    }
+    return blocks.length > 0 ? `${blocks.join('\n\n')}\n` : '';
+}
+
+/**
+ * The conversation as the Context1 app-memory payload: completed turns
+ * as plain {role, text, model} — no widgets, no streaming state.
+ * @param {{role: string, text: string, model?: ?string}[]} turns
+ * @returns {string}  JSON array
+ */
+export function serializeConversation(turns) {
+    return JSON.stringify((turns ?? [])
+        .filter(t => t && (t.role === 'user' || t.role === 'assistant') &&
+            typeof t.text === 'string' && t.text !== '')
+        .map(t => ({
+            role: t.role,
+            text: t.text,
+            model: typeof t.model === 'string' ? t.model : null,
+        })));
+}
+
+/**
+ * Parse a stored conversation back into renderable turns. Shape-validated
+ * per turn; anything malformed — bad JSON, non-array, junk entries — is
+ * dropped rather than trusted, so a corrupt memory value can never break
+ * startup.
+ * @param {string} json
+ * @returns {{role: string, text: string, model: ?string}[]}
+ */
+export function deserializeConversation(json) {
+    let parsed;
+    try {
+        parsed = JSON.parse(json);
+    } catch {
+        return [];
+    }
+    if (!Array.isArray(parsed))
+        return [];
+    return parsed
+        .filter(t => t && (t.role === 'user' || t.role === 'assistant') &&
+            typeof t.text === 'string' && t.text !== '')
+        .map(t => ({
+            role: t.role,
+            text: t.text,
+            model: typeof t.model === 'string' ? t.model : null,
+        }));
+}
