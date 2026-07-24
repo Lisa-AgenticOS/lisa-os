@@ -17,7 +17,11 @@ After=graphical-session.target
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/lisa-remoted --dbus
+# Explicit runtime socket under %t (=$XDG_RUNTIME_DIR) so `lisa ask
+# --model remote:…` and `lisa remote` find it deterministically; keys stay
+# in the 0700 StateDirectory. --dbus adds the session-bus management surface.
+ExecStartPre=/usr/bin/mkdir -p %t/lisa
+ExecStart=/usr/bin/lisa-remoted --dbus --socket %t/lisa/remoted.sock
 Restart=on-failure
 RestartSec=2
 StateDirectory=lisa/remoted

@@ -437,6 +437,18 @@ fn ask(
     if background {
         body["lisa_priority"] = "background".into();
     }
+
+    // Remote (BYO cloud) models go to the egress broker, not the local
+    // engine: `lisa ask --model remote:moonshot:kimi-k2 "…"`. The broker
+    // (same user) holds the key, enforces per-scope consent, and ledgers
+    // the egress — inferenced never gets network.
+    if let Some(hint) = body["model"].as_str().map(str::to_owned)
+        && let Some((provider, remote_model)) = parse_remote_model(&hint)
+    {
+        body["model"] = remote_model.into();
+        return broker_chat(provider, &body);
+    }
+
     let endpoint = format!("{}/v1/chat/completions", url.trim_end_matches('/'));
     let mut response = ureq::post(&endpoint).send_json(&body).with_context(|| {
         format!(
@@ -660,10 +672,32 @@ fn ambient_cmd(cmd: AmbientCmd) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The broker's unix socket. LISA_REMOTED_SOCKET wins; otherwise prefer the
+/// per-user runtime socket the user unit binds ($XDG_RUNTIME_DIR/lisa/…),
+/// falling back to the legacy system path for a system-scope broker.
 fn remoted_socket() -> PathBuf {
-    std::env::var_os("LISA_REMOTED_SOCKET")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/lisa/remoted/remoted.sock"))
+    if let Some(s) = std::env::var_os("LISA_REMOTED_SOCKET") {
+        return PathBuf::from(s);
+    }
+    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let p = PathBuf::from(rt).join("lisa/remoted.sock");
+        if p.exists() {
+            return p;
+        }
+    }
+    PathBuf::from("/var/lib/lisa/remoted/remoted.sock")
+}
+
+/// Split a `remote:<provider>:<model>` hint into (provider, model). The
+/// model tail may itself contain colons/slashes (openrouter vendor/model,
+/// tinker:// URIs), so only the first two segments are fixed.
+fn parse_remote_model(model: &str) -> Option<(&str, &str)> {
+    let rest = model.strip_prefix("remote:")?;
+    let (provider, tail) = rest.split_once(':')?;
+    if provider.is_empty() || tail.is_empty() {
+        return None;
+    }
+    Some((provider, tail))
 }
 
 /// Minimal sync HTTP/1.1 over the broker's unix socket (Connection:
@@ -699,6 +733,63 @@ fn broker_request(method: &str, path: &str, body: Option<&str>) -> anyhow::Resul
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     Ok((status, resp.trim().to_string()))
+}
+
+/// Route a chat request to the remote-provider broker over its unix socket
+/// (non-streaming for now). `body["model"]` must already be the
+/// provider-side id (the `remote:<provider>:` prefix stripped). The broker
+/// enforces `prompt` consent + ledgers the egress; `provider` rides the
+/// `x-lisa-provider` header, matching `lisa-remoted`'s `/v1/chat/completions`.
+fn broker_chat(provider: &str, body: &serde_json::Value) -> anyhow::Result<()> {
+    use std::os::unix::net::UnixStream;
+    let mut body = body.clone();
+    body["stream"] = false.into(); // streaming over the socket is a follow-up
+    let payload = body.to_string();
+    let sock = remoted_socket();
+    let mut stream = UnixStream::connect(&sock).with_context(|| {
+        format!(
+            "lisa-remoted socket {} — is the broker running? \
+             (systemctl --user start lisa-remoted)",
+            sock.display()
+        )
+    })?;
+    let req = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: lisa-remoted\r\n\
+         Content-Type: application/json\r\nx-lisa-provider: {provider}\r\n\
+         x-lisa-scopes: prompt\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        payload.len(),
+        payload
+    );
+    stream.write_all(req.as_bytes())?;
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw)?;
+    let (head, resp) = raw
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("malformed broker response"))?;
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let json: serde_json::Value =
+        serde_json::from_str(resp.trim()).unwrap_or_else(|_| serde_json::json!({}));
+    if status >= 400 || json.get("error").is_some() {
+        let msg = json["error"]["message"]
+            .as_str()
+            .or_else(|| json["error"].as_str())
+            .unwrap_or_else(|| resp.trim());
+        bail!(
+            "remote provider {provider}: {msg}\n\
+             (add an API key and enable the 'prompt' scope in \
+             Settings › Intelligence › Providers)"
+        );
+    }
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default();
+    println!("{content}");
+    Ok(())
 }
 
 fn remote_cmd(cmd: RemoteCmd) -> anyhow::Result<()> {
@@ -1152,4 +1243,30 @@ fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::parse_remote_model;
+
+    #[test]
+    fn parses_provider_and_model_including_colonful_tails() {
+        assert_eq!(
+            parse_remote_model("remote:moonshot:kimi-k2"),
+            Some(("moonshot", "kimi-k2"))
+        );
+        // openrouter vendor/model and colon-bearing tails stay intact.
+        assert_eq!(
+            parse_remote_model("remote:openrouter:anthropic/claude-3.5-sonnet"),
+            Some(("openrouter", "anthropic/claude-3.5-sonnet"))
+        );
+        assert_eq!(
+            parse_remote_model("remote:tinker:tinker://run/w/5"),
+            Some(("tinker", "tinker://run/w/5"))
+        );
+        // Non-remote and malformed hints route locally / are rejected.
+        assert_eq!(parse_remote_model("qwen3-0.6b"), None);
+        assert_eq!(parse_remote_model("remote:openai"), None);
+        assert_eq!(parse_remote_model("remote:openai:"), None);
+    }
 }
