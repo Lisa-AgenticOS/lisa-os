@@ -738,7 +738,9 @@ add_provider_row (CcLisaPanel *self, JsonObject *p)
 
   name = json_object_get_string_member_with_default (p, "display_name", id);
   base = json_object_get_string_member_with_default (p, "base_url", NULL);
-  has_cred = json_object_get_boolean_member_with_default (p, "has_credential", FALSE);
+  /* has_key = a stored API key specifically (not an OAuth sign-in), so the
+   * key controls stay honest for a provider that is only signed in. */
+  has_cred = json_object_get_boolean_member_with_default (p, "has_key", FALSE);
   builtin = json_object_get_boolean_member_with_default (p, "builtin", FALSE);
   /* Broker (ADR-0010) marks providers that support OAuth sign-in and whether
    * a usable token is stored. Defaults keep older brokers working. */

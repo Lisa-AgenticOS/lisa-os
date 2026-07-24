@@ -93,6 +93,10 @@ impl Broker {
                     "notes": p.notes,
                     "builtin": p.builtin,
                     "has_credential": has_key || connected,
+                    // A stored API key specifically (vs. an OAuth sign-in) —
+                    // lets a UI label the key controls without conflating the
+                    // two credential kinds.
+                    "has_key": has_key,
                     // The active auth mode: OAuth takes precedence over a key.
                     "auth": if connected { "oauth" } else { "key" },
                     "oauth_capable": oauth_capable,
