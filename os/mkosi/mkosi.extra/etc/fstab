@@ -1,0 +1,16 @@
+# Lisa OS static mounts (ADR-0018/0019). By PARTITION LABEL, never by UUID:
+# per-build fs-UUIDs/PARTUUIDs baked into a slot can never match the
+# persistent partitions after an A/B update (that mismatch = emergency
+# mode). Labels are identical on every build and on the installed disk.
+#
+# An fstab entry (vs a unit file) is also load-bearing against
+# systemd-gpt-auto: with /var absent from fstab, gpt-auto generates its own
+# var.mount keyed on a machine-id-derived partition UUID that exists on no
+# real disk — a 90s device timeout and emergency mode on the updated slot
+# (nightly forensics 2026-07-25). gpt-auto explicitly defers to fstab.
+#
+# /home exists only on fresh installs (repart-created, ADR-0019): nofail +
+# a short device timeout make legacy disks skip it cleanly; they keep the
+# /var/home bind (lisa-home-persist).
+PARTLABEL=var  /var  btrfs rw,nodev,suid,exec 0 0
+PARTLABEL=home /home btrfs rw,nodev,suid,exec,nofail,x-systemd.device-timeout=5s 0 0

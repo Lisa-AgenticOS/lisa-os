@@ -28,14 +28,20 @@ build and on the installed disk:
 
 - `20-var.conf` drops `MountPoint=/var` (no per-build fstab identifier) and adds
   `Label=var`.
-- A shipped `var.mount` unit
-  (`mkosi.extra/usr/lib/systemd/system/var.mount`, enabled via
-  `local-fs.target.wants/`) mounts `What=/dev/disk/by-partlabel/var` at `/var`,
-  ordered into `local-fs.target`.
+- A shipped `/etc/fstab` (mkosi.extra) carries
+  `PARTLABEL=var /var btrfs …` — **an fstab entry, not a unit file, on
+  purpose**: nightly forensics (2026-07-25) showed that with `/var` absent
+  from fstab, **systemd-gpt-auto generates its own var.mount keyed on a
+  machine-id-derived partition UUID** that exists on no real disk — a 90 s
+  device timeout and emergency mode on the updated slot even after the
+  fstab/byte-copy fixes (the mysterious constant `…4b47d0…` device wait).
+  gpt-auto explicitly defers to fstab, so the fstab line kills the phantom
+  mount deterministically on every boot of every slot.
 
-This supersedes the initial attempt (pinning the partition UUID): a pinned
-PARTUUID would still not match an *already-installed* device (its `/var` keeps
-the original UUID), whereas the label matches every existing and future install
+This supersedes two earlier attempts: pinning the partition UUID (would not
+match an already-installed device), and a `var.mount` unit in /usr (loses to
+the gpt-auto generator on some boots — generator output ranks above /usr/lib
+in the unit load path). The label matches every existing and future install
 with **no disk surgery**.
 
 ## Consequences

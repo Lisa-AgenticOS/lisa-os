@@ -22,11 +22,11 @@ systemd-repart, not baked into the image:
 - `mkosi.extra/usr/lib/repart.d/60-home.conf`: Type=home, btrfs, `Label=home`,
   Weight=100. `50-var.conf` gets Weight=300 — free disk space splits var 3 :
   home 1 (models dominate storage needs).
-- `home.mount` (by **partlabel**, per ADR-0018 — never per-build UUIDs),
-  `ConditionPathExists=/dev/disk/by-partlabel/home` so a disk without the
-  partition neither waits for a device nor fails a unit; ordered after
-  systemd-repart (a first boot sees the partition it just created) and before
-  lisa-home-persist.
+- An `/etc/fstab` line (`PARTLABEL=home /home btrfs …,nofail,
+  x-systemd.device-timeout=5s`) — by **partlabel** per ADR-0018 (never
+  per-build UUIDs), and via **fstab rather than a unit** so systemd-gpt-auto
+  defers to it (see ADR-0018's forensics). `nofail` + the 5 s device timeout
+  make a disk without the partition skip it cleanly.
 - First-login state: an empty home partition would hide the baked
   `/home/lisa` (the g-i-s suppression marker), so postinst mirrors it to
   `/usr/share/factory/home/lisa` and `tmpfiles.d/lisa-home-factory.conf`
