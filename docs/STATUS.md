@@ -16,6 +16,32 @@ claim below is enforced by CI on `main`, not aspirational.
 - Latest release: **v20260724.25** (GNOME desktop image) (runs-from-USB image + sysupdate transfer set)
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
 
+**Overnight 2026-07-24→25 (autonomous loop):**
+- **A/B update emergency-mode bug root-caused in three layers** (ADR-0018):
+  per-build /var identifiers → mount by PARTLABEL via fstab; the nightly's
+  byte-copy duplicate btrfs fsid → btrfstune -m; and systemd-gpt-auto's
+  phantom machine-id-keyed var.mount racing the fstab-generator →
+  `systemd.gpt_auto=no`, with /var, /home, and /efi as explicit fstab
+  PARTLABEL mounts. Releases are gated on the nightly's ab-sysupdate job.
+- **On-device (field iMac, .22): the Assistant chat is verified end-to-end** —
+  streamed tokens, ledgered (`inference.generate/complete`), window renders
+  with a live model picker. Two shipping bugs found live and fixed: the model
+  pool assigned llama children the daemons' own ports (kernel-allocated free
+  ports now), and GJS TextDecoder lacks `{stream:true}` (boundary-safe
+  incremental decode now). Auto-suspend disabled and masked in-image — the
+  machine cannot resume from suspend (amdgpu), so it never sleeps.
+- **Apps wave:** Assistant Stop/export/persisted history (via the new
+  contextd), Ledger free-text search, Notes `search_notes`, and the §5.8
+  **Terminal integration** (`lisa explain`, `lisa suggest`, Ctrl+G with a
+  review gate). Plus: true SSE streaming through the remoted broker,
+  double-tap-Shift summon (fcitx5), `dev.lisaos.Context1` (M3's missing
+  IPC surface), a dedicated /home partition for fresh installs (ADR-0019),
+  and the **app-update channel** (`lisa apps update`, ADR-0020 — app updates
+  without an image release).
+- **Apple Silicon:** the full Track L e2e **passes natively on aarch64**
+  (podman/ALARM on the dev Mac) — the userland half of the aarch64 lane is
+  proven; the image/boot half is the open task.
+
 **Recent (2026-07-24, after v25):**
 - **Intelligence panel** in the gnome-control-center fork works (fixed the
   GNOME-50 subpage activation trap, ADR-0012) — subpages (Providers / Local
