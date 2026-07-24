@@ -10,6 +10,9 @@
 
 enable lisa-inferenced.service
 enable lisa-model-store.service
+# Persist /home onto the durable var partition before login (settings, the
+# wallpaper, and the SSH key survive A/B updates). Boot-safe.
+enable lisa-home-persist.service
 enable lisa-boot-report.service
 enable gdm.service
 # Boot-splash lifecycle: keep the units that quit Plymouth and hand the

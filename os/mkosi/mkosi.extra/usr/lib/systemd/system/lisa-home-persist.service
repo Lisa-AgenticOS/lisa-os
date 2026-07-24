@@ -1,0 +1,28 @@
+# Back /home with the durable `var` partition so GNOME settings (mouse speed,
+# power/suspend toggles), the wallpaper, and the SSH key survive A/B updates.
+# /home is otherwise part of the per-slot root and resets on every reboot into
+# a new slot (field report 2026-07-24). See /usr/lib/lisa/persist-home.sh.
+#
+# Boot-safe: on any problem /home stays the per-slot directory (fully usable,
+# just not persistent) and the unit never blocks boot. Runs before gdm and
+# user sessions so the bind is in place before anyone logs in. Companion to
+# lisa-model-store.service (same durable-var idiom).
+#
+# One-time: enabling this seeds /var/home from the slot's baked /home, so
+# settings from a pre-persistence slot are not carried over — persistence
+# begins here and holds from this release onward.
+
+[Unit]
+Description=Back /home with the durable var partition (settings persist across updates)
+After=local-fs.target
+Before=systemd-user-sessions.service gdm.service display-manager.service
+# Skip if /home is already its own mount (e.g. a dedicated home partition).
+ConditionPathIsMountPoint=!/home
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/lisa/persist-home.sh
+
+[Install]
+WantedBy=multi-user.target
