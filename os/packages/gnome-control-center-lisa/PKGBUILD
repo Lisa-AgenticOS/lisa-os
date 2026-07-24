@@ -49,10 +49,12 @@ source=(
   "cc-lisa-panel.c"
   "cc-lisa-panel-meson.build"
   "gnome-lisa-panel.desktop.in"
+  "lisa-intelligence-symbolic.svg"
 )
 b2sums=('94d45dc219e1f1e533d66e2cc9ce5daadc8030ccc2466befc7ad3f79ea8fa8928648878c4caf8b0170ea345b8a1bf3d11e14237e37175fa15f97a7fc7d92dde7'
         'SKIP'
         'a67bd121284dd5546607f21a966ae7e73a05b5cd5e90d925fa0ba710e7c877f85a7c700dded0e050ce297884201f07177cd975c5501cc62fe35c27e5285bdfa3'
+        'SKIP'
         'SKIP'
         'SKIP'
         'SKIP'
@@ -85,6 +87,8 @@ prepare() {
   install -m644 "$srcdir"/cc-lisa-panel-meson.build  panels/lisa/meson.build
   install -m644 "$srcdir"/gnome-lisa-panel.desktop.in \
     panels/lisa/gnome-lisa-panel.desktop.in
+  install -m644 "$srcdir"/lisa-intelligence-symbolic.svg \
+    panels/lisa/lisa-intelligence-symbolic.svg
 
   # Regression guard (ADR-0012): X-GNOME-SystemSettings in the panel
   # .desktop makes GNOME 50 treat `lisa` as a `system` subpage — the

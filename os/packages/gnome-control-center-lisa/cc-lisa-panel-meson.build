@@ -16,6 +16,14 @@ i18n.merge_file(
   install_dir: control_center_desktopdir
 )
 
+# The spark AI icon shown for the panel in the sidebar. Symbolic → recolored
+# by GTK. Named to match Icon= in the .desktop.
+install_data(
+  'lisa-intelligence-symbolic.svg',
+  install_dir: join_paths(get_option('prefix'), get_option('datadir'),
+                          'icons', 'hicolor', 'scalable', 'apps')
+)
+
 sources = files('cc-lisa-panel.c')
 
 cflags += [

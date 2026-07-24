@@ -2,15 +2,17 @@
  *
  * PLAN §5.3 (Settings panel), §5.11, §8; ADR-0008, ADR-0012.
  *
- * One surface, three groups on a single AdwPreferencesPage:
- *   - Cloud providers: bring-your-own OpenAI-compatible endpoints and
- *     their write-only API keys, read live from the lisa-remoted broker
- *     over the session bus (org.lisa.Remote1). Add/remove providers, set
- *     or clear a key. Everything here can cause egress and is marked in
- *     the Ledger.
- *   - Privacy & offload: a per-scope "may offload" switch. Nothing leaves
- *     this machine until a scope is switched on; remote models need the
- *     Prompts scope. Also from the broker.
+ * A root menu of two rows (System-style list-in-list) over an
+ * AdwNavigationView, each pushing a subpage:
+ *   - Providers: bring-your-own OpenAI-compatible endpoints and their
+ *     write-only API keys, read live from the lisa-remoted broker over the
+ *     session bus (org.lisa.Remote1). Add/remove providers, set or clear a
+ *     key, and — for OAuth-capable providers (Anthropic, OpenAI) — "Sign in
+ *     with Claude"/"Sign in with ChatGPT" via BeginLogin (the broker runs
+ *     the PKCE flow; we open the browser and react to LoginCompleted). Also
+ *     the per-scope "may offload" consent switch: nothing leaves this
+ *     machine until a scope is switched on; remote models need the Prompts
+ *     scope. Everything here can cause egress and is marked in the Ledger.
  *   - Local models: `lisa models catalog --json` (§8 hardware-aware fit),
  *     each row badged by what runs on THIS machine, with a one-click Get
  *     (`lisa models get`). Local inference never leaves the machine.
@@ -44,7 +46,9 @@ struct _CcLisaPanel
 {
   CcPanel parent_instance;
 
-  AdwPreferencesPage  *page;
+  AdwNavigationView   *nav;             /* root menu → Providers / Local models */
+  AdwPreferencesPage  *page;            /* Providers subpage: providers+consent */
+  AdwPreferencesPage  *models_page;     /* Local models subpage                 */
   AdwToastOverlay     *toasts;
 
   AdwPreferencesGroup *providers_group; /* stable; rows rebuilt from State */
@@ -276,12 +280,12 @@ refresh_models (CcLisaPanel *self)
   g_autoptr (GSubprocess) proc = NULL;
 
   if (self->models_group)
-    adw_preferences_page_remove (self->page, self->models_group);
+    adw_preferences_page_remove (self->models_page, self->models_group);
 
   self->models_group = ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
   adw_preferences_group_set_title (self->models_group, _("Local models"));
   adw_preferences_group_set_description (self->models_group, _("Reading catalog…"));
-  adw_preferences_page_add (self->page, self->models_group);
+  adw_preferences_page_add (self->models_page, self->models_group);
 
   proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                              G_SUBPROCESS_FLAGS_STDERR_SILENCE,
@@ -630,13 +634,102 @@ on_key_clicked (GtkButton *button, gpointer data)
   adw_dialog_present (dialog, GTK_WIDGET (self));
 }
 
+/* --- OAuth sign-in (Anthropic/OpenAI) --------------------------------- */
+
+/* The broker owns the flow (it is the only daemon with egress): BeginLogin
+ * starts a PKCE + localhost-callback exchange and returns the authorize
+ * URL, which we open in the user's browser. The broker emits LoginCompleted
+ * when the exchange lands, which drives a toast + State() re-read. */
+
+static const gchar *
+provider_signin_verb (const gchar *id)
+{
+  if (g_strcmp0 (id, "anthropic") == 0)
+    return _("Sign in with Claude");
+  if (g_strcmp0 (id, "openai") == 0)
+    return _("Sign in with ChatGPT");
+  return _("Sign in");
+}
+
+static void
+on_beginlogin_done (GObject *source, GAsyncResult *res, gpointer data)
+{
+  g_autoptr (GError) error = NULL;
+  g_autoptr (GVariant) reply =
+    g_dbus_proxy_call_finish (G_DBUS_PROXY (source), res, &error);
+  const gchar *url = NULL;
+
+  if (!reply)
+    {
+      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+        return;
+      lisa_toast (CC_LISA_PANEL (data), error->message);
+      return;
+    }
+
+  g_variant_get (reply, "(&s)", &url);
+  if (url && *url)
+    g_app_info_launch_default_for_uri (url, NULL, NULL);
+}
+
+static void
+on_signin_clicked (GtkButton *button, gpointer data)
+{
+  CcLisaPanel *self = CC_LISA_PANEL (data);
+  const gchar *id = g_object_get_data (G_OBJECT (button), "pid");
+
+  if (!self->remote || !id)
+    return;
+
+  lisa_toast (self, _("Opening your browser to sign in…"));
+  g_dbus_proxy_call (self->remote, "BeginLogin", g_variant_new ("(s)", id),
+                     G_DBUS_CALL_FLAGS_NONE, REMOTE_TIMEOUT_MS,
+                     self->cancellable, on_beginlogin_done, self);
+}
+
+static void
+on_logout_clicked (GtkButton *button, gpointer data)
+{
+  CcLisaPanel *self = CC_LISA_PANEL (data);
+  const gchar *id = g_object_get_data (G_OBJECT (button), "pid");
+
+  if (!self->remote || !id)
+    return;
+
+  g_dbus_proxy_call (self->remote, "Logout", g_variant_new ("(s)", id),
+                     G_DBUS_CALL_FLAGS_NONE, REMOTE_TIMEOUT_MS,
+                     self->cancellable, on_mutate_done, self);
+}
+
+/* The broker's LoginCompleted(provider, ok, detail): toast the outcome and
+ * re-read State so the row flips to "Signed in". */
+static void
+on_remote_signal (GDBusProxy  *proxy,
+                  const gchar *sender,
+                  const gchar *signal,
+                  GVariant    *params,
+                  gpointer     data)
+{
+  CcLisaPanel *self = CC_LISA_PANEL (data);
+  const gchar *pid = NULL, *detail = NULL;
+  gboolean ok = FALSE;
+
+  if (g_strcmp0 (signal, "LoginCompleted") != 0)
+    return;
+
+  g_variant_get (params, "(&sb&s)", &pid, &ok, &detail);
+  lisa_toast (self, (detail && *detail) ? detail
+                      : (ok ? _("Signed in.") : _("Sign-in failed.")));
+  refresh_state (self);
+}
+
 static void
 add_provider_row (CcLisaPanel *self, JsonObject *p)
 {
   const gchar *id = json_object_get_string_member_with_default (p, "id", NULL);
   const gchar *name;
   const gchar *base;
-  gboolean has_cred, builtin;
+  gboolean has_cred, builtin, oauth_capable, connected;
   g_autoptr (GString) subtitle = NULL;
   GtkWidget *row, *pill, *keybtn;
 
@@ -647,8 +740,15 @@ add_provider_row (CcLisaPanel *self, JsonObject *p)
   base = json_object_get_string_member_with_default (p, "base_url", NULL);
   has_cred = json_object_get_boolean_member_with_default (p, "has_credential", FALSE);
   builtin = json_object_get_boolean_member_with_default (p, "builtin", FALSE);
+  /* Broker (ADR-0010) marks providers that support OAuth sign-in and whether
+   * a usable token is stored. Defaults keep older brokers working. */
+  oauth_capable = json_object_get_boolean_member_with_default (p, "oauth_capable", FALSE);
+  connected = json_object_get_boolean_member_with_default (p, "connected", FALSE);
 
   subtitle = g_string_new ((base && *base) ? base : _("endpoint not configured"));
+  if (oauth_capable)
+    g_string_append_printf (subtitle, " · %s",
+                            connected ? _("signed in") : _("not signed in"));
   g_string_append_printf (subtitle, " · %s", has_cred ? _("key set") : _("no key"));
   if (!builtin)
     g_string_append_printf (subtitle, " · %s", _("custom"));
@@ -657,11 +757,35 @@ add_provider_row (CcLisaPanel *self, JsonObject *p)
   adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), name);
   adw_action_row_set_subtitle (ADW_ACTION_ROW (row), subtitle->str);
 
-  pill = gtk_label_new (has_cred ? _("Key set") : _("No key"));
-  gtk_widget_set_valign (pill, GTK_ALIGN_CENTER);
-  gtk_widget_add_css_class (pill, "caption");
-  gtk_widget_add_css_class (pill, has_cred ? "success" : "dim-label");
-  adw_action_row_add_suffix (ADW_ACTION_ROW (row), pill);
+  {
+    /* An OAuth provider's headline status is its sign-in, not the key. */
+    gboolean pill_ok = oauth_capable ? connected : has_cred;
+    const gchar *pill_text = oauth_capable
+      ? (connected ? _("Signed in") : _("Not signed in"))
+      : (has_cred ? _("Key set") : _("No key"));
+    pill = gtk_label_new (pill_text);
+    gtk_widget_set_valign (pill, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class (pill, "caption");
+    gtk_widget_add_css_class (pill, pill_ok ? "success" : "dim-label");
+    adw_action_row_add_suffix (ADW_ACTION_ROW (row), pill);
+  }
+
+  /* Sign in with Claude / ChatGPT — for oauth-capable providers, alongside
+   * the manual API key below. */
+  if (oauth_capable)
+    {
+      GtkWidget *auth = gtk_button_new_with_label (
+        connected ? _("Sign out") : provider_signin_verb (id));
+      gtk_widget_set_valign (auth, GTK_ALIGN_CENTER);
+      if (!connected)
+        gtk_widget_add_css_class (auth, "suggested-action");
+      g_object_set_data_full (G_OBJECT (auth), "pid", g_strdup (id), g_free);
+      g_signal_connect (auth, "clicked",
+                        G_CALLBACK (connected ? on_logout_clicked
+                                              : on_signin_clicked),
+                        self);
+      adw_action_row_add_suffix (ADW_ACTION_ROW (row), auth);
+    }
 
   keybtn = gtk_button_new_with_label (has_cred ? _("Replace key…") : _("Set key…"));
   gtk_widget_set_valign (keybtn, GTK_ALIGN_CENTER);
@@ -870,6 +994,7 @@ on_proxy_ready (GObject *source, GAsyncResult *res, gpointer data)
 
   self = CC_LISA_PANEL (data);
   self->remote = proxy;
+  g_signal_connect (proxy, "g-signal", G_CALLBACK (on_remote_signal), self);
   refresh_state (self);
 }
 
@@ -900,20 +1025,71 @@ cc_lisa_panel_class_init (CcLisaPanelClass *klass)
   object_class->dispose = cc_lisa_panel_dispose;
 }
 
+/* Root-menu row → push its subpage (like the System panel's list-in-list). */
+static void
+on_menu_row_activated (AdwActionRow *row, gpointer data)
+{
+  CcLisaPanel *self = CC_LISA_PANEL (data);
+  const gchar *tag = g_object_get_data (G_OBJECT (row), "nav-tag");
+
+  if (self->nav && tag)
+    adw_navigation_view_push_by_tag (self->nav, tag);
+}
+
+/* Build one root-menu row: title/subtitle, an icon, a chevron, activatable,
+ * and tagged with the subpage it pushes. */
+static GtkWidget *
+menu_row_new (CcLisaPanel *self,
+              const gchar *title,
+              const gchar *subtitle,
+              const gchar *icon,
+              const gchar *tag)
+{
+  GtkWidget *row = adw_action_row_new ();
+
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), title);
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (row), subtitle);
+  adw_action_row_add_prefix (ADW_ACTION_ROW (row),
+                             gtk_image_new_from_icon_name (icon));
+  adw_action_row_add_suffix (ADW_ACTION_ROW (row),
+                             gtk_image_new_from_icon_name ("go-next-symbolic"));
+  gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), TRUE);
+  g_object_set_data_full (G_OBJECT (row), "nav-tag", g_strdup (tag), g_free);
+  g_signal_connect (row, "activated", G_CALLBACK (on_menu_row_activated), self);
+  return row;
+}
+
+/* Wrap a preferences page in a titled, tagged AdwNavigationPage (its own
+ * header bar; AdwNavigationView adds the back button on push). */
+static AdwNavigationPage *
+subpage_new (GtkWidget *content, const gchar *title, const gchar *tag)
+{
+  GtkWidget *toolbar = adw_toolbar_view_new ();
+  AdwNavigationPage *page;
+
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar), adw_header_bar_new ());
+  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar), content);
+  page = adw_navigation_page_new (toolbar, title);
+  adw_navigation_page_set_tag (page, tag);
+  return page;
+}
+
 static void
 cc_lisa_panel_init (CcLisaPanel *self)
 {
-  GtkWidget *toolbar_view = adw_toolbar_view_new ();
-  GtkWidget *header = adw_header_bar_new ();
+  GtkWidget *root_page, *menu_group;
+  AdwNavigationPage *root_nav, *providers_nav, *models_nav;
 
   self->cancellable = g_cancellable_new ();
   self->provider_rows = g_ptr_array_new ();
   self->consent_rows = g_ptr_array_new ();
   self->known_ids = g_ptr_array_new_with_free_func (g_free);
   self->page = ADW_PREFERENCES_PAGE (adw_preferences_page_new ());
+  self->models_page = ADW_PREFERENCES_PAGE (adw_preferences_page_new ());
   self->toasts = ADW_TOAST_OVERLAY (adw_toast_overlay_new ());
+  self->nav = ADW_NAVIGATION_VIEW (adw_navigation_view_new ());
 
-  /* Cloud providers — rows come from the broker's State(). */
+  /* --- Providers subpage: Cloud providers + Privacy & offload -------- */
   self->providers_group = ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
   adw_preferences_group_set_title (self->providers_group, _("Cloud providers"));
   adw_preferences_group_set_description (
@@ -931,7 +1107,6 @@ cc_lisa_panel_init (CcLisaPanel *self)
                                            self->add_provider_btn);
   adw_preferences_page_add (self->page, self->providers_group);
 
-  /* Privacy & offload — per-scope consent from may_offload. */
   self->consent_group = ADW_PREFERENCES_GROUP (adw_preferences_group_new ());
   adw_preferences_group_set_title (self->consent_group, _("Privacy & offload"));
   adw_preferences_group_set_description (
@@ -941,8 +1116,33 @@ cc_lisa_panel_init (CcLisaPanel *self)
       "egress and is marked in the Ledger."));
   adw_preferences_page_add (self->page, self->consent_group);
 
-  /* Local models — kept last; its group is (re)added on every refresh. */
+  /* Local models subpage — its group is (re)added on every refresh. */
   refresh_models (self);
+
+  /* --- Root menu: two rows into the subpages (System-style) ---------- */
+  menu_group = adw_preferences_group_new ();
+  adw_preferences_group_add (
+    ADW_PREFERENCES_GROUP (menu_group),
+    menu_row_new (self, _("Providers"),
+                  _("Cloud sign-in, API keys, and what may leave this machine"),
+                  "network-transmit-receive-symbolic", "providers"));
+  adw_preferences_group_add (
+    ADW_PREFERENCES_GROUP (menu_group),
+    menu_row_new (self, _("Local models"),
+                  _("Models that run on this machine — never leave it"),
+                  "computer-symbolic", "models"));
+  root_page = adw_preferences_page_new ();
+  adw_preferences_page_add (ADW_PREFERENCES_PAGE (root_page),
+                            ADW_PREFERENCES_GROUP (menu_group));
+
+  /* Root added FIRST so AdwNavigationView shows it; subpages are then
+   * available for push_by_tag. */
+  root_nav      = subpage_new (root_page, _("Intelligence"), "root");
+  providers_nav = subpage_new (GTK_WIDGET (self->page), _("Providers"), "providers");
+  models_nav    = subpage_new (GTK_WIDGET (self->models_page), _("Local models"), "models");
+  adw_navigation_view_add (self->nav, root_nav);
+  adw_navigation_view_add (self->nav, providers_nav);
+  adw_navigation_view_add (self->nav, models_nav);
 
   /* Show the safe default until the broker proxy resolves, then read
    * real state (or keep the broker-absent fallback). */
@@ -953,12 +1153,9 @@ cc_lisa_panel_init (CcLisaPanel *self)
                             REMOTE_BUS_NAME, REMOTE_OBJECT_PATH, REMOTE_IFACE,
                             self->cancellable, on_proxy_ready, self);
 
-  adw_toast_overlay_set_child (self->toasts, GTK_WIDGET (self->page));
-
-  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), header);
-  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view),
-                                GTK_WIDGET (self->toasts));
+  adw_toast_overlay_set_child (self->toasts, GTK_WIDGET (self->nav));
 
   adw_navigation_page_set_title (ADW_NAVIGATION_PAGE (self), _("Intelligence"));
-  adw_navigation_page_set_child (ADW_NAVIGATION_PAGE (self), toolbar_view);
+  adw_navigation_page_set_child (ADW_NAVIGATION_PAGE (self),
+                                 GTK_WIDGET (self->toasts));
 }

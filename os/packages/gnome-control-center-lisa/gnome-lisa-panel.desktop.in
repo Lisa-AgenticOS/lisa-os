@@ -3,7 +3,7 @@ Name=Intelligence
 Comment=Local models, model providers, and what may leave this machine
 Exec=gnome-control-center lisa
 # Translators: Do NOT translate or transliterate this text (this is an icon file name)!
-Icon=preferences-system-symbolic
+Icon=lisa-intelligence-symbolic
 Terminal=false
 Type=Application
 NoDisplay=true
