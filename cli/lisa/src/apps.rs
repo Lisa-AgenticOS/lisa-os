@@ -98,26 +98,36 @@ pub fn update() -> anyhow::Result<()> {
         bail!("checksum mismatch for {tar_name}: expected {expected}, got {got}");
     }
 
-    // Unpack into a fresh version dir (tar handles zstd via --zstd).
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest)?;
-    }
-    std::fs::create_dir_all(&dest)?;
-    let tmp_tar = dest.with_extension("tar.zst.partial");
+    // Stage-then-rename (issue #17): unpack into a hidden staging dir and
+    // only rename it into place once complete, so a kill/power-loss
+    // mid-unpack never leaves a partial tree that status/rollback would
+    // trust. Hidden names are ignored by installed_versions. The pid in
+    // the name keeps concurrent runs from clobbering each other's staging;
+    // the final flip stays atomic either way.
+    let staging = versions.join(format!(".staging-{}-{}", ver, std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    let tmp_tar = staging.join("payload.tar.zst");
+    let unpack_dir = staging.join("tree");
+    std::fs::create_dir_all(&unpack_dir)?;
     std::fs::write(&tmp_tar, &body)?;
     let status = std::process::Command::new("tar")
         .arg("--zstd")
         .arg("-xf")
         .arg(&tmp_tar)
         .arg("-C")
-        .arg(&dest)
+        .arg(&unpack_dir)
         .status()
         .context("running tar (needs zstd support)")?;
-    let _ = std::fs::remove_file(&tmp_tar);
     if !status.success() {
-        let _ = std::fs::remove_dir_all(&dest);
+        let _ = std::fs::remove_dir_all(&staging);
         bail!("unpacking {tar_name} failed ({status})");
     }
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    std::fs::rename(&unpack_dir, &dest).context("moving the unpacked tree into place")?;
+    let _ = std::fs::remove_dir_all(&staging);
 
     flip_current(&base, &ver)?;
     println!("apps tree {ver} is current — running apps pick it up on their next launch");
@@ -184,8 +194,11 @@ fn installed_versions(base: &Path) -> anyhow::Result<Vec<String>> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(base.join("versions")) {
         for e in entries.flatten() {
-            if e.path().is_dir() {
-                out.push(e.file_name().to_string_lossy().into_owned());
+            let name = e.file_name().to_string_lossy().into_owned();
+            // Hidden entries are in-flight staging dirs (issue #17) —
+            // never report them as installed.
+            if e.path().is_dir() && !name.starts_with('.') {
+                out.push(name);
             }
         }
     }

@@ -468,6 +468,8 @@ impl Broker {
             start_id: p.start_id,
             started: Instant::now(),
             done: false,
+            forwarded_tokens: 0,
+            forwarded_chars: 0,
         };
         let upstream = match proxy::send_stream(&self.http, &p.upstream).await {
             Ok(s) => s,
@@ -510,6 +512,8 @@ impl Broker {
                             {
                                 chunks += 1;
                                 chars += t.chars().count() as i64;
+                                completion.forwarded_tokens = chunks;
+                                completion.forwarded_chars = chars;
                             }
                             yield c.to_string();
                         }
@@ -562,6 +566,11 @@ struct StreamCompletion {
     start_id: i64,
     started: Instant,
     done: bool,
+    /// Forwarded so far — updated per chunk, so an abort (consumer drop,
+    /// e.g. the Assistant's Stop button) ledgers the REAL counts instead
+    /// of 0/0 (issue #18).
+    forwarded_tokens: i64,
+    forwarded_chars: i64,
 }
 
 impl StreamCompletion {
@@ -596,7 +605,8 @@ impl StreamCompletion {
 impl Drop for StreamCompletion {
     fn drop(&mut self) {
         if !self.done {
-            self.complete("aborted", Some("consumer disconnected mid-stream"), 0, 0);
+            let (t, c) = (self.forwarded_tokens, self.forwarded_chars);
+            self.complete("aborted", Some("consumer disconnected mid-stream"), t, c);
         }
     }
 }
