@@ -17,7 +17,7 @@ header (and a bottom bar when narrow):
   egress-marked. If the CLI/daemon can't answer, the page says so instead
   of guessing capacity.
 - **Providers** — the `lisa-remoted` broker over D-Bus
-  (`org.lisa.Remote1`): one card per provider (registry rows: OpenAI,
+  (`dev.lisaos.Remote1`): one card per provider (registry rows: OpenAI,
   Anthropic, Tinker, Together.ai, Fireworks.ai, Hugging Face + user-added
   OpenAI-compat URLs) with its **brand logo** (bundled
   `assets/provider-logos/`, recolored to the theme; a generic mark for
@@ -62,7 +62,7 @@ header (and a bottom bar when narrow):
   `currentColor`, recolored to the theme at load.
 - `tests/model.test.js` — unit tests via `shell/testing/harness.js`
   (`just shell-test`; runs under gjs, node, or macOS jsc).
-- `org.lisa.Settings.desktop` — launcher entry.
+- `app.lisaos.Settings.desktop` — launcher entry.
 
 ## Run (dev)
 

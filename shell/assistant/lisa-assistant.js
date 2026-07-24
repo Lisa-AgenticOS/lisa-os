@@ -1,12 +1,12 @@
 #!/usr/bin/env -S gjs -m
 // Lisa Assistant — the persistent chat window (this session's ADR; PLAN
-// §5.7.1). A second thin frontend of the org.lisa.Overlay1 backend: it sends
+// §5.7.1). A second thin frontend of the dev.lisaos.Overlay1 backend: it sends
 // a multi-turn chat Ask (lane:"chat") and renders the streamed Token signals,
 // exactly as the transient overlay does — but with history, a model picker
 // (local + cloud), and an egress marker on turns that leave the machine.
 //
 // Models: local from lisa-inferenced `GET /v1/models`; cloud from
-// org.lisa.Remote1 (providers that are signed in or hold a key → their
+// dev.lisaos.Remote1 (providers that are signed in or hold a key → their
 // ListModels). Cloud turns route as `remote:<provider>:<model>` and are
 // ledgered `remote.*` by the broker. This app renders; the daemons enforce.
 
@@ -29,9 +29,9 @@ Gio._promisify(Gio.DBusConnection.prototype, 'call');
 
 const INFERENCED_URL =
     GLib.getenv('LISA_INFERENCED_URL') ?? 'http://127.0.0.1:7778';
-const REMOTED_NAME = 'org.lisa.Remoted';        // well-known name (≠ iface)
-const REMOTED_PATH = '/org/lisa/Remote1';
-const REMOTED_IFACE = 'org.lisa.Remote1';
+const REMOTED_NAME = 'dev.lisaos.Remoted';        // well-known name (≠ iface)
+const REMOTED_PATH = '/dev/lisaos/Remote1';
+const REMOTED_IFACE = 'dev.lisaos.Remote1';
 const EGRESS_COLOR = '#E66100';                 // the Ledger "leaves" colour
 
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
@@ -102,7 +102,7 @@ class AssistantWindow {
             'in Settings → Intelligence for Claude / GPT.');
     }
 
-    // ---- backend (org.lisa.Overlay1) -----------------------------------
+    // ---- backend (dev.lisaos.Overlay1) -----------------------------------
 
     _connectBackend() {
         try {
@@ -316,7 +316,7 @@ class AssistantWindow {
     }
 }
 
-const app = new Adw.Application({application_id: 'org.lisa.Assistant'});
+const app = new Adw.Application({application_id: 'app.lisaos.Assistant'});
 app.connect('activate', () => {
     (app.activeWindow ?? new AssistantWindow(app).window).present();
 });

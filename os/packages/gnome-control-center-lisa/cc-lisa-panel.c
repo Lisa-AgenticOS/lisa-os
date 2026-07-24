@@ -6,7 +6,7 @@
  * AdwNavigationView, each pushing a subpage:
  *   - Providers: bring-your-own OpenAI-compatible endpoints and their
  *     write-only API keys, read live from the lisa-remoted broker over the
- *     session bus (org.lisa.Remote1). Add/remove providers, set or clear a
+ *     session bus (dev.lisaos.Remote1). Add/remove providers, set or clear a
  *     key, and — for OAuth-capable providers (Anthropic, OpenAI) — "Sign in
  *     with Claude"/"Sign in with ChatGPT" via BeginLogin (the broker runs
  *     the PKCE flow; we open the browser and react to LoginCompleted). Also
@@ -17,7 +17,7 @@
  *     each row badged by what runs on THIS machine, with a one-click Get
  *     (`lisa models get`). Local inference never leaves the machine.
  *
- * Providers + consent used to live in a standalone org.lisa.Settings app
+ * Providers + consent used to live in a standalone app.lisaos.Settings app
  * behind an "Open…" button; they are now native here and that app is
  * hidden (NoDisplay). If the broker is not running, the providers group
  * shows a single inline "broker not running" row and disables the write
@@ -37,9 +37,9 @@
 #include "cc-lisa-panel.h"
 
 /* The broker's management surface (ADR-0008 §1). Session bus. */
-#define REMOTE_BUS_NAME    "org.lisa.Remoted"
-#define REMOTE_OBJECT_PATH "/org/lisa/Remote1"
-#define REMOTE_IFACE       "org.lisa.Remote1"
+#define REMOTE_BUS_NAME    "dev.lisaos.Remoted"
+#define REMOTE_OBJECT_PATH "/dev/lisaos/Remote1"
+#define REMOTE_IFACE       "dev.lisaos.Remote1"
 #define REMOTE_TIMEOUT_MS  3000
 
 struct _CcLisaPanel
@@ -302,7 +302,7 @@ refresh_models (CcLisaPanel *self)
 }
 
 /* ------------------------------------------------------------------ */
-/* Cloud providers + Privacy & offload (native, over org.lisa.Remote1) */
+/* Cloud providers + Privacy & offload (native, over dev.lisaos.Remote1) */
 /* ------------------------------------------------------------------ */
 
 /* A modal dialog's context: entries + provider id, freed with the

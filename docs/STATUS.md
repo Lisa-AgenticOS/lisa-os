@@ -27,7 +27,7 @@ claim below is enforced by CI on `main`, not aspirational.
   has structural bounds (min/maxItems, min/maxLength) — unbounded rules
   let small models spiral. Server re-samples invalid guided output.
 - QoS scheduler: interactive preempts background streams < 250 ms.
-- `org.lisa.Inference1` D-Bus surface: OpenSession → (path, fd), tokens
+- `dev.lisaos.Inference1` D-Bus surface: OpenSession → (path, fd), tokens
   stream over the fd to EOF, Embed/Cancel/Close (tested over zbus p2p).
   Ships as the per-user `lisa-inferenced-dbus.service` (the hardened
   system unit can't reach the login session's bus; companion owns 7778,
@@ -99,25 +99,25 @@ Pantheon. Feeds the M4 shell ADR.
   hand-syncing files is dead — fixes ship via the release channel and
   the box pulls them with `lisa update` (sysupdate). First live M4 run
   verified: extensions ACTIVE (after the shell-version fix),
-  `org.lisa.Overlay1.UI` owned by gnome-shell, Summon → overlay shows →
+  `dev.lisaos.Overlay1.UI` owned by gnome-shell, Summon → overlay shows →
   ledgered context retrieval. `lisa install <disk>` already done.
 - **iMac as CI runner:** not yet registered (needs a fresh registration
   token minted at the machine); unlocks perf gates + the Flutter Linux
   spike half + real M4 desktop work.
 - **M1 remainder:** LoRA hot-swap; latency budgets on reference hardware.
 - **M2:** portal core landed (branch `portal-m2`, §5.5/ADR-0008):
-  `org.lisa.Portal` session service — per-app identity, first-use
+  `dev.lisaos.Portal` session service — per-app identity, first-use
   consent (fail-closed), append-only grant store, quotas, Ledger
   attribution, revoke-kills-live-session; tested over zbus p2p incl.
-  end-to-end against `org.lisa.Inference1`. Still open: Flatpak demo
+  end-to-end against `dev.lisaos.Inference1`. Still open: Flatpak demo
   app on a live desktop, shell consent dialog (M4), Settings UI;
   `liblisa` SDK guided-gen samples.
 - **M3 next:** embedding pipeline + hybrid ranking (sqlite-vec), file
   watchers, ACL fuzz suite, the portal Context/Memory surfaces.
 - **M4:** first passes landed (branch `m4-shell`): overlay backend
-  (`org.lisa.Overlay1`) + GNOME extension, launcher search provider
+  (`dev.lisaos.Overlay1`) + GNOME extension, launcher search provider
   (qalc + context lanes + **"Ask Lisa" handoff** — every query can
-  summon the overlay via the frontend-owned `org.lisa.Overlay1.UI`
+  summon the overlay via the frontend-owned `dev.lisaos.Overlay1.UI`
   name, Spotlight-style, prompt pre-submitted; promoted when the query
   reads like a question), Ledger app (GTK4/GJS), fcitx5-lisa proofread
   addon (ADR-0007) — pure logic unit-tested everywhere (`just
@@ -138,7 +138,7 @@ Pantheon. Feeds the M4 shell ADR.
   escalation (untrusted or empty chain escalates one tier, fail closed),
   Ledger attribution on every call path, and the undo journal
   (`agent-journal.db`) with manifest-declared `$input`/`$result`
-  compensations behind `lisa undo`. D-Bus surface `org.lisa.Agent1`
+  compensations behind `lisa undo`. D-Bus surface `dev.lisaos.Agent1`
   (ListTools/Discover/RequestCall/Confirm/Undo + ConfirmationRequested),
   tested over zbus p2p on macOS. `tests/injection-suite` seeded: 150 of
   the 500+ corpus, bus-layer gate green (0 unconfirmed privileged
@@ -148,7 +148,7 @@ Pantheon. Feeds the M4 shell ADR.
   CLI verbs, btrfs-snapshot file-op compensation, first-party app tools,
   model-in-the-loop injection layer — so the §5.4 demo flow is proven in
   parts, not yet end-to-end. Overlay backend swaps its direct
-  `org.lisa.Inference1` calls for `RequestCall` when it becomes an Agent
+  `dev.lisaos.Inference1` calls for `RequestCall` when it becomes an Agent
   Bus client.
 - **Hardening gaps (noted in releases):** sysupdate `Verify=no` until
   signed manifests (M1); `/etc` not overlaid yet; Arch base not yet

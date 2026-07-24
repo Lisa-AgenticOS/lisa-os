@@ -3,7 +3,7 @@
 //
 // Pure logic (no GTK imports; unit-tests under gjs/node/jsc) over two
 // data sources:
-//   • the broker's org.lisa.Remote1 `State` JSON — {providers:[{id,
+//   • the broker's dev.lisaos.Remote1 `State` JSON — {providers:[{id,
 //     display_name, base_url, auth, dialect, notes, builtin,
 //     has_credential, oauth_available}], may_offload:{scope:bool}};
 //   • `lisa models catalog --json` — {profile:{total_ram_gb, tier, …},

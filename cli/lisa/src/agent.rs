@@ -2,7 +2,7 @@
 //! ADR-0013).
 //!
 //! `do` is the whole intent pipeline in one verb: fetch the tool catalog
-//! from `org.lisa.Agent1`, run the liblisa intent router (stage 1: pick a
+//! from `dev.lisaos.Agent1`, run the liblisa intent router (stage 1: pick a
 //! tool, grammar-guaranteed; stage 2: fill its args against the tool's own
 //! schema), then hand the call to the bus, where tiers, provenance, undo,
 //! and the Ledger apply. The CLI is a *trusted-user* surface: provenance is
@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use zbus::blocking::Connection;
 use zbus::zvariant::OwnedValue;
 
-const DEST: &str = "org.lisa.Agent1";
-const PATH: &str = "/org/lisa/Agent1";
-const IFACE: &str = "org.lisa.Agent1";
+const DEST: &str = "dev.lisaos.Agent1";
+const PATH: &str = "/dev/lisaos/Agent1";
+const IFACE: &str = "dev.lisaos.Agent1";
 
 /// Session-bus connection to lisa-agentd, with a CLI-appropriate error.
 fn connect() -> anyhow::Result<Connection> {
@@ -245,17 +245,17 @@ mod tests {
     #[test]
     fn parse_catalog_maps_list_tools_json() {
         let raw = r#"[
-            {"app_id":"org.lisa.notes","name":"create_note","tier":"write",
+            {"app_id":"app.lisaos.notes","name":"create_note","tier":"write",
              "description":"Create a note","undoable":true,
              "input_schema":{"type":"object","properties":{"title":{"type":"string"}},
                              "required":["title"]}},
-            {"app_id":"org.lisa.notes","name":"list_notes","tier":"read",
+            {"app_id":"app.lisaos.notes","name":"list_notes","tier":"read",
              "description":"List notes","undoable":false,
              "input_schema":{"type":"object","properties":{}}}
         ]"#;
         let tools = parse_catalog(raw).unwrap();
         assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].id(), "org.lisa.notes::create_note");
+        assert_eq!(tools[0].id(), "app.lisaos.notes::create_note");
         assert!(tools[0].takes_args());
         assert!(!tools[1].takes_args());
         // The catalog drives a compilable router grammar end to end.

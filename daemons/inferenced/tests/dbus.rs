@@ -1,4 +1,4 @@
-//! org.lisa.Inference1 over zbus peer-to-peer connections (PLAN Appendix
+//! dev.lisaos.Inference1 over zbus peer-to-peer connections (PLAN Appendix
 //! A). P2P over a socketpair needs no bus daemon, so this runs on macOS
 //! dev hosts and CI alike; real session-bus registration is exercised on
 //! Linux systems.
@@ -21,7 +21,7 @@ async fn p2p_pair() -> (zbus::Connection, zbus::Connection) {
         .unwrap()
         .p2p()
         .serve_at(
-            "/org/lisa/Inference1",
+            "/dev/lisaos/Inference1",
             Inference1::new(
                 Arc::new(lisa_inferenced::pool::SingleEngine {
                     engine: Arc::new(StubEngine),
@@ -42,9 +42,9 @@ async fn p2p_pair() -> (zbus::Connection, zbus::Connection) {
 async fn open_session(client: &zbus::Connection) -> (OwnedObjectPath, std::os::fd::OwnedFd) {
     let proxy = zbus::Proxy::new(
         client,
-        "org.lisa.Inference1",
-        "/org/lisa/Inference1",
-        "org.lisa.Inference1",
+        "dev.lisaos.Inference1",
+        "/dev/lisaos/Inference1",
+        "dev.lisaos.Inference1",
     )
     .await
     .unwrap();
@@ -64,9 +64,9 @@ async fn generate_streams_tokens_over_the_fd_until_eof() {
 
     let session = zbus::Proxy::new(
         &client,
-        "org.lisa.Inference1",
+        "dev.lisaos.Inference1",
         path.clone(),
-        "org.lisa.Inference1.Session",
+        "dev.lisaos.Inference1.Session",
     )
     .await
     .unwrap();
@@ -97,9 +97,9 @@ async fn embed_returns_deterministic_vectors() {
 
     let session = zbus::Proxy::new(
         &client,
-        "org.lisa.Inference1",
+        "dev.lisaos.Inference1",
         path,
-        "org.lisa.Inference1.Session",
+        "dev.lisaos.Inference1.Session",
     )
     .await
     .unwrap();
@@ -121,9 +121,9 @@ async fn close_removes_the_session_object() {
 
     let session = zbus::Proxy::new(
         &client,
-        "org.lisa.Inference1",
+        "dev.lisaos.Inference1",
         path.clone(),
-        "org.lisa.Inference1.Session",
+        "dev.lisaos.Inference1.Session",
     )
     .await
     .unwrap();

@@ -18,7 +18,7 @@ envelope. Usage stats and export included. If a Golden Gate user asks
   (CLAUDE.md rule 7 — the CLI is the command center; the app renders
   and never writes, which the DB's append-only triggers enforce
   anyway).
-- `org.lisa.LedgerApp.desktop` — launcher entry.
+- `app.lisaos.LedgerApp.desktop` — launcher entry.
 - `lib/model.js` — pure view-model (timeline fold, filters, stats).
 - `tests/model.test.js` — unit tests (`just shell-test`).
 

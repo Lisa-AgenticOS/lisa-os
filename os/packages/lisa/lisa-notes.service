@@ -3,7 +3,7 @@
 # dir the bus dispatches to (%t/lisa/mcp via LISA_MCP_DIR). Local-only:
 # unix socket + SQLite under $XDG_DATA_HOME; no network.
 [Unit]
-Description=Lisa Notes (MCP server org.lisa.notes)
+Description=Lisa Notes (MCP server app.lisaos.notes)
 After=dbus.service
 
 [Service]

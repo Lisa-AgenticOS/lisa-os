@@ -10,7 +10,7 @@ that leave the machine. It complements the transient Super+Shift+Space overlay
 
 ## How it fits
 
-A **second thin frontend of the `org.lisa.Overlay1` backend** (the overlay's
+A **second thin frontend of the `dev.lisaos.Overlay1` backend** (the overlay's
 "one headless backend, many frontends" design). The window sends a multi-turn
 chat `Ask` and renders the streamed `Token` signals — the same contract the
 GNOME Shell overlay uses.
@@ -26,7 +26,7 @@ lisa-overlayd.js  (backend chat lane)
 lisa-inferenced → (remote:*) → remoted broker → Claude / GPT
 ```
 
-- **Models:** local from `GET /v1/models`; cloud from `org.lisa.Remote1`
+- **Models:** local from `GET /v1/models`; cloud from `dev.lisaos.Remote1`
   (providers that are signed in or hold a key → their `ListModels`). A cloud
   pick routes as `remote:<provider>:<model>`.
 - **On the record:** every turn is ledgered by the daemon — `inference.*`
@@ -38,7 +38,7 @@ lisa-inferenced → (remote:*) → remoted broker → Claude / GPT
 - `lisa-assistant.js` — the window (model picker, conversation, composer).
 - `lib/model.js` — pure view-model (model-list assembly, send payload, egress
   marker); unit-tested in `tests/model.test.js`.
-- `org.lisa.Assistant.desktop` + `lisa-assistant-symbolic.svg` — launcher entry.
+- `app.lisaos.Assistant.desktop` + `lisa-assistant-symbolic.svg` — launcher entry.
 - The chat lane itself lives in the backend
   (`../overlay-extension/backend/lisa-overlayd.js`) with pure helpers in
   `../overlay-extension/lib/chat.js` (`tests/chat.test.js`).

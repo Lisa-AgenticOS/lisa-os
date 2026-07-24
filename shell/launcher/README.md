@@ -13,7 +13,7 @@ model). Budgets: first results < 150 ms, semantic refinement < 700 ms.
   search: GNOME's providers keep the app lane; ours adds
   - **"Ask Lisa" (assistant handoff)**: every query ≥ 2 chars gets an
     entry that hides the overview and calls `Summon(query)` on
-    `org.lisa.Overlay1.UI` — the overlay frontend opens with the prompt
+    `dev.lisaos.Overlay1.UI` — the overlay frontend opens with the prompt
     already submitted (Spotlight-style; promoted above file hits when
     the query reads like a question). Icon: bundled `lisa-mark.svg`;
   - **calculator/unit answers**: conservative routing heuristic →

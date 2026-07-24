@@ -1,4 +1,4 @@
-//! D-Bus surface: org.lisa.Inference1 (`docs/PLAN.md` §5.1, Appendix A).
+//! D-Bus surface: dev.lisaos.Inference1 (`docs/PLAN.md` §5.1, Appendix A).
 //!
 //! OpenSession(options) → (session object path, read fd). Tokens stream
 //! over the fd as raw UTF-8; the daemon closes its write end when the
@@ -39,7 +39,7 @@ impl Inference1 {
     }
 }
 
-#[zbus::interface(name = "org.lisa.Inference1")]
+#[zbus::interface(name = "dev.lisaos.Inference1")]
 impl Inference1 {
     /// Liveness probe.
     fn ping(&self) -> String {
@@ -63,7 +63,7 @@ impl Inference1 {
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         let id = self.next_session.fetch_add(1, Ordering::Relaxed);
-        let path = OwnedObjectPath::try_from(format!("/org/lisa/Inference1/session/{id}"))
+        let path = OwnedObjectPath::try_from(format!("/dev/lisaos/Inference1/session/{id}"))
             .expect("session path is valid");
 
         let (reader, writer) =
@@ -94,7 +94,7 @@ pub struct Session {
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
-#[zbus::interface(name = "org.lisa.Inference1.Session")]
+#[zbus::interface(name = "dev.lisaos.Inference1.Session")]
 impl Session {
     /// Generate from `prompt`; tokens stream over the session fd, which
     /// is closed at end-of-message. Params: "schema" (s, JSON Schema →
@@ -200,8 +200,11 @@ pub async fn serve(
     scheduler: Arc<Scheduler>,
 ) -> zbus::Result<zbus::Connection> {
     zbus::connection::Builder::session()?
-        .name("org.lisa.Inference1")?
-        .serve_at("/org/lisa/Inference1", Inference1::new(engines, scheduler))?
+        .name("dev.lisaos.Inference1")?
+        .serve_at(
+            "/dev/lisaos/Inference1",
+            Inference1::new(engines, scheduler),
+        )?
         .build()
         .await
 }

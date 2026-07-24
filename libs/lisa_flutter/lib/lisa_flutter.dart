@@ -3,7 +3,7 @@
 /// PLAN §5.12: mirrors liblisa's surface. This first pass ships the
 /// OpenAI-compat fallback transport (loopback HTTP against
 /// lisa-inferenced) with zero package dependencies — `dart:io` only.
-/// The primary D-Bus transport (sessions over org.lisa.Inference1 with
+/// The primary D-Bus transport (sessions over dev.lisaos.Inference1 with
 /// fd-passed streams, via package:dbus) lands with the Linux spike;
 /// portal identity flows through it unchanged (ADR-0004).
 library;

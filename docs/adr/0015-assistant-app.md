@@ -36,7 +36,7 @@ whole inference path; it complements, not replaces, the overlay.
   being interpreted — it iterates on the real hardware by copying files, with
   no image rebuild. The Flutter lane (`lisa_ui`/`lisa_flutter`, ADR-0004/0014)
   remains the path for the *app suite*; this is not that.
-- **A second frontend of the `org.lisa.Overlay1` backend**, honoring the
+- **A second frontend of the `dev.lisaos.Overlay1` backend**, honoring the
   overlay's "one headless backend, many thin frontends" design. The window
   sends `Ask(prompt, {lane:"chat", model_hint, history_json})` and renders the
   streamed `Token`/`Finished` signals — the same contract the overlay uses.
@@ -46,7 +46,7 @@ whole inference path; it complements, not replaces, the overlay.
   the egress broker. Existing overlay behavior is untouched (gated on
   `lane:"chat"`).
 - **Local + cloud from the start.** Local models from `GET /v1/models`; cloud
-  from `org.lisa.Remote1` (providers signed in or holding a key → `ListModels`).
+  from `dev.lisaos.Remote1` (providers signed in or holding a key → `ListModels`).
   This requires enabling the per-user companion's remote routing
   (`cfg.remote.enabled` + `LISA_REMOTED_SOCKET` → the user broker socket).
 - **Nothing hidden.** Every turn is ledgered by the daemon (`inference.*`

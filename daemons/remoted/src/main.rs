@@ -33,7 +33,7 @@ struct Args {
     #[arg(long, value_name = "ESP_MOUNTPOINT")]
     import_esp: Option<PathBuf>,
 
-    /// Also register org.lisa.Remote1 on the session bus.
+    /// Also register dev.lisaos.Remote1 on the session bus.
     #[arg(long)]
     dbus: bool,
 }

@@ -2,7 +2,7 @@
 //!
 //! Turns a natural-language utterance into a typed, grammar-*guaranteed*
 //! choice of one tool from a catalog, with filled arguments. The caller then
-//! hands the result to the Agent Bus (`org.lisa.Agent1.RequestCall`), where
+//! hands the result to the Agent Bus (`dev.lisaos.Agent1.RequestCall`), where
 //! confirmation tiers, provenance escalation, the undo journal, and the
 //! Ledger apply — so every intent is trust-checked by construction.
 //!
@@ -195,7 +195,7 @@ mod tests {
     fn catalog() -> Vec<ToolInfo> {
         vec![
             ToolInfo {
-                app_id: "org.lisa.notes".into(),
+                app_id: "app.lisaos.notes".into(),
                 tool: "create".into(),
                 description: "Create a note with a title and body".into(),
                 input_schema: json!({
@@ -208,7 +208,7 @@ mod tests {
                 }),
             },
             ToolInfo {
-                app_id: "org.lisa.lights".into(),
+                app_id: "app.lisaos.lights".into(),
                 tool: "all_off".into(),
                 description: "Turn every light off".into(),
                 input_schema: json!({"type": "object", "properties": {}}),
@@ -223,21 +223,21 @@ mod tests {
         let g = task.grammar().expect("router schema must compile");
         assert!(g.starts_with("root ::="), "grammar: {g}");
         // The enum carries every tool id plus the `none` sentinel.
-        assert!(g.contains("org.lisa.notes::create"), "grammar: {g}");
-        assert!(g.contains("org.lisa.lights::all_off"), "grammar: {g}");
+        assert!(g.contains("app.lisaos.notes::create"), "grammar: {g}");
+        assert!(g.contains("app.lisaos.lights::all_off"), "grammar: {g}");
         assert!(g.contains("none"), "grammar: {g}");
         // Both catalog ids are listed in the prompt for the model.
         assert!(
             task.system
-                .contains("org.lisa.notes::create — Create a note")
+                .contains("app.lisaos.notes::create — Create a note")
         );
     }
 
     #[test]
     fn parse_choice_reads_a_real_choice() {
-        let out = json!({"intent": "org.lisa.notes::create", "confidence": 0.9});
+        let out = json!({"intent": "app.lisaos.notes::create", "confidence": 0.9});
         let choice = parse_choice(&out).unwrap().expect("a choice");
-        assert_eq!(choice.app_id, "org.lisa.notes");
+        assert_eq!(choice.app_id, "app.lisaos.notes");
         assert_eq!(choice.tool, "create");
         assert!((choice.confidence - 0.9).abs() < 1e-9);
     }
@@ -264,7 +264,7 @@ mod tests {
         // notes.create takes args → a fill task whose grammar compiles.
         let filler = arg_filler(&tools[0]).expect("notes.create takes args");
         assert!(filler.grammar().is_ok(), "arg grammar must compile");
-        assert!(filler.system.contains("org.lisa.notes::create"));
+        assert!(filler.system.contains("app.lisaos.notes::create"));
         // lights.all_off takes none → no second model call.
         assert!(arg_filler(&tools[1]).is_none());
     }
@@ -272,12 +272,12 @@ mod tests {
     #[test]
     fn intent_call_assembles_bus_ready_with_user_provenance() {
         let choice = Choice {
-            app_id: "org.lisa.notes".into(),
+            app_id: "app.lisaos.notes".into(),
             tool: "create".into(),
             confidence: 0.8,
         };
         let call = IntentCall::from_user(&choice, json!({"title": "milk"}));
-        assert_eq!(call.app_id, "org.lisa.notes");
+        assert_eq!(call.app_id, "app.lisaos.notes");
         assert_eq!(call.tool, "create");
         assert_eq!(call.args["title"], "milk");
         assert_eq!(call.chain, vec!["user".to_string()]);

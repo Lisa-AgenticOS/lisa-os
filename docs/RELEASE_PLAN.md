@@ -55,7 +55,7 @@ Settings, see **Intelligence**, and Local models populate.
 
 1. **Package the GJS Settings app** — add `shell/settings` to the
    `lisa-shell` package (install `lisa-settings.js` + `lib/` + the
-   `org.lisa.Settings.desktop`). Without it, the native panel's
+   `app.lisaos.Settings.desktop`). Without it, the native panel's
    "Manage providers" bridge has no target. *Small, low-risk.*
 2. **Build + wire the g-c-c fork** — the CI `gnome-panel-build` job runs
    `makepkg` for `os/packages/gnome-control-center-lisa` (x86 Arch).

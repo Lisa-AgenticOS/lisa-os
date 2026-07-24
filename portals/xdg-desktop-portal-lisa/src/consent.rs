@@ -1,7 +1,7 @@
 //! Consent (`docs/PLAN.md` §5.5): first-use grant with "always / only
 //! this time", remembered denies, fail-closed when no dialog can be
 //! shown. The portal decides *policy* here; the *pixels* belong to the
-//! shell, reached over `org.lisa.impl.portal.Consent` (the impl-portal
+//! shell, reached over `dev.lisaos.impl.portal.Consent` (the impl-portal
 //! split upstream xdg-desktop-portal uses — see ADR-0008). The M4 shell
 //! provides that dialog service; until it exists, first-use requests are
 //! denied, never silently allowed.
@@ -63,7 +63,7 @@ impl ConsentUi for StaticConsent {
 }
 
 /// Consent dialog over the session bus: the shell serves
-/// `org.lisa.impl.portal.Consent` at `/org/lisa/impl/portal/consent`
+/// `dev.lisaos.impl.portal.Consent` at `/dev/lisaos/impl/portal/consent`
 /// with `AskConsent(app_id s, app_kind s, scope s) -> (allow b, remember b)`.
 /// Any error (service absent, dialog dismissed, timeout) → `None` →
 /// fail closed.
@@ -72,9 +72,9 @@ pub struct DbusConsentUi {
 }
 
 impl DbusConsentUi {
-    pub const BUS_NAME: &'static str = "org.lisa.Shell";
-    pub const PATH: &'static str = "/org/lisa/impl/portal/consent";
-    pub const INTERFACE: &'static str = "org.lisa.impl.portal.Consent";
+    pub const BUS_NAME: &'static str = "dev.lisaos.Shell";
+    pub const PATH: &'static str = "/dev/lisaos/impl/portal/consent";
+    pub const INTERFACE: &'static str = "dev.lisaos.impl.portal.Consent";
 
     pub fn new(conn: zbus::Connection) -> Self {
         Self { conn }

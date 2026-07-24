@@ -1,4 +1,4 @@
-//! org.lisa.Remote1 over zbus peer-to-peer connections — the Settings
+//! dev.lisaos.Remote1 over zbus peer-to-peer connections — the Settings
 //! app's management plane, exercised without a bus daemon so it runs on
 //! macOS dev hosts and CI alike (same pattern as inferenced).
 
@@ -13,7 +13,7 @@ async fn p2p_pair(broker: Arc<Broker>) -> (zbus::Connection, zbus::Connection) {
         .server(guid)
         .unwrap()
         .p2p()
-        .serve_at("/org/lisa/Remote1", Remote1::new(broker))
+        .serve_at("/dev/lisaos/Remote1", Remote1::new(broker))
         .unwrap()
         .build();
     let client_fut = zbus::connection::Builder::unix_stream(client_sock)
@@ -33,9 +33,9 @@ fn broker() -> (tempfile::TempDir, Arc<Broker>) {
 async fn proxy(client: &zbus::Connection) -> zbus::Proxy<'static> {
     zbus::Proxy::new(
         client,
-        "org.lisa.Remote1",
-        "/org/lisa/Remote1",
-        "org.lisa.Remote1",
+        "dev.lisaos.Remote1",
+        "/dev/lisaos/Remote1",
+        "dev.lisaos.Remote1",
     )
     .await
     .unwrap()

@@ -2,5 +2,5 @@
 # Install to $XDG_DATA_DIRS/dbus-1/services/; the packaged path below
 # matches the Track L layer layout (/usr/share/lisa).
 [D-BUS Service]
-Name=org.lisa.Overlay1
+Name=dev.lisaos.Overlay1
 Exec=/usr/bin/gjs -m /usr/share/lisa/shell/overlay-extension/backend/lisa-overlayd.js

@@ -1,18 +1,18 @@
 // Lisa assistant overlay — GNOME Shell frontend (PLAN §5.7.1).
 //
 // Thin by design: all state and token streams live in the headless
-// backend (org.lisa.Overlay1, backend/lisa-overlayd.js); this
+// backend (dev.lisaos.Overlay1, backend/lisa-overlayd.js); this
 // extension renders it. Summon with Super+Shift+Space (Super+Space is
 // the Spotlight-style search, §5.7.2; Super+C opens the persistent
 // Lisa Assistant chat window, ADR-0015) — or programmatically
-// via org.lisa.Overlay1.UI (the §5.7.2 launcher's "Ask Lisa" lane
+// via dev.lisaos.Overlay1.UI (the §5.7.2 launcher's "Ask Lisa" lane
 // hands queries over here): a translucent layer over the current
 // workspace with the three per-invocation context chips —
 // [this window], [selection], [my stuff] — a prompt entry, and the
 // streamed answer. Escape cancels/dismisses.
 //
 // Agent Bus lane (M5, ADR-0013): actionable prompts execute via
-// org.lisa.Agent1 in the backend; when a call parks for consent the
+// dev.lisaos.Agent1 in the backend; when a call parks for consent the
 // backend raises ConfirmationNeeded and this layer renders it — a
 // chip-weight box for confirm-chip, a heavier modal-weight box for
 // confirm-modal (escalated/untrusted chains and destructive tiers call
@@ -142,7 +142,7 @@ class OverlayWidget extends St.BoxLayout {
         this._entry.grab_key_focus();
     }
 
-    // --- summon support (org.lisa.Overlay1.UI) ---------------------------
+    // --- summon support (dev.lisaos.Overlay1.UI) ---------------------------
 
     setPrompt(text) {
         this._entry.set_text(text);
@@ -333,7 +333,7 @@ export default class LisaOverlayExtension extends Extension {
             Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
             () => this._openAssistant());
 
-        // UI-control surface (org.lisa.Overlay1.UI): other shell
+        // UI-control surface (dev.lisaos.Overlay1.UI): other shell
         // surfaces — the §5.7.2 launcher's "Ask Lisa" lane — summon
         // this overlay with a prompt. Owned by the frontend because
         // the headless backend has no UI; the wlr client can own the
@@ -375,10 +375,10 @@ export default class LisaOverlayExtension extends Extension {
     }
 
     // Open the persistent chat window, or raise it if already running
-    // (org.lisa.Assistant is single-instance, so activate() focuses it).
+    // (app.lisaos.Assistant is single-instance, so activate() focuses it).
     _openAssistant() {
         const app = Shell.AppSystem.get_default()
-            .lookup_app('org.lisa.Assistant.desktop');
+            .lookup_app('app.lisaos.Assistant.desktop');
         if (app)
             app.activate();
         else
@@ -392,7 +392,7 @@ export default class LisaOverlayExtension extends Extension {
             this._show();
     }
 
-    // org.lisa.Overlay1.UI.Summon: show the layer (if hidden), preset
+    // dev.lisaos.Overlay1.UI.Summon: show the layer (if hidden), preset
     // any chip toggles the caller passed, and submit a non-empty
     // prompt straight away — a live stream is replaced, matching the
     // launcher's "new query wins" behavior. Empty prompt = plain show.

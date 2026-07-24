@@ -1,7 +1,7 @@
 # D-Bus session-bus activation for the Lisa portal (PLAN §5.5).
-# First method call on org.lisa.Portal starts the user service.
+# First method call on dev.lisaos.Portal starts the user service.
 
 [D-BUS Service]
-Name=org.lisa.Portal
+Name=dev.lisaos.Portal
 Exec=/usr/bin/xdg-desktop-portal-lisa
 SystemdService=xdg-desktop-portal-lisa.service

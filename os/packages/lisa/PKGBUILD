@@ -45,7 +45,7 @@ package_lisa-inferenced() {
     install -Dm755 target/release/lisa-inferenced "$pkgdir/usr/bin/lisa-inferenced"
     install -Dm644 os/packages/lisa/lisa-inferenced.service \
         "$pkgdir/usr/lib/systemd/system/lisa-inferenced.service"
-    # Per-user session-bus surface (org.lisa.Inference1) for the shell
+    # Per-user session-bus surface (dev.lisaos.Inference1) for the shell
     # surfaces; enabled for every user from first login.
     install -Dm644 os/packages/lisa/lisa-inferenced-dbus.service \
         "$pkgdir/usr/lib/systemd/user/lisa-inferenced-dbus.service"
@@ -77,8 +77,8 @@ package_lisa-portal() {
         "$pkgdir/usr/bin/xdg-desktop-portal-lisa"
     install -Dm644 os/packages/lisa/xdg-desktop-portal-lisa.service \
         "$pkgdir/usr/lib/systemd/user/xdg-desktop-portal-lisa.service"
-    install -Dm644 os/packages/lisa/org.lisa.Portal.service \
-        "$pkgdir/usr/share/dbus-1/services/org.lisa.Portal.service"
+    install -Dm644 os/packages/lisa/dev.lisaos.Portal.service \
+        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Portal.service"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
@@ -102,8 +102,8 @@ package_lisa-notes() {
     cd "$pkgbase-$pkgver"
     install -Dm755 target/release/lisa-notes "$pkgdir/usr/bin/lisa-notes"
     # The app-intent manifest: what the bus discovers and enforces.
-    install -Dm644 apps/notes/org.lisa.notes.json \
-        "$pkgdir/usr/share/lisa/manifests/org.lisa.notes.json"
+    install -Dm644 apps/notes/app.lisaos.notes.json \
+        "$pkgdir/usr/share/lisa/manifests/app.lisaos.notes.json"
     install -Dm644 os/packages/lisa/lisa-notes.service \
         "$pkgdir/usr/lib/systemd/user/lisa-notes.service"
     install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
@@ -117,7 +117,7 @@ package_lisa-remoted() {
     depends=(gcc-libs)
     cd "$pkgbase-$pkgver"
     install -Dm755 target/release/lisa-remoted "$pkgdir/usr/bin/lisa-remoted"
-    # Per-user session service: owns org.lisa.Remote1 on the session bus so
+    # Per-user session service: owns dev.lisaos.Remote1 on the session bus so
     # Settings › Intelligence › Providers can add providers + keys. It is
     # the only desktop component with network egress (CLAUDE.md rule 5).
     install -Dm644 os/packages/lisa/lisa-remoted-user.service \
@@ -126,8 +126,8 @@ package_lisa-remoted() {
     ln -s ../lisa-remoted.service \
         "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-remoted.service"
     # D-Bus session activation — Settings auto-starts the broker on first call.
-    install -Dm644 os/packages/lisa/org.lisa.Remoted.service \
-        "$pkgdir/usr/share/dbus-1/services/org.lisa.Remoted.service"
+    install -Dm644 os/packages/lisa/dev.lisaos.Remoted.service \
+        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Remoted.service"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
@@ -173,21 +173,21 @@ package_lisa-shell() {
         "$pkgdir/usr/share/gnome-shell/extensions/lisa-launcher@lisa-os.org"
 
     # D-Bus activation for the headless overlay backend (§5.7.1).
-    install -Dm644 shell/overlay-extension/backend/org.lisa.Overlay1.service \
-        "$pkgdir/usr/share/dbus-1/services/org.lisa.Overlay1.service"
+    install -Dm644 shell/overlay-extension/backend/dev.lisaos.Overlay1.service \
+        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Overlay1.service"
     # Ledger app launcher entry (§5.7.6).
-    install -Dm644 shell/ledger-app/org.lisa.LedgerApp.desktop \
-        "$pkgdir/usr/share/applications/org.lisa.LedgerApp.desktop"
+    install -Dm644 shell/ledger-app/app.lisaos.LedgerApp.desktop \
+        "$pkgdir/usr/share/applications/app.lisaos.LedgerApp.desktop"
     # Assistant chat window: launcher entry + its spark icon (ADR-0015).
-    install -Dm644 shell/assistant/org.lisa.Assistant.desktop \
-        "$pkgdir/usr/share/applications/org.lisa.Assistant.desktop"
+    install -Dm644 shell/assistant/app.lisaos.Assistant.desktop \
+        "$pkgdir/usr/share/applications/app.lisaos.Assistant.desktop"
     install -Dm644 shell/assistant/lisa-assistant-symbolic.svg \
         "$pkgdir/usr/share/icons/hicolor/scalable/apps/lisa-assistant-symbolic.svg"
     # AI settings launcher entry (§5.11). Also the target the native
     # gnome-control-center Intelligence panel opens for provider/key
     # management (ADR-0012) — it resolves this desktop id.
-    install -Dm644 shell/settings/org.lisa.Settings.desktop \
-        "$pkgdir/usr/share/applications/org.lisa.Settings.desktop"
+    install -Dm644 shell/settings/app.lisaos.Settings.desktop \
+        "$pkgdir/usr/share/applications/app.lisaos.Settings.desktop"
     # Session defaults: extensions enabled; Super+Space is the
     # Spotlight-style search (§5.7.2), Super+Shift+Space the assistant
     # overlay (§5.7.1), the input-source switcher moves to

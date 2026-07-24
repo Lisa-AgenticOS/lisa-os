@@ -1,4 +1,4 @@
-//! The seam to `org.lisa.Inference1` (`daemons/inferenced`). The portal
+//! The seam to `dev.lisaos.Inference1` (`daemons/inferenced`). The portal
 //! proxies portal sessions onto real daemon sessions; this trait keeps
 //! the D-Bus surface testable with a stub upstream on any dev host, and
 //! `ZbusUpstream` is exercised against the real `Inference1` interface
@@ -43,15 +43,15 @@ fn dbus_err(e: zbus::Error) -> UpstreamError {
     UpstreamError::Unavailable(e.to_string())
 }
 
-/// The real upstream: `org.lisa.Inference1` over an existing zbus
+/// The real upstream: `dev.lisaos.Inference1` over an existing zbus
 /// connection (session bus in production, p2p in tests).
 pub struct ZbusUpstream {
     conn: zbus::Connection,
 }
 
 impl ZbusUpstream {
-    pub const BUS_NAME: &'static str = "org.lisa.Inference1";
-    pub const PATH: &'static str = "/org/lisa/Inference1";
+    pub const BUS_NAME: &'static str = "dev.lisaos.Inference1";
+    pub const PATH: &'static str = "/dev/lisaos/Inference1";
 
     pub fn new(conn: zbus::Connection) -> Self {
         Self { conn }
@@ -65,7 +65,7 @@ impl ZbusUpstream {
             &self.conn,
             Self::BUS_NAME,
             path,
-            "org.lisa.Inference1.Session",
+            "dev.lisaos.Inference1.Session",
         )
         .await
         .map_err(dbus_err)
@@ -82,7 +82,7 @@ impl InferenceUpstream for ZbusUpstream {
                 &self.conn,
                 Self::BUS_NAME,
                 Self::PATH,
-                "org.lisa.Inference1",
+                "dev.lisaos.Inference1",
             )
             .await
             .map_err(dbus_err)?;

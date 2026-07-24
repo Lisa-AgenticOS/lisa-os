@@ -20,15 +20,15 @@ has even stabilized, and rejected by the same logic as ADR-0002's
 ## Decision
 
 1. **Ship the portal as its own session D-Bus service** —
-   `org.lisa.Portal` at `/org/lisa/portal/desktop`, Rust/zbus (ADR-0002),
+   `dev.lisaos.Portal` at `/dev/lisaos/portal/desktop`, Rust/zbus (ADR-0002),
    D-Bus-activated, systemd `--user` unit. Interfaces:
-   `org.lisa.portal.Inference` + `org.lisa.portal.Session` (M2, live),
-   `org.lisa.portal.Grants` (Settings backend, M2, live),
-   `org.lisa.portal.{Context,Memory,Agent}` (reserved; M3/M5).
+   `dev.lisaos.portal.Inference` + `dev.lisaos.portal.Session` (M2, live),
+   `dev.lisaos.portal.Grants` (Settings backend, M2, live),
+   `dev.lisaos.portal.{Context,Memory,Agent}` (reserved; M3/M5).
 2. **Adopt upstream's frontend/impl split for consent:** the portal
    decides policy; the pixels live in the shell, reached via
-   `org.lisa.impl.portal.Consent` (`AskConsent(app_id, app_kind, scope)
-   → (allow, remember)`, served by `org.lisa.Shell`). No dialog service
+   `dev.lisaos.impl.portal.Consent` (`AskConsent(app_id, app_kind, scope)
+   → (allow, remember)`, served by `dev.lisaos.Shell`). No dialog service
    → first-use requests are **denied**, never silently allowed.
 3. **Identity the upstream way:** Flatpak apps are identified by
    `/proc/<pid>/root/.flatpak-info` (unforgeable from inside the
@@ -37,7 +37,7 @@ has even stabilized, and rejected by the same logic as ADR-0002's
    the Ledger.
 
 Until the freedesktop proposal lands, a Flatpak app needs
-`--talk-name=org.lisa.Portal` in its manifest to reach the portal. That
+`--talk-name=dev.lisaos.Portal` in its manifest to reach the portal. That
 one visible line replaces a patched portal frontend; the demo app and
 SDK templates carry it. When/if GNOME/KDE adopt the interface, the same
 objects move behind `org.freedesktop.portal.Desktop` unchanged.
@@ -52,9 +52,9 @@ objects move behind `org.freedesktop.portal.Desktop` unchanged.
   deferred with it.
 - The shell (M4 surfaces) owns one more small D-Bus service: the
   consent dialog. Until it ships, real first-use grants can only come
-  from `org.lisa.portal.Grants` (Settings/CLI pre-grant) or the
+  from `dev.lisaos.portal.Grants` (Settings/CLI pre-grant) or the
   explicit `--consent allow` dev mode.
-- `agentd` (M5) consumes this precedent: `org.lisa.portal.Agent` lands
+- `agentd` (M5) consumes this precedent: `dev.lisaos.portal.Agent` lands
   on the same bus name, grant store, and consent path.
 - The portal session ledger lives per-user (`~/.local/share/lisa/`);
   unifying it with the system daemons' StateDirectory ledger is a

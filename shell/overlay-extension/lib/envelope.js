@@ -41,7 +41,7 @@ export function parseContextHits(text) {
 }
 
 /**
- * Compose the envelope sent to org.lisa.Inference1.
+ * Compose the envelope sent to dev.lisaos.Inference1.
  * No hits → the bare prompt (no preamble overhead on plain questions).
  *
  * @param {string} prompt the user's turn

@@ -36,8 +36,8 @@ const FILE_HITS = 5;
 // UI-control surface of the assistant overlay (§5.7.1), owned by its
 // frontend — see shell/overlay-extension. Kept as literal strings so
 // this extension directory stays self-contained.
-const OVERLAY_UI_BUS = 'org.lisa.Overlay1.UI';
-const OVERLAY_UI_PATH = '/org/lisa/Overlay1/UI';
+const OVERLAY_UI_BUS = 'dev.lisaos.Overlay1.UI';
+const OVERLAY_UI_PATH = '/dev/lisaos/Overlay1/UI';
 
 class LisaSearchProvider {
     constructor(extension) {

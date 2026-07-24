@@ -19,9 +19,9 @@ panels are compiled into the binary and registered in a static table
 only way to add a sidebar entry is to build our own gnome-control-center
 with the panel included.
 
-We already have the backends a panel needs: the `org.lisa.Remote1` D-Bus
+We already have the backends a panel needs: the `dev.lisaos.Remote1` D-Bus
 broker (providers/keys/consent) and `lisa models catalog --json` (§8
-hardware-aware local-model fit). The standalone GJS `org.lisa.Settings`
+hardware-aware local-model fit). The standalone GJS `app.lisaos.Settings`
 app (shell/settings) already drives them and is unit-tested.
 
 ## Decision
@@ -49,11 +49,11 @@ upstream moved them. Everything else is upstream, unmodified.
   its §8 fit badge and a one-click **Get** for pinned models that fit
   (spawns `lisa models get`). Local inference never leaves the machine,
   so nothing here is egress-marked. Plus a **Providers & privacy** group
-  that summarizes offload state and opens the existing `org.lisa.Settings`
+  that summarizes offload state and opens the existing `app.lisaos.Settings`
   app for the full provider/key/OAuth flow (reuse, don't reimplement the
   amber-egress UI in C yet).
 - **v2:** providers/keys/consent move native into the panel (same
-  `org.lisa.Remote1` calls the GJS app makes), and a **Lisa** group
+  `dev.lisaos.Remote1` calls the GJS app makes), and a **Lisa** group
   (default model, voice/wake-word) once those settings are
   daemon-readable. The GJS app stays as the reference/fallback.
 

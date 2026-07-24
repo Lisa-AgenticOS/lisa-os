@@ -1,11 +1,11 @@
-# Per-user Agent Bus (org.lisa.Agent1 on the session bus, PLAN §5.4,
+# Per-user Agent Bus (dev.lisaos.Agent1 on the session bus, PLAN §5.4,
 # ADR-0013): tool discovery, tier/provenance enforcement, undo journal —
 # and execution over per-app MCP unix sockets under the session-private
 # %t/lisa/mcp (LISA_MCP_DIR keeps the daemon and every app's server
 # agreeing on the socket dir). No network by design (CLAUDE.md rule 5):
 # the bus talks D-Bus and local sockets only.
 [Unit]
-Description=Lisa Agent Bus (org.lisa.Agent1)
+Description=Lisa Agent Bus (dev.lisaos.Agent1)
 After=dbus.service
 
 [Service]

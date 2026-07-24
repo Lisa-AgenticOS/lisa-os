@@ -1,6 +1,6 @@
 //! xdg-desktop-portal-lisa entrypoint (`docs/PLAN.md` §5.5, ADR-0008):
-//! a per-user session-bus service (`org.lisa.Portal`) sitting between
-//! apps and `org.lisa.Inference1`. Defaults are the safe ones: real
+//! a per-user session-bus service (`dev.lisaos.Portal`) sitting between
+//! apps and `dev.lisaos.Inference1`. Defaults are the safe ones: real
 //! identity resolution via /proc, consent via the shell dialog service
 //! (fail-closed when absent), grants and ledger on disk.
 
@@ -21,7 +21,7 @@ use tracing::info;
     about = "Lisa OS trust-boundary portal (PLAN §5.5)"
 )]
 struct Args {
-    /// Upstream inference daemon: dbus (org.lisa.Inference1) | stub.
+    /// Upstream inference daemon: dbus (dev.lisaos.Inference1) | stub.
     #[arg(long, default_value = "dbus")]
     upstream: String,
     /// Consent backend: ui (shell dialog, fail-closed when absent) |

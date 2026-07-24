@@ -49,7 +49,7 @@ usable session on hardware.
 **Inference (M1).** `lisa-inferenced`: supervised llama-server children,
 real streaming tokens, kill-9 recovery ~2 s, guided generation
 (JSON-Schema→GBNF, 1000/1000 sampled gate), QoS preemption <250 ms,
-`org.lisa.Inference1` D-Bus with fd-passed streams, embeddings,
+`dev.lisaos.Inference1` D-Bus with fd-passed streams, embeddings,
 multi-model residency with LRU eviction, verified zero egress.
 `lisa-modeld`: blake3 content store, hardware profiler (§8 tiers),
 resumable pulls, **hardware-aware model fit** (`lisa models catalog`).
@@ -63,7 +63,7 @@ grants, quotas. Ledger app in the shell.
 tags + incremental reindex, namespace-isolated per-app memory with
 zero-residual wipe.
 
-**Surfaces (M4).** Assistant overlay (`org.lisa.Overlay1` + GNOME
+**Surfaces (M4).** Assistant overlay (`dev.lisaos.Overlay1` + GNOME
 extension), semantic launcher, Ledger app, fcitx5 writing-tools addon —
 all with logic unit-tested; live on the iMac desktop.
 
@@ -101,7 +101,7 @@ egress ledgered in the "leaves your hardware" marking.
   fetched 50.3 API; the sed integration is verified against real upstream
   files. **Builds in CI/container, not yet compiled** (macOS host can't
   build g-c-c); not yet wired into the image.
-- ✅ **AI panel (standalone, GJS)**: `org.lisa.Settings` two sections
+- ✅ **AI panel (standalone, GJS)**: `app.lisaos.Settings` two sections
   (Local models + Providers with per-provider model routing); the panel
   the native g-c-c one bridges to. `lisa models catalog/list --json`.
 - ✅ **Scoped-ACL retrieval** (M3 §5.3 acceptance): `contextd::acl` maps a
@@ -134,7 +134,7 @@ egress ledgered in the "leaves your hardware" marking.
 - Build whisper.cpp + piper from source into the image (not in Arch
   repos) so voice works on the device.
 - The Spotlight-style right-⌘ overlay summon (GNOME keybinding).
-- `lisa tools/call/undo` verbs over `org.lisa.Agent1` (async D-Bus
+- `lisa tools/call/undo` verbs over `dev.lisaos.Agent1` (async D-Bus
   client in the CLI).
 
 ## What's left — the path to a real Lisa

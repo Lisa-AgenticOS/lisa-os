@@ -3,7 +3,7 @@
 // Pure logic, no GNOME imports: runs under gjs (the backend), GNOME
 // Shell (the frontend renders consentView output), node, and jsc
 // (unit tests on any dev host). The backend turns an actionable prompt
-// into an org.lisa.Agent1 RequestCall; the model is deliberately NOT
+// into an dev.lisaos.Agent1 RequestCall; the model is deliberately NOT
 // in this lane — tool picking reuses Agent1.Discover plus the same
 // deterministic token-overlap scoring as agentd's registry
 // (daemons/agentd/src/registry.rs — keep scoreTool/tokenize in sync),
@@ -274,7 +274,7 @@ export function reasonText(detailJson) {
     return detail.reason ?? detail.error ?? JSON.stringify(detail);
 }
 
-/** "org.lisa.notes" → "notes" — short app label for consent UI. */
+/** "app.lisaos.notes" → "notes" — short app label for consent UI. */
 export function appShort(appId) {
     const parts = String(appId ?? '').split('.').filter(p => p !== '');
     return parts.length > 0 ? parts[parts.length - 1] : String(appId ?? '?');

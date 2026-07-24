@@ -49,7 +49,7 @@ unix socket and gains no network itself.
   `x-lisa-provider`, `x-lisa-scopes` headers); management under
   `/v1/providers`, `/v1/consent`, `POST /v1/oauth/{provider}/begin`,
   `DELETE /v1/oauth/{provider}`; `GET /health`.
-- D-Bus `org.lisa.Remote1` (management plane for Settings): `State`,
+- D-Bus `dev.lisaos.Remote1` (management plane for Settings): `State`,
   `AddProvider`, `RemoveProvider`, `SetKey`, `ClearKey`, `SetConsent`,
   `BeginLogin`, `Logout`, `ListModels`, and the `LoginCompleted` signal.
   Each `State` provider row carries `auth` (`"oauth"`/`"key"`),

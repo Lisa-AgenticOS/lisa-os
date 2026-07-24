@@ -80,9 +80,9 @@ async fn harness(identity: AppIdentity, consent: Arc<dyn ConsentUi>) -> Harness 
 async fn portal_proxy(h: &Harness) -> zbus::Proxy<'static> {
     zbus::Proxy::new(
         &h.client,
-        "org.lisa.Portal",
+        "dev.lisaos.Portal",
         PORTAL_PATH,
-        "org.lisa.portal.Inference",
+        "dev.lisaos.portal.Inference",
     )
     .await
     .unwrap()
@@ -91,9 +91,9 @@ async fn portal_proxy(h: &Harness) -> zbus::Proxy<'static> {
 async fn grants_proxy(h: &Harness) -> zbus::Proxy<'static> {
     zbus::Proxy::new(
         &h.client,
-        "org.lisa.Portal",
+        "dev.lisaos.Portal",
         PORTAL_PATH,
-        "org.lisa.portal.Grants",
+        "dev.lisaos.portal.Grants",
     )
     .await
     .unwrap()
@@ -112,9 +112,9 @@ async fn open_session(h: &Harness) -> zbus::Result<(OwnedObjectPath, std::os::fd
 async fn session_proxy(h: &Harness, path: OwnedObjectPath) -> zbus::Proxy<'static> {
     zbus::Proxy::new(
         &h.client,
-        "org.lisa.Portal",
+        "dev.lisaos.Portal",
         path,
-        "org.lisa.portal.Session",
+        "dev.lisaos.portal.Session",
     )
     .await
     .unwrap()
@@ -403,7 +403,7 @@ async fn every_session_open_is_preceded_by_a_ledger_entry() {
 
 #[tokio::test]
 async fn portal_proxies_to_the_real_inferenced_interface() {
-    // End-to-end over two p2p hops: app ↔ portal ↔ org.lisa.Inference1
+    // End-to-end over two p2p hops: app ↔ portal ↔ dev.lisaos.Inference1
     // (the real interface from daemons/inferenced, stub engine).
     use lisa_inferenced::dbus::Inference1;
     use lisa_inferenced::engine::StubEngine;
@@ -416,7 +416,7 @@ async fn portal_proxies_to_the_real_inferenced_interface() {
         .unwrap()
         .p2p()
         .serve_at(
-            "/org/lisa/Inference1",
+            "/dev/lisaos/Inference1",
             Inference1::new(
                 Arc::new(lisa_inferenced::pool::SingleEngine {
                     engine: Arc::new(StubEngine),

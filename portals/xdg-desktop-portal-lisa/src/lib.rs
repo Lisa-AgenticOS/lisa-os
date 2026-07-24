@@ -7,9 +7,9 @@
 //! runs first-use consent ("always / only this time"), enforces per-app
 //! quotas (requests/min, tokens/day), writes every decision and call to
 //! the Ledger under the *real* app id, and proxies inference sessions to
-//! `org.lisa.Inference1` so revoking a grant kills the live session.
+//! `dev.lisaos.Inference1` so revoking a grant kills the live session.
 //!
-//! The D-Bus surface (`org.lisa.portal.Inference`, `org.lisa.portal.Grants`)
+//! The D-Bus surface (`dev.lisaos.portal.Inference`, `dev.lisaos.portal.Grants`)
 //! lives in [`portal`]; everything it decides with — identity, grants,
 //! quotas, consent — is host-independent library code, unit-tested on any
 //! dev host. Runtime registration on the session bus is Linux territory.

@@ -9,22 +9,22 @@ import {
 } from '../lib/agent.js';
 
 // ToolRef-shaped fixtures (what Agent1.Discover returns), mirroring
-// apps/notes/org.lisa.notes.json and agentd's calendar test fixture.
+// apps/notes/app.lisaos.notes.json and agentd's calendar test fixture.
 const NOTES = [
-    {app_id: 'org.lisa.notes', name: 'create_note', tier: 'write',
+    {app_id: 'app.lisaos.notes', name: 'create_note', tier: 'write',
         description: 'Create a note with a title and optional body', undoable: true,
         input_schema: {type: 'object', required: ['title'],
             properties: {title: {type: 'string'}, body: {type: 'string'}}}},
-    {app_id: 'org.lisa.notes', name: 'list_notes', tier: 'read',
+    {app_id: 'app.lisaos.notes', name: 'list_notes', tier: 'read',
         description: 'List active notes (id, title, created), oldest first',
         undoable: false,
         input_schema: {type: 'object', properties: {}}},
-    {app_id: 'org.lisa.notes', name: 'delete_note', tier: 'write',
+    {app_id: 'app.lisaos.notes', name: 'delete_note', tier: 'write',
         description: 'Soft-delete a note; restorable via restore_note',
         undoable: true,
         input_schema: {type: 'object', required: ['id'],
             properties: {id: {type: 'integer'}}}},
-    {app_id: 'org.lisa.notes', name: 'restore_note', tier: 'write',
+    {app_id: 'app.lisaos.notes', name: 'restore_note', tier: 'write',
         description: 'Restore a soft-deleted note', undoable: false,
         input_schema: {type: 'object', required: ['id'],
             properties: {id: {type: 'integer'}}}},
@@ -48,7 +48,7 @@ test('tokenize mirrors agentd registry tokens()', () => {
     assertEq(tokenize('Add a Calendar-Event!'), ['add', 'a', 'calendar', 'event']);
     assertEq(tokenize('  '), []);
     assertEq(tokenize(null), []);
-    assertEq(tokenize('org.lisa.notes'), ['org', 'lisa', 'notes']);
+    assertEq(tokenize('app.lisaos.notes'), ['app', 'lisaos', 'notes']);
 });
 
 test('scoreTool weighs name tokens 3, description/app-id 1 (registry parity)', () => {
@@ -157,13 +157,13 @@ test('reasonText reads denied/failed detail_json', () => {
 });
 
 test('appShort takes the last app-id segment', () => {
-    assertEq(appShort('org.lisa.notes'), 'notes');
+    assertEq(appShort('app.lisaos.notes'), 'notes');
     assertEq(appShort('org.gnome.Calendar'), 'Calendar');
 });
 
 test('consentView maps a chip spec to chip-weight UI data', () => {
     const view = consentView(JSON.stringify({
-        call_id: 1, actor: 'overlay', app_id: 'org.lisa.notes', tool: 'create_note',
+        call_id: 1, actor: 'overlay', app_id: 'app.lisaos.notes', tool: 'create_note',
         description: 'Create a note with a title and optional body',
         args: {title: 'buy milk'}, tier: 'write', effective_tier: 'write',
         confirmation: 'chip', escalated: false, chain: ['user'], undoable: true,
@@ -186,7 +186,7 @@ test('consentView maps modal/escalated/destructive specs to warnings', () => {
     assertEq(view.argsText, 'id: evt-1');
 
     const notUndoable = consentView(JSON.stringify({
-        app_id: 'org.lisa.notes', tool: 'restore_note', args: {id: 3},
+        app_id: 'app.lisaos.notes', tool: 'restore_note', args: {id: 3},
         tier: 'write', effective_tier: 'write', confirmation: 'chip',
         escalated: false, undoable: false,
     }));

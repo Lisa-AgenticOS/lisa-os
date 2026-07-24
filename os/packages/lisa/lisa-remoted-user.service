@@ -1,6 +1,6 @@
 # lisa-remoted (per-user) — the BYO remote-provider broker's management +
 # egress surface for the desktop (ADR-0010, PLAN §5.11). Runs in the user
-# session with --dbus so it owns org.lisa.Remoted on the SESSION bus, where
+# session with --dbus so it owns dev.lisaos.Remoted on the SESSION bus, where
 # the Settings › Intelligence › Providers UI reaches it (add a provider,
 # store an API key, set per-scope offload consent). Keys live 0600 under
 # ~/.local/share/lisa/remoted.

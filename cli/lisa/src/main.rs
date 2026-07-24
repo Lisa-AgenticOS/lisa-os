@@ -81,9 +81,9 @@ enum Command {
     /// List tools on the Agent Bus (PLAN §5.4).
     Tools,
     /// Call a tool on the Agent Bus directly:
-    /// `lisa call org.lisa.notes create_note '{"title":"milk"}'`.
+    /// `lisa call app.lisaos.notes create_note '{"title":"milk"}'`.
     Call {
-        /// App id (reverse-DNS, e.g. org.lisa.notes).
+        /// App id (reverse-DNS, e.g. app.lisaos.notes).
         app_id: String,
         /// Tool name (e.g. create_note).
         tool: String,

@@ -7,7 +7,7 @@
 //     installed, and a one-click Get for pinned models that fit. Local
 //     inference never leaves the machine, so nothing here is
 //     egress-marked.
-//   • Providers — the lisa-remoted broker over D-Bus (org.lisa.Remote1):
+//   • Providers — the lisa-remoted broker over D-Bus (dev.lisaos.Remote1):
 //     one card per provider with its brand logo and a key-state pill,
 //     write-only key entry (store/replace/forget), Sign in with Claude,
 //     and — once a key is set and the `prompt` scope is on — a live
@@ -38,9 +38,9 @@ import {
     modelHintFor, parseModelList,
 } from './lib/model.js';
 
-const BUS_NAME = 'org.lisa.Remoted';
-const OBJECT_PATH = '/org/lisa/Remote1';
-const IFACE = 'org.lisa.Remote1';
+const BUS_NAME = 'dev.lisaos.Remoted';
+const OBJECT_PATH = '/dev/lisaos/Remote1';
+const IFACE = 'dev.lisaos.Remote1';
 
 // Brand logos shipped alongside this app (assets/provider-logos/),
 // resolved relative to this file so the dev run works from the repo.
@@ -798,7 +798,7 @@ class SettingsWindow {
     }
 }
 
-const app = new Adw.Application({application_id: 'org.lisa.Settings'});
+const app = new Adw.Application({application_id: 'app.lisaos.Settings'});
 app.connect('activate', () => {
     (app.activeWindow ?? new SettingsWindow(app).window).present();
 });

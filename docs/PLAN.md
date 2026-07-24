@@ -102,7 +102,7 @@ Omarchy's growth path — a script layered on stock Arch first, its own ISO only
 │                            │ liblisa SDK  /  OpenAI-compat HTTP        │
 ├────────────────────────────▼────────────────────────────────────────────┤
 │  PORTAL LAYER          xdg-desktop-portal-lisa                          │
-│  (trust boundary)      org.lisa.portal.{Inference, Context, Memory,     │
+│  (trust boundary)      dev.lisaos.portal.{Inference, Context, Memory,     │
 │                        Agent}  — per-app identity, consent, quotas      │
 ├─────────────┬──────────────────┬───────────────────┬────────────────────┤
 │ lisa-       │ lisa-contextd    │ lisa-agentd       │ lisa-modeld        │
@@ -144,7 +144,7 @@ Each spec: purpose → design → interfaces → repo path → acceptance.
 - **Resident-model strategy (the macOS trick, done openly):** one always-warm small "system model" (§7 tier table) with **runtime LoRA adapter hot-swap** (llama.cpp supports this) for task specialization — summarize, extract, classify — instead of loading a full model per task.
 - **Scheduler:** priority classes — `interactive` (assistant, foreground app) > `ui` (writing tools, suggestions) > `background` (indexing, batch). Preemption by cancellation of background batches. Continuous batching within a model; prompt-prefix KV cache keyed by (app, session).
 - **Power awareness:** on battery (via `power-profiles-daemon` signals), background class is parked; thermals respected via configurable token-rate caps.
-- **APIs:** (a) D-Bus `org.lisa.Inference1` — sessions, generate (streaming via fd passing), embed, transcribe, guided generation with a JSON-Schema parameter (compiled to GBNF grammar server-side); (b) **OpenAI-compatible HTTP on a unix socket + `127.0.0.1:7777`** so every existing OpenAI-client app/tool works out of the box, with per-app identity via `SO_PEERCRED` mapped to portal grants.
+- **APIs:** (a) D-Bus `dev.lisaos.Inference1` — sessions, generate (streaming via fd passing), embed, transcribe, guided generation with a JSON-Schema parameter (compiled to GBNF grammar server-side); (b) **OpenAI-compatible HTTP on a unix socket + `127.0.0.1:7777`** so every existing OpenAI-client app/tool works out of the box, with per-app identity via `SO_PEERCRED` mapped to portal grants.
 - **Isolation:** systemd hardening — `PrivateNetwork=yes`, `ProtectHome=yes` (models and cache only), seccomp allowlist, own cgroup with memory ceiling.
 
 **Repo:** `daemons/inferenced` (Rust; `zbus` for D-Bus, `axum` for HTTP).
@@ -211,7 +211,7 @@ Each spec: purpose → design → interfaces → repo path → acceptance.
 **Purpose:** per-app identity, consent UX, quota enforcement, and Ledger attribution for all of the above, Flatpak-compatible.
 
 **Design:**
-- New portal interfaces: `org.lisa.portal.Inference` (session open → returns fd/socket bound to grants), `org.lisa.portal.Context` (scope requests: e.g. `documents.read`, `mail.read`, `screen.once`), `org.lisa.portal.Memory` (app namespace handle), `org.lisa.portal.Agent` (tool discovery/invoke as a client).
+- New portal interfaces: `dev.lisaos.portal.Inference` (session open → returns fd/socket bound to grants), `dev.lisaos.portal.Context` (scope requests: e.g. `documents.read`, `mail.read`, `screen.once`), `dev.lisaos.portal.Memory` (app namespace handle), `dev.lisaos.portal.Agent` (tool discovery/invoke as a client).
 - Consent dialogs follow the platform's portal pattern: first-use grant with scope granularity + "always/only this time"; a **Settings › Intelligence** panel mirrors macOS-style toggles but per-scope, per-app, with usage counts sourced from the Ledger.
 - Quotas: per-app token/day and requests/min defaults (generous; anti-abuse, not monetization), configurable.
 - Unsandboxed host apps get identity via peer-cred + `.desktop` mapping (best effort, documented as weaker).
@@ -243,7 +243,7 @@ Each spec: purpose → design → interfaces → repo path → acceptance.
 Summon with `Super+Shift+Space` (and a long-press key on supported hardware; `Super+Space` alone is the §5.7.2 search, macOS-style): a translucent layer over the current workspace. Text-first, voice optional. It is an MCP client of the Agent Bus with three context affordances, each visibly toggled per-invocation: **[this window]** (screen capture → VLM), **[selection]** (app-published resource or AT-SPI), **[my stuff]** (Context Fabric scopes). Streams answers; renders plan steps and confirmation chips inline; every session lands in the Ledger. Implementation: one headless overlay backend (session D-Bus service owning state/streams) with thin frontends — a GNOME Shell extension (TS/GJS) for the flagship image, and a `wlr-layer-shell` client for Hyprland/wlroots compositors so the Lisa Layer works day one on Omarchy (§3, Track L).
 
 #### 5.7.2 Semantic launcher & search
-Replace/augment the Shell search provider: one box that mixes app launch, file hits (lexical+vector via Context Fabric), actions ("rotate this pdf" → tool from the bus), and calculator/unit answers from the system model with grammar-constrained output (no hallucinated math — the model routes to `qalc`, it doesn't do arithmetic). Every query also carries an **"Ask Lisa"** entry — the Spotlight-style assistant handoff: activating it closes the overview and summons the §5.7.1 overlay with the prompt already submitted (via the frontend-owned `org.lisa.Overlay1.UI` name; promoted above file hits when the query reads like a natural-language question). Latency budget: first useful results < 150 ms (lexical), semantic refinement streams in < 700 ms.
+Replace/augment the Shell search provider: one box that mixes app launch, file hits (lexical+vector via Context Fabric), actions ("rotate this pdf" → tool from the bus), and calculator/unit answers from the system model with grammar-constrained output (no hallucinated math — the model routes to `qalc`, it doesn't do arithmetic). Every query also carries an **"Ask Lisa"** entry — the Spotlight-style assistant handoff: activating it closes the overview and summons the §5.7.1 overlay with the prompt already submitted (via the frontend-owned `dev.lisaos.Overlay1.UI` name; promoted above file hits when the query reads like a natural-language question). Latency budget: first useful results < 150 ms (lexical), semantic refinement streams in < 700 ms.
 
 #### 5.7.3 Writing Tools everywhere (the hard one, solved in three layers)
 Golden Gate's "write with Siri anywhere you type" relies on private toolkit hooks. Our stack:
@@ -416,7 +416,7 @@ Trademark/brand clearance for “Lisa OS” (the Apple Lisa homage is intentiona
 
 ---
 
-## Appendix A — D-Bus sketch (`org.lisa.Inference1`, abridged)
+## Appendix A — D-Bus sketch (`dev.lisaos.Inference1`, abridged)
 ```
 OpenSession(a{sv} options) → (o session, h stream_fd)   # options: model_hint, tools, memory_ns, scopes
 Session.Generate(s prompt, a{sv} params) → ()           # tokens stream over fd; params incl. schema (guided)

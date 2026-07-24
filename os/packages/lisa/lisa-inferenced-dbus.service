@@ -1,4 +1,4 @@
-# lisa-inferenced-dbus — session-bus surface org.lisa.Inference1
+# lisa-inferenced-dbus — session-bus surface dev.lisaos.Inference1
 # (PLAN §5.1, Appendix A). Runs per-user alongside the hardened system
 # service (lisa-inferenced.service): that one owns compute + the
 # OpenAI-compat HTTP port and deliberately cannot reach the user's
@@ -12,7 +12,7 @@
 # (watchdog in main.rs); Restart=on-failure puts the name back.
 
 [Unit]
-Description=Lisa inference session-bus surface (org.lisa.Inference1)
+Description=Lisa inference session-bus surface (dev.lisaos.Inference1)
 
 [Service]
 Type=exec

@@ -1,4 +1,4 @@
-//! D-Bus management surface: org.lisa.Remote1 (ADR-0008 §1, ADR-0010 §4)
+//! D-Bus management surface: dev.lisaos.Remote1 (ADR-0008 §1, ADR-0010 §4)
 //! — the Settings app's plane: providers, credentials (write-only),
 //! per-scope offload consent, and "Sign in with Claude / ChatGPT" OAuth.
 //! Tested over zbus p2p (macOS + CI); registered on the bus on real
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use zbus::object_server::SignalEmitter;
 
 /// The object path the interface lives at (session bus + p2p).
-pub const OBJECT_PATH: &str = "/org/lisa/Remote1";
+pub const OBJECT_PATH: &str = "/dev/lisaos/Remote1";
 
 pub struct Remote1 {
     broker: Arc<Broker>,
@@ -25,7 +25,7 @@ fn fail(e: impl std::fmt::Display) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(e.to_string())
 }
 
-#[zbus::interface(name = "org.lisa.Remote1")]
+#[zbus::interface(name = "dev.lisaos.Remote1")]
 impl Remote1 {
     /// Liveness probe.
     fn ping(&self) -> String {
@@ -130,7 +130,7 @@ pub fn spawn_login_signal(broker: Arc<Broker>, conn: zbus::Connection) {
 /// Register on the session bus (real systems; tests use p2p connections).
 pub async fn serve(broker: Arc<Broker>) -> zbus::Result<zbus::Connection> {
     let conn = zbus::connection::Builder::session()?
-        .name("org.lisa.Remoted")?
+        .name("dev.lisaos.Remoted")?
         .serve_at(OBJECT_PATH, Remote1::new(Arc::clone(&broker)))?
         .build()
         .await?;

@@ -1,6 +1,6 @@
 //! lisa-notes — the Notes app's MCP server, the first real tool on the
 //! Agent Bus (ADR-0013). agentd's `McpDispatcher` connects to
-//! `<socket_dir>/org.lisa.notes.sock` and speaks newline-delimited
+//! `<socket_dir>/app.lisaos.notes.sock` and speaks newline-delimited
 //! JSON-RPC 2.0; notes live in SQLite under the user's XDG data dir.
 
 mod server;
@@ -10,7 +10,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const APP_ID: &str = "org.lisa.notes";
+const APP_ID: &str = "app.lisaos.notes";
 /// Must match `mcp_bus::DEFAULT_SOCKET_DIR`.
 const DEFAULT_SOCKET_DIR: &str = "/run/lisa/mcp";
 
@@ -55,7 +55,7 @@ fn run(socket: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// `--socket <path>` (or `--socket=<path>`); default
-/// `$LISA_MCP_DIR/org.lisa.notes.sock` with `/run/lisa/mcp` as the dir.
+/// `$LISA_MCP_DIR/app.lisaos.notes.sock` with `/run/lisa/mcp` as the dir.
 fn socket_path() -> Result<PathBuf, String> {
     let mut socket = None;
     let mut args = std::env::args().skip(1);
@@ -102,9 +102,9 @@ mod tests {
     #[test]
     fn manifest_is_well_formed() {
         let m: serde_json::Value =
-            serde_json::from_str(include_str!("../org.lisa.notes.json")).unwrap();
+            serde_json::from_str(include_str!("../app.lisaos.notes.json")).unwrap();
         assert_eq!(m["lisa_manifest"], 1);
-        assert_eq!(m["app_id"], "org.lisa.notes");
+        assert_eq!(m["app_id"], "app.lisaos.notes");
         assert_eq!(m["mcp"]["transport"], "unix");
         assert_eq!(m["mcp"]["activatable"], false);
 

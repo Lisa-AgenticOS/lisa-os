@@ -2,8 +2,8 @@
 #
 # A per-user *session* service (systemd --user), unlike the system
 # daemons: grants, consent, and the per-user ledger are per-user by
-# construction. D-Bus-activated via org.lisa.Portal; apps reach it on
-# the session bus, it reaches org.lisa.Inference1 the same way. The
+# construction. D-Bus-activated via dev.lisaos.Portal; apps reach it on
+# the session bus, it reaches dev.lisaos.Inference1 the same way. The
 # portal itself needs no network — it brokers fds, it never carries
 # model traffic.
 
@@ -13,7 +13,7 @@ Documentation=https://github.com/Lisa-AgenticOS/lisa-os/blob/main/portals/xdg-de
 
 [Service]
 Type=dbus
-BusName=org.lisa.Portal
+BusName=dev.lisaos.Portal
 ExecStart=/usr/bin/xdg-desktop-portal-lisa
 Restart=on-failure
 RestartSec=2

@@ -29,7 +29,7 @@ export function parseLocalModels(modelsJson) {
 }
 
 /**
- * Providers from `org.lisa.Remote1.State()` that can actually serve a chat —
+ * Providers from `dev.lisaos.Remote1.State()` that can actually serve a chat —
  * signed in (OAuth) or holding an API key.
  * @param {object} stateJson  parsed State() document
  * @returns {{id: string, display_name: string}[]}

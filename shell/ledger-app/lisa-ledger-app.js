@@ -214,7 +214,7 @@ class LedgerWindow {
     }
 }
 
-const app = new Adw.Application({application_id: 'org.lisa.LedgerApp'});
+const app = new Adw.Application({application_id: 'app.lisaos.LedgerApp'});
 app.connect('activate', () => {
     (app.activeWindow ?? new LedgerWindow(app).window).present();
 });

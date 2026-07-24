@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn end_to_end_over_a_real_socket() {
         let dir = tempfile::tempdir().unwrap();
-        let sock = dir.path().join("org.lisa.notes.sock");
+        let sock = dir.path().join("app.lisaos.notes.sock");
         let store = Store::open(&dir.path().join("notes.db")).unwrap();
         let listener = UnixListener::bind(&sock).unwrap();
         let _server = thread::spawn(move || serve(listener, &store));

@@ -1,19 +1,19 @@
 //! The portal D-Bus surface (`docs/PLAN.md` §5.5, ADR-0008):
 //!
-//! - `org.lisa.portal.Inference` at `/org/lisa/portal/desktop` —
+//! - `dev.lisaos.portal.Inference` at `/dev/lisaos/portal/desktop` —
 //!   `OpenSession(a{sv}) → (o, h)`: identity → consent → Ledger →
-//!   proxied `org.lisa.Inference1` session. The returned fd is the
+//!   proxied `dev.lisaos.Inference1` session. The returned fd is the
 //!   daemon's token pipe, passed through untouched; the returned object
-//!   path is a portal-owned session (`org.lisa.portal.Session`) that
+//!   path is a portal-owned session (`dev.lisaos.portal.Session`) that
 //!   proxies Generate/Embed/Cancel/Close with per-call Ledger
 //!   attribution and quota enforcement.
-//! - `org.lisa.portal.Grants` at the same path — the Settings ›
+//! - `dev.lisaos.portal.Grants` at the same path — the Settings ›
 //!   Intelligence backend: List/Grant/Deny/Revoke. Revoke kills every
 //!   live session under the grant: the daemon session is closed (the
 //!   app's fd sees EOF) and the portal session object is removed, well
 //!   under the 1 s acceptance budget.
 //!
-//! `org.lisa.portal.{Context,Memory,Agent}` (§5.5) are reserved names,
+//! `dev.lisaos.portal.{Context,Memory,Agent}` (§5.5) are reserved names,
 //! landing with M3/M5 on this same grant store.
 //!
 //! Tested over zbus p2p connections (no bus daemon needed — macOS dev
@@ -33,8 +33,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zbus::object_server::ObjectServer;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
-pub const PORTAL_BUS_NAME: &str = "org.lisa.Portal";
-pub const PORTAL_PATH: &str = "/org/lisa/portal/desktop";
+pub const PORTAL_BUS_NAME: &str = "dev.lisaos.Portal";
+pub const PORTAL_PATH: &str = "/dev/lisaos/portal/desktop";
 
 /// Everything the interfaces decide with, shared across objects.
 pub struct PortalState {
@@ -193,7 +193,7 @@ impl InferencePortal {
     }
 }
 
-#[zbus::interface(name = "org.lisa.portal.Inference")]
+#[zbus::interface(name = "dev.lisaos.portal.Inference")]
 impl InferencePortal {
     /// Liveness probe.
     fn ping(&self) -> String {
@@ -201,7 +201,7 @@ impl InferencePortal {
     }
 
     /// Open an inference session for the calling app. Options are
-    /// forwarded to `org.lisa.Inference1.OpenSession` ("model_hint" et
+    /// forwarded to `dev.lisaos.Inference1.OpenSession` ("model_hint" et
     /// al.); the portal adds "app_id". Returns the portal session object
     /// path and the daemon's token-pipe read fd.
     async fn open_session(
@@ -241,7 +241,7 @@ impl InferencePortal {
         let upstream_session: Arc<dyn UpstreamSession> = Arc::from(upstream_session);
 
         let id = state.next_session.fetch_add(1, Ordering::Relaxed);
-        let path = OwnedObjectPath::try_from(format!("/org/lisa/portal/session/{id}"))
+        let path = OwnedObjectPath::try_from(format!("/dev/lisaos/portal/session/{id}"))
             .expect("session path is valid");
         let session = PortalSession {
             state: Arc::clone(&state),
@@ -304,7 +304,7 @@ impl PortalSession {
     }
 }
 
-#[zbus::interface(name = "org.lisa.portal.Session")]
+#[zbus::interface(name = "dev.lisaos.portal.Session")]
 impl PortalSession {
     /// Generate from `prompt`; tokens stream over the fd returned by
     /// OpenSession. Params are forwarded to the daemon session
@@ -423,7 +423,7 @@ impl GrantsPortal {
     }
 }
 
-#[zbus::interface(name = "org.lisa.portal.Grants")]
+#[zbus::interface(name = "dev.lisaos.portal.Grants")]
 impl GrantsPortal {
     /// Every (app, scope) that ever asked: (app_id, scope, state) with
     /// state one of "allowed" | "denied" | "unset".

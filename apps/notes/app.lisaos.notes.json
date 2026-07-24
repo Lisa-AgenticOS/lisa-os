@@ -1,6 +1,6 @@
 {
   "lisa_manifest": 1,
-  "app_id": "org.lisa.notes",
+  "app_id": "app.lisaos.notes",
   "mcp": { "transport": "unix", "activatable": false },
   "tools": [
     {

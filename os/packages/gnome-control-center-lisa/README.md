@@ -16,11 +16,11 @@ stock upstream except the panel dir and two anchored edits.
   *runs on this machine* / *tight fit* / *too big — use a provider*) and a
   one-click **Get** (`lisa models get`) for pinned models that fit. Local
   inference never leaves the machine — nothing here is egress-marked.
-- **Providers & privacy** — opens the `org.lisa.Settings` app for the full
+- **Providers & privacy** — opens the `app.lisaos.Settings` app for the full
   provider / key / Sign-in-with-Claude / offload-consent flow. v2 moves
-  these native into the panel (same `org.lisa.Remote1` D-Bus calls).
+  these native into the panel (same `dev.lisaos.Remote1` D-Bus calls).
 
-The panel talks only to existing backends (`org.lisa.Remote1`, the `lisa`
+The panel talks only to existing backends (`dev.lisaos.Remote1`, the `lisa`
 CLI); no backend logic is duplicated.
 
 ## Files

@@ -1,4 +1,4 @@
-//! org.lisa.Agent1 over zbus peer-to-peer connections (PLAN §5.4).
+//! dev.lisaos.Agent1 over zbus peer-to-peer connections (PLAN §5.4).
 //! P2P over a socketpair needs no bus daemon, so this runs on macOS dev
 //! hosts and CI alike; real session-bus registration is exercised on
 //! Linux systems.
@@ -67,7 +67,7 @@ async fn fixture() -> Fixture {
         .server(guid)
         .unwrap()
         .p2p()
-        .serve_at("/org/lisa/Agent1", Agent1::new(bus))
+        .serve_at("/dev/lisaos/Agent1", Agent1::new(bus))
         .unwrap()
         .build();
     let client_fut = zbus::connection::Builder::unix_stream(client_sock)
@@ -85,9 +85,9 @@ async fn fixture() -> Fixture {
 async fn proxy(client: &zbus::Connection) -> zbus::Proxy<'_> {
     zbus::Proxy::new(
         client,
-        "org.lisa.Agent1",
-        "/org/lisa/Agent1",
-        "org.lisa.Agent1",
+        "dev.lisaos.Agent1",
+        "/dev/lisaos/Agent1",
+        "dev.lisaos.Agent1",
     )
     .await
     .unwrap()

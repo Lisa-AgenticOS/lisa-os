@@ -19,7 +19,7 @@
 //! - `bus`       — the call state machine (request → confirm/deny →
 //!   execute), Ledger attribution, undo journal wiring;
 //! - `journal`   — the SQLite undo journal (compensation calls);
-//! - `dbus`      — the `org.lisa.Agent1` surface (session bus on real
+//! - `dbus`      — the `dev.lisaos.Agent1` surface (session bus on real
 //!   systems; zbus p2p in tests).
 //!
 //! Deferred to the next M5 slices (ADR-0009): the MCP wire transport

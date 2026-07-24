@@ -1,12 +1,12 @@
 #!/usr/bin/env -S gjs -m
 // lisa-overlayd — headless assistant-overlay backend (PLAN §5.7.1).
 //
-// Owns org.lisa.Overlay1 on the session bus: state and token streams
+// Owns dev.lisaos.Overlay1 on the session bus: state and token streams
 // live here so frontends stay thin — the GNOME Shell extension and the
 // wlr-layer-shell client (Track L) both just render this service.
 //
 // Per Ask(), the prompt first tries the Agent Bus lane (M5, ADR-0013):
-//   0. [action] → org.lisa.Agent1.Discover(prompt) scored by
+//   0. [action] → dev.lisaos.Agent1.Discover(prompt) scored by
 //      lib/agent.js (deterministic token overlap, no model in this
 //      lane); a confident, arg-fillable hit becomes RequestCall with
 //      actor "overlay", provenance ["user"]. "executed"/"failed"/
@@ -18,7 +18,7 @@
 //   1. [my stuff] → `lisa context search` (Context Fabric, PLAN §5.3;
 //      retrieval is ledgered by the CLI) → provenance-fenced envelope
 //      (Appendix C via lib/envelope.js).
-//   2. org.lisa.Inference1.OpenSession → (session path, token fd);
+//   2. dev.lisaos.Inference1.OpenSession → (session path, token fd);
 //      Session.Generate; tokens are read off the fd and re-emitted as
 //      Token signals until EOF ⇒ Finished. Every generation is
 //      ledgered by lisa-inferenced (dataflow rule 4).
@@ -37,13 +37,13 @@ import {buildMessages, chatRequestBody, parseSseLine, isRemoteModel}
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH}
     from '../lib/iface.js';
 
-const INFERENCE_BUS = 'org.lisa.Inference1';
-const INFERENCE_PATH = '/org/lisa/Inference1';
-const INFERENCE_IFACE = 'org.lisa.Inference1';
-const SESSION_IFACE = 'org.lisa.Inference1.Session';
-const AGENT_BUS = 'org.lisa.Agent1';
-const AGENT_PATH = '/org/lisa/Agent1';
-const AGENT_IFACE = 'org.lisa.Agent1';
+const INFERENCE_BUS = 'dev.lisaos.Inference1';
+const INFERENCE_PATH = '/dev/lisaos/Inference1';
+const INFERENCE_IFACE = 'dev.lisaos.Inference1';
+const SESSION_IFACE = 'dev.lisaos.Inference1.Session';
+const AGENT_BUS = 'dev.lisaos.Agent1';
+const AGENT_PATH = '/dev/lisaos/Agent1';
+const AGENT_IFACE = 'dev.lisaos.Agent1';
 const AGENT_ACTOR = 'overlay';
 const AGENT_PROVENANCE = ['user']; // typed prompts: a trusted chain (rule 6)
 const CONTEXT_HITS = 3;
@@ -298,7 +298,7 @@ class OverlayService {
         }
     }
 
-    // ---- Agent Bus lane (org.lisa.Agent1) -------------------------------
+    // ---- Agent Bus lane (dev.lisaos.Agent1) -------------------------------
 
     // Prompt → {tool, args, score} or null. Any failure (agentd not on
     // the bus, no confident hit, unfillable args) means the inference

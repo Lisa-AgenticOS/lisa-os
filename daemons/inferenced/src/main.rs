@@ -1,7 +1,7 @@
 //! lisa-inferenced entrypoint — the one process that owns compute for
 //! inference (`docs/PLAN.md` §5.1). OpenAI-compat HTTP on loopback,
 //! llama-server supervision with a stub fallback, and the opt-in
-//! org.lisa.Inference1 session-bus surface the shell uses
+//! dev.lisaos.Inference1 session-bus surface the shell uses
 //! (`os/packages/lisa/lisa-inferenced-dbus.service`).
 
 use clap::Parser;
@@ -35,7 +35,7 @@ struct Args {
     /// The "download in Settings, use it anywhere" path.
     #[arg(long)]
     models_dir: Option<PathBuf>,
-    /// Register org.lisa.Inference1 on the session bus (config key
+    /// Register dev.lisaos.Inference1 on the session bus (config key
     /// `dbus`). Used by the per-user companion unit that gives the
     /// shell surfaces their engine surface.
     #[arg(long)]
@@ -154,10 +154,10 @@ async fn main() -> anyhow::Result<()> {
     let _dbus_conn = if cfg.dbus {
         match dbus::serve(Arc::clone(&engines), Arc::clone(&scheduler)).await {
             Ok(conn) => {
-                info!("org.lisa.Inference1 registered on the session bus");
+                info!("dev.lisaos.Inference1 registered on the session bus");
                 // A dead bus connection silently drops the name while
                 // the process keeps serving (seen live: session restart
-                // → bus socket gone → org.lisa.Inference1 vanished with
+                // → bus socket gone → dev.lisaos.Inference1 vanished with
                 // the daemon still up). Exit and let systemd restart us
                 // onto the live bus instead of serving a ghost.
                 let watchdog = conn.clone();

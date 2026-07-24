@@ -37,7 +37,7 @@
      retrieval-quality wins in evals.
    - *Verb set:* `remember/recall/forget/improve` is a cleaner per-app
      memory API shape than bare KV get/put — worth considering for the
-     `org.lisa.portal.Memory` surface.
+     `dev.lisaos.portal.Memory` surface.
    - *Consolidation:* their "whole memory layer on one Postgres" pitch
      validates our "whole context fabric in one user-readable SQLite"
      bet.

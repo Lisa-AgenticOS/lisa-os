@@ -47,7 +47,7 @@ Interfaces:
   `/v1/oauth/...`) share the socket; socket permissions are the access
   control (0700 runtime dir, M2 attaches per-app identity via the
   portal + `SO_PEERCRED` like §5.1).
-- **D-Bus `org.lisa.Remote1`** — the management plane for the Settings
+- **D-Bus `dev.lisaos.Remote1`** — the management plane for the Settings
   app: list/add/remove providers, set/clear credentials, per-scope
   consent switches, and the Sign-in-with-Claude OAuth start/finish.
   Tested over zbus p2p (macOS + CI), registered on the bus on real

@@ -31,12 +31,12 @@ provenance escalation and an undo journal. The guardrail prompt
   ledger): mutable working state (active → undone/skipped) so `lisa
   undo` reverts the last agent action via the manifest-declared inverse
   call.
-- **`dbus`** — the `org.lisa.Agent1` session-bus surface (below).
+- **`dbus`** — the `dev.lisaos.Agent1` session-bus surface (below).
 
-## D-Bus surface: `org.lisa.Agent1`
+## D-Bus surface: `dev.lisaos.Agent1`
 
 JSON payloads cross as strings (script/`busctl`-friendly, matching
-`org.lisa.Overlay1`):
+`dev.lisaos.Overlay1`):
 
 ```
 ListTools() → (s tools_json)              # [{app_id,name,tier,description,undoable}]
@@ -54,9 +54,9 @@ signal ConfirmationRequested(t call_id, s spec_json)
 
 Read-tier calls with a fully trusted (all-`user`) chain execute
 immediately; everything else parks and emits `ConfirmationRequested`
-(answer via `Confirm`). The overlay backend (`org.lisa.Overlay1`, §5.7.1)
+(answer via `Confirm`). The overlay backend (`dev.lisaos.Overlay1`, §5.7.1)
 becomes a client of this interface, swapping its direct
-`org.lisa.Inference1` calls for `RequestCall` when it turns tool calls
+`dev.lisaos.Inference1` calls for `RequestCall` when it turns tool calls
 into agent actions.
 
 ## App manifests

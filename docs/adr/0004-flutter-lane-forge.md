@@ -61,6 +61,6 @@ hedge.
 **Remaining (needs a Linux desktop; target: the iMac runner):** GTK
 embedder under Wayland; fcitx5 IM round-trip in a Flutter text field;
 the primary D-Bus transport via package:dbus against
-`org.lisa.Inference1` — the server side of that surface already exists
+`dev.lisaos.Inference1` — the server side of that surface already exists
 and is tested (fd-passed token streams), so the Dart side is a client
 exercise.

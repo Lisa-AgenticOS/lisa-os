@@ -12,12 +12,12 @@ backend interface.
 ## Layout
 
 - `backend/lisa-overlayd.js` — the headless backend (GJS). Owns
-  `org.lisa.Overlay1` on the session bus: `Ask(prompt, options) →
+  `dev.lisaos.Overlay1` on the session bus: `Ask(prompt, options) →
   query_id`, `Cancel`, `Respond(query_id, approve)`, `GetStatus`;
   signals `Started(id, meta_json)`, `Token(id, text)`,
   `ConfirmationNeeded(id, spec_json)`, `Finished(id, status, detail)`.
   Per Ask it first tries the **Agent Bus lane** (M5, ADR-0013):
-  `org.lisa.Agent1.Discover(prompt)` scored by `lib/agent.js` (no
+  `dev.lisaos.Agent1.Discover(prompt)` scored by `lib/agent.js` (no
   model in this lane); a confident, arg-fillable hit becomes
   `RequestCall` with actor `overlay`, provenance `["user"]`. Results
   and denial/failure reasons stream back as `Token` + `Finished`;
@@ -28,8 +28,8 @@ backend interface.
   `RequestCall` reply, so id-matching would race). Prompts that don't
   route keep the inference lane unchanged: [my stuff] retrieval via
   `lisa context search` (ledgered by the CLI), Appendix C fencing,
-  `org.lisa.Inference1` session, token fd re-emitted as signals.
-  `backend/org.lisa.Overlay1.service` provides D-Bus activation.
+  `dev.lisaos.Inference1` session, token fd re-emitted as signals.
+  `backend/dev.lisaos.Overlay1.service` provides D-Bus activation.
 - `extension.js` + `metadata.json` + `schemas/` + `stylesheet.css` —
   the GNOME Shell frontend (ESM, GNOME 46+): keybinding, chips, entry,
   streamed response, footer showing attached context and ledgering.
@@ -38,7 +38,7 @@ backend interface.
   (escalated chains, destructive tiers, and non-undoable calls call
   out their warnings), Allow/Deny answering via `Respond`; one consent
   at a time, further requests queue. Also owns
-  **`org.lisa.Overlay1.UI`** on the session bus
+  **`dev.lisaos.Overlay1.UI`** on the session bus
   (`Summon(prompt, options)`, `Hide`, `GetVisible`) — the UI-control
   surface other shell surfaces use to summon the overlay
   programmatically; the §5.7.2 launcher's "Ask Lisa" lane hands its
@@ -54,9 +54,9 @@ backend interface.
 ## Status
 
 Working first pass: backend + GNOME frontend wired end-to-end against
-`org.lisa.Inference1` (needs a Linux/GNOME session to run; logic is
+`dev.lisaos.Inference1` (needs a Linux/GNOME session to run; logic is
 unit-tested everywhere). The Agent Bus lane routes actionable prompts
-to `org.lisa.Agent1` (read-tier calls with the trusted `["user"]`
+to `dev.lisaos.Agent1` (read-tier calls with the trusted `["user"]`
 chain execute silently and render their result; write/destructive park
 for chip/modal consent per the tier table). [this window] waits on
 §5.7.4 screen context (M6); [selection] waits on §5.7.3 layer 3; both

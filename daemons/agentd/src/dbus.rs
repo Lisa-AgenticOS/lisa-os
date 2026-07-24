@@ -1,7 +1,7 @@
-//! D-Bus surface: `org.lisa.Agent1` (`docs/PLAN.md` §5.4).
+//! D-Bus surface: `dev.lisaos.Agent1` (`docs/PLAN.md` §5.4).
 //!
 //! The Agent Bus as seen by shell surfaces and scripts. The overlay
-//! backend (`org.lisa.Overlay1`, PLAN §5.7.1) becomes a client of this
+//! backend (`dev.lisaos.Overlay1`, PLAN §5.7.1) becomes a client of this
 //! interface at M5; `lisa tools/call/undo` CLI verbs ride it too.
 //!
 //! Shape (JSON payloads are strings — rich structures stay one
@@ -94,7 +94,7 @@ fn outcome_reply(outcome: &Outcome) -> (u64, String, String) {
     }
 }
 
-#[zbus::interface(name = "org.lisa.Agent1")]
+#[zbus::interface(name = "dev.lisaos.Agent1")]
 impl Agent1 {
     /// Liveness probe.
     fn ping(&self) -> String {
@@ -183,8 +183,8 @@ impl Agent1 {
 /// Register on the session bus (real systems; tests use p2p).
 pub async fn serve(bus: Arc<AgentBus>) -> zbus::Result<zbus::Connection> {
     zbus::connection::Builder::session()?
-        .name("org.lisa.Agent1")?
-        .serve_at("/org/lisa/Agent1", Agent1::new(bus))?
+        .name("dev.lisaos.Agent1")?
+        .serve_at("/dev/lisaos/Agent1", Agent1::new(bus))?
         .build()
         .await
 }

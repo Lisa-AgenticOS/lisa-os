@@ -1,7 +1,7 @@
 //! lisa-agentd — daemon entry point (`docs/PLAN.md` §5.4).
 //!
 //! Loads installed manifests, opens the Ledger (no ledger, no bus) and
-//! the undo journal, and serves `org.lisa.Agent1` on the session bus.
+//! the undo journal, and serves `dev.lisaos.Agent1` on the session bus.
 //! No network access — ever (CLAUDE.md rule 5); the hardened systemd
 //! unit enforces it on the image, and no dependency here may add it.
 
@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let _connection = dbus::serve(bus).await?;
-    info!("org.lisa.Agent1 up on the session bus");
+    info!("dev.lisaos.Agent1 up on the session bus");
 
     tokio::signal::ctrl_c().await?;
     info!("shutting down");

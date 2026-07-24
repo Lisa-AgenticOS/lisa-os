@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub bind: Bind,
     pub engine: EngineKind,
-    /// Register org.lisa.Inference1 on the session bus. Off by default in
+    /// Register dev.lisaos.Inference1 on the session bus. Off by default in
     /// M0 — the full D-Bus surface is an M1 deliverable.
     pub dbus: bool,
     pub llama: LlamaConfig,
