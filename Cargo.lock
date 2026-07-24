@@ -804,6 +804,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-core"
+version = "0.1.0"
+dependencies = [
+ "liblisa",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

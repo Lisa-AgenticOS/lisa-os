@@ -5,6 +5,7 @@ members = [
     "libs/lisa-ledger",
     "libs/forge-harness",
     "libs/mcp-bus",
+    "libs/harness-core",
     "daemons/inferenced",
     "daemons/modeld",
     "daemons/contextd",
