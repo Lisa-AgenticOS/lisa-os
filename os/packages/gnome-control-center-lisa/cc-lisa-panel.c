@@ -1027,6 +1027,88 @@ cc_lisa_panel_class_init (CcLisaPanelClass *klass)
   object_class->dispose = cc_lisa_panel_dispose;
 }
 
+/* --- Operating system: version + one-click update (ADR-0018 era) ------ */
+
+/* `lisa update` finished: report honestly and re-enable the button. The
+ * update only STAGES the new slot — never reboot from a Settings panel. */
+static void
+on_update_finished (GObject *source, GAsyncResult *res, gpointer data)
+{
+  GSubprocess *proc = G_SUBPROCESS (source);
+  g_autoptr (GError) error = NULL;
+  CcLisaPanel *self;
+  GtkButton *button;
+
+  if (!g_subprocess_wait_check_finish (proc, res, &error) &&
+      g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+    return; /* panel gone */
+
+  self = CC_LISA_PANEL (data);
+  button = g_object_get_data (G_OBJECT (proc), "update-button");
+  if (button)
+    {
+      gtk_widget_set_sensitive (GTK_WIDGET (button), TRUE);
+      gtk_button_set_label (button, _("Update"));
+    }
+  if (error)
+    lisa_toast (self, _("Update failed — see `lisa update` in a terminal."));
+  else
+    lisa_toast (self, _("Update staged — reboot to apply."));
+}
+
+static void
+on_update_clicked (GtkButton *button, gpointer data)
+{
+  CcLisaPanel *self = CC_LISA_PANEL (data);
+  g_autoptr (GError) error = NULL;
+  g_autoptr (GSubprocess) proc = NULL;
+
+  gtk_widget_set_sensitive (GTK_WIDGET (button), FALSE);
+  gtk_button_set_label (button, _("Updating…"));
+
+  proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+                             G_SUBPROCESS_FLAGS_STDERR_SILENCE,
+                           &error, "lisa", "update", NULL);
+  if (!proc)
+    {
+      gtk_widget_set_sensitive (GTK_WIDGET (button), TRUE);
+      gtk_button_set_label (button, _("Update"));
+      lisa_toast (self, _("The lisa CLI was not found on PATH."));
+      return;
+    }
+  g_object_set_data (G_OBJECT (proc), "update-button", button);
+  g_subprocess_wait_check_async (proc, self->cancellable,
+                                 on_update_finished, self);
+}
+
+/* The "Lisa OS <version>" row with an Update suffix. Version from
+ * os-release IMAGE_VERSION (what sysupdate keys on); absent on dev
+ * hosts → an honest fallback. */
+static GtkWidget *
+os_row_new (CcLisaPanel *self)
+{
+  g_autofree gchar *version = g_get_os_info ("IMAGE_VERSION");
+  GtkWidget *row = adw_action_row_new ();
+  GtkWidget *update;
+
+  adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), _("Lisa OS"));
+  adw_action_row_set_subtitle (ADW_ACTION_ROW (row),
+                               version && *version ? version
+                                                   : _("version unknown"));
+  adw_action_row_add_prefix (ADW_ACTION_ROW (row),
+                             gtk_image_new_from_icon_name (
+                               "software-update-available-symbolic"));
+
+  update = gtk_button_new_with_label (_("Update"));
+  gtk_widget_set_valign (update, GTK_ALIGN_CENTER);
+  gtk_widget_set_tooltip_text (update,
+                               _("Download and stage the newest release; "
+                                 "applies on the next reboot"));
+  g_signal_connect (update, "clicked", G_CALLBACK (on_update_clicked), self);
+  adw_action_row_add_suffix (ADW_ACTION_ROW (row), update);
+  return row;
+}
+
 /* Root-menu row → push its subpage (like the System panel's list-in-list). */
 static void
 on_menu_row_activated (AdwActionRow *row, gpointer data)
@@ -1136,6 +1218,17 @@ cc_lisa_panel_init (CcLisaPanel *self)
   root_page = adw_preferences_page_new ();
   adw_preferences_page_add (ADW_PREFERENCES_PAGE (root_page),
                             ADW_PREFERENCES_GROUP (menu_group));
+
+  /* Operating system — version + one-click update, below the menu. */
+  {
+    GtkWidget *os_group = adw_preferences_group_new ();
+    adw_preferences_group_set_title (ADW_PREFERENCES_GROUP (os_group),
+                                     _("Operating system"));
+    adw_preferences_group_add (ADW_PREFERENCES_GROUP (os_group),
+                               os_row_new (self));
+    adw_preferences_page_add (ADW_PREFERENCES_PAGE (root_page),
+                              ADW_PREFERENCES_GROUP (os_group));
+  }
 
   /* Root added FIRST so AdwNavigationView shows it; subpages are then
    * available for push_by_tag. */

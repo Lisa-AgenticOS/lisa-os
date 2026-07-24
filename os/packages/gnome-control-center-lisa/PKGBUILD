@@ -103,6 +103,33 @@ prepare() {
     | grep -q 'X-GNOME-SystemSettings' \
     || { echo "lisa panel .desktop has X-GNOME-SystemSettings — breaks activation (ADR-0012)" >&2; return 1; }
 
+  # --- Remove the "Support GNOME" donate group from About (ADR-0012) ----
+  # Lisa is a derived distro; soliciting donations to GNOME from the OS
+  # About page is upstream's business, not ours. Anchored + guarded: a
+  # GNOME bump that moves the blp fails the build loudly instead of
+  # silently keeping (or half-removing) the group.
+  local about_blp=panels/system/about/cc-about-page.blp
+  grep -q 'Support GNOME' "$about_blp" \
+    || { echo "donate anchor moved in $about_blp — update the Lisa patch" >&2; return 1; }
+  # Delete the smallest brace-balanced Adw.PreferencesGroup block that
+  # contains the donate anchor.
+  awk '
+    BEGIN { buf = ""; ingroup = 0; depth = 0 }
+    /Adw\.PreferencesGroup/ && !ingroup { ingroup = 1; buf = $0 "\n"; depth = gsub(/{/, "{") - gsub(/}/, "}"); next }
+    ingroup {
+      buf = buf $0 "\n"
+      depth += gsub(/{/, "{") - gsub(/}/, "}")
+      if (depth <= 0) {
+        if (buf !~ /Support GNOME/) printf "%s", buf
+        ingroup = 0; buf = ""
+      }
+      next
+    }
+    { print }
+  ' "$about_blp" > "$about_blp.lisa" && mv "$about_blp.lisa" "$about_blp"
+  ! grep -q 'Support GNOME' "$about_blp" \
+    || { echo "donate group removal failed in $about_blp" >&2; return 1; }
+
   # Register it: build the panel lib, declare the GType, and list it.
   sed -i "s/^  'wellbeing',\$/  'wellbeing',\n  'lisa',/" panels/meson.build
   sed -i '/^extern GType cc_wellbeing_panel_get_type (void);/a extern GType cc_lisa_panel_get_type (void);' \
