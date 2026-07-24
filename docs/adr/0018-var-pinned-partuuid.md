@@ -35,8 +35,13 @@ build and on the installed disk:
   machine-id-derived partition UUID** that exists on no real disk — a 90 s
   device timeout and emergency mode on the updated slot even after the
   fstab/byte-copy fixes (the mysterious constant `…4b47d0…` device wait).
-  gpt-auto explicitly defers to fstab, so the fstab line kills the phantom
-  mount deterministically on every boot of every slot.
+  gpt-auto is documented to defer to fstab — but the next nightly proved the
+  defer **races the fstab-generator** (v1 booted with the fstab mount, v2 died
+  on the phantom UUID with the identical image). So gpt-auto is now **fully
+  disabled** (`systemd.gpt_auto=no` on the kernel command line), and
+  everything it provided is explicit: `root=` for the root, fstab PARTLABEL
+  entries for `/var`, `/home`, and `/efi` (the ESP mount sysupdate needs for
+  staging UKIs; mountpoint created in postinst).
 
 This supersedes two earlier attempts: pinning the partition UUID (would not
 match an already-installed device), and a `var.mount` unit in /usr (loses to

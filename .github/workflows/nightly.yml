@@ -99,7 +99,7 @@ jobs:
           # Good entry: serial console + clean poweroff so QEMU exits on
           # success. No try counters = permanently valid entry.
           "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
-            --cmdline='root=/dev/vda2 rw console=ttyS0 lisa_demo=good systemd.unit=poweroff.target' \
+            --cmdline='root=/dev/vda2 rw console=ttyS0 lisa_demo=good systemd.unit=poweroff.target systemd.gpt_auto=no' \
             --output=good-demo.efi
           # Bad entry: version 99 outranks the good entry. It boots but
           # immediately reboots (systemd.unit=reboot.target) without ever
@@ -107,7 +107,7 @@ jobs:
           # burns a try per cycle. (A broken-root variant drops to an
           # emergency shell and hangs instead of rebooting.)
           "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
-            --cmdline='root=/dev/vda2 rw console=ttyS0 lisa_demo=bad systemd.unit=reboot.target' \
+            --cmdline='root=/dev/vda2 rw console=ttyS0 lisa_demo=bad systemd.unit=reboot.target systemd.gpt_auto=no' \
             --output=bad-demo.efi
           mcopy -o -i "$ESP" good-demo.efi "::/EFI/Linux/$NAME"
           mcopy -i "$ESP" bad-demo.efi "::/EFI/Linux/lisa-99+2.efi"
@@ -253,10 +253,10 @@ jobs:
           objcopy --dump-section .linux=vmlinuz --dump-section .initrd=initrd.img "mnt-esp/EFI/Linux/$NAME" discard.efi
           UKIFY=$(command -v ukify || echo /usr/lib/systemd/ukify)
           "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
-            --cmdline='root=/dev/vda2 rw console=ttyS0' \
+            --cmdline='root=/dev/vda2 rw console=ttyS0 systemd.gpt_auto=no' \
             --output=lisa_1.efi
           "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
-            --cmdline='root=/dev/vda3 rw console=ttyS0' \
+            --cmdline='root=/dev/vda3 rw console=ttyS0 systemd.gpt_auto=no' \
             --output=lisa_2.efi
           sudo rm "mnt-esp/EFI/Linux/$NAME"
           sudo cp lisa_1.efi mnt-esp/EFI/Linux/lisa_1.efi

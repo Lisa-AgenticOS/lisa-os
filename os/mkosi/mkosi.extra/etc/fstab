@@ -12,5 +12,11 @@
 # /home exists only on fresh installs (repart-created, ADR-0019): nofail +
 # a short device timeout make legacy disks skip it cleanly; they keep the
 # /var/home bind (lisa-home-persist).
+# gpt-auto is fully disabled on the cmdline (systemd.gpt_auto=no): its
+# "defer to fstab" races the fstab-generator, and losing the race meant the
+# phantom machine-id-keyed var.mount won and the boot died. Everything it
+# used to provide is explicit here — including the ESP, which sysupdate
+# needs mounted to stage UKIs.
 PARTLABEL=var  /var  btrfs rw,nodev,suid,exec 0 0
 PARTLABEL=home /home btrfs rw,nodev,suid,exec,nofail,x-systemd.device-timeout=5s 0 0
+PARTLABEL=esp  /efi  vfat  rw,umask=0077,nofail,x-systemd.device-timeout=10s 0 0

@@ -98,6 +98,10 @@ if id lisa &>/dev/null; then
     cp -a /home/lisa /usr/share/factory/home/lisa
 fi
 
+# The ESP mounts at /efi from the baked fstab (gpt-auto is disabled,
+# ADR-0018) — the mountpoint must exist.
+install -d /efi
+
 # Networking, one owner per image flavor:
 # - Desktop images: NetworkManager owns ALL interfaces (Wi-Fi via the
 #   GNOME quick-settings UI — the field test proved iwctl-only is a
