@@ -84,3 +84,34 @@ export function parseSseLine(line) {
 export function isRemoteModel(model) {
     return typeof model === 'string' && model.startsWith('remote:');
 }
+
+/**
+ * Length of the longest prefix of `bytes` that ends on a complete UTF-8
+ * sequence. GJS's TextDecoder lacks {stream:true} (field iMac), so chunked
+ * decoding must trim a chunk-split multibyte char instead of half-decoding
+ * it into a replacement character.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {number}
+ */
+export function utf8Complete(bytes) {
+    const n = bytes.length;
+    if (n === 0)
+        return 0;
+    // Find the last lead byte within the final 4 bytes.
+    let i = n - 1;
+    const limit = Math.max(0, n - 4);
+    while (i > limit && (bytes[i] & 0xC0) === 0x80)
+        i--;
+    const b = bytes[i];
+    let need = 1;
+    if ((b & 0xE0) === 0xC0)
+        need = 2;
+    else if ((b & 0xF0) === 0xE0)
+        need = 3;
+    else if ((b & 0xF8) === 0xF0)
+        need = 4;
+    else if ((b & 0x80) !== 0)
+        return n; // continuation/invalid at lead position — let decode handle it
+    return (n - i >= need) ? n : i;
+}

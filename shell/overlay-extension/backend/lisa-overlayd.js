@@ -34,7 +34,7 @@ import {decideAction, formatExecuted, reasonText, safeParse}
     from '../lib/agent.js';
 import {buildEnvelope, parseContextHits, contextHitsFromJson,
     classifyAffordances} from '../lib/envelope.js';
-import {buildMessages, chatRequestBody, parseSseLine, isRemoteModel}
+import {buildMessages, chatRequestBody, parseSseLine, isRemoteModel, utf8Complete}
     from '../lib/chat.js';
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH}
     from '../lib/iface.js';
@@ -191,14 +191,27 @@ class OverlayService {
             await this._sessionCall(sessionPath, 'Generate',
                 new GLib.Variant('(sa{sv})', [envelope, params]));
 
+            // GJS's TextDecoder lacks {stream:true} (field iMac): accumulate
+            // and re-decode up to the last complete UTF-8 boundary, emitting
+            // only the tail.
             const decoder = new TextDecoder('utf-8');
+            let raw = new Uint8Array(0);
+            let emitted = 0;
             for (;;) {
                 const bytes = await stream.read_bytes_async(
                     4096, GLib.PRIORITY_DEFAULT, cancellable);
                 if (bytes.get_size() === 0)
                     break; // EOF = end-of-message (§5.1).
-                this._emit('Token', new GLib.Variant('(ts)',
-                    [id, decoder.decode(bytes.toArray(), {stream: true})]));
+                const chunk = bytes.toArray();
+                const grown = new Uint8Array(raw.length + chunk.length);
+                grown.set(raw); grown.set(chunk, raw.length);
+                raw = grown;
+                const all = decoder.decode(raw.subarray(0, utf8Complete(raw)));
+                if (all.length > emitted) {
+                    this._emit('Token', new GLib.Variant('(ts)',
+                        [id, all.slice(emitted)]));
+                    emitted = all.length;
+                }
             }
             this._finish(id, this._active?.cancelled ? 'cancelled' : 'ok', '');
         } catch (e) {
@@ -261,7 +274,13 @@ class OverlayService {
             return;
         }
 
+        // GJS's TextDecoder rejects the {stream:true} option (found on the
+        // field iMac), so decode incrementally by accumulating raw bytes and
+        // re-decoding the whole buffer, emitting only the tail — O(n²) on
+        // pathological replies but exactly correct across chunk-split UTF-8.
         const decoder = new TextDecoder('utf-8');
+        let raw = new Uint8Array(0);
+        let decoded = 0; // chars of `raw` already moved into buf
         let buf = '';
         let done = false;
         try {
@@ -270,7 +289,15 @@ class OverlayService {
                     4096, GLib.PRIORITY_DEFAULT, cancellable);
                 if (bytes.get_size() === 0)
                     break; // stream closed
-                buf += decoder.decode(bytes.toArray(), {stream: true});
+                const chunk = bytes.toArray();
+                const grown = new Uint8Array(raw.length + chunk.length);
+                grown.set(raw); grown.set(chunk, raw.length);
+                raw = grown;
+                // Decode only up to the last complete UTF-8 sequence, so a
+                // chunk-split multibyte char is never half-decoded.
+                const all = decoder.decode(raw.subarray(0, utf8Complete(raw)));
+                buf += all.slice(decoded);
+                decoded = all.length;
                 let nl;
                 while ((nl = buf.indexOf('\n')) >= 0) {
                     const line = buf.slice(0, nl);

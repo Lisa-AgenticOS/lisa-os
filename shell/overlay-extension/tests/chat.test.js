@@ -74,4 +74,23 @@ test('isRemoteModel detects the broker route', () => {
     assert(!isRemoteModel(undefined), 'undefined is not remote');
 });
 
+// utf8Complete added when the field iMac's GJS rejected {stream:true}.
+import {utf8Complete} from '../lib/chat.js';
+
+test('utf8Complete keeps complete sequences', () => {
+    const enc = new TextEncoder();
+    const b = enc.encode('héllo — ok');
+    assertEq(utf8Complete(b), b.length);
+    assertEq(utf8Complete(new Uint8Array(0)), 0);
+});
+
+test('utf8Complete trims a split multibyte tail', () => {
+    const enc = new TextEncoder();
+    const full = enc.encode('a€'); // € = 3 bytes
+    const cut = full.subarray(0, full.length - 1); // split the €
+    assertEq(utf8Complete(cut), 1, 'only the "a" is complete');
+    const cut2 = full.subarray(0, full.length - 2);
+    assertEq(utf8Complete(cut2), 1);
+});
+
 finish('chat');
