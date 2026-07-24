@@ -1,4 +1,4 @@
-# ADR-0008: Agent Bus core — D-Bus surface, tier enforcement at the bus, staged MCP transport
+# ADR-0009: Agent Bus core — D-Bus surface, tier enforcement at the bus, staged MCP transport
 
 - **Status:** accepted
 - **Date:** 2026-07-22
