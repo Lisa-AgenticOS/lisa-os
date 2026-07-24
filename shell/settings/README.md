@@ -17,24 +17,30 @@ header (and a bottom bar when narrow):
   egress-marked. If the CLI/daemon can't answer, the page says so instead
   of guessing capacity.
 - **Providers** — the `lisa-remoted` broker over D-Bus
-  (`org.lisa.Remote1`): registry rows (OpenAI, Anthropic, Tinker,
-  Together.ai, Fireworks.ai, Hugging Face + user-added OpenAI-compat
-  URLs), each with an amber *leaves your hardware* badge, write-only key
-  entry (store/replace/forget — never read back), removal for custom
-  rows, and a **Sign in with Claude** button on the Anthropic row that
-  stays disabled *with the reason* until Anthropic publishes registerable
-  OAuth endpoints (rule 8: the app never pretends). Each row expands to
-  show its **model routing** (`remote:<id>:<model-id>`) and the
-  provider's own notes — the broker doesn't enumerate a provider's models
-  (that needs egress + a key) and we never invent a model list.
-  Below the list, **What may leave this machine**: per-scope switches
-  (`prompt`, `files`, `mail`, `calendar`, `screen`, `memory`), default
-  all off; a banner states the measured condition. `prompt` is first and
-  marked *required for remote* — inferenced always sends it, so the
-  broker refuses every remote request while it is off: a keyed provider
-  with `prompt` off raises a prominent amber warning at the top of the
-  page, and key + `prompt` on shows a subtle *Ready* note. Broker
-  unreachable → defaults shown, switches and the add/save actions
+  (`org.lisa.Remote1`): one card per provider (registry rows: OpenAI,
+  Anthropic, Tinker, Together.ai, Fireworks.ai, Hugging Face + user-added
+  OpenAI-compat URLs) with its **brand logo** (bundled
+  `assets/provider-logos/`, recolored to the theme; a generic mark for
+  custom endpoints and Tinker), an amber *leaves your hardware* badge, a
+  *key set / no key* pill, write-only key entry (store/replace/forget —
+  never read back), removal for custom rows, and a **Sign in with
+  Claude** button on the Anthropic card that stays disabled *with the
+  reason* until Anthropic publishes registerable OAuth endpoints (rule 8:
+  the app never pretends). Once a key is set **and** the `prompt` scope
+  is on, a **Models** row fetches the provider's own live `/models` list
+  over D-Bus (`ListModels`, with a spinner and inline errors + retry) and
+  offers the real ids in a dropdown — picking one copies its ready-to-use
+  route `remote:<id>:<model>` to the clipboard and shows it. Without a
+  key or consent, the card shows the routing guidance
+  (`remote:<id>:<model-id>` + the provider's notes) instead — never an
+  invented model list. Below the cards, **What may leave this machine**:
+  per-scope switches (`prompt`, `files`, `mail`, `calendar`, `screen`,
+  `memory`), default all off; a banner states the measured condition.
+  `prompt` is first and marked *required for remote* — inferenced always
+  sends it, so the broker refuses every remote request while it is off: a
+  keyed provider with `prompt` off raises a prominent amber warning at
+  the top of the page, and key + `prompt` on shows a subtle *Ready* note.
+  Broker unreachable → defaults shown, switches and the add/save actions
   disabled with the reason.
 
 ## Layout
@@ -47,8 +53,13 @@ header (and a bottom bar when narrow):
   defaults, provider/consent rows, sign-in gating, form validation,
   remote-readiness (`remoteReadiness`) and offline
   (`providersDisabledReason`) helpers, **plus** catalog parsing,
-  local-model rows + fit badges, profile summary, and per-provider
-  routing help. No GTK imports.
+  local-model rows + fit badges, profile summary, per-provider routing
+  help, the logo map (`providerLogoFile`), the route builder
+  (`modelHintFor`), and the `ListModels` reply parser (`parseModelList`).
+  No GTK imports.
+- `assets/provider-logos/` — the bundled brand SVGs (construct's set,
+  mapped to Lisa's provider ids) plus `generic.svg`; all draw in
+  `currentColor`, recolored to the theme at load.
 - `tests/model.test.js` — unit tests via `shell/testing/harness.js`
   (`just shell-test`; runs under gjs, node, or macOS jsc).
 - `org.lisa.Settings.desktop` — launcher entry.

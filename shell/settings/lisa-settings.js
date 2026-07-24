@@ -8,17 +8,21 @@
 //     inference never leaves the machine, so nothing here is
 //     egress-marked.
 //   • Providers — the lisa-remoted broker over D-Bus (org.lisa.Remote1):
-//     bring-your-own accounts (list/add/remove, key entry, Sign in with
-//     Claude), per-provider model routing help, and the per-scope
-//     "may offload" switches. Because the broker refuses any remote
-//     request whose `prompt` scope is not consented (default: off), a
-//     keyed provider with `prompt` off raises a prominent amber warning;
-//     when the broker is unreachable the add/save actions are disabled
-//     with the reason instead of throwing. Everything that can leave the
-//     machine is rendered in the distinct amber "leaves your hardware"
-//     color; the default — and the state shown whenever the broker is
-//     unreachable — is "Nothing leaves this machine." Keys are
-//     write-only: this app stores or clears them, never reads them back.
+//     one card per provider with its brand logo and a key-state pill,
+//     write-only key entry (store/replace/forget), Sign in with Claude,
+//     and — once a key is set and the `prompt` scope is on — a live
+//     model dropdown fed by the broker's `ListModels` (the provider's
+//     own /models, never an invented list). Picking a model copies its
+//     ready-to-use route `remote:<id>:<model>`. Because the broker
+//     refuses any remote request whose `prompt` scope is not consented
+//     (default: off), a keyed provider with `prompt` off raises a
+//     prominent amber warning; when the broker is unreachable the
+//     add/save actions are disabled with the reason instead of throwing.
+//     Everything that can leave the machine is rendered in the distinct
+//     amber "leaves your hardware" color; the default — and the state
+//     shown whenever the broker is unreachable — is "Nothing leaves
+//     this machine." Keys are write-only: this app stores or clears
+//     them, never reads them back.
 
 import Adw from 'gi://Adw?version=1';
 import Gdk from 'gi://Gdk?version=4.0';
@@ -30,16 +34,29 @@ import {
     EGRESS_CSS_CLASS, parseState, providerRows, consentRows,
     anythingLeaves, offloadSummary, validateCustomProvider,
     parseCatalog, localModelRows, profileSummary, providerModelHelp,
-    remoteReadiness, providersDisabledReason,
+    remoteReadiness, providersDisabledReason, providerLogoFile,
+    modelHintFor, parseModelList,
 } from './lib/model.js';
 
 const BUS_NAME = 'org.lisa.Remoted';
 const OBJECT_PATH = '/org/lisa/Remote1';
 const IFACE = 'org.lisa.Remote1';
 
+// Brand logos shipped alongside this app (assets/provider-logos/),
+// resolved relative to this file so the dev run works from the repo.
+const LOGO_DIR = Gio.File.new_for_uri(import.meta.url)
+    .get_parent().get_child('assets').get_child('provider-logos');
+
 const CSS = `
+@define-color lisa_violet #7A55D1;
 .${EGRESS_CSS_CLASS} { color: #E66100; }
 banner.${EGRESS_CSS_CLASS} { background-color: alpha(#E66100, 0.15); }
+.provider-pill { border-radius: 99px; padding: 2px 10px; font-weight: 600; }
+.provider-pill.has-key { background-color: alpha(@lisa_violet, 0.16); color: @lisa_violet; }
+.provider-pill.no-key {
+    background-color: alpha(@window_fg_color, 0.08);
+    color: alpha(@window_fg_color, 0.55);
+}
 `;
 
 /** Thin async wrapper over the broker's management interface. */
@@ -53,11 +70,11 @@ class RemoteService {
         return this._bus;
     }
 
-    _call(method, params = null) {
+    _call(method, params = null, timeout = 2000) {
         return new Promise((resolve, reject) => {
             this._connection().call(
                 BUS_NAME, OBJECT_PATH, IFACE, method, params, null,
-                Gio.DBusCallFlags.NONE, 2000, null, (bus, res) => {
+                Gio.DBusCallFlags.NONE, timeout, null, (bus, res) => {
                     try {
                         resolve(bus.call_finish(res));
                     } catch (e) {
@@ -100,6 +117,14 @@ class RemoteService {
 
     claudeOauthFinish(code) {
         return this._call('ClaudeOauthFinish', new GLib.Variant('(s)', [code]));
+    }
+
+    /** The provider's own live model list (its /models, keyed). Longer
+     *  timeout: this is a real egress roundtrip, unlike local state. */
+    async listModels(provider) {
+        const reply = await this._call('ListModels',
+            new GLib.Variant('(s)', [provider]), 15000);
+        return parseModelList(reply.deep_unpack()[0]);
     }
 }
 
@@ -157,6 +182,12 @@ class SettingsWindow {
         this.state = parseState(null); // safe default: nothing leaves
         this.offline = true;
         this.catalog = null;           // null until modeld answers
+        this._logoCache = new Map();   // `${id}:${dark}` → Gdk.Texture
+
+        // Logo SVGs are recolored with the foreground color, so a theme
+        // flip means re-rendering the cards with fresh textures.
+        this._styleManager = Adw.StyleManager.get_default();
+        this._styleManager.connect('notify::dark', () => this._render());
 
         this.window = new Adw.ApplicationWindow({
             application: app,
@@ -285,7 +316,9 @@ class SettingsWindow {
         this.consentBanner.revealed =
             !this.offline && readiness.hasKeyedProvider && !readiness.promptAllowed;
 
-        this._provGroups.push(this._providerGroup(readiness, disabledReason));
+        this._provGroups.push(this._providersHeader(readiness, disabledReason));
+        for (const row of providerRows(this.state.providers))
+            this._provGroups.push(this._providerCard(row, readiness));
         this._provGroups.push(this._consentGroup());
         for (const g of this._provGroups)
             this.providersPage.add(g);
@@ -300,7 +333,8 @@ class SettingsWindow {
             this.localPage.add(g);
     }
 
-    _providerGroup(readiness, disabledReason) {
+    /** Section header: title, description, and the add-provider button. */
+    _providersHeader(readiness, disabledReason) {
         const group = new Adw.PreferencesGroup({
             title: 'Remote providers',
             description: 'Bring-your-own accounts. Requests through a provider ' +
@@ -317,76 +351,109 @@ class SettingsWindow {
         });
         add.connect('clicked', () => this._addProviderDialog());
         group.header_suffix = add;
+        return group;
+    }
 
-        for (const row of providerRows(this.state.providers)) {
-            const item = new Adw.ExpanderRow({
-                title: GLib.markup_escape_text(row.title, -1),
-                subtitle: GLib.markup_escape_text(row.subtitle, -1),
+    /**
+     * One card per provider (the construct pattern, libadwaita-native):
+     * a header row with the brand logo, the key-state pill and removal
+     * for custom endpoints; the write-only key row; then the live model
+     * dropdown when the card can actually serve models, otherwise the
+     * routing guidance.
+     */
+    _providerCard(row, readiness) {
+        const card = new Adw.PreferencesGroup();
+
+        const header = new Adw.ActionRow({
+            title: GLib.markup_escape_text(row.title, -1),
+            subtitle: GLib.markup_escape_text(row.subtitle, -1),
+        });
+        header.add_prefix(this._logoImage(row.id));
+
+        const badge = new Gtk.Label({
+            label: 'leaves your hardware',
+            valign: Gtk.Align.CENTER,
+        });
+        badge.add_css_class(EGRESS_CSS_CLASS);
+        badge.add_css_class('caption');
+        header.add_suffix(badge);
+
+        const pill = new Gtk.Label({
+            label: row.hasCredential ? 'key set' : 'no key',
+            valign: Gtk.Align.CENTER,
+        });
+        pill.add_css_class('provider-pill');
+        pill.add_css_class('caption');
+        pill.add_css_class(row.hasCredential ? 'has-key' : 'no-key');
+        header.add_suffix(pill);
+
+        if (row.removable) {
+            const remove = Gtk.Button.new_from_icon_name('user-trash-symbolic');
+            remove.valign = Gtk.Align.CENTER;
+            remove.tooltip_text = 'Remove this provider (and its key)';
+            remove.connect('clicked', async () => {
+                try {
+                    await this.service.removeProvider(row.id);
+                    this.toast(`${row.title} removed`);
+                } catch (e) {
+                    this.toast(e.message);
+                }
+                this.reload();
             });
-            const badge = new Gtk.Label({
-                label: 'leaves your hardware',
+            header.add_suffix(remove);
+        }
+        card.add(header);
+
+        // Keys are write-only: store/replace/forget, never read back.
+        const keyRow = new Adw.ActionRow({
+            title: 'API key',
+            subtitle: row.hasCredential
+                ? 'Stored by the broker — replace or forget it here.'
+                : 'Not set — the provider refuses requests until you add one.',
+        });
+        const keyBtn = new Gtk.Button({
+            label: row.hasCredential ? 'Replace key…' : 'Set key…',
+            valign: Gtk.Align.CENTER,
+        });
+        keyBtn.connect('clicked', () => this._keyDialog(row));
+        keyRow.add_suffix(keyBtn);
+
+        if (row.hasCredential) {
+            const clear = Gtk.Button.new_from_icon_name('edit-clear-symbolic');
+            clear.valign = Gtk.Align.CENTER;
+            clear.tooltip_text = 'Forget the stored key';
+            clear.connect('clicked', async () => {
+                try {
+                    await this.service.clearKey(row.id);
+                    this.toast(`Key for ${row.title} forgotten`);
+                } catch (e) {
+                    this.toast(e.message);
+                }
+                this.reload();
+            });
+            keyRow.add_suffix(clear);
+        }
+
+        if (row.showsSignIn) {
+            const signIn = new Gtk.Button({
+                label: 'Sign in with Claude',
                 valign: Gtk.Align.CENTER,
+                sensitive: row.signIn.enabled,
+                tooltip_text: row.signIn.enabled
+                    ? 'Authorize with your Claude account'
+                    : row.signIn.reason,
             });
-            badge.add_css_class(EGRESS_CSS_CLASS);
-            badge.add_css_class('caption');
-            item.add_suffix(badge);
+            signIn.connect('clicked', () => this._signInWithClaude());
+            keyRow.add_suffix(signIn);
+        }
+        card.add(keyRow);
 
-            const keyBtn = new Gtk.Button({
-                label: row.hasCredential ? 'Replace key…' : 'Set key…',
-                valign: Gtk.Align.CENTER,
-            });
-            keyBtn.connect('clicked', () => this._keyDialog(row));
-            item.add_suffix(keyBtn);
-
-            if (row.hasCredential) {
-                const clear = Gtk.Button.new_from_icon_name('edit-clear-symbolic');
-                clear.valign = Gtk.Align.CENTER;
-                clear.tooltip_text = 'Forget the stored key';
-                clear.connect('clicked', async () => {
-                    try {
-                        await this.service.clearKey(row.id);
-                        this.toast(`Key for ${row.title} forgotten`);
-                    } catch (e) {
-                        this.toast(e.message);
-                    }
-                    this.reload();
-                });
-                item.add_suffix(clear);
-            }
-
-            if (row.showsSignIn) {
-                const signIn = new Gtk.Button({
-                    label: 'Sign in with Claude',
-                    valign: Gtk.Align.CENTER,
-                    sensitive: row.signIn.enabled,
-                    tooltip_text: row.signIn.enabled
-                        ? 'Authorize with your Claude account'
-                        : row.signIn.reason,
-                });
-                signIn.connect('clicked', () => this._signInWithClaude());
-                item.add_suffix(signIn);
-            }
-
-            if (row.removable) {
-                const remove = Gtk.Button.new_from_icon_name('user-trash-symbolic');
-                remove.valign = Gtk.Align.CENTER;
-                remove.tooltip_text = 'Remove this provider (and its key)';
-                remove.connect('clicked', async () => {
-                    try {
-                        await this.service.removeProvider(row.id);
-                        this.toast(`${row.title} removed`);
-                    } catch (e) {
-                        this.toast(e.message);
-                    }
-                    this.reload();
-                });
-                item.add_suffix(remove);
-            }
-
-            // Expanded: how to address this provider's models. The broker
-            // doesn't enumerate them (that needs egress + a key), and we
-            // never invent a model list (rule 8) — so we show the real
-            // routing format and the provider's own notes.
+        // Models: the live list when the card can serve models; the
+        // routing guidance otherwise (never an invented list — rule 8).
+        if (row.hasCredential && readiness.promptAllowed) {
+            card.add(this._modelsRow(row));
+        } else {
+            card.add(this._modelsGuidanceRow(row));
             const raw = this.state.providers.find(p => p.id === row.id) ?? {id: row.id};
             const help = providerModelHelp(raw);
             const routeRow = new Adw.ActionRow({
@@ -402,16 +469,136 @@ class SettingsWindow {
                 this.toast('Routing prefix copied');
             });
             routeRow.add_suffix(copy);
-            item.add_row(routeRow);
+            card.add(routeRow);
             if (help.hint && help.hint !== help.route)
-                item.add_row(new Adw.ActionRow({
+                card.add(new Adw.ActionRow({
                     title: 'Notes',
                     subtitle: GLib.markup_escape_text(help.hint, -1),
                     subtitle_selectable: true,
                 }));
-            group.add(item);
         }
-        return group;
+        return card;
+    }
+
+    /**
+     * The provider's brand logo, recolored with the foreground color:
+     * the shipped SVGs draw in `currentColor`, which a texture does not
+     * inherit from the widget tree — so we substitute the actual color
+     * for the current light/dark theme before rendering.
+     */
+    _logoImage(providerId) {
+        const key = `${providerId}:${this._styleManager.dark}`;
+        if (!this._logoCache.has(key)) {
+            let texture = null;
+            try {
+                const file = LOGO_DIR.get_child(providerLogoFile(providerId));
+                const [, bytes] = file.load_bytes(null);
+                const svg = new TextDecoder().decode(bytes.toArray())
+                    .replaceAll('currentColor',
+                        this._styleManager.dark ? '#ffffff' : '#1a1a1a');
+                texture = Gdk.Texture.new_from_bytes(new GLib.Bytes(svg));
+            } catch (e) {
+                logError?.(e, `provider logo for ${providerId}`);
+            }
+            this._logoCache.set(key, texture);
+        }
+        const texture = this._logoCache.get(key);
+        const image = texture
+            ? Gtk.Image.new_from_paintable(texture)
+            : new Gtk.Image({icon_name: 'network-server-symbolic'});
+        image.pixel_size = 24;
+        image.valign = Gtk.Align.CENTER;
+        return image;
+    }
+
+    /**
+     * The live "Models" row: fetch → spinner → a dropdown of the
+     * provider's real model ids. Picking one copies its ready-to-use
+     * route (`remote:<id>:<model>`) to the clipboard and shows it in the
+     * row. Errors render inline with a Retry — never thrown.
+     */
+    _modelsRow(row) {
+        const item = new Adw.ActionRow({
+            title: 'Models',
+            subtitle: 'Fetch the provider’s own /models list with your key — ' +
+                'the request leaves this machine.',
+        });
+        const box = new Gtk.Box({spacing: 6, valign: Gtk.Align.CENTER});
+        item.add_suffix(box);
+        const swap = widget => {
+            let child = box.get_first_child();
+            while (child) {
+                const next = child.get_next_sibling();
+                box.remove(child);
+                child = next;
+            }
+            box.append(widget);
+        };
+        const fetch = new Gtk.Button({
+            label: 'Fetch models',
+            valign: Gtk.Align.CENTER,
+        });
+        fetch.connect('clicked', () => this._loadModels(row, item, swap));
+        box.append(fetch);
+        return item;
+    }
+
+    async _loadModels(row, item, swap) {
+        const spinner = new Gtk.Spinner({
+            spinning: true,
+            valign: Gtk.Align.CENTER,
+        });
+        swap(spinner);
+        item.subtitle = 'Asking the provider for its model list…';
+        const fail = message => {
+            const retry = new Gtk.Button({
+                label: 'Retry',
+                valign: Gtk.Align.CENTER,
+            });
+            retry.connect('clicked', () => this._loadModels(row, item, swap));
+            swap(retry);
+            item.subtitle = GLib.markup_escape_text(message, -1);
+        };
+        let models;
+        try {
+            models = await this.service.listModels(row.id);
+        } catch (e) {
+            fail(e.message);
+            return;
+        }
+        if (models.length === 0) {
+            fail('The provider returned an empty model list.');
+            return;
+        }
+        const list = new Gtk.StringList();
+        for (const model of models)
+            list.append(model);
+        const drop = new Gtk.DropDown({model: list, valign: Gtk.Align.CENTER});
+        // Nothing pre-selected — selecting is what copies the route.
+        drop.selected = Gtk.INVALID_LIST_POSITION;
+        drop.connect('notify::selected-item', () => {
+            const model = drop.selected_item?.string;
+            if (!model)
+                return;
+            const hint = modelHintFor(row.id, model);
+            this.window.get_clipboard().set(hint);
+            item.subtitle = GLib.markup_escape_text(hint, -1);
+            this.toast(`Copied ${hint}`);
+        });
+        swap(drop);
+        item.subtitle_selectable = true;
+        item.subtitle = `${models.length} models — pick one to copy its route.`;
+    }
+
+    /** Why the live model list is unavailable on this card right now. */
+    _modelsGuidanceRow(row) {
+        const reason = !row.hasCredential
+            ? 'Set a key above to fetch this provider’s live model list.'
+            : 'Enable the ‘prompt’ scope below to fetch the live model list.';
+        return new Adw.ActionRow({
+            title: 'Models',
+            subtitle: GLib.markup_escape_text(reason, -1),
+        });
     }
 
     _localModelGroup() {

@@ -288,11 +288,67 @@ export function profileSummary(profile) {
 }
 
 /**
- * Per-provider model-routing help. The broker doesn't enumerate a
- * provider's models (that would need egress + a key), and rule 8 forbids
- * inventing a model list — so we surface the real routing format and the
- * provider's own registry `notes` (which carry model-id guidance, e.g.
- * HuggingFace's `openai/gpt-oss-120b:cheapest`). `null` for local-only.
+ * Provider brand logos shipped in `assets/provider-logos/`, keyed by
+ * registry id (construct's brand set, mapped to Lisa's provider ids).
+ * Providers without a brand mark — `tinker` and every custom endpoint —
+ * fall back to `generic.svg`.
+ */
+export const PROVIDER_LOGOS = {
+    openai: 'openai.svg',
+    anthropic: 'anthropic.svg',
+    google: 'google.svg',
+    moonshot: 'moonshot.svg',
+    deepseek: 'deepseek.svg',
+    groq: 'groq.svg',
+    mistral: 'mistral.svg',
+    xai: 'xai.svg',
+    openrouter: 'openrouter.svg',
+    perplexity: 'perplexity.svg',
+    together: 'together.svg',
+    fireworks: 'fireworks.svg',
+    huggingface: 'huggingface.svg',
+};
+
+/** Logo filename for a provider id; the generic mark when no brand exists. */
+export function providerLogoFile(providerId) {
+    return PROVIDER_LOGOS[providerId] ?? 'generic.svg';
+}
+
+/**
+ * The ready-to-use routing hint for one concrete model, e.g.
+ * `remote:openai:gpt-5.2` — what the model dropdown copies on selection.
+ */
+export function modelHintFor(providerId, modelId) {
+    return `remote:${providerId}:${modelId}`;
+}
+
+/**
+ * Parse the broker's `ListModels` reply: a JSON array of the provider's
+ * own model ids. Defensive — junk input or junk entries render as no
+ * models (the UI then says so) rather than throwing in a signal handler.
+ *
+ * @param {string|object} raw @returns {string[]}
+ */
+export function parseModelList(raw) {
+    let list = raw;
+    if (typeof raw === 'string') {
+        try {
+            list = JSON.parse(raw);
+        } catch {
+            return [];
+        }
+    }
+    if (!Array.isArray(list))
+        return [];
+    return list.filter(m => typeof m === 'string' && m.trim() !== '');
+}
+
+/**
+ * Per-provider model-routing help, shown when the live `ListModels`
+ * dropdown is unavailable (no key, `prompt` scope off, or broker
+ * unreachable): the real routing format and the provider's own registry
+ * `notes` (which carry model-id guidance, e.g. HuggingFace's
+ * `openai/gpt-oss-120b:cheapest`). Rule 8: never an invented model list.
  *
  * @param {object} provider @returns {{route: string, hint: string}}
  */

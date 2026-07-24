@@ -5,7 +5,8 @@ import {
     claudeSignInState, consentRows, anythingLeaves, offloadSummary,
     validateCustomProvider, remoteReadiness, providersDisabledReason,
     parseCatalog, fitBadge, localModelSubtitle, localModelRows,
-    profileSummary, providerModelHelp,
+    profileSummary, providerModelHelp, PROVIDER_LOGOS, providerLogoFile,
+    modelHintFor, parseModelList,
 } from '../lib/model.js';
 
 const sampleState = {
@@ -235,6 +236,38 @@ test('providerModelHelp surfaces the route and real notes, never invents models'
     const bare = providerModelHelp({id: 'openai'});
     assertEq(bare.route, 'remote:openai:<model-id>');
     assert(bare.hint.includes('remote:openai:'), 'falls back to the routing format');
+});
+
+// --- Provider logos, model hints, live model list ----------------------
+
+test('providerLogoFile maps every branded built-in, else the generic mark', () => {
+    // The 13 built-ins with a brand logo; tinker has none.
+    for (const id of ['openai', 'anthropic', 'google', 'moonshot', 'deepseek',
+        'groq', 'mistral', 'xai', 'openrouter', 'perplexity', 'together',
+        'fireworks', 'huggingface'])
+        assertEq(providerLogoFile(id), `${id}.svg`, id);
+    assertEq(Object.keys(PROVIDER_LOGOS).length, 13, 'exactly the branded set');
+    assertEq(providerLogoFile('tinker'), 'generic.svg');
+    assertEq(providerLogoFile('my-lab'), 'generic.svg', 'custom endpoints');
+    assertEq(providerLogoFile(''), 'generic.svg');
+    assertEq(providerLogoFile(undefined), 'generic.svg');
+});
+
+test('modelHintFor builds the ready-to-use remote route', () => {
+    assertEq(modelHintFor('openai', 'gpt-5.2'), 'remote:openai:gpt-5.2');
+    assertEq(modelHintFor('together', 'org/model'),
+        'remote:together:org/model', 'namespaced ids pass through');
+});
+
+test('parseModelList round-trips the broker reply and tolerates junk', () => {
+    assertEq(parseModelList('["b-model","a-model"]'), ['b-model', 'a-model']);
+    assertEq(parseModelList(['x', 'y']), ['x', 'y'], 'already-parsed array');
+    for (const raw of ['not json', '{}', null, undefined, '{"data":[]}', '42'])
+        assertEq(parseModelList(raw), [], `junk: ${raw}`);
+    // Junk entries are dropped, real ids kept, order preserved.
+    assertEq(parseModelList(['keep', '', '  ', 7, null, {}, ['x'], 'also-keep']),
+        ['keep', 'also-keep']);
+    assertEq(parseModelList('[]'), [], 'an empty list is not an error');
 });
 
 finish('settings/model');
