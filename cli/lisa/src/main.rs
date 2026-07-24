@@ -7,6 +7,7 @@
 //! the Agent Bus in M5.
 
 mod agent;
+mod terminal;
 mod voice;
 
 use anyhow::{Context, bail};
@@ -48,6 +49,45 @@ enum Command {
         /// Run at background priority (preempted by interactive requests).
         #[arg(long)]
         background: bool,
+    },
+    /// Explain the last failed command (PLAN §5.8 Terminal):
+    /// `lisa explain --exit 101 cargo build`, or pipe the output —
+    /// `make 2>&1 | lisa explain`. A bare `lisa explain` uses what the
+    /// terminal hooks stashed about the last failure.
+    Explain {
+        /// The command that failed (words joined; flags-first: put
+        /// `--exit` before it, the command's own flags pass through).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+        /// Its exit code.
+        #[arg(long)]
+        exit: Option<i32>,
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:7777",
+            env = "LISA_INFERENCE_URL"
+        )]
+        url: String,
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Natural language → ONE shell command, printed for review — never
+    /// executed (PLAN §5.8; the Ctrl+G terminal hook calls this).
+    /// stdout is exactly the command; the explanation goes to stderr.
+    Suggest {
+        /// What you want, in plain words.
+        request: Vec<String>,
+        /// Emit the raw {command, explanation} JSON instead.
+        #[arg(long)]
+        json: bool,
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:7777",
+            env = "LISA_INFERENCE_URL"
+        )]
+        url: String,
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Manage the local model store (PLAN §5.2).
     Models {
@@ -357,6 +397,18 @@ fn run() -> anyhow::Result<()> {
             json_schema,
             background,
         } => ask(prompt, &url, model, no_stream, json_schema, background),
+        Command::Explain {
+            command,
+            exit,
+            url,
+            model,
+        } => terminal::explain_cmd(command, exit, &url, model),
+        Command::Suggest {
+            request,
+            json,
+            url,
+            model,
+        } => terminal::suggest_cmd(&request.join(" "), &url, model, json),
         Command::Models { cmd, store } => models(cmd, store),
         Command::Do {
             utterance,
@@ -449,8 +501,24 @@ fn ask(
         return broker_chat(provider, &body);
     }
 
+    print_chat(url, &body, no_stream)
+}
+
+/// POST a chat body to the local endpoint and print the reply — SSE
+/// token deltas as they arrive, or in one shot with `no_stream`. The
+/// single HTTP path the text verbs share (`ask`, `explain`) — no verb
+/// grows HTTP machinery of its own.
+pub(crate) fn print_chat(
+    url: &str,
+    body: &serde_json::Value,
+    no_stream: bool,
+) -> anyhow::Result<()> {
+    if no_stream {
+        println!("{}", chat_completion(url, body)?);
+        return Ok(());
+    }
     let endpoint = format!("{}/v1/chat/completions", url.trim_end_matches('/'));
-    let mut response = ureq::post(&endpoint).send_json(&body).with_context(|| {
+    let mut response = ureq::post(&endpoint).send_json(body).with_context(|| {
         format!(
             "request to {endpoint} failed — is lisa-inferenced running? \
              Start it with `lisa-inferenced` (or `cargo run -p lisa-inferenced`)"
@@ -459,18 +527,6 @@ fn ask(
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    if no_stream {
-        let json: serde_json::Value = response.body_mut().read_json()?;
-        if let Some(err) = json["error"]["message"].as_str() {
-            bail!("inference error: {err}");
-        }
-        let content = json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default();
-        writeln!(out, "{content}")?;
-        return Ok(());
-    }
-
     // SSE: print token deltas as they arrive.
     let reader = BufReader::new(response.body_mut().as_reader());
     for line in reader.lines() {
@@ -492,6 +548,27 @@ fn ask(
     }
     writeln!(out)?;
     Ok(())
+}
+
+/// One non-streaming completion against the local endpoint; returns the
+/// reply content (`suggest` parses it, `print_chat --no-stream` prints
+/// it).
+pub(crate) fn chat_completion(url: &str, body: &serde_json::Value) -> anyhow::Result<String> {
+    let endpoint = format!("{}/v1/chat/completions", url.trim_end_matches('/'));
+    let mut response = ureq::post(&endpoint).send_json(body).with_context(|| {
+        format!(
+            "request to {endpoint} failed — is lisa-inferenced running? \
+             Start it with `lisa-inferenced` (or `cargo run -p lisa-inferenced`)"
+        )
+    })?;
+    let json: serde_json::Value = response.body_mut().read_json()?;
+    if let Some(err) = json["error"]["message"].as_str() {
+        bail!("inference error: {err}");
+    }
+    Ok(json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
 }
 
 use std::io::IsTerminal;

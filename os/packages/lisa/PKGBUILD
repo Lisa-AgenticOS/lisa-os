@@ -156,6 +156,16 @@ package_lisa-cli() {
     depends=(gcc-libs)
     cd "$pkgbase-$pkgver"
     install -Dm755 target/release/lisa "$pkgdir/usr/bin/lisa"
+    # Terminal integration (PLAN §5.8): opt-in shell hooks for
+    # `lisa explain` / `lisa suggest` (Ctrl+G review gate). All logic is
+    # in the CLI; these only wire keys and prompts (CLAUDE.md rule 4).
+    install -Dm644 apps/terminal-integration/lisa-terminal.zsh \
+        "$pkgdir/usr/share/lisa/terminal/lisa-terminal.zsh"
+    install -Dm644 apps/terminal-integration/lisa-terminal.bash \
+        "$pkgdir/usr/share/lisa/terminal/lisa-terminal.bash"
+    # Inert gate: sources nothing unless the user set LISA_TERMINAL=1.
+    install -Dm644 apps/terminal-integration/lisa-terminal.sh \
+        "$pkgdir/etc/profile.d/lisa-terminal.sh"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
