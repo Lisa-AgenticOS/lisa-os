@@ -8,7 +8,11 @@ Terminal=false
 Type=Application
 NoDisplay=true
 StartupNotify=true
-Categories=GNOME;GTK;Settings;DesktopSettings;X-GNOME-Settings-Panel;X-GNOME-SystemSettings;
+# X-GNOME-PersonalizationSettings marks this a TOP-LEVEL panel. Do NOT use
+# X-GNOME-SystemSettings here: in GNOME 50 that category makes cc-window
+# treat the id as a `system` subpage, so activating the sidebar row redirects
+# to `system lisa` and fails with "Invalid subpage: 'lisa'" (ADR-0012).
+Categories=GNOME;GTK;Settings;DesktopSettings;X-GNOME-Settings-Panel;X-GNOME-PersonalizationSettings;
 OnlyShowIn=GNOME;
 # Translators: Search terms to find the Intelligence panel. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
 Keywords=AI;Intelligence;Lisa;Model;Models;LLM;Provider;Assistant;Offload;Privacy;

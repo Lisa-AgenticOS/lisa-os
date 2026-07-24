@@ -86,6 +86,15 @@ prepare() {
   install -m644 "$srcdir"/gnome-lisa-panel.desktop.in \
     panels/lisa/gnome-lisa-panel.desktop.in
 
+  # Regression guard (ADR-0012): X-GNOME-SystemSettings in the panel
+  # .desktop makes GNOME 50 treat `lisa` as a `system` subpage — the
+  # sidebar row shows but activating it redirects to `system lisa` and
+  # dies with "Invalid subpage: 'lisa'". Must stay a top-level category.
+  grep -q 'X-GNOME-PersonalizationSettings' panels/lisa/gnome-lisa-panel.desktop.in \
+    || { echo "lisa panel .desktop must use a top-level category, not SystemSettings" >&2; return 1; }
+  ! grep -q 'X-GNOME-SystemSettings' panels/lisa/gnome-lisa-panel.desktop.in \
+    || { echo "lisa panel .desktop has X-GNOME-SystemSettings — breaks activation (ADR-0012)" >&2; return 1; }
+
   # Register it: build the panel lib, declare the GType, and list it.
   sed -i "s/^  'wellbeing',\$/  'wellbeing',\n  'lisa',/" panels/meson.build
   sed -i '/^extern GType cc_wellbeing_panel_get_type (void);/a extern GType cc_lisa_panel_get_type (void);' \
