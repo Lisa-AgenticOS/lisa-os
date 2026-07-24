@@ -1,43 +1,49 @@
-# ADR-0018: the /var partition UUID is pinned to a constant
+# ADR-0018: /var is mounted by partition LABEL, not by UUID
 
 - **Status:** accepted
 - **Date:** 2026-07-24
 
 ## Context
 
-Durable state lives on a separate `/var` partition (ADR era of durable-var,
-`mkosi.repart/20-var.conf`). `MountPoint=/var` makes `repart --generate-fstab`
-bake a `/var` entry **by PARTUUID** into each root slot's `/etc/fstab`.
+Durable state lives on a separate `/var` partition (`mkosi.repart/20-var.conf`).
+It was mounted via `MountPoint=/var`, which makes `repart --generate-fstab`
+bake a `/var` fstab entry keyed on an identifier that is **assigned fresh on
+every image build** — the btrfs filesystem UUID (from `Format=`) and/or the
+partition PARTUUID. The persistent `/var` partition, however, keeps the
+identifiers from the **original** install and is never rewritten by an update.
 
-Bug: mkosi assigns the `/var` partition a **fresh random PARTUUID on every
-image build**, and bakes that build's PARTUUID into that slot's fstab. But the
-persistent `/var` partition on a device keeps the PARTUUID from the *original*
-install and is never rewritten by an update. So after a `lisa update` /
-`systemd-sysupdate` stages a newer slot, that slot's fstab references a `/var`
-PARTUUID that does not exist on the disk → `/var` fails to mount → `Local File
-Systems` fails → the box drops to **emergency mode**. This is exactly what the
-field iMac hit (it was hand-patched per slot), and the nightly `ab-sysupdate`
-job has failed on it since 2026-07-24.
+Bug: after `lisa update` / `systemd-sysupdate` stages a newer root slot, that
+slot's baked fstab references a `/var` identifier the disk's `/var` never had →
+`/var` fails to mount → `Local File Systems` fails → the box drops to
+**emergency mode** (no networking, no SSH). This is exactly what the field iMac
+hit — it had to be hand-patched every update — and it is why the nightly
+`ab-sysupdate` job began failing on 2026-07-24. Confirmed on the live device:
+its `/var` fstab was hand-patched to `UUID=<btrfs-fs-uuid>`, and every fresh
+slot baked a different value.
 
 ## Decision
 
-**Pin the `/var` partition UUID** to a constant in `mkosi.repart/20-var.conf`
-(`UUID=489dedcf-8291-4e00-bfc5-ef6b6d5f2131`). Every image build then assigns
-`/var` the same PARTUUID and bakes the same value into every slot's fstab, so a
-sysupdated slot's fstab always matches the one persistent `/var` partition.
+Mount `/var` by its **partition LABEL** (`var`), which is identical on every
+build and on the installed disk:
 
-Pinned only in the **image** repart (20-var.conf), not the runtime repart
-(`mkosi.extra/.../repart.d/50-var.conf`): the runtime pass only grows the
-existing partition and must not be given a UUID that could make it treat an
-already-installed device's `/var` as a mismatch and recreate it.
+- `20-var.conf` drops `MountPoint=/var` (no per-build fstab identifier) and adds
+  `Label=var`.
+- A shipped `var.mount` unit
+  (`mkosi.extra/usr/lib/systemd/system/var.mount`, enabled via
+  `local-fs.target.wants/`) mounts `What=/dev/disk/by-partlabel/var` at `/var`,
+  ordered into `local-fs.target`.
+
+This supersedes the initial attempt (pinning the partition UUID): a pinned
+PARTUUID would still not match an *already-installed* device (its `/var` keeps
+the original UUID), whereas the label matches every existing and future install
+with **no disk surgery**.
 
 ## Consequences
 
-- `lisa update` / sysupdate no longer breaks `/var` — the core self-update
-  promise holds without per-slot hand-patching. Verified by the nightly
-  `ab-sysupdate` job.
-- All Lisa installs share one `/var` PARTUUID. Harmless here: one Lisa disk per
-  machine and `root=` is explicit (no gpt-auto ambiguity). Two Lisa disks in
-  one machine is out of scope.
-- Existing hand-patched devices are unaffected until reinstalled; new images
-  are correct from install onward.
+- `lisa update` / sysupdate no longer breaks `/var`; the self-update path holds
+  without per-slot hand-patching. Verified by the nightly `ab-sysupdate` job.
+- The **existing field iMac needs nothing** — its `/var` is already labeled
+  `var`, so a release carrying this change mounts it correctly on first update.
+- gpt-auto stays inert (explicit `root=`), so the explicit `var.mount` is what
+  drives the mount. Cross-disk label ambiguity (two Lisa disks in one machine)
+  is out of scope.

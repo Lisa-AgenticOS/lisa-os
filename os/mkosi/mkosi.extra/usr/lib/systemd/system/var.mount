@@ -1,0 +1,23 @@
+# Mount the durable /var partition by its stable partition LABEL (ADR-0018).
+# NOT by fs-UUID or PARTUUID: both are assigned fresh per image build and baked
+# into each slot, so a sysupdated slot would point at an identifier the
+# persistent /var never had → /var fails to mount → emergency mode. The label
+# `var` (repart Label=var) is identical on every build and on the installed
+# disk, so every slot mounts the one persistent partition. Boot-critical:
+# ordered into local-fs.target so services that need /var wait for it.
+[Unit]
+Description=Durable /var partition (by partition label)
+DefaultDependencies=no
+Conflicts=umount.target
+Before=local-fs.target umount.target
+After=local-fs-pre.target
+Wants=local-fs-pre.target
+
+[Mount]
+What=/dev/disk/by-partlabel/var
+Where=/var
+Type=btrfs
+Options=rw,nodev,suid,exec
+
+[Install]
+WantedBy=local-fs.target
