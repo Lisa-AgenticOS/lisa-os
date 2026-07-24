@@ -16,11 +16,11 @@ export default defineNuxtConfig({
   app: {
     head: {
       htmlAttrs: { lang: 'en' },
-      title: 'Lisa OS — build & contribute',
+      title: 'Lisa OS — developer portal',
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-        { name: 'description', content: 'Install Lisa OS, read the architecture, and contribute — an OpenAI-compatible endpoint on the machine, a live good-first-issues board, sign in with GitHub.' }
+        { name: 'description', content: 'The Lisa OS developer portal: docs, the API reference (HTTP, D-Bus, MCP), downloads, design guidelines, news, and a live good-first-issues board.' }
       ]
     }
   }

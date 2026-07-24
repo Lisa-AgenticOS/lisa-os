@@ -16,13 +16,13 @@ const oauth = defineOAuthGitHubEventHandler({
   },
   onError(event, error) {
     console.error('GitHub OAuth error:', error)
-    return sendRedirect(event, '/?login=error')
+    return sendRedirect(event, '/contribute?login=error')
   }
 })
 
 export default defineEventHandler((event) => {
   const gh = useRuntimeConfig(event).oauth?.github
   if (!gh?.clientId || !gh?.clientSecret)
-    return sendRedirect(event, '/?login=unavailable')
+    return sendRedirect(event, '/contribute?login=unavailable')
   return oauth(event)
 })
