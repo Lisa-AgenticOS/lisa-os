@@ -126,6 +126,7 @@ h1,h2,h3{letter-spacing:-.028em;line-height:1.05;font-weight:800;text-wrap:balan
 .status li .c{margin-top:5px;width:8px;height:8px;border-radius:2px;background:var(--violet)}
 .status .soon li{color:var(--ink-soft)}
 .status .soon li .c{background:var(--ink-faint);border-radius:50%;opacity:.6}
+.status li code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;background:var(--mono-bg);color:var(--mono-ink);border-radius:5px;padding:1px 5px}
 
 .close{padding:96px 0}
 .close h2{font-size:clamp(30px,4.6vw,50px);max-width:16ch}

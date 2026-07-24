@@ -71,6 +71,14 @@ h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balan
 pre{background:var(--mono-bg);color:var(--mono-ink);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-top:20px;overflow-x:auto;font:13.5px/1.7 ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
 pre .c{color:var(--ink-faint)}pre .k{color:var(--violet-ink);font-weight:600}
 .after{margin-top:16px;font-size:15px}
+code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.88em;background:var(--mono-bg);color:var(--mono-ink);border-radius:5px;padding:1px 5px}
+pre code{font:inherit;background:transparent;color:inherit;border-radius:0;padding:0}
+
+/* shipped-this-week strip */
+.ship{list-style:none;margin:24px 0 0;padding:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--ground)}
+.ship li{display:flex;gap:16px;align-items:baseline;padding:13px 20px;border-bottom:1px solid var(--line);font-size:14.5px;line-height:1.55;color:var(--ink)}
+.ship li:last-child{border-bottom:0}
+.ship .d{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
 
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:22px;border-top:1px solid var(--line)}
 @media(max-width:640px){.grid{grid-template-columns:1fr}}

@@ -54,6 +54,19 @@ const ghMark = 'M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.61 8.2 11.17.6.11.82-.
       </div>
     </header>
 
+    <section id="shipped" class="sec anchor">
+      <h2>What shipped this week.</h2>
+      <p>From <code>docs/STATUS.md</code> — verified on real hardware, not aspirational.</p>
+      <ul class="ship">
+        <li><span class="d">Jul 25</span><span>Assistant chat verified end-to-end on the field iMac — streamed, ledgered, live model picker; Stop, Markdown export, history across restarts</span></li>
+        <li><span class="d">Jul 25</span><span>Terminal integration: <code>lisa explain</code> / <code>lisa suggest</code> — Ctrl+G with review-before-Enter; suggestions never auto-run</span></li>
+        <li><span class="d">Jul 25</span><span><code>lisa apps update</code>: app updates in minutes, no reboot, atomic rollback (ADR-0020)</span></li>
+        <li><span class="d">Jul 25</span><span>True token streaming for cloud models through the egress broker; double-tap Shift summons the assistant overlay</span></li>
+        <li><span class="d">Jul 25</span><span><code>dev.lisaos.Context1</code>: scoped, ledgered retrieval and per-app memory</span></li>
+        <li><span class="d">Jul 25</span><span>A/B-update emergency-mode bug class fixed and CI-gated (mounts by partition label, gpt-auto off); the full stack passes e2e natively on ARM64 in containers — bootable Apple Silicon images in progress</span></li>
+      </ul>
+    </section>
+
     <section id="contribute" class="sec anchor">
       <h2>Start contributing.</h2>
       <p>Good first issues, straight from the repo. Pick one, comment to claim it, and open a PR.</p>
@@ -98,6 +111,9 @@ r = client.chat.completions.create(
     response_format={<span class="k">"type"</span>: <span class="k">"json_schema"</span>,
                      <span class="k">"json_schema"</span>: {<span class="k">"name"</span>: <span class="k">"recipe"</span>, <span class="k">"schema"</span>: SCHEMA}})
 <span class="c"># always valid JSON for SCHEMA</span></code></pre>
+      <p>The CLI is part of the surface too — the terminal gets first-class verbs:</p>
+      <pre><code>lisa explain      <span class="c"># explains the last failed command</span>
+lisa apps update  <span class="c"># app updates in minutes, no reboot, atomic rollback</span></code></pre>
       <p class="after"><a :href="`${repo}/tree/main/docs/sdk/samples`">→ Sample apps</a> · <a :href="`${repo}/tree/main/libs/lisa_flutter`">Dart/Flutter SDK</a></p>
     </section>
 

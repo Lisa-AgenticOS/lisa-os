@@ -73,7 +73,7 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       <div class="lead-2">
         <span class="eyebrow">The assistant</span>
         <h2>Talk to a local model — or your own cloud, on the record.</h2>
-        <p>Chat with the model that runs on your machine, or sign in to a provider you already pay for. Either way, the turn is streamed, and the egress is marked.</p>
+        <p>Press Super+C and chat with the model that runs on your machine, or sign in to a provider you already pay for. Replies stream in — and stop when you say stop — the history survives a restart, and any conversation exports to Markdown. The egress is always marked.</p>
       </div>
       <div class="win" role="img" aria-label="The Lisa Assistant chat window">
         <div class="bar"><i /><i /><i /><span class="t">Lisa Assistant</span>
@@ -95,21 +95,22 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
         <div class="col">
           <h4>Working now</h4>
           <ul>
+            <li><span class="c" />A chat assistant on Super+C — local and cloud models, streaming, history that survives restarts, Markdown export</li>
+            <li><span class="c" />Terminal help that never acts alone: <code>lisa explain</code> reads your last failure; <code>lisa suggest</code> drafts a command you review before running</li>
+            <li><span class="c" />App updates in minutes — no reboot, atomic rollback</li>
+            <li><span class="c" />Cloud replies stream token-by-token through the audited egress broker — signed in by you, off by default</li>
+            <li><span class="c" />Per-app memory and scoped context search, every read on the record</li>
+            <li><span class="c" />Local inference + guided generation as a system service, gated by the append-only Ledger</li>
             <li><span class="c" />Bootable, self-updating immutable OS — A/B slots, auto-rollback</li>
-            <li><span class="c" />Local inference + guided generation as a system service</li>
-            <li><span class="c" />Append-only audit Ledger, enforced by the system</li>
-            <li><span class="c" />On-device context search with per-app permissions</li>
-            <li><span class="c" />Bring-your-own cloud providers — signed in, off by default</li>
-            <li><span class="c" />A chat assistant: local and cloud models, streaming, ledgered</li>
           </ul>
         </div>
         <div class="col soon">
           <h4>On the way</h4>
           <ul>
-            <li><span class="c" />Native AI panel in Settings for models &amp; providers</li>
             <li><span class="c" />Always-on ambient assistant</li>
             <li><span class="c" />Apps you can generate and install locally</li>
             <li><span class="c" />Voice + wake-word loop, fully on device</li>
+            <li><span class="c" />Apple Silicon images — the stack already runs on ARM64 (container-verified)</li>
           </ul>
         </div>
       </div>
