@@ -60,6 +60,31 @@ impl Store {
         rows.collect()
     }
 
+    /// Active notes whose title or body contains `query` as a literal
+    /// substring, newest first (`created` desc, id as tiebreak), capped
+    /// at `limit`. Matching is SQLite `LIKE`: case-insensitive for
+    /// ASCII letters only — non-ASCII letters compare case-sensitively.
+    /// `%`, `_`, and `\` in the query are escaped, so they match
+    /// themselves, never as wildcards.
+    pub fn search(&self, query: &str, limit: i64) -> rusqlite::Result<Vec<NoteSummary>> {
+        let pattern = format!("%{}%", escape_like(query));
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, created FROM notes
+             WHERE deleted = 0
+               AND (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\')
+             ORDER BY created DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pattern, limit], |row| {
+            Ok(NoteSummary {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     /// Soft-delete. `false` when no *active* note has that id (unknown
     /// or already deleted) — the caller turns that into a tool error.
     pub fn delete(&self, id: i64) -> rusqlite::Result<bool> {
@@ -79,6 +104,19 @@ impl Store {
         )?;
         Ok(n > 0)
     }
+}
+
+/// Escape `LIKE` wildcards (`%`, `_`) and the escape character itself
+/// so a user query only ever matches literally.
+fn escape_like(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    for c in query.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -136,6 +174,102 @@ mod tests {
         assert!(!store.restore(999).unwrap(), "unknown id restores nothing");
         assert!(store.restore(id).unwrap());
         assert!(!store.restore(id).unwrap(), "already active");
+    }
+
+    #[test]
+    fn search_matches_title_and_body_newest_first() {
+        let (_dir, store) = fixture();
+        let a = store.create("milk run", "eggs and bread").unwrap();
+        let b = store.create("meeting", "budget for milk").unwrap();
+        store.create("unrelated", "nothing here").unwrap();
+
+        let hits = store.search("milk", 20).unwrap();
+        assert_eq!(
+            hits.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![b, a],
+            "title and body both match, newest first"
+        );
+    }
+
+    #[test]
+    fn search_is_case_insensitive_for_ascii_only() {
+        // SQLite LIKE folds case for the 26 ASCII letters only —
+        // non-ASCII letters compare case-sensitively (SQLite's
+        // documented default). Documented here, not worked around.
+        let (_dir, store) = fixture();
+        store.create("Shopping List", "MILK").unwrap();
+        assert_eq!(
+            store.search("shopping", 20).unwrap().len(),
+            1,
+            "title, folded"
+        );
+        assert_eq!(store.search("milk", 20).unwrap().len(), 1, "body, folded");
+
+        store.create("Škoda", "").unwrap();
+        assert_eq!(
+            store.search("Škoda", 20).unwrap().len(),
+            1,
+            "exact non-ASCII"
+        );
+        assert!(
+            store.search("škoda", 20).unwrap().is_empty(),
+            "non-ASCII case is not folded"
+        );
+    }
+
+    #[test]
+    fn search_excludes_soft_deleted_notes() {
+        let (_dir, store) = fixture();
+        let keep = store.create("keep milk", "").unwrap();
+        let gone = store.create("gone milk", "").unwrap();
+        assert!(store.delete(gone).unwrap());
+
+        let hits = store.search("milk", 20).unwrap();
+        assert_eq!(hits.iter().map(|n| n.id).collect::<Vec<_>>(), vec![keep]);
+
+        assert!(store.restore(gone).unwrap());
+        assert_eq!(store.search("milk", 20).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn search_honors_the_limit_keeping_the_newest() {
+        let (_dir, store) = fixture();
+        store.create("milk 1", "").unwrap();
+        let b = store.create("milk 2", "").unwrap();
+        let c = store.create("milk 3", "").unwrap();
+
+        let hits = store.search("milk", 2).unwrap();
+        assert_eq!(
+            hits.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![c, b],
+            "limit trims the oldest matches"
+        );
+    }
+
+    #[test]
+    fn search_treats_like_wildcards_literally() {
+        let (_dir, store) = fixture();
+        store.create("progress", "50% done").unwrap();
+        store.create("naming", "snake_case wins").unwrap();
+        store.create("paths", r"C:\temp").unwrap();
+        store.create("plain", "abc").unwrap();
+
+        let titles = |q: &str| {
+            store
+                .search(q, 20)
+                .unwrap()
+                .into_iter()
+                .map(|n| n.title)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles("%"), vec!["progress"], "% is literal, not match-all");
+        assert_eq!(titles("50% d"), vec!["progress"]);
+        assert_eq!(titles("_"), vec!["naming"], "_ is literal, not any-char");
+        assert_eq!(titles(r"\"), vec!["paths"], "backslash is literal too");
+        assert!(
+            titles("50_ done").is_empty(),
+            "_ does not act as an any-character wildcard"
+        );
     }
 
     #[test]

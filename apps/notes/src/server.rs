@@ -5,7 +5,7 @@
 //! `isError: true` *results* (not JSON-RPC errors), per the contract in
 //! `libs/mcp-bus/src/client.rs::extract_tool_result`.
 
-use crate::storage::Store;
+use crate::storage::{NoteSummary, Store};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -15,6 +15,7 @@ pub const PROTOCOL_VERSION: &str = "2024-11-05";
 
 const MAX_TITLE_CHARS: usize = 120;
 const MAX_BODY_CHARS: usize = 4000;
+const DEFAULT_SEARCH_LIMIT: i64 = 20;
 
 /// Accept connections one at a time, forever. The bus opens a fresh
 /// connection per dispatch and drops it after the call, so sequential
@@ -93,6 +94,7 @@ fn tools_call(id: Value, msg: &Value, store: &Store) -> Value {
     let result = match name {
         "create_note" => create_note(store, &args),
         "list_notes" => list_notes(store),
+        "search_notes" => search_notes(store, &args),
         "delete_note" => delete_note(store, &args),
         "restore_note" => restore_note(store, &args),
         other => tool_error(format!("unknown tool: {other}")),
@@ -130,14 +132,45 @@ fn create_note(store: &Store, args: &Value) -> Value {
 
 fn list_notes(store: &Store) -> Value {
     match store.list() {
-        Ok(notes) => structured(json!({
-            "notes": notes
-                .iter()
-                .map(|n| json!({ "id": n.id, "title": n.title, "created": n.created }))
-                .collect::<Vec<_>>(),
-        })),
+        Ok(notes) => structured(notes_json(&notes)),
         Err(e) => tool_error(format!("list_notes: {e}")),
     }
+}
+
+/// Substring search over title+body (SQLite LIKE, wildcards escaped —
+/// see `Store::search` for the exact semantics), newest first.
+fn search_notes(store: &Store, args: &Value) -> Value {
+    let query = match required_str(args, "query", "search_notes") {
+        Ok(q) => q,
+        Err(e) => return e,
+    };
+    if query.chars().count() > MAX_BODY_CHARS {
+        return tool_error(format!(
+            "search_notes: \"query\" exceeds {MAX_BODY_CHARS} characters"
+        ));
+    }
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => DEFAULT_SEARCH_LIMIT,
+        Some(v) => match v.as_i64() {
+            Some(n) if n >= 1 => n,
+            Some(_) => return tool_error("search_notes: \"limit\" must be at least 1"),
+            None => return tool_error("search_notes: \"limit\" must be an integer"),
+        },
+    };
+    match store.search(query, limit) {
+        Ok(notes) => structured(notes_json(&notes)),
+        Err(e) => tool_error(format!("search_notes: {e}")),
+    }
+}
+
+/// The `{notes: [...]}` shape `list_notes` and `search_notes` share.
+fn notes_json(notes: &[NoteSummary]) -> Value {
+    json!({
+        "notes": notes
+            .iter()
+            .map(|n| json!({ "id": n.id, "title": n.title, "created": n.created }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn delete_note(store: &Store, args: &Value) -> Value {
@@ -239,6 +272,33 @@ mod tests {
         assert_eq!(notes[0]["id"], id);
         assert_eq!(notes[0]["title"], "first");
         assert!(notes[0]["created"].as_str().unwrap().ends_with('Z'));
+
+        // search: substring over title+body, same note shape as list
+        let found = client
+            .call_tool("search_notes", &json!({"query": "bus"}))
+            .unwrap();
+        let hits = found["notes"].as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["id"], id);
+        assert_eq!(hits[0]["title"], "first");
+        assert_eq!(
+            client
+                .call_tool("search_notes", &json!({"query": "no such text"}))
+                .unwrap(),
+            json!({"notes": []})
+        );
+        let err = client.call_tool("search_notes", &json!({})).unwrap_err();
+        assert!(
+            matches!(err, McpError::Tool(ref msg) if msg.contains("missing required argument")),
+            "{err:?}"
+        );
+        let err = client
+            .call_tool("search_notes", &json!({"query": "x", "limit": 0}))
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::Tool(ref msg) if msg.contains("at least 1")),
+            "{err:?}"
+        );
 
         // delete → hidden; a second delete is a tool error
         let deleted = client.call_tool("delete_note", &json!({"id": id})).unwrap();

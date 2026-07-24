@@ -29,6 +29,20 @@
       }
     },
     {
+      "name": "search_notes",
+      "tier": "read",
+      "description": "Search active notes for a substring of title or body (case-insensitive for ASCII letters only; %, _ and \\ match literally), newest first",
+      "input_schema": {
+        "type": "object",
+        "required": ["query"],
+        "additionalProperties": false,
+        "properties": {
+          "query": { "type": "string", "maxLength": 4000 },
+          "limit": { "type": "integer", "minimum": 1, "default": 20 }
+        }
+      }
+    },
+    {
       "name": "delete_note",
       "tier": "write",
       "description": "Soft-delete a note; restorable via restore_note",

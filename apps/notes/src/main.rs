@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(m["mcp"]["activatable"], false);
 
         let tools = m["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
         for tool in tools {
             assert_eq!(
                 tool["input_schema"]["type"], "object",
@@ -119,6 +119,15 @@ mod tests {
 
         let by_name = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
         assert_eq!(by_name("list_notes")["tier"], "read");
+        assert_eq!(by_name("search_notes")["tier"], "read");
+        assert!(
+            by_name("search_notes").get("undo").is_none(),
+            "search is a read: nothing to undo"
+        );
+        assert_eq!(
+            by_name("search_notes")["input_schema"]["required"],
+            serde_json::json!(["query"])
+        );
         assert_eq!(by_name("create_note")["tier"], "write");
         assert_eq!(by_name("create_note")["undo"]["tool"], "delete_note");
         assert_eq!(by_name("create_note")["undo"]["map"]["id"], "$result.id");
