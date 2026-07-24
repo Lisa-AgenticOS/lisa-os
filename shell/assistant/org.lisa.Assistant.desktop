@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lisa Assistant
+GenericName=AI Chat
+Comment=Chat with a local model or your signed-in cloud models — every turn on the record.
+Exec=gjs -m /usr/share/lisa/shell/assistant/lisa-assistant.js
+Icon=lisa-assistant-symbolic
+Categories=Utility;GTK;Chat;
+Keywords=lisa;ai;chat;assistant;claude;gpt;llm;
+StartupNotify=true

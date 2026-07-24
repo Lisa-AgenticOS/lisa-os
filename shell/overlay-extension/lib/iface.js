@@ -14,6 +14,16 @@
 //   "selection" → app resource / AT-SPI (PLAN §5.7.3 layer 3 — reported unavailable)
 // plus "model_hint" (s), forwarded to org.lisa.Inference1.
 //
+// The persistent chat window (a second frontend) adds three options:
+//   "lane" (s)         → "chat" selects the multi-turn chat lane (no Agent
+//                        pass; talks to lisa-inferenced's OpenAI-compat
+//                        endpoint so the chat template applies and
+//                        `remote:<provider>:<model>` routes through the broker)
+//   "history_json" (s) → prior [{role,content}] turns, for multi-turn
+//   "model_hint" (s)   → a local model id or `remote:<provider>:<model>`
+// Tokens and Finished are emitted exactly as for the inference lane, so a
+// frontend renders both the same way.
+//
 // Agent Bus lane (M5, ADR-0013): an actionable prompt routes to
 // org.lisa.Agent1 instead of inference. The result (or the denial /
 // failure reason) streams as Token signals and Finished carries the

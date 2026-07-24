@@ -16,7 +16,13 @@ Description=Lisa inference session-bus surface (org.lisa.Inference1)
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/lisa-inferenced --dbus --bind 127.0.0.1:7778 --engine llama --models-dir /var/lib/lisa-models/refs
+# --config enables the BYO remote tier (ADR-0010/0015) so `remote:*` model
+# hints route to the user's lisa-remoted broker over its session socket. This
+# gives inferenced NO network access — it reaches a loopback unix socket; the
+# broker owns egress, and the broker still gates every request on per-scope
+# consent + a stored credential (nothing leaves by default, rule 5).
+Environment=LISA_REMOTED_SOCKET=%t/lisa/remoted.sock
+ExecStart=/usr/bin/lisa-inferenced --dbus --bind 127.0.0.1:7778 --engine llama --models-dir /var/lib/lisa-models/refs --config /usr/share/lisa/inferenced-remote.toml
 Restart=on-failure
 RestartSec=2
 

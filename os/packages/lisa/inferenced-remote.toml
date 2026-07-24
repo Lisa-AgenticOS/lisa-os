@@ -1,0 +1,10 @@
+# lisa-inferenced companion config (lisa-inferenced-dbus.service): enable the
+# BYO remote tier so `remote:<provider>:<model>` hints route to the lisa-remoted
+# broker (ADR-0010/0015). Everything else stays at defaults / CLI flags.
+#
+# This does NOT give inferenced network access: it opens the broker's loopback
+# unix socket (path from $LISA_REMOTED_SOCKET), and the broker owns egress and
+# still gates every request on per-scope consent + a stored credential —
+# nothing leaves the machine by default (CLAUDE.md rule 5).
+[remote]
+enabled = true

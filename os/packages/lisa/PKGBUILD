@@ -49,6 +49,10 @@ package_lisa-inferenced() {
     # surfaces; enabled for every user from first login.
     install -Dm644 os/packages/lisa/lisa-inferenced-dbus.service \
         "$pkgdir/usr/lib/systemd/user/lisa-inferenced-dbus.service"
+    # Enables the BYO remote tier for the companion so `remote:*` chats reach
+    # the broker (ADR-0015); referenced by the unit's --config.
+    install -Dm644 os/packages/lisa/inferenced-remote.toml \
+        "$pkgdir/usr/share/lisa/inferenced-remote.toml"
     install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
     ln -s ../lisa-inferenced-dbus.service \
         "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-inferenced-dbus.service"
@@ -152,7 +156,8 @@ package_lisa-shell() {
     # activation file and the desktop entry already reference.
     local share="$pkgdir/usr/share/lisa/shell"
     install -d "$share"
-    cp -a shell/overlay-extension shell/launcher shell/ledger-app shell/settings "$share/"
+    cp -a shell/overlay-extension shell/launcher shell/ledger-app shell/settings \
+        shell/assistant "$share/"
     rm -rf "$share"/*/tests
     # Compile the overlay keybinding schema in place so the extension's
     # getSettings() resolves from its own schemas/ directory.
@@ -173,6 +178,11 @@ package_lisa-shell() {
     # Ledger app launcher entry (§5.7.6).
     install -Dm644 shell/ledger-app/org.lisa.LedgerApp.desktop \
         "$pkgdir/usr/share/applications/org.lisa.LedgerApp.desktop"
+    # Assistant chat window: launcher entry + its spark icon (ADR-0015).
+    install -Dm644 shell/assistant/org.lisa.Assistant.desktop \
+        "$pkgdir/usr/share/applications/org.lisa.Assistant.desktop"
+    install -Dm644 shell/assistant/lisa-assistant-symbolic.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/lisa-assistant-symbolic.svg"
     # AI settings launcher entry (§5.11). Also the target the native
     # gnome-control-center Intelligence panel opens for provider/key
     # management (ADR-0012) — it resolves this desktop id.

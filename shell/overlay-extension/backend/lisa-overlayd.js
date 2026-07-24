@@ -27,10 +27,13 @@
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Soup from 'gi://Soup?version=3.0';
 import {decideAction, formatExecuted, reasonText, safeParse}
     from '../lib/agent.js';
 import {buildEnvelope, parseContextHits, classifyAffordances}
     from '../lib/envelope.js';
+import {buildMessages, chatRequestBody, parseSseLine, isRemoteModel}
+    from '../lib/chat.js';
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH}
     from '../lib/iface.js';
 
@@ -45,9 +48,17 @@ const AGENT_ACTOR = 'overlay';
 const AGENT_PROVENANCE = ['user']; // typed prompts: a trusted chain (rule 6)
 const CONTEXT_HITS = 3;
 
+// The per-user inferenced companion's OpenAI-compat endpoint (it owns :7778;
+// the hardened system daemon on :7777 can't reach the session's broker
+// socket). The multi-turn chat lane routes here so the model's chat template
+// is applied and `remote:*` models reach the egress broker.
+const INFERENCED_URL =
+    GLib.getenv('LISA_INFERENCED_URL') ?? 'http://127.0.0.1:7778';
+
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 Gio._promisify(Gio.InputStream.prototype, 'read_bytes_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
+Gio._promisify(Soup.Session.prototype, 'send_async');
 
 class OverlayService {
     constructor(connection) {
@@ -57,6 +68,7 @@ class OverlayService {
         this._nextId = 1;
         this._active = null; // {id, cancellable, sessionPath, pendingCallId}
         this._external = new Map(); // query id → Agent1 call id (other actors' calls)
+        this._http = new Soup.Session(); // chat-lane HTTP (OpenAI-compat SSE)
         // Consent for calls parked by other clients (`lisa do` without
         // a TTY answer, scripts): surface them as first-class overlay
         // queries. Own calls are filtered out by actor — agentd emits
@@ -120,7 +132,11 @@ class OverlayService {
 
     _unpackOptions(options) {
         const out = {};
-        for (const key of ['my_stuff', 'window', 'selection', 'model_hint']) {
+        // model_hint (s): local id or `remote:<provider>:<model>`.
+        // lane (s): "chat" selects the multi-turn chat lane (no Agent pass).
+        // history_json (s): prior [{role,content}] turns for multi-turn.
+        for (const key of ['my_stuff', 'window', 'selection', 'model_hint',
+            'lane', 'history_json']) {
             const v = options[key];
             if (v !== undefined)
                 out[key] = v instanceof GLib.Variant ? v.recursiveUnpack() : v;
@@ -129,6 +145,12 @@ class OverlayService {
     }
 
     async _run(id, prompt, opts) {
+        // The chat window's lane: multi-turn, no Agent-Bus action pass.
+        if (opts.lane === 'chat') {
+            await this._runChat(id, prompt, opts);
+            return;
+        }
+
         const cancellable = new Gio.Cancellable();
         this._active = {
             id, cancellable, sessionPath: null, cancelled: false,
@@ -182,6 +204,97 @@ class OverlayService {
         } finally {
             stream.close(null);
             this._sessionCall(sessionPath, 'Close', null).catch(() => {});
+        }
+    }
+
+    // ---- Chat lane (multi-turn, OpenAI-compat over lisa-inferenced) -----
+
+    // POST the conversation to lisa-inferenced's OpenAI-compat endpoint
+    // (chat template applied; `remote:*` routes through the egress broker)
+    // and re-emit SSE deltas as Token signals — the same contract the
+    // overlay frontends already consume. Every turn is ledgered by the
+    // daemon (dataflow rule 4). No Agent-Bus pass: chat is pure inference.
+    async _runChat(id, prompt, opts) {
+        const cancellable = new Gio.Cancellable();
+        this._active = {
+            id, cancellable, sessionPath: null, cancelled: false,
+            pendingCallId: null,
+        };
+        const model = opts.model_hint;
+        const history = safeParse(opts.history_json) ?? [];
+        const messages = buildMessages(history, prompt);
+
+        this._emit('Started', new GLib.Variant('(ts)', [id, JSON.stringify({
+            sources: [], unavailable: [], mode: 'chat',
+            model: model ?? null, egress: isRemoteModel(model),
+        })]));
+
+        const msg = Soup.Message.new('POST',
+            `${INFERENCED_URL}/v1/chat/completions`);
+        msg.get_request_headers().append('accept', 'text/event-stream');
+        const payload = JSON.stringify(chatRequestBody(model, messages));
+        msg.set_request_body_from_bytes('application/json',
+            new GLib.Bytes(new TextEncoder().encode(payload)));
+
+        let stream;
+        try {
+            stream = await this._http.send_async(
+                msg, GLib.PRIORITY_DEFAULT, cancellable);
+        } catch (e) {
+            if (this._active?.cancelled)
+                this._finish(id, 'cancelled', '');
+            else
+                this._finish(id, 'error',
+                    `cannot reach lisa-inferenced (${e?.message ?? e})`);
+            return;
+        }
+        if (msg.get_status() !== Soup.Status.OK) {
+            this._finish(id, 'error',
+                `inference endpoint returned ${msg.get_status()} ` +
+                `${msg.get_reason_phrase() ?? ''}`.trim());
+            stream.close(null);
+            return;
+        }
+
+        const decoder = new TextDecoder('utf-8');
+        let buf = '';
+        let done = false;
+        try {
+            while (!done) {
+                const bytes = await stream.read_bytes_async(
+                    4096, GLib.PRIORITY_DEFAULT, cancellable);
+                if (bytes.get_size() === 0)
+                    break; // stream closed
+                buf += decoder.decode(bytes.toArray(), {stream: true});
+                let nl;
+                while ((nl = buf.indexOf('\n')) >= 0) {
+                    const line = buf.slice(0, nl);
+                    buf = buf.slice(nl + 1);
+                    const ev = parseSseLine(line);
+                    if (!ev)
+                        continue;
+                    if (ev.done) {
+                        done = true;
+                        break;
+                    }
+                    if (ev.error) {
+                        this._finish(id, 'error', ev.error);
+                        stream.close(null);
+                        return;
+                    }
+                    if (ev.delta)
+                        this._emit('Token',
+                            new GLib.Variant('(ts)', [id, ev.delta]));
+                }
+            }
+            this._finish(id, this._active?.cancelled ? 'cancelled' : 'ok', '');
+        } catch (e) {
+            if (this._active?.cancelled)
+                this._finish(id, 'cancelled', '');
+            else
+                this._finish(id, 'error', String(e?.message ?? e));
+        } finally {
+            stream.close(null);
         }
     }
 
