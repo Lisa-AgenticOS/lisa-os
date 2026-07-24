@@ -1332,10 +1332,12 @@ name = "lisa-remoted"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "axum",
  "base64",
  "blake3",
  "clap",
+ "futures",
  "http-body-util",
  "lisa-ledger",
  "rand 0.9.5",

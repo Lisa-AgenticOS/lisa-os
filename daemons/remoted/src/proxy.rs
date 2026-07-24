@@ -104,6 +104,12 @@ pub fn build_upstream(
             if !system_parts.is_empty() {
                 out["system"] = Value::String(system_parts.join("\n"));
             }
+            // Streaming requests stream upstream too (ADR-0010 update):
+            // the OpenAI-compat dialect passes the flag through verbatim;
+            // the Anthropic dialect re-renders the body, so carry it over.
+            if body["stream"].as_bool().unwrap_or(false) {
+                out["stream"] = Value::Bool(true);
+            }
             // OAuth requires the ?beta=true query param alongside the
             // beta header (Construct brain/provider/anthropic.go).
             let url = if oauth_anthropic {
@@ -166,14 +172,18 @@ pub fn output_tokens(normalized: &Value) -> i64 {
         .unwrap_or(0)
 }
 
-/// Perform the upstream call. This is the only network touchpoint in
-/// the crate (and in the OS, outside modeld).
-pub async fn send(client: &reqwest::Client, req: &UpstreamRequest) -> Result<Value, ProxyError> {
+fn post(client: &reqwest::Client, req: &UpstreamRequest) -> reqwest::RequestBuilder {
     let mut builder = client.post(&req.url);
     for (k, v) in &req.headers {
         builder = builder.header(k, v);
     }
-    let resp = builder.json(&req.body).send().await?;
+    builder.json(&req.body)
+}
+
+/// Perform the upstream call. `send`/`send_stream` are the only network
+/// touchpoints in the crate (and in the OS, outside modeld).
+pub async fn send(client: &reqwest::Client, req: &UpstreamRequest) -> Result<Value, ProxyError> {
+    let resp = post(client, req).send().await?;
     let status = resp.status();
     let body: Value = match resp.json().await {
         Ok(v) => v,
@@ -187,6 +197,28 @@ pub async fn send(client: &reqwest::Client, req: &UpstreamRequest) -> Result<Val
         });
     }
     Ok(body)
+}
+
+/// Perform a *streaming* upstream call (ADR-0010 update): the request is
+/// sent as-is (callers set `stream:true` in the body) and the provider's
+/// raw SSE bytes come back as a stream. A non-2xx status is read to
+/// completion and surfaced as `Upstream` before any byte is forwarded.
+pub async fn send_stream(
+    client: &reqwest::Client,
+    req: &UpstreamRequest,
+) -> Result<impl futures::Stream<Item = Result<Vec<u8>, reqwest::Error>> + Send + use<>, ProxyError>
+{
+    use futures::StreamExt;
+    let resp = post(client, req).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ProxyError::Upstream {
+            status: status.as_u16(),
+            body,
+        });
+    }
+    Ok(resp.bytes_stream().map(|r| r.map(|b| b.to_vec())))
 }
 
 #[cfg(test)]
@@ -278,6 +310,22 @@ mod tests {
         assert_eq!(out["choices"][0]["finish_reason"], "stop");
         assert_eq!(out["usage"]["total_tokens"], 10);
         assert_eq!(output_tokens(&out), 3);
+    }
+
+    #[test]
+    fn stream_flag_reaches_both_dialects() {
+        let body = json!({
+            "model": "m", "stream": true,
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let openai = build_upstream(&spec("openai"), "k", &body).unwrap();
+        assert_eq!(openai.body["stream"], true, "compat passes through");
+        let anthropic = build_upstream(&spec("anthropic"), "k", &body).unwrap();
+        assert_eq!(anthropic.body["stream"], true, "re-rendered body keeps it");
+        // And absent means absent — non-streaming behavior unchanged.
+        let body = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        let anthropic = build_upstream(&spec("anthropic"), "k", &body).unwrap();
+        assert!(anthropic.body.get("stream").is_none());
     }
 
     #[test]

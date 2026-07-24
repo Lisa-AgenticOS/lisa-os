@@ -27,6 +27,19 @@ unix socket and gains no network itself.
   entry, no request); completions/denials land as `remote.complete` /
   `denied`. The `remote.` kind prefix is the machine-readable "leaves
   your hardware" marking; UIs render it in the egress color `#E66100`.
+  Streamed requests hit the same gate: `remote.generate` before the
+  first byte leaves, `remote.complete` when the stream ends — ok,
+  error, idle timeout, or consumer disconnect (`aborted`) — with the
+  accumulated token/char counts.
+- **True streaming:** a data-plane request with `stream:true` streams
+  the provider's SSE back over the unix socket as `text/event-stream`
+  (`data:` chunk frames, `data: [DONE]` terminator). Anthropic
+  Messages events (`message_start`, `content_block_delta`,
+  `message_delta`, `message_stop`) are translated on the fly to the
+  OpenAI `chat.completion.chunk` shape, so consumers see one format
+  regardless of dialect; mid-stream failures arrive as a
+  `{"error":...}` frame before `[DONE]`. A provider that goes silent
+  mid-stream is cut after 120 s idle. `stream:false` behaves as before.
 - **Sign in with Claude / ChatGPT (OAuth):** browser-callback flow with
   RFC 7636 PKCE (S256). `BeginLogin` binds a loopback callback server on
   the provider's fixed port (127.0.0.1:53692 Claude / :1455 ChatGPT),

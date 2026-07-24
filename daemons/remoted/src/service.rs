@@ -8,14 +8,22 @@
 use crate::consent::{Consent, ConsentError};
 use crate::oauth::{self, LoginOutcome, OauthError, OauthManager};
 use crate::proxy::{self, ProxyError};
-use crate::registry::{AuthStyle, Dialect, Registry, RegistryError};
+use crate::registry::{AuthStyle, Dialect, ProviderSpec, Registry, RegistryError};
 use crate::secrets::{SecretStore, SecretsError};
+use crate::stream::{SseParser, StreamItem, StreamTranslator};
+use futures::{Stream, StreamExt};
 use lisa_ledger::{Event, Ledger, preview_of};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
+
+/// A stalled provider must not hang a session forever: if no bytes
+/// arrive for this long mid-stream, the stream completes with an error
+/// (ledgered, surfaced downstream as an `error` frame).
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerError {
@@ -45,7 +53,14 @@ pub struct Broker {
 impl Broker {
     pub fn open(state_dir: &Path, ledger: Arc<Ledger>) -> anyhow::Result<Arc<Self>> {
         let secrets = SecretStore::open(state_dir)?;
-        let http = reqwest::Client::new();
+        // Bounded waits, not deadlines: connect_timeout caps dial time and
+        // read_timeout is per-read idle (a long stream keeps flowing; a
+        // provider that goes silent gets cut). No total timeout — a slow
+        // long generation is legitimate.
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .read_timeout(Duration::from_secs(300))
+            .build()?;
         Ok(Arc::new(Self {
             registry: Mutex::new(Registry::open(state_dir)?),
             oauth: OauthManager::new(http.clone(), secrets.clone()),
@@ -298,15 +313,18 @@ impl Broker {
         Ok(ids)
     }
 
-    /// Proxy one chat completion. Ledger discipline (§5.11, dataflow
-    /// rule 4): the `remote.generate` entry precedes egress — no entry,
-    /// no request — and consent denials are ledgered refusals.
-    pub async fn chat(
+    /// Everything that must happen *before* egress, shared by the
+    /// non-streaming and streaming paths: resolve the provider, check
+    /// per-scope consent (denials are ledgered refusals), select the
+    /// credential, render the upstream request, and append the
+    /// `remote.generate` gate entry — no entry, no request (§5.11,
+    /// dataflow rule 4). Streaming never bypasses any of this.
+    async fn preflight(
         &self,
         provider_id: &str,
         scopes: &[String],
         body: &Value,
-    ) -> Result<Value, BrokerError> {
+    ) -> Result<Preflight, BrokerError> {
         let spec = self
             .registry
             .lock()
@@ -368,19 +386,37 @@ impl Broker {
             ..Default::default()
         })?;
 
+        Ok(Preflight {
+            spec,
+            upstream,
+            ledger_model,
+            start_id,
+        })
+    }
+
+    /// Proxy one chat completion (non-streaming). Ledger discipline
+    /// (§5.11, dataflow rule 4): the `remote.generate` entry precedes
+    /// egress and `remote.complete` records the outcome.
+    pub async fn chat(
+        &self,
+        provider_id: &str,
+        scopes: &[String],
+        body: &Value,
+    ) -> Result<Value, BrokerError> {
+        let p = self.preflight(provider_id, scopes, body).await?;
         let started = Instant::now();
-        let result = proxy::send(&self.http, &upstream).await;
+        let result = proxy::send(&self.http, &p.upstream).await;
         let duration_ms = started.elapsed().as_millis() as i64;
         match result {
             Ok(raw) => {
-                let normalized = proxy::translate_response(spec.dialect, &raw);
+                let normalized = proxy::translate_response(p.spec.dialect, &raw);
                 self.ledger.append(&Event {
                     kind: "remote.complete".into(),
                     app_id: "host".into(),
-                    model: ledger_model,
+                    model: p.ledger_model,
                     status: "ok".into(),
-                    detail: json!({"egress": "remote", "provider": spec.id}).to_string(),
-                    ref_id: Some(start_id),
+                    detail: json!({"egress": "remote", "provider": p.spec.id}).to_string(),
+                    ref_id: Some(p.start_id),
                     output_tokens: proxy::output_tokens(&normalized),
                     duration_ms,
                     ..Default::default()
@@ -391,20 +427,176 @@ impl Broker {
                 self.ledger.append(&Event {
                     kind: "remote.complete".into(),
                     app_id: "host".into(),
-                    model: ledger_model,
+                    model: p.ledger_model,
                     status: "error".into(),
                     detail: json!({
                         "egress": "remote",
-                        "provider": spec.id,
+                        "provider": p.spec.id,
                         "error": e.to_string(),
                     })
                     .to_string(),
-                    ref_id: Some(start_id),
+                    ref_id: Some(p.start_id),
                     duration_ms,
                     ..Default::default()
                 })?;
                 Err(e.into())
             }
+        }
+    }
+
+    /// Proxy one *streaming* chat completion (ADR-0010 update): the
+    /// provider's SSE stream is translated to OpenAI-compatible chunk
+    /// frames as it arrives. The returned items are SSE `data:` payloads
+    /// ready for the wire: chunk JSON, then — on failure — one
+    /// `{"error":{...}}` frame, and always a final `[DONE]`.
+    ///
+    /// Ledger discipline holds: `preflight` appends `remote.generate`
+    /// before any byte leaves, and `remote.complete` lands when the
+    /// stream ends — ok, error, idle timeout, or consumer disconnect
+    /// (the `StreamCompletion` guard covers the drop path).
+    pub async fn chat_stream(
+        &self,
+        provider_id: &str,
+        scopes: &[String],
+        body: &Value,
+    ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, BrokerError> {
+        let p = self.preflight(provider_id, scopes, body).await?;
+        let mut completion = StreamCompletion {
+            ledger: Arc::clone(&self.ledger),
+            provider: p.spec.id.clone(),
+            model: p.ledger_model.clone(),
+            start_id: p.start_id,
+            started: Instant::now(),
+            done: false,
+        };
+        let upstream = match proxy::send_stream(&self.http, &p.upstream).await {
+            Ok(s) => s,
+            Err(e) => {
+                completion.complete("error", Some(&e.to_string()), 0, 0);
+                return Err(e.into());
+            }
+        };
+        let dialect = p.spec.dialect;
+        let stream = async_stream::stream! {
+            let mut completion = completion;
+            let mut parser = SseParser::default();
+            let mut translator = StreamTranslator::new(dialect);
+            let mut chunks: i64 = 0;
+            let mut chars: i64 = 0;
+            let mut error: Option<String> = None;
+            let mut clean = false;
+            futures::pin_mut!(upstream);
+            'stream: loop {
+                let bytes = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, upstream.next()).await {
+                    Err(_) => {
+                        error = Some(format!(
+                            "provider stream stalled (no bytes for {}s)",
+                            STREAM_IDLE_TIMEOUT.as_secs()
+                        ));
+                        break;
+                    }
+                    Ok(None) => break, // provider EOF; clean only after Done
+                    Ok(Some(Err(e))) => {
+                        error = Some(e.to_string());
+                        break;
+                    }
+                    Ok(Some(Ok(b))) => b,
+                };
+                for data in parser.feed(&bytes) {
+                    match translator.translate(&data) {
+                        Some(StreamItem::Chunk(c)) => {
+                            if let Some(t) = c["choices"][0]["delta"]["content"].as_str()
+                                && !t.is_empty()
+                            {
+                                chunks += 1;
+                                chars += t.chars().count() as i64;
+                            }
+                            yield c.to_string();
+                        }
+                        Some(StreamItem::Done) => {
+                            clean = true;
+                            break 'stream;
+                        }
+                        Some(StreamItem::Error(m)) => {
+                            error = Some(m);
+                            break 'stream;
+                        }
+                        None => {}
+                    }
+                }
+            }
+            if error.is_none() && !clean {
+                error = Some("provider stream ended before completion".into());
+            }
+            // Provider-reported usage wins; forwarded-chunk count is the
+            // honest fallback.
+            let output_tokens = translator.output_tokens.unwrap_or(chunks);
+            match &error {
+                None => completion.complete("ok", None, output_tokens, chars),
+                Some(e) => completion.complete("error", Some(e), output_tokens, chars),
+            }
+            if let Some(e) = error {
+                yield json!({"error": {"message": e}}).to_string();
+            }
+            yield "[DONE]".to_string();
+        };
+        Ok(Box::pin(stream))
+    }
+}
+
+/// The pre-egress state shared by `chat` and `chat_stream`.
+struct Preflight {
+    spec: ProviderSpec,
+    upstream: proxy::UpstreamRequest,
+    ledger_model: String,
+    start_id: i64,
+}
+
+/// Guarantees a `remote.complete` for every started stream — including
+/// a consumer that disconnects mid-stream (Drop ledgers status
+/// "aborted"), so no `remote.generate` is ever left dangling.
+struct StreamCompletion {
+    ledger: Arc<Ledger>,
+    provider: String,
+    model: String,
+    start_id: i64,
+    started: Instant,
+    done: bool,
+}
+
+impl StreamCompletion {
+    fn complete(&mut self, status: &str, error: Option<&str>, output_tokens: i64, chars: i64) {
+        self.done = true;
+        let mut detail = json!({
+            "egress": "remote",
+            "provider": self.provider,
+            "streamed": true,
+            "output_chars": chars,
+        });
+        if let Some(e) = error {
+            detail["error"] = json!(e);
+        }
+        let event = Event {
+            kind: "remote.complete".into(),
+            app_id: "host".into(),
+            model: self.model.clone(),
+            status: status.into(),
+            detail: detail.to_string(),
+            ref_id: Some(self.start_id),
+            output_tokens,
+            duration_ms: self.started.elapsed().as_millis() as i64,
+            ..Default::default()
+        };
+        if let Err(e) = self.ledger.append(&event) {
+            tracing::error!(error = %e, "failed to ledger remote.complete for a stream");
+        }
+    }
+}
+
+impl Drop for StreamCompletion {
+    fn drop(&mut self) {
+        if !self.done {
+            self.complete("aborted", Some("consumer disconnected mid-stream"), 0, 0);
         }
     }
 }

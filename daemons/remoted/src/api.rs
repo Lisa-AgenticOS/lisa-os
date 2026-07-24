@@ -12,10 +12,13 @@ use crate::service::{Broker, BrokerError};
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post, put};
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::convert::Infallible;
 use std::sync::Arc;
 
 fn error_response(e: BrokerError) -> Response {
@@ -90,6 +93,20 @@ async fn chat(
                 .collect()
         })
         .unwrap_or_default();
+    // stream:true answers as SSE over the socket (ADR-0010 update):
+    // `data:` frames in the OpenAI chunk shape, a `{"error":...}` frame
+    // on mid-stream failure, `data: [DONE]` last. Pre-flight failures
+    // (consent, credentials, upstream refusal) still return plain JSON
+    // errors with the proper status. stream:false is unchanged.
+    if body["stream"].as_bool().unwrap_or(false) {
+        return match broker.chat_stream(&provider, &scopes, &body).await {
+            Ok(stream) => {
+                let events = stream.map(|d| Ok::<_, Infallible>(Event::default().data(d)));
+                Sse::new(events).into_response()
+            }
+            Err(e) => error_response(e),
+        };
+    }
     match broker.chat(&provider, &scopes, &body).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => error_response(e),

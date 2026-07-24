@@ -1,15 +1,18 @@
 //! Integration tests for the broker surface (ADR-0008): consent gates
 //! egress, every remote request is ledgered with the `remote.` marking
 //! before it leaves, and the proxy path works end-to-end against a mock
-//! provider (network paths mockable — no real egress in tests).
+//! provider (network paths mockable — no real egress in tests) — both
+//! non-streaming and TRUE streaming (SSE proxied over the socket).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::response::Json;
+use axum::response::sse::{Event, Sse};
 use axum::routing::post;
 use http_body_util::BodyExt;
 use lisa_remoted::{api, service::Broker};
 use serde_json::{Value, json};
+use std::convert::Infallible;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -34,19 +37,36 @@ async fn body_json(res: axum::response::Response) -> Value {
     serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap()
 }
 
-fn chat_request(provider: &str, scopes: &str) -> Request<Body> {
+fn chat_request_body(provider: &str, scopes: &str, body: Value) -> Request<Body> {
     Request::post("/v1/chat/completions")
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-lisa-provider", provider)
         .header("x-lisa-scopes", scopes)
-        .body(Body::from(
-            json!({
-                "model": "test-model",
-                "messages": [{"role": "user", "content": "leave my machine"}],
-            })
-            .to_string(),
-        ))
+        .body(Body::from(body.to_string()))
         .unwrap()
+}
+
+fn chat_request(provider: &str, scopes: &str) -> Request<Body> {
+    chat_request_body(
+        provider,
+        scopes,
+        json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "leave my machine"}],
+        }),
+    )
+}
+
+fn stream_request(provider: &str, scopes: &str) -> Request<Body> {
+    chat_request_body(
+        provider,
+        scopes,
+        json!({
+            "model": "test-model",
+            "stream": true,
+            "messages": [{"role": "user", "content": "leave my machine"}],
+        }),
+    )
 }
 
 /// A fake OpenAI-compatible provider on loopback.
@@ -69,6 +89,51 @@ async fn mock_provider() -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     format!("http://{addr}/v1")
+}
+
+/// A fake *streaming* OpenAI-compatible provider: SSE chunks, a usage
+/// frame, `[DONE]`. `truncate` cuts the stream off before `[DONE]`.
+async fn mock_stream_provider(truncate: bool) -> String {
+    async fn completions(truncate: bool) -> impl axum::response::IntoResponse {
+        let frames: Vec<String> = if truncate {
+            vec![
+                json!({"choices": [{"index": 0, "delta": {"content": "cut "}, "finish_reason": null}]})
+                    .to_string(),
+            ]
+        } else {
+            vec![
+                json!({"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null}]})
+                    .to_string(),
+                json!({"choices": [{"index": 0, "delta": {"content": "mock "}, "finish_reason": null}]})
+                    .to_string(),
+                json!({"choices": [{"index": 0, "delta": {"content": "streams"}, "finish_reason": "stop"}]})
+                    .to_string(),
+                json!({"choices": [], "usage": {"completion_tokens": 7}}).to_string(),
+                "[DONE]".to_string(),
+            ]
+        };
+        Sse::new(futures::stream::iter(
+            frames
+                .into_iter()
+                .map(|f| Ok::<_, Infallible>(Event::default().data(f))),
+        ))
+    }
+    let app =
+        axum::Router::new().route("/v1/chat/completions", post(move || completions(truncate)));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}/v1")
+}
+
+/// Collect the SSE `data:` payloads of a streamed broker response.
+async fn sse_payloads(res: axum::response::Response) -> Vec<String> {
+    let raw = res.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8_lossy(&raw)
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .map(str::to_string)
+        .collect()
 }
 
 #[tokio::test]
@@ -247,6 +312,107 @@ async fn consented_request_proxies_and_is_ledgered_before_and_after() {
     assert_eq!(entries[0].status, "ok");
     assert_eq!(entries[0].ref_id, Some(entries[1].id));
     assert_eq!(entries[0].output_tokens, 3);
+}
+
+#[tokio::test]
+async fn streaming_request_proxies_sse_and_is_ledgered_before_and_after() {
+    let f = fixture();
+    let base = mock_stream_provider(false).await;
+    f.broker.add_provider("mock", "Mock", &base).unwrap();
+    f.broker.set_key("mock", "mk-1").unwrap();
+    f.broker.set_consent("prompt", true).unwrap();
+    let consent_rows = f.ledger.tail(10).unwrap().len();
+
+    let router = api::router(Arc::clone(&f.broker));
+    let res = router
+        .oneshot(stream_request("mock", "prompt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(
+        res.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream"),
+        "streamed responses are SSE over the socket"
+    );
+    let payloads = sse_payloads(res).await;
+    assert_eq!(payloads.last().map(String::as_str), Some("[DONE]"));
+    let text: String = payloads
+        .iter()
+        .filter_map(|p| serde_json::from_str::<Value>(p).ok())
+        .filter_map(|c| {
+            c["choices"][0]["delta"]["content"]
+                .as_str()
+                .map(String::from)
+        })
+        .collect();
+    assert_eq!(text, "mock streams", "deltas arrive in order");
+
+    let entries = f.ledger.tail(10).unwrap();
+    assert_eq!(entries.len(), consent_rows + 2, "start + complete");
+    assert_eq!(entries[1].kind, "remote.generate");
+    assert_eq!(entries[1].status, "started");
+    assert_eq!(entries[0].kind, "remote.complete");
+    assert_eq!(entries[0].status, "ok");
+    assert_eq!(entries[0].ref_id, Some(entries[1].id));
+    assert_eq!(
+        entries[0].output_tokens, 7,
+        "provider-reported usage wins over chunk count"
+    );
+    assert!(entries[0].detail.contains("\"streamed\":true"));
+    assert!(entries[0].detail.contains("\"output_chars\":12"));
+}
+
+#[tokio::test]
+async fn truncated_provider_stream_surfaces_and_ledgers_an_error() {
+    let f = fixture();
+    let base = mock_stream_provider(true).await;
+    f.broker.add_provider("mock", "Mock", &base).unwrap();
+    f.broker.set_key("mock", "mk-1").unwrap();
+    f.broker.set_consent("prompt", true).unwrap();
+
+    let router = api::router(Arc::clone(&f.broker));
+    let res = router
+        .oneshot(stream_request("mock", "prompt"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "failure arrives mid-stream");
+    let payloads = sse_payloads(res).await;
+    assert_eq!(payloads.last().map(String::as_str), Some("[DONE]"));
+    let error = &payloads[payloads.len() - 2];
+    let error: Value = serde_json::from_str(error).unwrap();
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ended before completion"),
+        "{error}"
+    );
+
+    let entries = f.ledger.tail(2).unwrap();
+    assert_eq!(entries[0].kind, "remote.complete");
+    assert_eq!(entries[0].status, "error");
+    assert!(entries[0].detail.contains("ended before completion"));
+}
+
+#[tokio::test]
+async fn streaming_never_bypasses_consent() {
+    let f = fixture();
+    let router = api::router(Arc::clone(&f.broker));
+    let res = router
+        .oneshot(stream_request("openai", "prompt"))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "stream:true hits the same consent gate"
+    );
+    let entries = f.ledger.tail(10).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].kind, "remote.generate");
+    assert_eq!(entries[0].status, "denied");
 }
 
 #[tokio::test]

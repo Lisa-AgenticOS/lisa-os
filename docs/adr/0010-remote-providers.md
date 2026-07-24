@@ -47,6 +47,19 @@ Interfaces:
   `/v1/oauth/...`) share the socket; socket permissions are the access
   control (0700 runtime dir, M2 attaches per-app identity via the
   portal + `SO_PEERCRED` like §5.1).
+
+  *Update (2026-07-24): streaming is real.* The data plane originally
+  answered non-streaming only (inferenced re-chunked the finished
+  completion to fake a streaming feel — a known follow-up). Now
+  `stream:true` proxies the provider's SSE back over the socket as
+  `text/event-stream`: OpenAI-compat frames pass through, Anthropic
+  Messages events are translated on the fly to the OpenAI
+  `chat.completion.chunk` shape, mid-stream failures arrive as one
+  `{"error":...}` frame, and `data: [DONE]` terminates. The Ledger gate
+  is unchanged: `remote.generate` before the first byte of egress,
+  `remote.complete` when the stream ends (ok / error / `aborted` on
+  consumer disconnect) with accumulated token/char counts. Idle
+  timeouts on both hops keep a stalled provider from hanging a session.
 - **D-Bus `dev.lisaos.Remote1`** — the management plane for the Settings
   app: list/add/remove providers, set/clear credentials, per-scope
   consent switches, and the Sign-in-with-Claude OAuth start/finish.

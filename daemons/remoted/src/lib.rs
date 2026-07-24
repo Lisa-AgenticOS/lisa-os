@@ -14,3 +14,4 @@ pub mod proxy;
 pub mod registry;
 pub mod secrets;
 pub mod service;
+pub mod stream;
