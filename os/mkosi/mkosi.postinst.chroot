@@ -91,6 +91,11 @@ if id lisa &>/dev/null; then
     install -d -o lisa -g lisa -m 0755 /home/lisa/.config
     echo yes > /home/lisa/.config/gnome-initial-setup-done
     chown lisa:lisa /home/lisa/.config/gnome-initial-setup-done
+    # Factory mirror (ADR-0019): a fresh dedicated home partition mounts an
+    # empty btrfs over /home, hiding the baked state above; tmpfiles
+    # (lisa-home-factory.conf) copies this factory tree in exactly once.
+    install -d /usr/share/factory/home
+    cp -a /home/lisa /usr/share/factory/home/lisa
 fi
 
 # Networking, one owner per image flavor:

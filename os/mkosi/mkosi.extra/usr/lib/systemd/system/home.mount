@@ -1,0 +1,23 @@
+# Mount the dedicated home partition when one exists (ADR-0019). Fresh
+# installs get it from repart at first boot (60-home.conf); legacy disks
+# without one keep the /var/home bind (lisa-home-persist.service — it no-ops
+# once /home is a mountpoint). Condition-guarded so a disk with no home
+# partition neither waits 90s for a device nor fails a unit; ordered after
+# systemd-repart so a first boot sees the partition it just created.
+# By-partlabel, never by UUID — identifiers baked per build broke A/B updates
+# once already (ADR-0018).
+[Unit]
+Description=Dedicated /home partition (by partition label)
+ConditionPathExists=/dev/disk/by-partlabel/home
+After=systemd-repart.service local-fs-pre.target
+Before=local-fs.target lisa-home-persist.service
+Conflicts=umount.target
+
+[Mount]
+What=/dev/disk/by-partlabel/home
+Where=/home
+Type=btrfs
+Options=rw,nodev,suid,exec
+
+[Install]
+WantedBy=local-fs.target
