@@ -12,10 +12,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(GNUInstallDirs)
 find_package(Fcitx5Core REQUIRED)
 find_package(Fcitx5Utils REQUIRED)
+# Header-only interface target for the dbus addon's public API
+# (IDBusModule::bus) — the double-shift gesture's Summon call rides
+# fcitx5's own session-bus connection.
+find_package(Fcitx5Module REQUIRED COMPONENTS DBus)
 find_package(Threads REQUIRED)
 
-add_library(lisa MODULE src/lisa.cpp src/http.cpp)
-target_link_libraries(lisa Fcitx5::Core Fcitx5::Utils Threads::Threads)
+add_library(lisa MODULE src/lisa.cpp src/http.cpp src/doubleshift.cpp)
+target_link_libraries(lisa Fcitx5::Core Fcitx5::Utils Fcitx5::Module::DBus
+                      Threads::Threads)
 set_target_properties(lisa PROPERTIES PREFIX "")
 
 configure_file(lisa-addon.conf.in lisa-addon.conf @ONLY)

@@ -41,6 +41,9 @@ ime-test:
     c++ -std=c++17 -Wall -Wextra -Iime/fcitx5-lisa/src -o "$out/http_test" \
         ime/fcitx5-lisa/tests/http_test.cpp ime/fcitx5-lisa/src/http.cpp
     "$out/http_test"
+    c++ -std=c++17 -Wall -Wextra -Iime/fcitx5-lisa/src -o "$out/doubleshift_test" \
+        ime/fcitx5-lisa/tests/doubleshift_test.cpp ime/fcitx5-lisa/src/doubleshift.cpp
+    "$out/doubleshift_test"
 
 # What CI runs on every PR.
 ci: lint test shell-test ime-test

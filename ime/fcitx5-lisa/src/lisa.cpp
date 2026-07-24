@@ -14,14 +14,26 @@
 // selection (an IM commit replaces the active selection in standard
 // toolkits). The floating compose panel (rewrite menu, "continue
 // writing", dictation §5.7.5) grows on this same skeleton.
+//
+// Second gesture: double-tap a bare Shift key → summon the Lisa
+// assistant overlay (dev.lisaos.Overlay1.UI.Summon with an empty
+// prompt — ADR-0016 names). The IM layer is the one place that sees
+// keys in every app, so the gesture works everywhere. Detection lives
+// in doubleshift.{h,cpp} (pure, unit-tested); this file only
+// translates KeyEvents and makes the fire-and-forget D-Bus call via
+// fcitx5's own dbus addon — asynchronous, never blocking the key path.
 
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <thread>
 #include <utility>
 
 #include <fcitx-config/configuration.h>
 #include <fcitx-config/iniparser.h>
+#include <fcitx-module/dbus/dbus_public.h>
+#include <fcitx-utils/dbus/bus.h>
+#include <fcitx-utils/dbus/message.h>
 #include <fcitx-utils/eventdispatcher.h>
 #include <fcitx-utils/i18n.h>
 #include <fcitx-utils/key.h>
@@ -32,6 +44,7 @@
 #include <fcitx/inputcontext.h>
 #include <fcitx/instance.h>
 
+#include "doubleshift.h"
 #include "http.h"
 
 namespace {
@@ -41,6 +54,16 @@ constexpr char kProofreadPrompt[] =
     "in the user's text. Preserve its meaning, tone, language, line "
     "breaks, and formatting. Reply with the corrected text only - no "
     "commentary, no quotes.";
+
+// The overlay's UI control surface (see
+// shell/overlay-extension/lib/iface.js — the authoritative XML;
+// ADR-0016 reverse-DNS names). Summon("", {}) just shows the layer.
+constexpr char kOverlayUiBusName[] = "dev.lisaos.Overlay1.UI";
+constexpr char kOverlayUiObjectPath[] = "/dev/lisaos/Overlay1/UI";
+constexpr char kOverlayUiInterface[] = "dev.lisaos.Overlay1.UI";
+// Fire-and-forget: short reply timeout so a wedged frontend can never
+// back up into the input path (the call itself is already async).
+constexpr uint64_t kSummonTimeoutUsec = 1'000'000; // 1 s
 
 FCITX_CONFIGURATION(
     LisaConfig,
@@ -54,7 +77,10 @@ FCITX_CONFIGURATION(
                                     "127.0.0.1"};
     fcitx::Option<int> port{this, "Port", _("Inference endpoint port"), 7777};
     fcitx::Option<int> timeoutSeconds{this, "TimeoutSeconds",
-                                      _("Request timeout (seconds)"), 30};);
+                                      _("Request timeout (seconds)"), 30};
+    fcitx::Option<bool> doubleShiftSummon{
+        this, "DoubleShiftSummon",
+        _("Double-tap Shift summons the Lisa assistant overlay"), true};);
 
 class LisaWritingTools final : public fcitx::AddonInstance {
 public:
@@ -67,6 +93,10 @@ public:
             fcitx::EventWatcherPhase::PreInputMethod,
             [this](fcitx::Event &event) {
                 auto &keyEvent = static_cast<fcitx::KeyEvent &>(event);
+                // The double-shift detector sees every key event but
+                // never consumes any: Shift taps pass through to the
+                // app untouched.
+                handleDoubleShift(keyEvent);
                 if (keyEvent.isRelease() ||
                     !keyEvent.key().checkKeyList(*config_.triggerKey))
                     return;
@@ -130,12 +160,68 @@ private:
         }).detach();
     }
 
+    // Translate the fcitx KeyEvent into the pure detector's event
+    // model; on detection, summon the overlay. Rate-limiting (~1 s
+    // debounce) lives inside the detector, where it is unit-tested.
+    void handleDoubleShift(const fcitx::KeyEvent &keyEvent) {
+        if (!*config_.doubleShiftSummon) {
+            detector_.reset();
+            return;
+        }
+        const fcitx::Key &key = keyEvent.rawKey();
+        lisa::ShiftKey side = lisa::ShiftKey::None;
+        if (key.sym() == FcitxKey_Shift_L)
+            side = lisa::ShiftKey::Left;
+        else if (key.sym() == FcitxKey_Shift_R)
+            side = lisa::ShiftKey::Right;
+        // Non-Shift modifiers held during the event break the tap
+        // (Shift's own bit is irrelevant to bareness; lock states like
+        // Caps/Num are ignored on purpose).
+        const fcitx::KeyStates states = key.states();
+        const bool otherMods = states.test(fcitx::KeyState::Ctrl) ||
+                               states.test(fcitx::KeyState::Alt) ||
+                               states.test(fcitx::KeyState::Super);
+        const auto nowMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+        if (detector_.onKeyEvent(side, keyEvent.isRelease(), otherMods, nowMs))
+            summonOverlay();
+    }
+
+    // Fire-and-forget Summon("", {}) on the session bus via fcitx5's
+    // dbus addon (an optional dependency — no bus, no gesture). The
+    // async call never blocks input processing; the slot just keeps
+    // the pending call alive and is dropped on the next summon.
+    void summonOverlay() {
+        auto *dbusAddon = dbus();
+        if (!dbusAddon)
+            return;
+        fcitx::dbus::Bus *bus = dbusAddon->call<fcitx::IDBusModule::bus>();
+        if (!bus)
+            return;
+        auto msg = bus->createMethodCall(kOverlayUiBusName,
+                                         kOverlayUiObjectPath,
+                                         kOverlayUiInterface, "Summon");
+        msg << std::string(); // empty prompt: just show the layer
+        msg << fcitx::dbus::Container(fcitx::dbus::Container::Type::Array,
+                                      fcitx::dbus::Signature("{sv}"));
+        msg << fcitx::dbus::ContainerEnd();
+        summonSlot_ = msg.callAsync(
+            kSummonTimeoutUsec,
+            [](fcitx::dbus::Message & /*reply*/) { return true; });
+    }
+
+    FCITX_ADDON_DEPENDENCY_LOADER(dbus, instance_->addonManager());
+
     fcitx::Instance *instance_;
     LisaConfig config_;
     fcitx::EventDispatcher dispatcher_;
     std::vector<std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>>>
         handlers_;
     std::atomic<bool> busy_{false};
+    lisa::DoubleShiftDetector detector_;
+    std::unique_ptr<fcitx::dbus::Slot> summonSlot_;
 };
 
 class LisaWritingToolsFactory final : public fcitx::AddonFactory {

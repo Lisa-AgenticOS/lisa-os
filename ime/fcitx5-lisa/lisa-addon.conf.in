@@ -7,3 +7,6 @@ Type=SharedLibrary
 OnDemand=False
 Configurable=True
 Version=@PROJECT_VERSION@
+# Session-bus access for the double-tap-Shift overlay summon; the
+# writing tools work without it, so the dependency stays optional.
+OptionalDependencies=dbus
