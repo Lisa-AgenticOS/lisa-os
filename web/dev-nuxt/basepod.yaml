@@ -1,0 +1,6 @@
+name: lisa-dev-next
+server: bp.common.al
+port: 3000
+build:
+    dockerfile: Dockerfile
+    context: .

@@ -1,0 +1,15 @@
+{
+  "name": "lisa-dev-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview"
+  },
+  "dependencies": {
+    "nuxt": "^4.5.0",
+    "@nuxt/ui": "^4.10.0",
+    "nuxt-auth-utils": "^0.5.29"
+  }
+}
