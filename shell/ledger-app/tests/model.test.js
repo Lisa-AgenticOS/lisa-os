@@ -1,7 +1,7 @@
 // Unit tests for the Ledger app view-model (PLAN §5.7.6).
 import {test, assert, assertEq, finish} from '../../testing/harness.js';
 import {
-    buildTimeline, filterRows, distinctValues, usageStats,
+    buildTimeline, filterRows, searchRows, distinctValues, usageStats,
     dayOf, formatTs, describeRow,
 } from '../lib/model.js';
 
@@ -47,6 +47,35 @@ test('filterRows by app, kind, and day', () => {
     assertEq(filterRows(rows, {day: '1999-01-01'}).length, 0);
     assertEq(filterRows(rows, {app: 'all', kind: 'all', day: 'all'}).length, 2);
     assertEq(filterRows(rows, {}).length, 2);
+});
+
+test('searchRows matches preview, detail, model, and kind', () => {
+    const rows = buildTimeline(ENTRIES);
+    assertEq(searchRows(rows, 'hello').map(r => r.id), [1], 'preview');
+    assertEq(searchRows(rows, 'qwen3').map(r => r.id), [1], 'model');
+    assertEq(searchRows(rows, 'context.search').map(r => r.id), [3], 'kind');
+    const withDetail = rows.map(r =>
+        r.id === 3 ? {...r, detail: 'timeout waiting for daemon'} : r);
+    assertEq(searchRows(withDetail, 'timeout').map(r => r.id), [3], 'detail');
+});
+
+test('searchRows is case-insensitive', () => {
+    const rows = buildTimeline(ENTRIES);
+    assertEq(searchRows(rows, 'HELLO').map(r => r.id), [1]);
+    assertEq(searchRows(rows, 'QwEn3').map(r => r.id), [1]);
+});
+
+test('searchRows with an empty query passes rows through unchanged', () => {
+    const rows = buildTimeline(ENTRIES);
+    assertEq(searchRows(rows, ''), rows);
+    assertEq(searchRows(rows, '   '), rows, 'whitespace-only counts as empty');
+    assertEq(searchRows(rows, undefined), rows);
+});
+
+test('searchRows with no match returns an empty result', () => {
+    const rows = buildTimeline(ENTRIES);
+    assertEq(searchRows(rows, 'no-such-text'), []);
+    assertEq(searchRows([], 'hello'), []);
 });
 
 test('distinctValues feeds the dropdowns sorted', () => {

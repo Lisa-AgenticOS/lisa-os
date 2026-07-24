@@ -74,6 +74,25 @@ export function filterRows(rows, f) {
 }
 
 /**
+ * Free-text search over timeline rows: case-insensitive substring
+ * match against preview, detail, model, and kind. An empty (or
+ * whitespace-only) query matches everything, so the dropdown-filtered
+ * view passes through unchanged.
+ *
+ * @param {object[]} rows
+ * @param {string} [query]
+ * @returns {object[]}
+ */
+export function searchRows(rows, query) {
+    const q = String(query ?? '').trim().toLowerCase();
+    if (!q)
+        return rows ?? [];
+    return (rows ?? []).filter(r =>
+        [r.preview, r.detail, r.model, r.kind]
+            .some(v => String(v ?? '').toLowerCase().includes(q)));
+}
+
+/**
  * Distinct values of a field across rows, sorted, for filter dropdowns.
  * @param {object[]} rows @param {string} field @returns {string[]}
  */

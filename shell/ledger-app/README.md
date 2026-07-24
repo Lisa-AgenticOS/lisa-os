@@ -11,7 +11,9 @@ envelope. Usage stats and export included. If a Golden Gate user asks
 
 - `lisa-ledger-app.js` — GTK4/libadwaita app (GJS, ESM). Timeline of
   ledger events with completions folded into their start entries;
-  header dropdowns filter by app / kind / day; activating a row opens
+  header dropdowns filter by app / kind / day and a search entry
+  narrows the view live (case-insensitive substring over preview,
+  detail, model, kind); activating a row opens
   the envelope detail (input blake3, bounded preview, detail, tokens,
   duration, linked ledger ids); footer shows tokens-by-app; export
   writes the filtered view as JSON. Reads via `lisa ledger --json`
@@ -19,7 +21,8 @@ envelope. Usage stats and export included. If a Golden Gate user asks
   and never writes, which the DB's append-only triggers enforce
   anyway).
 - `app.lisaos.LedgerApp.desktop` — launcher entry.
-- `lib/model.js` — pure view-model (timeline fold, filters, stats).
+- `lib/model.js` — pure view-model (timeline fold, filters, search,
+  stats).
 - `tests/model.test.js` — unit tests (`just shell-test`).
 
 ## Status

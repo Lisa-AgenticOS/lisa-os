@@ -15,7 +15,7 @@ import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk?version=4.0';
 
 import {
-    buildTimeline, filterRows, distinctValues, usageStats,
+    buildTimeline, filterRows, searchRows, distinctValues, usageStats,
     formatTs, dayOf, describeRow,
 } from './lib/model.js';
 
@@ -29,6 +29,7 @@ class LedgerWindow {
         this._entries = [];
         this._rows = [];
         this._filter = {app: ALL, kind: ALL, day: ALL};
+        this._query = '';
 
         this.window = new Adw.ApplicationWindow({
             application: app,
@@ -54,6 +55,16 @@ class LedgerWindow {
         exportBtn.tooltip_text = 'Export the filtered view as JSON';
         exportBtn.connect('clicked', () => this._export());
         header.pack_end(exportBtn);
+
+        this._search = new Gtk.SearchEntry({
+            placeholder_text: 'Search',
+            tooltip_text: 'Search preview, detail, model, and kind',
+        });
+        this._search.connect('search-changed', () => {
+            this._query = this._search.text ?? '';
+            this._render();
+        });
+        header.pack_end(this._search);
 
         this._list = new Gtk.ListBox({
             selection_mode: Gtk.SelectionMode.NONE,
@@ -132,7 +143,8 @@ class LedgerWindow {
 
     _render() {
         this._list.remove_all();
-        this._visible = filterRows(this._rows, this._filter);
+        this._visible = searchRows(
+            filterRows(this._rows, this._filter), this._query);
         for (const row of this._visible) {
             const item = new Adw.ActionRow({
                 title: GLib.markup_escape_text(
