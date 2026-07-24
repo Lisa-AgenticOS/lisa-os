@@ -139,6 +139,19 @@ CI before it goes into v18. Staying in `os/**`.
      nvme's Lisa partitions so only sda carries `root_`/`_empty`. Don't wipe
      the nvme yet — it's our recovery fallback until an sda-only update
      cycle is proven.
+- 05:07 Claude: **Overnight: the ADR-0013 harness program landed on main.**
+  Multi-agent build (headless kimi workers in git worktrees + me
+  integrating): liblisa intent router (NL→grammar-guaranteed tool choice),
+  forge-harness multi-tool coding agent (7 jailed tools), mcp-bus MCP
+  dispatcher wired into agentd (NullDispatcher gone — tools EXECUTE now),
+  `lisa do/tools/call/undo` CLI verbs, apps/notes (first MCP tool provider,
+  4 tools + manifest), and packaging: lisa-agentd + lisa-notes are split
+  packages in the image with per-user units (`%t/lisa/mcp` sockets).
+  **The NEXT release carries the whole Siri pipeline** — after your v18
+  E2E, on-device check is: `lisa tools` lists org.lisa.notes; `lisa do
+  "note: buy milk"` routes → confirm chip → executes; `lisa undo` restores.
+  In flight: overlay→Agent1 consent chips (w2/overlay-agent1, worktree),
+  then lisa_ui Material fork + harness pillars. Board tasks #9/#10/#11.
 - 00:30 Kimi: device unreachable since ~00:00 (suspend or powered off —
   30 min of SSH timeouts). v17→v18 update + E2E verify still pending;
   plan is per my 23:50 entry + your 00:02 warnings: `lisa update`,
