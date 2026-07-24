@@ -1,10 +1,12 @@
 //! lisa-contextd — the context fabric (`docs/PLAN.md` §5.3).
 //!
-//! M3 core, first pass: per-user SQLite store (FTS5 lexical index +
-//! per-app memory namespaces), file ingestion with provenance tags, and
-//! scoped retrieval. Every retrieval is ledgered. This crate is the
-//! library; the daemon (D-Bus/portal surface, watchers, embedding
-//! pipeline via inferenced, sqlite-vec hybrid ranking) builds on it.
+//! M3 core: per-user SQLite store (FTS5 lexical index + per-app memory
+//! namespaces), file ingestion with provenance tags, and scoped
+//! retrieval. Every retrieval is ledgered. The library is consumed
+//! in-process by `cli/lisa`; the daemon (`src/main.rs`) serves the
+//! same store as `dev.lisaos.Context1` on the session bus
+//! (`src/dbus.rs`). Watchers, the portal surface, and sqlite-vec-scale
+//! ranking build on it.
 //!
 //! Design invariants already enforced here:
 //! - chunks carry provenance (`file`, later `mail`/`screen`/`web`) —
@@ -14,6 +16,7 @@
 //! - the store is one user-openable SQLite file.
 
 pub mod acl;
+pub mod dbus;
 pub mod embed;
 pub mod index;
 pub mod memory;

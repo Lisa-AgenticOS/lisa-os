@@ -1239,14 +1239,20 @@ dependencies = [
 name = "lisa-contextd"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blake3",
+ "clap",
  "lisa-ledger",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "walkdir",
+ "zbus",
 ]
 
 [[package]]

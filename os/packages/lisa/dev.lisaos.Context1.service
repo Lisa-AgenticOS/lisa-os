@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=dev.lisaos.Context1
+Exec=/usr/bin/lisa-contextd
+SystemdService=lisa-contextd.service

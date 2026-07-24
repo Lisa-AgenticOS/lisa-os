@@ -5,7 +5,7 @@
 # the hosted repo (M1) ships signed packages instead (PLAN §5.10).
 
 pkgbase=lisa
-pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-portal lisa-agentd lisa-notes lisa-remoted)
+pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-portal lisa-agentd lisa-contextd lisa-notes lisa-remoted)
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Lisa OS AI layer: local inference as a system service"
@@ -93,6 +93,26 @@ package_lisa-agentd() {
     install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
     ln -s ../lisa-agentd.service \
         "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-agentd.service"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_lisa-contextd() {
+    pkgdesc="Lisa OS context fabric: consented index + per-app memory over D-Bus (PLAN §5.3)"
+    depends=(gcc-libs)
+    cd "$pkgbase-$pkgver"
+    install -Dm755 target/release/lisa-contextd "$pkgdir/usr/bin/lisa-contextd"
+    # Session-bus daemon (dev.lisaos.Context1), one per user, on from
+    # first login. No network by design (CLAUDE.md rule 5) — the unit's
+    # hardening removes the address families outright.
+    install -Dm644 os/packages/lisa/lisa-contextd-user.service \
+        "$pkgdir/usr/lib/systemd/user/lisa-contextd.service"
+    install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
+    ln -s ../lisa-contextd.service \
+        "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-contextd.service"
+    # D-Bus session activation — the overlay backend's first Search
+    # auto-starts the daemon.
+    install -Dm644 os/packages/lisa/dev.lisaos.Context1.service \
+        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Context1.service"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
