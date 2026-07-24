@@ -170,6 +170,18 @@ jobs:
           # sysupdate transfers: root partition images by slot label,
           # UKIs by ESP filename. Verify=no: the M1 hosted repo signs.
           sudo mkdir -p mnt-root/etc/sysupdate.d mnt-root/efi
+          # HERMETIC: mask the image's baked production channel
+          # (/usr/lib/sysupdate.d → releases/latest). Without this, sysupdate
+          # merges both sources and picks the highest version — the PUBLISHED
+          # release (e.g. 20260724.25) beats the local demo's "2", so the
+          # test silently updated slot B to the real GitHub release instead
+          # of the build under test (the root cause of the ab-sysupdate
+          # failures since v25 shipped: v2 was always v25's old /var-UUID
+          # fstab, never this build). Same-name /etc symlinks to /dev/null
+          # override /usr/lib per unit-file semantics.
+          for f in mnt-root/usr/lib/sysupdate.d/*; do
+            sudo ln -sf /dev/null "mnt-root/etc/sysupdate.d/$(basename "$f")"
+          done
           sudo tee mnt-root/etc/sysupdate.d/50-root.conf >/dev/null <<'EOF'
           [Transfer]
           Verify=no

@@ -43,6 +43,11 @@ systemd-repart, not baked into the image:
 - Existing installs migrate only via reinstall; their `/var/home` path stays
   supported indefinitely (it is the same code that also serves as the
   fallback).
+- On disks with no free space (already-grown installs, the CI demo disk) the
+  runtime repart pass fails noisily ("Failed to start Repartition Root
+  Disk") because the home partition cannot be created; boot is unaffected
+  (the service is not boot-blocking) and fresh disks with free space
+  succeed. Cosmetic; a conditional repart pass can quiet it later.
 - The image layout itself is unchanged — nothing new to fit into the 32 GB
   budget; CI's image/boot checks cover the unchanged path, and the fresh-disk
   path is exercised by `lisa install` on hardware.
