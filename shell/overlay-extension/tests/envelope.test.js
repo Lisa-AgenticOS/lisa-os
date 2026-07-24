@@ -1,8 +1,8 @@
 // Unit tests for the overlay's envelope logic (PLAN §5.7.1, Appendix C).
 import {test, assert, assertEq, finish} from '../../testing/harness.js';
 import {
-    buildEnvelope, parseContextHits, clampPreview, classifyAffordances,
-    POLICY_PREAMBLE,
+    buildEnvelope, parseContextHits, contextHitsFromJson, clampPreview,
+    classifyAffordances, POLICY_PREAMBLE,
 } from '../lib/envelope.js';
 
 test('parseContextHits reads the lisa context search format', () => {
@@ -25,6 +25,32 @@ test('parseContextHits tolerates empty and garbage input', () => {
     assertEq(parseContextHits(''), []);
     assertEq(parseContextHits(null), []);
     assertEq(parseContextHits('stray snippet with no header\n'), []);
+});
+
+test('contextHitsFromJson maps the Context1.Search reply to hits', () => {
+    const json = JSON.stringify([
+        {source: '/n/plan.md', provenance: 'file',
+            snippet: 'launch Friday', score: -1.5},
+        {source: 'mail://inbox/42', provenance: 'mail',
+            snippet: 'dentist at 3pm', score: -0.9},
+    ]);
+    const hits = contextHitsFromJson(json);
+    assertEq(hits.length, 2);
+    assertEq(hits[0], {
+        provenance: 'file',
+        source: '/n/plan.md',
+        snippet: 'launch Friday',
+    });
+    assertEq(hits[1].provenance, 'mail');
+});
+
+test('contextHitsFromJson tolerates malformed daemon replies', () => {
+    assertEq(contextHitsFromJson('not json'), []);
+    assertEq(contextHitsFromJson(''), []);
+    assertEq(contextHitsFromJson('{"an":"object"}'), []);
+    assertEq(contextHitsFromJson('[null, 42]'), []);
+    assertEq(contextHitsFromJson('[{}]'),
+        [{provenance: '', source: '', snippet: ''}]);
 });
 
 test('buildEnvelope with no hits is the bare prompt', () => {

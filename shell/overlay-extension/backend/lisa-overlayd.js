@@ -15,9 +15,11 @@
 //      parked by other clients surface too, via Agent1's
 //      ConfirmationRequested signal.
 // Otherwise the inference lane runs unchanged:
-//   1. [my stuff] → `lisa context search` (Context Fabric, PLAN §5.3;
-//      retrieval is ledgered by the CLI) → provenance-fenced envelope
-//      (Appendix C via lib/envelope.js).
+//   1. [my stuff] → dev.lisaos.Context1.Search (Context Fabric, PLAN
+//      §5.3; lisa-contextd ledgers the retrieval before replying),
+//      falling back to the `lisa context search` shell-out (ledgered
+//      by the CLI) when the daemon isn't on the bus → provenance-
+//      fenced envelope (Appendix C via lib/envelope.js).
 //   2. dev.lisaos.Inference1.OpenSession → (session path, token fd);
 //      Session.Generate; tokens are read off the fd and re-emitted as
 //      Token signals until EOF ⇒ Finished. Every generation is
@@ -30,8 +32,8 @@ import GLib from 'gi://GLib';
 import Soup from 'gi://Soup?version=3.0';
 import {decideAction, formatExecuted, reasonText, safeParse}
     from '../lib/agent.js';
-import {buildEnvelope, parseContextHits, classifyAffordances}
-    from '../lib/envelope.js';
+import {buildEnvelope, parseContextHits, contextHitsFromJson,
+    classifyAffordances} from '../lib/envelope.js';
 import {buildMessages, chatRequestBody, parseSseLine, isRemoteModel}
     from '../lib/chat.js';
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH}
@@ -44,6 +46,9 @@ const SESSION_IFACE = 'dev.lisaos.Inference1.Session';
 const AGENT_BUS = 'dev.lisaos.Agent1';
 const AGENT_PATH = '/dev/lisaos/Agent1';
 const AGENT_IFACE = 'dev.lisaos.Agent1';
+const CONTEXT_BUS = 'dev.lisaos.Context1';
+const CONTEXT_PATH = '/dev/lisaos/Context1';
+const CONTEXT_IFACE = 'dev.lisaos.Context1';
 const AGENT_ACTOR = 'overlay';
 const AGENT_PROVENANCE = ['user']; // typed prompts: a trusted chain (rule 6)
 const CONTEXT_HITS = 3;
@@ -416,7 +421,32 @@ class OverlayService {
             Gio.DBusCallFlags.NONE, -1, cancellable);
     }
 
+    // [my stuff] retrieval: dev.lisaos.Context1.Search on the session
+    // bus (lisa-contextd ledgers the retrieval before replying, PLAN
+    // §5.3; the activation file starts the daemon on first call). When
+    // the daemon isn't reachable (not packaged / not running), fall
+    // back to the `lisa context search` shell-out this backend always
+    // used — that path is ledgered by the CLI — so nothing regresses.
     async _searchContext(query, cancellable) {
+        try {
+            const options = {limit: GLib.Variant.new_uint32(CONTEXT_HITS)};
+            const reply = await this._connection.call(
+                CONTEXT_BUS, CONTEXT_PATH, CONTEXT_IFACE, 'Search',
+                new GLib.Variant('(sa{sv})', [query, options]),
+                new GLib.VariantType('(s)'),
+                Gio.DBusCallFlags.NONE, -1, cancellable);
+            const [hitsJson] = reply.deepUnpack();
+            return contextHitsFromJson(hitsJson);
+        } catch (e) {
+            if (this._active?.cancelled)
+                return [];
+            log(`lisa-overlayd: Context1 unavailable (${e?.message ?? e}); ` +
+                'falling back to `lisa context search`');
+            return this._searchContextCli(query, cancellable);
+        }
+    }
+
+    async _searchContextCli(query, cancellable) {
         try {
             const argv = [this._lisaCli(), 'context', 'search', query,
                 '--limit', String(CONTEXT_HITS)];

@@ -41,6 +41,33 @@ export function parseContextHits(text) {
 }
 
 /**
+ * Map dev.lisaos.Context1.Search's JSON reply — an array of
+ * {source, provenance, snippet, score} — to the overlay's hit shape
+ * ({provenance, source, snippet}, same as parseContextHits). Malformed
+ * replies and entries degrade to "no context", never a crash.
+ *
+ * @param {string} text the Search reply's hits_json
+ * @returns {{provenance: string, source: string, snippet: string}[]}
+ */
+export function contextHitsFromJson(text) {
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        return [];
+    }
+    if (!Array.isArray(parsed))
+        return [];
+    return parsed
+        .filter(h => h !== null && typeof h === 'object')
+        .map(h => ({
+            provenance: String(h.provenance ?? ''),
+            source: String(h.source ?? ''),
+            snippet: String(h.snippet ?? ''),
+        }));
+}
+
+/**
  * Compose the envelope sent to dev.lisaos.Inference1.
  * No hits → the bare prompt (no preamble overhead on plain questions).
  *

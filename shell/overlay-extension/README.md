@@ -27,7 +27,10 @@ backend interface.
   (own calls are filtered by actor — the signal precedes the
   `RequestCall` reply, so id-matching would race). Prompts that don't
   route keep the inference lane unchanged: [my stuff] retrieval via
-  `lisa context search` (ledgered by the CLI), Appendix C fencing,
+  `dev.lisaos.Context1.Search` (lisa-contextd ledgers the retrieval
+  before replying, PLAN §5.3), falling back to the `lisa context
+  search` shell-out (ledgered by the CLI) when the context daemon
+  isn't on the bus, then Appendix C fencing,
   `dev.lisaos.Inference1` session, token fd re-emitted as signals.
   `backend/dev.lisaos.Overlay1.service` provides D-Bus activation.
 - `extension.js` + `metadata.json` + `schemas/` + `stylesheet.css` —
@@ -44,8 +47,8 @@ backend interface.
   programmatically; the §5.7.2 launcher's "Ask Lisa" lane hands its
   queries over here. Owned by the frontend because the headless
   backend has no UI; the wlr client can own the same name.
-- `lib/` — shared pure logic (`envelope.js`: Appendix C fencing, CLI
-  output parsing; `agent.js`: prompt→tool routing, schema-driven arg
+- `lib/` — shared pure logic (`envelope.js`: Appendix C fencing,
+  Context1 JSON + CLI output parsing; `agent.js`: prompt→tool routing, schema-driven arg
   filling, outcome formatting, consent-spec mapping; `iface.js`: the
   D-Bus interface XML).
 - `tests/` — unit tests for `lib/` (`just shell-test`; runs under gjs,
