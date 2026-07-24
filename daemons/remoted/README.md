@@ -15,8 +15,11 @@ unix socket and gains no network itself.
   (Thinking Machines, OpenAI-compat sampling beta), `together`,
   `fireworks` — plus user-supplied OpenAI-compat URLs persisted in
   `providers.toml`.
-- **Credentials:** one mode-0600 file per key in a 0700 state dir
-  (`keys/<provider>.key`); write-only through every API surface.
+- **Credentials:** one mode-0600 file per credential in a 0700 state dir
+  — API keys as `keys/<provider>.key`, OAuth sessions as
+  `keys/<provider>.oauth.json` (`{"type":"oauth","refresh":…}`);
+  write-only through every API surface (only the refresh is persisted —
+  access tokens live in memory).
 - **Consent:** per-scope "may offload" switches (`prompt`, `files`,
   `mail`, `calendar`, `screen`, `memory`), all default **off** — by
   default nothing leaves the device, not even the prompt.
@@ -24,9 +27,17 @@ unix socket and gains no network itself.
   entry, no request); completions/denials land as `remote.complete` /
   `denied`. The `remote.` kind prefix is the machine-readable "leaves
   your hardware" marking; UIs render it in the egress color `#E66100`.
-- **Sign in with Claude:** full PKCE (S256) machinery, endpoints
-  **explicitly unset** until Anthropic publishes a registerable client
-  (CLAUDE.md rule 8 — no invented URLs). API keys work today.
+- **Sign in with Claude / ChatGPT (OAuth):** browser-callback flow with
+  RFC 7636 PKCE (S256). `BeginLogin` binds a loopback callback server on
+  the provider's fixed port (127.0.0.1:53692 Claude / :1455 ChatGPT),
+  returns the authorize URL for the panel to open; on redirect the broker
+  exchanges the code, persists the (rotating) refresh token, and emits
+  `LoginCompleted`. On chat, OAuth takes precedence over any stored API
+  key (Anthropic → `Authorization: Bearer` + `anthropic-beta:
+  oauth-2025-04-20`; OpenAI → plain Bearer). Endpoints/client-ids are
+  VERIFIED public constants ported from the shipping Construct app
+  (`brain/oauth/`), pinned in `oauth.rs` (CLAUDE.md rule 8 — no invented
+  URLs). API keys still work for every provider.
 - **ESP provisioning (field test, provisional):** `--import-esp <mnt>`
   imports staged `lisa-provision/<provider>.key` files into the 0600
   store and scrubs them off the world-readable FAT ESP. Shipped as the
@@ -36,10 +47,13 @@ unix socket and gains no network itself.
 
 - Unix-socket HTTP: `POST /v1/chat/completions` (OpenAI-compat body +
   `x-lisa-provider`, `x-lisa-scopes` headers); management under
-  `/v1/providers`, `/v1/consent`, `/v1/oauth/claude/*`; `GET /health`.
+  `/v1/providers`, `/v1/consent`, `POST /v1/oauth/{provider}/begin`,
+  `DELETE /v1/oauth/{provider}`; `GET /health`.
 - D-Bus `org.lisa.Remote1` (management plane for Settings): `State`,
   `AddProvider`, `RemoveProvider`, `SetKey`, `ClearKey`, `SetConsent`,
-  `ClaudeOauthStart`, `ClaudeOauthFinish`. Tested over zbus p2p.
+  `BeginLogin`, `Logout`, `ListModels`, and the `LoginCompleted` signal.
+  Each `State` provider row carries `auth` (`"oauth"`/`"key"`),
+  `oauth_capable`, and `connected`. Tested over zbus p2p.
 
 ## Run (dev)
 

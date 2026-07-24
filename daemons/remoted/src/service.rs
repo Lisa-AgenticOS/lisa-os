@@ -6,7 +6,7 @@
 //! the machine-readable "leaves your hardware" marking (§5.11).
 
 use crate::consent::{Consent, ConsentError};
-use crate::oauth::{self, AuthorizeRequest, OauthEndpoints, OauthError, Pkce};
+use crate::oauth::{self, LoginOutcome, OauthError, OauthManager};
 use crate::proxy::{self, ProxyError};
 use crate::registry::{AuthStyle, Dialect, Registry, RegistryError};
 use crate::secrets::{SecretStore, SecretsError};
@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::sync::broadcast;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerError {
@@ -30,31 +31,35 @@ pub enum BrokerError {
     Proxy(#[from] ProxyError),
     #[error("refusing to run without a ledger entry: {0}")]
     Ledger(#[from] lisa_ledger::LedgerError),
-    #[error("no Sign in with Claude flow in progress")]
-    NoPendingOauth,
 }
 
 pub struct Broker {
     registry: Mutex<Registry>,
     secrets: SecretStore,
     consent: Mutex<Consent>,
-    oauth_endpoints: OauthEndpoints,
-    pending_oauth: Mutex<Option<AuthorizeRequest>>,
+    oauth: Arc<OauthManager>,
     ledger: Arc<Ledger>,
     http: reqwest::Client,
 }
 
 impl Broker {
     pub fn open(state_dir: &Path, ledger: Arc<Ledger>) -> anyhow::Result<Arc<Self>> {
+        let secrets = SecretStore::open(state_dir)?;
+        let http = reqwest::Client::new();
         Ok(Arc::new(Self {
             registry: Mutex::new(Registry::open(state_dir)?),
-            secrets: SecretStore::open(state_dir)?,
+            oauth: OauthManager::new(http.clone(), secrets.clone()),
             consent: Mutex::new(Consent::open(state_dir)?),
-            oauth_endpoints: OauthEndpoints::load(state_dir)?,
-            pending_oauth: Mutex::new(None),
+            secrets,
             ledger,
-            http: reqwest::Client::new(),
+            http,
         }))
+    }
+
+    /// Subscribe to OAuth login completions — the D-Bus layer forwards
+    /// these as the `LoginCompleted` signal.
+    pub fn subscribe_logins(&self) -> broadcast::Receiver<LoginOutcome> {
+        self.oauth.subscribe()
     }
 
     pub fn secrets(&self) -> &SecretStore {
@@ -75,18 +80,23 @@ impl Broker {
             .list()
             .into_iter()
             .map(|p| {
-                let has_oauth_token = self.secrets.has_named(&format!("{}.oauth.json", p.id));
+                let oauth_capable = oauth::is_capable(&p.id);
+                let connected = oauth_capable && self.oauth.connected(&p.id);
+                let has_key = self.secrets.has(&p.id);
                 json!({
                     "id": p.id,
                     "display_name": p.display_name,
                     "base_url": p.base_url,
-                    "auth": p.auth,
+                    // The wire auth style (bearer / anthropic-api-key / …).
+                    "auth_style": p.auth,
                     "dialect": p.dialect,
                     "notes": p.notes,
                     "builtin": p.builtin,
-                    "has_credential": self.secrets.has(&p.id) || has_oauth_token,
-                    "oauth_available":
-                        p.id == "anthropic" && self.oauth_endpoints.configured(),
+                    "has_credential": has_key || connected,
+                    // The active auth mode: OAuth takes precedence over a key.
+                    "auth": if connected { "oauth" } else { "key" },
+                    "oauth_capable": oauth_capable,
+                    "connected": connected,
                 })
             })
             .collect();
@@ -144,74 +154,87 @@ impl Broker {
         Ok(())
     }
 
-    // ---- Sign in with Claude ----------------------------------------------
+    // ---- Sign in with Claude / ChatGPT (OAuth) ----------------------------
 
-    /// Start the PKCE flow. Errors with `Unconfigured` until Anthropic
-    /// publishes registerable endpoints (ADR-0008 §4 / rule 8).
-    pub fn oauth_start(&self) -> Result<String, BrokerError> {
-        let req = oauth::authorize_request(&self.oauth_endpoints, &Pkce::generate())?;
-        let url = req.authorize_url.clone();
-        *self.pending_oauth.lock().expect("oauth lock") = Some(req);
-        Ok(url)
+    /// Start "Sign in with …": bind the loopback callback server, return
+    /// the authorize URL for the panel to open in the browser. The broker
+    /// never launches a browser (egress isolation). Only `anthropic` and
+    /// `openai` are OAuth-capable (ADR-0010 §4).
+    pub async fn begin_login(&self, provider_id: &str) -> Result<String, BrokerError> {
+        // A registered provider only — a login for an unknown row is a
+        // client error, not a callback we should bind a port for.
+        self.registry
+            .lock()
+            .expect("registry lock")
+            .get(provider_id)?;
+        Ok(self.oauth.begin_login(provider_id).await?)
     }
 
-    /// Finish the flow with the pasted authorization code: exchange it
-    /// at the configured token endpoint and store the token set 0600.
-    pub async fn oauth_finish(&self, code: &str) -> Result<(), BrokerError> {
-        let pending = self
-            .pending_oauth
-            .lock()
-            .expect("oauth lock")
-            .take()
-            .ok_or(BrokerError::NoPendingOauth)?;
-        let form = oauth::token_exchange_form(&self.oauth_endpoints, code, &pending.verifier)?;
-        let token_url = self
-            .oauth_endpoints
-            .token_url
-            .clone()
-            .ok_or(OauthError::Unconfigured)?;
-        let resp = self
-            .http
-            .post(&token_url)
-            .form(&form)
-            .send()
-            .await
-            .map_err(ProxyError::from)?;
-        let status = resp.status();
-        let body: Value = resp.json().await.map_err(ProxyError::from)?;
-        if !status.is_success() {
-            return Err(ProxyError::Upstream {
-                status: status.as_u16(),
-                body: body.to_string(),
-            }
-            .into());
-        }
-        self.secrets
-            .set_named("anthropic.oauth.json", &body.to_string())?;
+    /// Forget a stored OAuth session (idempotent). Ledgered as a
+    /// revocation of the egress capability the sign-in granted.
+    pub fn logout(&self, provider_id: &str) -> Result<(), BrokerError> {
+        self.oauth.logout(provider_id)?;
+        self.ledger.append(&Event {
+            kind: "remote.grant".into(),
+            app_id: "settings".into(),
+            model: format!("{provider_id}:oauth"),
+            status: "revoked".into(),
+            detail: json!({
+                "egress": "remote",
+                "provider": provider_id,
+                "grant": "oauth-signin",
+                "action": "revoke",
+            })
+            .to_string(),
+            ..Default::default()
+        })?;
         Ok(())
+    }
+
+    /// Ledger a completed sign-in as an egress-capability grant. Called
+    /// by the D-Bus layer when a `LoginCompleted(ok=true)` arrives — the
+    /// exchange itself already happened in the broker's own egress lane.
+    pub fn ledger_login_grant(&self, provider_id: &str) {
+        let _ = self.ledger.append(&Event {
+            kind: "remote.grant".into(),
+            app_id: "settings".into(),
+            model: format!("{provider_id}:oauth"),
+            status: "ok".into(),
+            detail: json!({
+                "egress": "remote",
+                "provider": provider_id,
+                "grant": "oauth-signin",
+                "action": "grant",
+            })
+            .to_string(),
+            ..Default::default()
+        });
     }
 
     // ---- data plane --------------------------------------------------------
 
-    fn credential_for(
+    /// Select the credential + wire auth style for `id`. OAuth takes
+    /// precedence over any stored API key when a usable session exists
+    /// (ADR-0010 §4): Anthropic → OAuth bearer (+beta header + Claude-Code
+    /// framing); OpenAI OAuth rides the same plain `Authorization: Bearer`
+    /// as its API key. Otherwise the stored key is used.
+    async fn credential_for(
         &self,
         id: &str,
         auth: AuthStyle,
     ) -> Result<(String, AuthStyle), BrokerError> {
+        if oauth::is_capable(id) && self.oauth.connected(id) {
+            let access = self.oauth.access_token(id).await?;
+            let style = match auth {
+                AuthStyle::AnthropicApiKey | AuthStyle::AnthropicOauth => AuthStyle::AnthropicOauth,
+                AuthStyle::Bearer => AuthStyle::Bearer,
+            };
+            return Ok((access, style));
+        }
         match auth {
             AuthStyle::Bearer => Ok((self.secrets.get(id)?, AuthStyle::Bearer)),
-            // Anthropic: an API key wins; otherwise a stored Sign in
-            // with Claude token authenticates as OAuth bearer.
             AuthStyle::AnthropicApiKey | AuthStyle::AnthropicOauth => {
-                if let Ok(key) = self.secrets.get(id) {
-                    return Ok((key, AuthStyle::AnthropicApiKey));
-                }
-                let raw = self.secrets.get_named(&format!("{id}.oauth.json"))?;
-                let token = serde_json::from_str::<Value>(&raw)
-                    .ok()
-                    .and_then(|v| v["access_token"].as_str().map(String::from))
-                    .ok_or_else(|| SecretsError::Missing(id.to_string()))?;
-                Ok((token, AuthStyle::AnthropicOauth))
+                Ok((self.secrets.get(id)?, AuthStyle::AnthropicApiKey))
             }
         }
     }
@@ -231,7 +254,7 @@ impl Broker {
             status: 0,
             body: "provider has no configured endpoint".into(),
         })?;
-        let (credential, auth) = self.credential_for(provider_id, spec.auth)?;
+        let (credential, auth) = self.credential_for(provider_id, spec.auth).await?;
         let base = base.trim_end_matches('/');
         // OpenAI-compat base_urls already carry /v1; Anthropic's does not.
         let url = match spec.dialect {
@@ -324,7 +347,7 @@ impl Broker {
             return Err(denied.into());
         }
 
-        let (credential, auth) = self.credential_for(&spec.id, spec.auth)?;
+        let (credential, auth) = self.credential_for(&spec.id, spec.auth).await?;
         let mut spec = spec;
         spec.auth = auth;
         let upstream = proxy::build_upstream(&spec, &credential, body)?;

@@ -103,13 +103,54 @@ async fn provider_and_key_management_round_trips() {
 }
 
 #[tokio::test]
-async fn claude_oauth_start_fails_loudly_while_unconfigured() {
+async fn state_reports_oauth_capability_per_provider() {
     let (_dir, b) = broker();
     let (_server, client) = p2p_pair(b).await;
     let p = proxy(&client).await;
-    let err = p.call_method("ClaudeOauthStart", &()).await.unwrap_err();
+
+    let (raw,): (String,) = p
+        .call_method("State", &())
+        .await
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap();
+    let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let by_id = |id: &str| {
+        state["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    // anthropic + openai are OAuth-capable; nothing is connected yet.
+    for id in ["anthropic", "openai"] {
+        let row = by_id(id);
+        assert_eq!(row["oauth_capable"], true, "{id} is oauth-capable");
+        assert_eq!(row["connected"], false, "{id} not signed in yet");
+        assert_eq!(row["auth"], "key", "{id} defaults to key mode");
+    }
+    // Everything else stays key-only.
+    for id in ["tinker", "together", "google", "openrouter"] {
+        assert_eq!(by_id(id)["oauth_capable"], false, "{id} key-only");
+    }
+}
+
+#[tokio::test]
+async fn begin_login_rejects_key_only_providers_and_logout_is_idempotent() {
+    let (_dir, b) = broker();
+    let (_server, client) = p2p_pair(b).await;
+    let p = proxy(&client).await;
+
+    // A key-only provider cannot start OAuth (and binds no port).
+    let err = p.call_method("BeginLogin", &("tinker",)).await.unwrap_err();
     assert!(
-        err.to_string().contains("not configured"),
-        "rule 8: unset endpoints must be explicit, got: {err}"
+        err.to_string().contains("does not support OAuth"),
+        "got: {err}"
     );
+
+    // Logout with no stored session is a clean no-op.
+    p.call_method("Logout", &("anthropic",)).await.unwrap();
 }

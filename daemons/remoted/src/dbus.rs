@@ -1,10 +1,15 @@
-//! D-Bus management surface: org.lisa.Remote1 (ADR-0008 §1) — the
-//! Settings app's plane: providers, credentials (write-only), per-scope
-//! offload consent, and the Sign in with Claude flow. Tested over zbus
-//! p2p (macOS + CI); registered on the bus on real systems.
+//! D-Bus management surface: org.lisa.Remote1 (ADR-0008 §1, ADR-0010 §4)
+//! — the Settings app's plane: providers, credentials (write-only),
+//! per-scope offload consent, and "Sign in with Claude / ChatGPT" OAuth.
+//! Tested over zbus p2p (macOS + CI); registered on the bus on real
+//! systems.
 
 use crate::service::Broker;
 use std::sync::Arc;
+use zbus::object_server::SignalEmitter;
+
+/// The object path the interface lives at (session bus + p2p).
+pub const OBJECT_PATH: &str = "/org/lisa/Remote1";
 
 pub struct Remote1 {
     broker: Arc<Broker>,
@@ -65,16 +70,19 @@ impl Remote1 {
         self.broker.set_consent(&scope, allowed).map_err(fail)
     }
 
-    /// Begin Sign in with Claude; returns the authorize URL to open.
-    /// Fails with an explanatory error while endpoints are unset
-    /// (ADR-0008 §4 — no invented URLs).
-    fn claude_oauth_start(&self) -> zbus::fdo::Result<String> {
-        self.broker.oauth_start().map_err(fail)
+    /// Begin "Sign in with …" for an OAuth-capable provider (`anthropic`
+    /// or `openai`); returns the authorize URL for the panel to open in
+    /// the browser. The broker binds a loopback callback server and does
+    /// the token exchange when the browser redirects back; completion
+    /// arrives asynchronously via the `LoginCompleted` signal. Fails for
+    /// key-only providers.
+    async fn begin_login(&self, provider_id: String) -> zbus::fdo::Result<String> {
+        self.broker.begin_login(&provider_id).await.map_err(fail)
     }
 
-    /// Complete the flow with the pasted authorization code.
-    async fn claude_oauth_finish(&self, code: String) -> zbus::fdo::Result<()> {
-        self.broker.oauth_finish(&code).await.map_err(fail)
+    /// Forget a stored OAuth session (idempotent).
+    fn logout(&self, provider_id: String) -> zbus::fdo::Result<()> {
+        self.broker.logout(&provider_id).map_err(fail)
     }
 
     /// The provider's live model list (its own `/models`), as a JSON array
@@ -83,13 +91,49 @@ impl Remote1 {
         let ids = self.broker.list_models(&provider).await.map_err(fail)?;
         Ok(serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()))
     }
+
+    /// Emitted once a `BeginLogin` flow finishes: `ok` true on a stored
+    /// session, false on error/timeout; `detail` is a human-readable
+    /// status. No token material is ever carried.
+    #[zbus(signal)]
+    async fn login_completed(
+        emitter: &SignalEmitter<'_>,
+        provider_id: &str,
+        ok: bool,
+        detail: &str,
+    ) -> zbus::Result<()>;
+}
+
+/// Forward broker login completions to the D-Bus `LoginCompleted` signal
+/// on `conn`, and ledger successful sign-ins as egress-capability grants.
+/// Runs until the broadcast sender is dropped.
+pub fn spawn_login_signal(broker: Arc<Broker>, conn: zbus::Connection) {
+    let mut rx = broker.subscribe_logins();
+    tokio::spawn(async move {
+        while let Ok(outcome) = rx.recv().await {
+            if outcome.ok {
+                broker.ledger_login_grant(&outcome.provider_id);
+            }
+            if let Ok(emitter) = SignalEmitter::new(&conn, OBJECT_PATH) {
+                let _ = Remote1::login_completed(
+                    &emitter,
+                    &outcome.provider_id,
+                    outcome.ok,
+                    &outcome.detail,
+                )
+                .await;
+            }
+        }
+    });
 }
 
 /// Register on the session bus (real systems; tests use p2p connections).
 pub async fn serve(broker: Arc<Broker>) -> zbus::Result<zbus::Connection> {
-    zbus::connection::Builder::session()?
+    let conn = zbus::connection::Builder::session()?
         .name("org.lisa.Remoted")?
-        .serve_at("/org/lisa/Remote1", Remote1::new(broker))?
+        .serve_at(OBJECT_PATH, Remote1::new(Arc::clone(&broker)))?
         .build()
-        .await
+        .await?;
+    spawn_login_signal(broker, conn.clone());
+    Ok(conn)
 }

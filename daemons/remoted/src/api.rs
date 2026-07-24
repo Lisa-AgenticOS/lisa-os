@@ -25,7 +25,10 @@ fn error_response(e: BrokerError) -> Response {
         BrokerError::Registry(RegistryError::Unknown(_)) => StatusCode::NOT_FOUND,
         BrokerError::Registry(_) => StatusCode::BAD_REQUEST,
         BrokerError::Secrets(SecretsError::Missing(_)) => StatusCode::PRECONDITION_FAILED,
-        BrokerError::Oauth(OauthError::Unconfigured) => StatusCode::NOT_IMPLEMENTED,
+        BrokerError::Oauth(OauthError::NotCapable(_)) => StatusCode::BAD_REQUEST,
+        BrokerError::Oauth(OauthError::ReauthRequired(_)) => StatusCode::UNAUTHORIZED,
+        BrokerError::Oauth(OauthError::InProgress(_)) => StatusCode::CONFLICT,
+        BrokerError::Oauth(_) => StatusCode::BAD_GATEWAY,
         BrokerError::Proxy(ProxyError::BadRequest) => StatusCode::BAD_REQUEST,
         BrokerError::Proxy(ProxyError::Upstream { .. }) => StatusCode::BAD_GATEWAY,
         BrokerError::Ledger(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -42,8 +45,8 @@ pub fn router(broker: Arc<Broker>) -> Router {
         .route("/v1/providers/{id}", delete(remove_provider))
         .route("/v1/providers/{id}/key", put(set_key).delete(clear_key))
         .route("/v1/consent", get(consent).put(set_consent))
-        .route("/v1/oauth/claude/start", post(oauth_start))
-        .route("/v1/oauth/claude/finish", post(oauth_finish))
+        .route("/v1/oauth/{provider}/begin", post(oauth_begin))
+        .route("/v1/oauth/{provider}", delete(oauth_logout))
         .with_state(broker)
 }
 
@@ -158,20 +161,19 @@ async fn set_consent(State(broker): State<Arc<Broker>>, Json(req): Json<SetConse
     }
 }
 
-async fn oauth_start(State(broker): State<Arc<Broker>>) -> Response {
-    match broker.oauth_start() {
+/// Begin "Sign in with …" for `provider`; returns the authorize URL the
+/// caller opens in a browser. Completion is observed by polling provider
+/// state (`connected`) or, over D-Bus, the `LoginCompleted` signal.
+async fn oauth_begin(State(broker): State<Arc<Broker>>, Path(provider): Path<String>) -> Response {
+    match broker.begin_login(&provider).await {
         Ok(url) => Json(json!({"authorize_url": url})).into_response(),
         Err(e) => error_response(e),
     }
 }
 
-#[derive(Deserialize)]
-struct OauthFinish {
-    code: String,
-}
-
-async fn oauth_finish(State(broker): State<Arc<Broker>>, Json(req): Json<OauthFinish>) -> Response {
-    match broker.oauth_finish(&req.code).await {
+/// Forget a stored OAuth session (idempotent).
+async fn oauth_logout(State(broker): State<Arc<Broker>>, Path(provider): Path<String>) -> Response {
+    match broker.logout(&provider) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(e) => error_response(e),
     }

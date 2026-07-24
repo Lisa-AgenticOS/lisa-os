@@ -15,6 +15,7 @@ pub enum SecretsError {
     Io(#[from] std::io::Error),
 }
 
+#[derive(Clone)]
 pub struct SecretStore {
     dir: PathBuf,
 }
@@ -73,6 +74,16 @@ impl SecretStore {
 
     pub fn has_named(&self, name: &str) -> bool {
         self.dir.join(name).is_file()
+    }
+
+    /// Remove a named credential (e.g. `<provider>.oauth.json` on
+    /// logout). A missing file is a clean no-op — logout is idempotent.
+    pub fn remove_named(&self, name: &str) -> Result<(), SecretsError> {
+        match std::fs::remove_file(self.dir.join(name)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn get(&self, provider: &str) -> Result<String, SecretsError> {

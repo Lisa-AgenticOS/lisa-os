@@ -303,27 +303,59 @@ async fn unknown_provider_is_404_and_missing_header_is_400() {
 }
 
 #[tokio::test]
-async fn sign_in_with_claude_reports_unconfigured_until_endpoints_exist() {
+async fn oauth_begin_rejects_key_only_providers() {
     let f = fixture();
     let router = api::router(f.broker);
+    // A key-only provider has no OAuth flow (and binds no callback port).
     let res = router
         .oneshot(
-            Request::post("/v1/oauth/claude/start")
+            Request::post("/v1/oauth/tinker/begin")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    // Rule 8: no invented endpoints — the flow is present but inert.
-    assert_eq!(res.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     let body = body_json(res).await;
     assert!(
         body["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("not configured"),
+            .contains("does not support OAuth"),
         "{body}"
     );
+}
+
+#[tokio::test]
+async fn oauth_state_reports_capability_and_logout_is_idempotent() {
+    let f = fixture();
+    let router = api::router(Arc::clone(&f.broker));
+
+    let res = router
+        .clone()
+        .oneshot(Request::get("/v1/providers").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_json(res).await;
+    let anthropic = body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "anthropic")
+        .unwrap();
+    assert_eq!(anthropic["oauth_capable"], true);
+    assert_eq!(anthropic["connected"], false);
+
+    // Logout without a session is a clean 200 no-op.
+    let res = router
+        .oneshot(
+            Request::delete("/v1/oauth/anthropic")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 }
 
 #[tokio::test]

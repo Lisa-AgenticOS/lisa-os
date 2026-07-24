@@ -52,10 +52,14 @@ pub fn build_upstream(
             headers.push(("anthropic-version".into(), "2023-06-01".into()));
         }
         AuthStyle::AnthropicOauth => {
-            headers.extend(oauth::bearer_headers(credential));
+            // Claude subscription (OAuth) auth: Bearer + the documented
+            // beta header — NOT x-api-key (Construct brain/provider/anthropic.go).
+            headers.push(("authorization".into(), format!("Bearer {credential}")));
+            headers.push(("anthropic-beta".into(), oauth::ANTHROPIC_OAUTH_BETA.into()));
             headers.push(("anthropic-version".into(), "2023-06-01".into()));
         }
     }
+    let oauth_anthropic = matches!(spec.auth, AuthStyle::AnthropicOauth);
     match spec.dialect {
         Dialect::OpenaiCompat => {
             // Pass the body through untouched (minus Lisa extensions);
@@ -76,6 +80,12 @@ pub fn build_upstream(
             // documented compat behavior), keep user/assistant turns.
             let messages = body["messages"].as_array().expect("checked above");
             let mut system_parts: Vec<String> = Vec::new();
+            // OAuth (Claude Pro/Max) traffic must present as Claude Code
+            // or the Messages API returns 429 — prepend the marker system
+            // prompt (Construct brain/provider/anthropic.go).
+            if oauth_anthropic {
+                system_parts.push(oauth::ANTHROPIC_CLAUDE_CODE_SYSTEM.to_string());
+            }
             let mut turns: Vec<Value> = Vec::new();
             for m in messages {
                 let role = m["role"].as_str().unwrap_or("user");
@@ -94,8 +104,15 @@ pub fn build_upstream(
             if !system_parts.is_empty() {
                 out["system"] = Value::String(system_parts.join("\n"));
             }
+            // OAuth requires the ?beta=true query param alongside the
+            // beta header (Construct brain/provider/anthropic.go).
+            let url = if oauth_anthropic {
+                format!("{}/v1/messages?beta=true", base.trim_end_matches('/'))
+            } else {
+                format!("{}/v1/messages", base.trim_end_matches('/'))
+            };
             Ok(UpstreamRequest {
-                url: format!("{}/v1/messages", base.trim_end_matches('/')),
+                url,
                 headers,
                 body: out,
             })
