@@ -1,0 +1,6 @@
+name: lisa-next
+server: bp.common.al
+port: 80
+build:
+    dockerfile: Dockerfile
+    context: .
