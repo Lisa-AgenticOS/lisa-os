@@ -1,0 +1,15 @@
+#!/bin/sh
+# lisa-app — launch a Lisa shell app from the newest apps tree (ADR-0020).
+# Resolution: $LISA_APPS_DIR → /var/lib/lisa/apps/current → the baked
+# /usr/share/lisa/shell. An updated tree (lisa apps update) takes effect on
+# the next launch; deleting /var/lib/lisa/apps restores the baked tree.
+# Shell script as a launcher hook only (CLAUDE.md rule 4) — all logic lives
+# in `lisa apps` (Rust).
+set -eu
+rel="${1:?usage: lisa-app <relpath-under-shell-tree> [args...]}"
+shift
+for base in "${LISA_APPS_DIR:-}" /var/lib/lisa/apps/current /usr/share/lisa/shell; do
+    [ -n "$base" ] && [ -f "$base/$rel" ] && exec gjs -m "$base/$rel" "$@"
+done
+echo "lisa-app: $rel not found in any apps tree" >&2
+exit 127

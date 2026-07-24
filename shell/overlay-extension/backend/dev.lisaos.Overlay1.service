@@ -3,4 +3,4 @@
 # matches the Track L layer layout (/usr/share/lisa).
 [D-BUS Service]
 Name=dev.lisaos.Overlay1
-Exec=/usr/bin/gjs -m /usr/share/lisa/shell/overlay-extension/backend/lisa-overlayd.js
+Exec=/usr/bin/lisa-app overlay-extension/backend/lisa-overlayd.js

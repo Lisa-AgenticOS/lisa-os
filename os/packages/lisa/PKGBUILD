@@ -156,6 +156,9 @@ package_lisa-cli() {
     depends=(gcc-libs)
     cd "$pkgbase-$pkgver"
     install -Dm755 target/release/lisa "$pkgdir/usr/bin/lisa"
+    # App launcher indirection (ADR-0020): prefers the updated apps tree on
+    # /var over the baked /usr/share/lisa/shell.
+    install -Dm755 os/packages/lisa/lisa-app "$pkgdir/usr/bin/lisa-app"
     # Terminal integration (PLAN §5.8): opt-in shell hooks for
     # `lisa explain` / `lisa suggest` (Ctrl+G review gate). All logic is
     # in the CLI; these only wire keys and prompts (CLAUDE.md rule 4).

@@ -146,7 +146,12 @@ jobs:
           sudo chown "$USER:" "lisa_${VER}.root"
           xz -T0 -3 "lisa_${VER}.root"
           zstd -q -T0 -8 --sparse lisa-usb.raw -o "lisa-usb-${VER}.raw.zst"
-          sha256sum "lisa_${VER}.root.xz" "lisa_${VER}.efi" "lisa-usb-${VER}.raw.zst" > SHA256SUMS
+          # The app-update channel (ADR-0020): the interpreted shell tree as
+          # its own artifact, so `lisa apps update` refreshes apps without an
+          # image update. Packed from the SAME commit as the image.
+          tar --zstd -cf "lisa-apps_${VER}.tar.zst" -C shell \
+            --exclude='*/tests' --exclude='testing' .
+          sha256sum "lisa_${VER}.root.xz" "lisa_${VER}.efi" "lisa-usb-${VER}.raw.zst" "lisa-apps_${VER}.tar.zst" > SHA256SUMS
           cat SHA256SUMS; ls -lh lisa_* lisa-usb-*
       - name: Publish release
         env:
@@ -180,4 +185,5 @@ jobs:
             "lisa-usb-${VER}.raw.zst" \
             "lisa_${VER}.root.xz" \
             "lisa_${VER}.efi" \
+            "lisa-apps_${VER}.tar.zst" \
             SHA256SUMS

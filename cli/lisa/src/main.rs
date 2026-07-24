@@ -7,6 +7,7 @@
 //! the Agent Bus in M5.
 
 mod agent;
+mod apps;
 mod terminal;
 mod voice;
 
@@ -179,6 +180,12 @@ enum Command {
         #[arg(long)]
         reboot: bool,
     },
+    /// Update the shell apps independently of the OS image (ADR-0020):
+    /// fetch, verify, and activate the newest apps tree — no reboot.
+    Apps {
+        #[command(subcommand)]
+        cmd: AppsCmd,
+    },
     /// Manage BYO remote model providers (PLAN §5.11). Inference uses
     /// them via `lisa ask --model remote:<provider>:<model>`.
     Remote {
@@ -262,6 +269,16 @@ enum AmbientCmd {
         #[arg(long)]
         classify: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AppsCmd {
+    /// Fetch, verify (SHA256SUMS), install, and activate the newest apps tree.
+    Update,
+    /// Show the current and installed apps-tree versions.
+    Status,
+    /// Flip back to the previously installed tree (or the baked image tree).
+    Rollback,
 }
 
 #[derive(Subcommand)]
@@ -429,6 +446,11 @@ fn run() -> anyhow::Result<()> {
         Command::Embed { text, url } => embed(text, &url),
         Command::Install { target, from, yes } => install_cmd(&target, from, yes),
         Command::Update { reboot } => update_cmd(reboot),
+        Command::Apps { cmd } => match cmd {
+            AppsCmd::Update => apps::update(),
+            AppsCmd::Status => apps::status(),
+            AppsCmd::Rollback => apps::rollback(),
+        },
         Command::Remote { cmd } => remote_cmd(cmd),
         Command::Transcribe { audio, model } => {
             let m = voice::whisper_model(model)?;
@@ -573,7 +595,8 @@ pub(crate) fn chat_completion(url: &str, body: &serde_json::Value) -> anyhow::Re
 
 use std::io::IsTerminal;
 
-const RELEASES_API: &str = "https://api.github.com/repos/Lisa-AgenticOS/lisa-os/releases/latest";
+pub(crate) const RELEASES_API: &str =
+    "https://api.github.com/repos/Lisa-AgenticOS/lisa-os/releases/latest";
 
 fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Result<()> {
     // Guards: block devices only on Linux and never the running disk;
