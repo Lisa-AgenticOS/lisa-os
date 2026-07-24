@@ -3,7 +3,8 @@
 // Thin by design: all state and token streams live in the headless
 // backend (org.lisa.Overlay1, backend/lisa-overlayd.js); this
 // extension renders it. Summon with Super+Shift+Space (Super+Space is
-// the Spotlight-style search, §5.7.2) — or programmatically
+// the Spotlight-style search, §5.7.2; Super+C opens the persistent
+// Lisa Assistant chat window, ADR-0015) — or programmatically
 // via org.lisa.Overlay1.UI (the §5.7.2 launcher's "Ask Lisa" lane
 // hands queries over here): a translucent layer over the current
 // workspace with the three per-invocation context chips —
@@ -323,6 +324,15 @@ export default class LisaOverlayExtension extends Extension {
             Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
             () => this._toggle());
 
+        // A dedicated hotkey for the persistent chat window (ADR-0015):
+        // open it, or focus it if already running (it's single-instance).
+        Main.wm.addKeybinding(
+            'open-assistant',
+            this._settings,
+            Meta.KeyBindingFlags.NONE,
+            Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+            () => this._openAssistant());
+
         // UI-control surface (org.lisa.Overlay1.UI): other shell
         // surfaces — the §5.7.2 launcher's "Ask Lisa" lane — summon
         // this overlay with a prompt. Owned by the frontend because
@@ -341,6 +351,7 @@ export default class LisaOverlayExtension extends Extension {
 
     disable() {
         Main.wm.removeKeybinding('toggle-overlay');
+        Main.wm.removeKeybinding('open-assistant');
         if (this._uiOwnerId) {
             Gio.bus_unown_name(this._uiOwnerId);
             this._uiOwnerId = 0;
@@ -361,6 +372,17 @@ export default class LisaOverlayExtension extends Extension {
                 Gio.DBus.session, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH);
         }
         return this._proxy;
+    }
+
+    // Open the persistent chat window, or raise it if already running
+    // (org.lisa.Assistant is single-instance, so activate() focuses it).
+    _openAssistant() {
+        const app = Shell.AppSystem.get_default()
+            .lookup_app('org.lisa.Assistant.desktop');
+        if (app)
+            app.activate();
+        else
+            Main.notify('Lisa Assistant', 'The assistant app is not installed.');
     }
 
     _toggle() {

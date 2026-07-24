@@ -12,5 +12,12 @@
       <default><![CDATA[['<Shift><Super>space']]]></default>
       <summary>Summon or dismiss the assistant overlay</summary>
     </key>
+    <key name="open-assistant" type="as">
+      <default><![CDATA[['<Super>c']]]></default>
+      <summary>Open the Lisa Assistant chat window</summary>
+      <description>Opens (or focuses) the persistent chat window. Super+A is
+      GNOME's app grid, so this defaults to Super+C — rebindable in
+      Settings.</description>
+    </key>
   </schema>
 </schemalist>
