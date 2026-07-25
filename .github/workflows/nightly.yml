@@ -40,19 +40,42 @@ jobs:
       # the image's own initrd + root.
       - name: Initrd must carry the bare-metal storage/HID stack
         run: |
-          # v26-v29 shipped initrds with ZERO storage modules (the custom
-          # mkosi.initrd config ignored the parent's module list): USB
+          # v26-v29 shipped initrds with ZERO storage modules (issue #46:
+          # the KernelModulesInitrdInclude spelling never applied): USB
           # sticks could load the UKI via firmware and then Linux couldn't
-          # see the stick — every USB boot dead. Never again.
-          zstd -dc os/mkosi/lisa.initrd > initrd.cpio || cat os/mkosi/lisa.initrd > initrd.cpio
-          for mod in usb-storage uas sd_mod xhci-pci ahci nvme btrfs; do
-            if ! cpio -it < initrd.cpio 2>/dev/null | grep -q "${mod}\.ko"; then
-              echo "FAIL: initrd is missing ${mod}.ko — USB/bare-metal boot would be broken"
-              exit 1
+          # see the stick — every USB boot dead. Never again. The check
+          # decompresses EVERY zstd frame — mkosi appends the kernel-
+          # modules initrd as separate frames, so a first-frame-only look
+          # cannot see them (or their absence) reliably. The UKI is the
+          # authoritative artifact; fall back to lisa.initrd if extraction
+          # fails.
+          sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils zstd >/dev/null
+          OFF=$(( $(sfdisk -J lisa.raw 2>/dev/null | jq -r '.partitiontable.partitions[0].start' || echo 0) * 512 ))
+          if [ "$OFF" -gt 0 ]; then
+            NAME=$(mdir -b -i "lisa.raw@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | head -1 || true)
+            if [ -n "$NAME" ]; then
+              mcopy -i "lisa.raw@@$OFF" "::/EFI/Linux/$NAME" uki.efi
+              objcopy --dump-section .initrd=initrd.img uki.efi discard.efi || true
             fi
-          done
-          echo "initrd storage/HID stack: OK"
-          rm -f initrd.cpio
+          fi
+          [ -f initrd.img ] || cp os/mkosi/lisa.initrd initrd.img
+          python3 - <<'PY'
+          import subprocess, sys
+          d = open('initrd.img','rb').read()
+          offs = [i for i in range(len(d)) if d[i:i+4] == b'\x28\xb5\x2f\xfd'] or [0]
+          blob = b''
+          for off in offs:
+              blob += subprocess.run(['zstd','-dc'], input=d[off:], capture_output=True).stdout
+          blob += d  # uncompressed cpio segments too
+          missing = [m for m in (b'usb-storage.ko', b'uas.ko', b'sd_mod.ko',
+                                 b'xhci-pci.ko', b'ahci.ko', b'nvme.ko', b'btrfs.ko')
+                     if m not in blob]
+          if missing:
+              print('FAIL: initrd missing modules:', [m.decode() for m in missing])
+              sys.exit(1)
+          print('initrd storage/HID stack: OK')
+          PY
+          rm -f initrd.img uki.efi discard.efi
       - name: Boot check (QEMU + swtpm)
         run: |
           set -o pipefail
