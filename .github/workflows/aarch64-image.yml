@@ -71,7 +71,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -qq -y --no-install-recommends qemu-system-arm ipxe-qemu >/dev/null
           timeout 900 qemu-system-aarch64 \
-            -machine virt -cpu max -accel kvm -accel tcg -m 4G -nographic -no-reboot \
+            -machine virt -cpu cortex-a72 -accel kvm -accel tcg -m 4G -nographic -no-reboot \
             -kernel os/mkosi/lisa.vmlinuz -initrd os/mkosi/lisa.initrd \
             -append "root=PARTLABEL=root_1 rw console=ttyAMA0 systemd.unit=poweroff.target systemd.show_status=1 systemd.gpt_auto=no" \
             -drive file=os/mkosi/lisa.raw,format=raw,if=virtio \
