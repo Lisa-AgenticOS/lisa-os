@@ -149,6 +149,90 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
+/// The tools/tool-calling lane: ledger the exchange, resolve the engine,
+/// and pass the OpenAI-compat body through verbatim (stream forced off).
+async fn chat_completions_tools(state: AppState, mut raw: serde_json::Value) -> Response {
+    if raw
+        .get("stream")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": {
+                "message": "streaming with tools is not supported yet — send stream:false",
+                "type": "invalid_request_error",
+            }})),
+        )
+            .into_response();
+    }
+    let model_req = raw
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let model = model_req
+        .clone()
+        .unwrap_or_else(|| state.model_name.clone());
+    let prompt_all = raw
+        .get("messages")
+        .map(std::string::ToString::to_string)
+        .unwrap_or_default();
+    let started_at = std::time::Instant::now();
+    let entry_id = match ledger_gate(
+        &state.ledger,
+        &LedgerEvent {
+            kind: "inference.generate".into(),
+            app_id: "host".into(),
+            model: model.clone(),
+            input_hash: blake3::hash(prompt_all.as_bytes()).to_hex().to_string(),
+            preview: preview_of(&prompt_all),
+            status: "started".into(),
+            detail: "tools".into(),
+            ..Default::default()
+        },
+    ) {
+        Ok(id) => id,
+        Err(resp) => return *resp,
+    };
+    let engine = match state.engines.engine_for(model_req.as_deref()).await {
+        Ok(e) => e,
+        Err(e) => return engine_error_response(e),
+    };
+    raw["stream"] = serde_json::Value::Bool(false);
+    match engine.raw_chat(raw).await {
+        Ok(child) => {
+            let output_tokens = child
+                .pointer("/usage/completion_tokens")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            let _ = state.ledger.append(&LedgerEvent {
+                kind: "inference.complete".into(),
+                app_id: "host".into(),
+                model,
+                status: "ok".into(),
+                ref_id: Some(entry_id),
+                output_tokens,
+                duration_ms: started_at.elapsed().as_millis() as i64,
+                ..Default::default()
+            });
+            Json(child).into_response()
+        }
+        Err(e) => {
+            let _ = state.ledger.append(&LedgerEvent {
+                kind: "inference.complete".into(),
+                app_id: "host".into(),
+                model,
+                status: "error".into(),
+                detail: e.to_string(),
+                ref_id: Some(entry_id),
+                duration_ms: started_at.elapsed().as_millis() as i64,
+                ..Default::default()
+            });
+            engine_error_response(e)
+        }
+    }
+}
+
 async fn models(State(state): State<AppState>) -> Json<ModelList> {
     Json(ModelList {
         object: "list",
@@ -168,8 +252,28 @@ async fn models(State(state): State<AppState>) -> Json<ModelList> {
 
 async fn chat_completions(
     State(state): State<AppState>,
-    Json(req): Json<ChatCompletionRequest>,
+    Json(raw): Json<serde_json::Value>,
 ) -> Response {
+    // Tool-calling requests take the raw passthrough lane: tool turns
+    // carry null content and extra roles the typed ChatMessage cannot
+    // represent, and the child's tool_calls must reach the client
+    // verbatim (found on the M4 rig — forge got plain text back).
+    if raw.get("tools").is_some() {
+        return chat_completions_tools(state, raw).await;
+    }
+    let req: ChatCompletionRequest = match serde_json::from_value(raw) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": {
+                    "message": format!("invalid request: {e}"),
+                    "type": "invalid_request_error",
+                }})),
+            )
+                .into_response();
+        }
+    };
     let model = req
         .model
         .clone()

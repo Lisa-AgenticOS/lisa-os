@@ -169,6 +169,40 @@ impl Engine for LlamaEngine {
         })
     }
 
+    fn raw_chat(
+        &self,
+        mut body: serde_json::Value,
+    ) -> futures::future::BoxFuture<'static, Result<serde_json::Value, EngineError>> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            inner.ensure_running().await?;
+            // The passthrough lane is non-streaming; cap tokens like the
+            // typed lane so a runaway generation can't hold the slot.
+            body["stream"] = serde_json::Value::Bool(false);
+            if body.get("max_tokens").is_none() {
+                body["max_tokens"] = serde_json::json!(2048);
+            }
+            let response = inner
+                .client
+                .post(inner.endpoint())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| EngineError::Unavailable(format!("llama-server: {e}")))?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                return Err(EngineError::Unavailable(format!(
+                    "llama-server {status}: {text}"
+                )));
+            }
+            response
+                .json()
+                .await
+                .map_err(|e| EngineError::Unavailable(format!("llama-server response: {e}")))
+        })
+    }
+
     fn embed(
         &self,
         texts: Vec<String>,

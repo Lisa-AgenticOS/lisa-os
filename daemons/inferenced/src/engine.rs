@@ -33,6 +33,21 @@ pub trait Engine: Send + Sync {
     fn generate(&self, req: GenerateRequest) -> TokenStream;
     /// Embed texts into vectors (§5.1 `Session.Embed` / /v1/embeddings).
     fn embed(&self, texts: Vec<String>) -> BoxFuture<'static, Result<Vec<Vec<f32>>, EngineError>>;
+    /// One non-streaming OpenAI-compat chat round-trip with the request
+    /// body passed through verbatim. The typed token lane cannot carry
+    /// `tools`/`tool_calls` (tool turns have null content and extra
+    /// roles), so agent surfaces need the engine's own wire format.
+    /// Engines without a native OpenAI endpoint reject.
+    fn raw_chat(
+        &self,
+        _body: serde_json::Value,
+    ) -> BoxFuture<'static, Result<serde_json::Value, EngineError>> {
+        Box::pin(async {
+            Err(EngineError::Unavailable(
+                "tool calling is not supported by this engine".into(),
+            ))
+        })
+    }
     /// Release resources (kill children). Pool eviction calls this.
     fn shutdown(&self) -> BoxFuture<'static, ()> {
         Box::pin(async {})
