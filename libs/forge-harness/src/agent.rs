@@ -165,6 +165,9 @@ pub struct AgentConfig {
     /// never spin forever.
     pub max_turns: usize,
     pub verifier: Verifier,
+    /// Transcript size ceiling: beyond it, stale tool results are elided
+    /// oldest-first (small local models drown in old file dumps).
+    pub history_char_budget: usize,
 }
 
 impl Default for AgentConfig {
@@ -172,6 +175,7 @@ impl Default for AgentConfig {
         Self {
             max_turns: 32,
             verifier: Verifier::Dart,
+            history_char_budget: 48_000,
         }
     }
 }
@@ -207,6 +211,45 @@ with `LisaScaffold`, and use the Material widget vocabulary lisa_ui re-exports \
 and `ConsentChip` where they fit.
 - When the task is complete, reply with a short summary and NO tool call.";
 
+/// What the loop is doing right now — surfaced to observers so a CLI can
+/// narrate the run live (the difference between an agent and a spinner).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentEvent {
+    Turn { n: usize, max: usize },
+    Call { name: String, detail: String },
+    CallResult { ok: bool, chars: usize },
+    VerifierFindings { chars: usize },
+    VerifierClean,
+    DoneClaimed,
+}
+
+/// Replace stale bulky tool results with a stub once the transcript
+/// outgrows `budget_chars`, oldest-first, always keeping the most recent
+/// `keep_recent` tool results verbatim. Small local models drown in old
+/// file dumps long before they run out of turns.
+fn elide_stale_tool_results(history: &mut [Message], budget_chars: usize, keep_recent: usize) {
+    let total: usize = history.iter().map(|m| m.content.len()).sum();
+    if total <= budget_chars {
+        return;
+    }
+    let tool_idx: Vec<usize> = history
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == Role::Tool && !m.content.starts_with("[elided"))
+        .map(|(i, _)| i)
+        .collect();
+    let mut excess = total.saturating_sub(budget_chars);
+    for &i in tool_idx.iter().rev().skip(keep_recent).rev() {
+        if excess == 0 {
+            break;
+        }
+        let dropped = history[i].content.len();
+        history[i].content =
+            format!("[elided {dropped}-char tool result — re-run the tool if needed]");
+        excess = excess.saturating_sub(dropped);
+    }
+}
+
 /// The agent loop: converse with the backend one tool call at a time,
 /// executing each call against the jail, until done or out of turns.
 pub fn forge_agent(
@@ -214,6 +257,17 @@ pub fn forge_agent(
     project: &Path,
     backend: &mut dyn Backend,
     config: &AgentConfig,
+) -> Result<AgentReport, ForgeError> {
+    forge_agent_observed(task, project, backend, config, &mut |_| {})
+}
+
+/// `forge_agent` with a live observer for every loop event.
+pub fn forge_agent_observed(
+    task: &str,
+    project: &Path,
+    backend: &mut dyn Backend,
+    config: &AgentConfig,
+    observe: &mut dyn FnMut(AgentEvent),
 ) -> Result<AgentReport, ForgeError> {
     let jail = Jail::new(project)?;
     let specs = tool_specs();
@@ -223,12 +277,19 @@ pub fn forge_agent(
     ];
     let mut verifier_output = String::new();
     for turn in 1..=config.max_turns {
+        elide_stale_tool_results(&mut history, config.history_char_budget, 4);
+        observe(AgentEvent::Turn {
+            n: turn,
+            max: config.max_turns,
+        });
         match backend.next_action(&history, &specs)? {
             AgentAction::Done(summary) => {
+                observe(AgentEvent::DoneClaimed);
                 // "Done" only counts if the verifier agrees. A `None`
                 // verifier always agrees — the model's word is the check.
                 match config.verifier.check(project)? {
                     None => {
+                        observe(AgentEvent::VerifierClean);
                         return Ok(AgentReport {
                             turns: turn,
                             summary,
@@ -237,6 +298,9 @@ pub fn forge_agent(
                         });
                     }
                     Some(findings) => {
+                        observe(AgentEvent::VerifierFindings {
+                            chars: findings.len(),
+                        });
                         history.push(Message::assistant_text(&summary));
                         history.push(Message::user(format!(
                             "You said you were done, but the verifier still reports:\n\
@@ -247,7 +311,20 @@ pub fn forge_agent(
                 }
             }
             AgentAction::Call(call) => {
+                observe(AgentEvent::Call {
+                    name: call.name.clone(),
+                    detail: call
+                        .args
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                });
                 let outcome = execute_tool(&jail, &call);
+                observe(AgentEvent::CallResult {
+                    ok: !outcome.text.starts_with("error"),
+                    chars: outcome.text.len(),
+                });
                 history.push(Message::assistant_call(call.clone()));
                 history.push(Message::tool_result(call.id.clone(), outcome.text));
                 if outcome.mutated {
@@ -255,6 +332,7 @@ pub fn forge_agent(
                     // immediately, findings go back into the conversation.
                     match config.verifier.check(project)? {
                         None if !config.verifier.is_none() => {
+                            observe(AgentEvent::VerifierClean);
                             return Ok(AgentReport {
                                 turns: turn,
                                 summary: String::new(),
@@ -263,6 +341,9 @@ pub fn forge_agent(
                             });
                         }
                         Some(findings) => {
+                            observe(AgentEvent::VerifierFindings {
+                                chars: findings.len(),
+                            });
                             history.push(Message::user(format!(
                                 "Verifier findings after your edit:\n{findings}\nFix them."
                             )));
@@ -363,6 +444,35 @@ mod tests {
     }
 
     #[test]
+    fn elision_drops_oldest_tool_results_and_keeps_recent() {
+        let mut history = vec![Message::system("s"), Message::user("t")];
+        for i in 0..10 {
+            history.push(Message::assistant_call(ToolCall {
+                id: format!("c{i}"),
+                name: "read_file".into(),
+                args: json!({"path": "x"}),
+            }));
+            history.push(Message::tool_result(format!("c{i}"), "y".repeat(1_000)));
+        }
+        elide_stale_tool_results(&mut history, 6_000, 4);
+        let elided: Vec<bool> = history
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| m.content.starts_with("[elided"))
+            .collect();
+        assert!(elided[0], "oldest tool result must be elided");
+        assert!(
+            elided.iter().rev().take(4).all(|e| !e),
+            "the 4 most recent tool results must survive verbatim"
+        );
+        let total: usize = history.iter().map(|m| m.content.len()).sum();
+        assert!(
+            total < 10_000,
+            "transcript must actually shrink, got {total}"
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn dart_source_walk_ignores_symlinks() {
         // #33: a symlinked dir must not let the walk escape the project,
@@ -392,6 +502,7 @@ mod tests {
         let config = AgentConfig {
             max_turns: 2,
             verifier: Verifier::Dart,
+            ..Default::default()
         };
         let err = forge_agent("build", dir.path(), &mut backend, &config).unwrap_err();
         assert!(matches!(err, ForgeError::NoConvergence(2)));
@@ -407,6 +518,7 @@ mod tests {
         let config = AgentConfig {
             max_turns: 8,
             verifier: Verifier::None,
+            ..Default::default()
         };
         let report = forge_agent("build", dir.path(), &mut backend, &config).unwrap();
         assert_eq!(report.turns, 2);
@@ -429,6 +541,7 @@ mod tests {
                 program: "true".into(),
                 args: vec![],
             },
+            ..Default::default()
         };
         let report = forge_agent("build", dir.path(), &mut backend, &config).unwrap();
         assert_eq!(report.turns, 1, "clean verifier converges immediately");
@@ -449,6 +562,7 @@ mod tests {
                 program: "false".into(),
                 args: vec![],
             },
+            ..Default::default()
         };
         let err = forge_agent("build", dir.path(), &mut backend, &config);
         assert!(matches!(err, Err(ForgeError::NoConvergence(3))));
@@ -484,6 +598,7 @@ mod tests {
                 program: "false".into(),
                 args: vec![],
             },
+            ..Default::default()
         };
         let err = forge_agent("build", dir.path(), &mut backend, &config);
         assert!(matches!(err, Err(ForgeError::Backend(_))));
@@ -510,6 +625,7 @@ mod tests {
         let config = AgentConfig {
             max_turns: 4,
             verifier: Verifier::None,
+            ..Default::default()
         };
         forge_agent("inspect", dir.path(), &mut backend, &config).unwrap();
         let tool_msg = backend

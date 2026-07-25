@@ -327,7 +327,15 @@ fn run_command(jail: &Jail, args: &Value) -> ToolOutcome {
 fn run_tests(jail: &Jail) -> ToolOutcome {
     let root = jail.root();
     let (program, argv): (&str, &[&str]) = if root.join("pubspec.yaml").exists() {
-        ("dart", &["test"])
+        // Flutter projects need `flutter test` — `dart test` cannot load
+        // dart:ui. A pubspec declaring the flutter sdk is the marker.
+        let is_flutter = std::fs::read_to_string(root.join("pubspec.yaml"))
+            .is_ok_and(|p| p.contains("sdk: flutter"));
+        if is_flutter {
+            ("flutter", &["test"])
+        } else {
+            ("dart", &["test"])
+        }
     } else if root.join("Cargo.toml").exists() {
         ("cargo", &["test"])
     } else {

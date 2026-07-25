@@ -19,7 +19,8 @@ pub mod openai;
 pub mod tools;
 
 pub use agent::{
-    AgentAction, AgentConfig, AgentReport, Message, Role, ScriptedBackend, Verifier, forge_agent,
+    AgentAction, AgentConfig, AgentEvent, AgentReport, Message, Role, ScriptedBackend, Verifier,
+    forge_agent, forge_agent_observed,
 };
 pub use openai::OpenAiBackend;
 pub use tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
@@ -99,6 +100,7 @@ pub fn forge(
     let config = AgentConfig {
         max_turns: max_iterations.saturating_mul(8).max(8),
         verifier: Verifier::Dart,
+        ..Default::default()
     };
     match forge_agent(task, project, backend, &config) {
         Ok(report) => Ok(ForgeReport {

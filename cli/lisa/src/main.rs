@@ -225,6 +225,11 @@ enum Command {
         /// Max plan→edit→analyze iterations before giving up.
         #[arg(long, default_value_t = 6)]
         max_iters: usize,
+        /// Forge a lisa_ui Flutter app: scaffolds the project (lisa_ui
+        /// path dependency, LisaApp stub, smoke test) and verifies with
+        /// `flutter analyze`. Needs the flutter SDK.
+        #[arg(long)]
+        flutter: bool,
     },
     /// Embed text into a vector (reads stdin when piped).
     Embed {
@@ -476,7 +481,8 @@ fn run() -> anyhow::Result<()> {
             model,
             url,
             max_iters,
-        } => forge_cmd(&task.join(" "), &project, model, &url, max_iters),
+            flutter,
+        } => forge_cmd(&task.join(" "), &project, model, &url, max_iters, flutter),
         Command::Context { cmd } => context_cmd(cmd),
         Command::Memory { cmd, app } => memory_cmd(cmd, &app),
     }
@@ -796,32 +802,131 @@ fn individualize_copied_fsids(disk: &std::path::Path) {
     }
 }
 
+/// Locate the lisa_ui package for a forged Flutter app's path dependency:
+/// `LISA_UI_PATH` first (dev trees), then the installed location.
+fn lisa_ui_path() -> anyhow::Result<PathBuf> {
+    if let Some(p) = std::env::var_os("LISA_UI_PATH") {
+        let p = PathBuf::from(p);
+        if p.join("pubspec.yaml").exists() {
+            return Ok(p);
+        }
+        bail!("LISA_UI_PATH={} has no pubspec.yaml", p.display());
+    }
+    let installed = PathBuf::from("/usr/share/lisa/lisa_ui");
+    if installed.join("pubspec.yaml").exists() {
+        return Ok(installed);
+    }
+    bail!(
+        "lisa_ui not found — set LISA_UI_PATH to a lisa_ui checkout \
+         (packaged path /usr/share/lisa/lisa_ui is absent)"
+    );
+}
+
+/// Scaffold a runnable lisa_ui Flutter app: pubspec with the lisa_ui path
+/// dependency, a LisaApp main stub the analyzer accepts, and one smoke
+/// test — so the verifier judges real app code from turn one.
+fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
+    let ui = lisa_ui_path()?;
+    std::fs::create_dir_all(project.join("lib"))?;
+    std::fs::create_dir_all(project.join("test"))?;
+    std::fs::write(
+        project.join("pubspec.yaml"),
+        format!(
+            "name: lisa_app\ndescription: An app forged by LisaCode.\n\
+             publish_to: none\nversion: 0.1.0\n\
+             environment:\n  sdk: ^3.9.0\n\
+             dependencies:\n  flutter:\n    sdk: flutter\n  lisa_ui:\n    path: {}\n\
+             dev_dependencies:\n  flutter_test:\n    sdk: flutter\n",
+            ui.display()
+        ),
+    )?;
+    std::fs::write(
+        project.join("lib/main.dart"),
+        "import 'package:lisa_ui/lisa_ui.dart';\n\n\
+         void main() {\n  runApp(\n    const LisaApp(\n      title: 'Lisa App',\n      \
+         home: LisaScaffold(\n        title: 'Lisa App',\n        \
+         body: Center(child: Text('Forged by LisaCode')),\n      ),\n    ),\n  );\n}\n",
+    )?;
+    std::fs::write(
+        project.join("test/smoke_test.dart"),
+        "import 'package:flutter_test/flutter_test.dart';\nimport 'package:lisa_app/main.dart' as app;\n\n\
+         void main() {\n  testWidgets('app builds', (tester) async {\n    app.main();\n    \
+         await tester.pump();\n  });\n}\n",
+    )?;
+    let status = std::process::Command::new("flutter")
+        .args(["pub", "get"])
+        .current_dir(project)
+        .status()
+        .context("running flutter pub get (is the flutter SDK installed?)")?;
+    if !status.success() {
+        bail!("flutter pub get failed in {}", project.display());
+    }
+    Ok(())
+}
+
 fn forge_cmd(
     task: &str,
     project: &PathBuf,
     model: Option<String>,
     url: &str,
     max_iters: usize,
+    flutter: bool,
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(project)?;
-    let pubspec = project.join("pubspec.yaml");
-    if !pubspec.exists() {
-        std::fs::write(
-            &pubspec,
-            "name: lisa_app\ndescription: An app forged by LisaCode.\nenvironment:\n  sdk: ^3.0.0\n",
-        )?;
-        std::fs::create_dir_all(project.join("bin"))?;
-    }
+    let verifier = if flutter {
+        if !project.join("pubspec.yaml").exists() {
+            scaffold_flutter_app(project)?;
+            println!(
+                ">> scaffolded a lisa_ui Flutter app in {}",
+                project.display()
+            );
+        }
+        forge_harness::Verifier::Command {
+            program: "flutter".into(),
+            args: vec!["analyze".into(), "--no-pub".into()],
+        }
+    } else {
+        let pubspec = project.join("pubspec.yaml");
+        if !pubspec.exists() {
+            std::fs::write(
+                &pubspec,
+                "name: lisa_app\ndescription: An app forged by LisaCode.\nenvironment:\n  sdk: ^3.0.0\n",
+            )?;
+            std::fs::create_dir_all(project.join("bin"))?;
+        }
+        forge_harness::Verifier::Dart
+    };
     println!("LisaCode: building \"{task}\" in {}", project.display());
     let mut backend = forge_harness::OpenAiBackend {
         url: url.to_string(),
         model,
     };
-    match forge_harness::forge(task, project, &mut backend, max_iters) {
+    let config = forge_harness::AgentConfig {
+        max_turns: max_iters.saturating_mul(8).max(8),
+        verifier,
+        ..Default::default()
+    };
+    // Narrate the loop live — an agent you can watch, not a spinner.
+    let mut observe = |ev: forge_harness::AgentEvent| {
+        use forge_harness::AgentEvent as E;
+        match ev {
+            E::Turn { n, max } => eprintln!("[turn {n}/{max}]"),
+            E::Call { name, detail } => eprintln!("  · {name} {detail}"),
+            E::CallResult { ok, chars } => {
+                if !ok {
+                    eprintln!("    ! tool error ({chars} chars)");
+                }
+            }
+            E::VerifierFindings { chars } => eprintln!("  ! verifier findings ({chars} chars)"),
+            E::VerifierClean => eprintln!("  ✓ verifier clean"),
+            E::DoneClaimed => eprintln!("  ∴ model claims done — checking"),
+        }
+    };
+    match forge_harness::forge_agent_observed(task, project, &mut backend, &config, &mut observe) {
         Ok(report) => {
             println!(
-                "converged in {} iteration(s) — code passes `dart analyze`. Source in {}",
-                report.iterations,
+                "converged in {} turn(s) — verifier clean. Source in {}",
+                report.turns,
                 project.display()
             );
             Ok(())

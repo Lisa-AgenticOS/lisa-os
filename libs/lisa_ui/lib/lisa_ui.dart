@@ -150,6 +150,9 @@ export 'package:flutter/material.dart'
         RichText,
         Row,
         SafeArea,
+        // The entry point: without it no app can launch on the single
+        // lisa_ui import (LisaCode writes `runApp(const LisaApp(...))`).
+        runApp,
         Scaffold,
         ScaffoldMessenger,
         ScrollController,
