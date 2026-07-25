@@ -6,11 +6,25 @@
 # so the same binary runs on any release target; Gemma-1B runs fine on
 # CPU). A Vulkan/AMD variant for the iMac's Radeon is a follow-up
 # (-DGGML_VULKAN=ON + vulkan deps).
+#
+# aarch64 (ADR-0021, issue #28): same source build, same flags — no
+# per-arch cmake delta is needed. Read from ggml's own cmake at this very
+# tag (ggml/src/ggml-cpu/CMakeLists.txt, the ARM branch): with
+# GGML_NATIVE=OFF and neither GGML_CPU_ARM_ARCH nor GGML_CPU_ALL_VARIANTS
+# set, ggml appends *no* -march/-mcpu at all and takes the compiler's
+# default target — armv8-a baseline on Arch Linux ARM. That is the same
+# portability trade the x86_64 build makes: it runs on every armv8 target
+# (Apple Silicon guests, Graviton, Cortex-A72 — the CPU the CI boot check
+# emulates), at the cost of dotprod/i8mm-accelerated quantized matmul.
+# Faster ARM builds are a follow-up and must not silently narrow the
+# baseline: either -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod (drops armv8.0
+# boards) or runtime dispatch (-DGGML_CPU_ALL_VARIANTS=ON with
+# GGML_BACKEND_DL=ON + shared libs, which changes what package() ships).
 pkgname=llama.cpp
 pkgver=b10093
 pkgrel=1
 pkgdesc="LLM inference in C/C++ — llama-server, the Lisa OS local engine"
-arch=(x86_64)
+arch=(x86_64 aarch64)
 url="https://github.com/ggml-org/llama.cpp"
 license=(MIT)
 depends=(gcc-libs glibc)

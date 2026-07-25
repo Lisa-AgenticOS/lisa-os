@@ -20,6 +20,7 @@ jobs:
       ime: ${{ steps.filter.outputs.ime }}
       gnome_panel: ${{ steps.filter.outputs.gnome_panel }}
       llama: ${{ steps.filter.outputs.llama }}
+      zen: ${{ steps.filter.outputs.zen }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -56,6 +57,9 @@ jobs:
               - '.github/workflows/ci.yml'
             llama:
               - 'os/packages/llama.cpp/**'
+              - '.github/workflows/ci.yml'
+            zen:
+              - 'os/packages/zen-browser/**'
               - '.github/workflows/ci.yml'
 
   lint:
@@ -143,6 +147,36 @@ jobs:
               && echo "OK: Intelligence panel .desktop present" \
               || { echo "FAIL: panel .desktop missing from package"; exit 1; }'
 
+  # aarch64 twin of gnome-panel-build (ADR-0021, issue #28). The ARM image
+  # ships this fork too, so the ARM compile needs a per-PR gate — the
+  # aarch64 image lane runs weekly, far too late to catch a PKGBUILD that
+  # only builds on x86. Native arm64 runner + the ALARM container, the same
+  # pair the image lane uses; ALARM carries stock gnome-control-center
+  # 50.3-1, so every dependency of the pinned version resolves there.
+  gnome-panel-build-arm64:
+    runs-on: ubuntu-24.04-arm
+    needs: changes
+    if: needs.changes.outputs.gnome_panel == 'true'
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: makepkg gnome-control-center-lisa in Arch Linux ARM
+        run: |
+          sudo podman run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+            # pacman >= 7 sandbox cannot apply inside the container.
+            sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+            pacman -Syu --noconfirm --needed base-devel git devtools >/dev/null
+            useradd -m builder
+            printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
+            cp -r /src/os/packages/gnome-control-center-lisa /home/builder/pkg
+            chown -R builder:builder /home/builder/pkg
+            su builder -c "cd ~/pkg && makepkg -s --nocheck --skippgpcheck --noconfirm"
+            pkg=$(ls /home/builder/pkg/gnome-control-center-[0-9]*.pkg.tar.* | grep -v -- -debug- | head -1)
+            echo "built: $pkg"
+            pacman -Qlp "$pkg" | grep -q gnome-lisa-panel.desktop \
+              && echo "OK: Intelligence panel .desktop present (aarch64)" \
+              || { echo "FAIL: panel .desktop missing from package"; exit 1; }'
+
   # PLAN §5.1: build the local inference engine (llama.cpp / llama-server)
   # from source in x86 Arch — it's AUR-only, so this is the build gate.
   # Path-filtered (heavy C++ compile). Asserts the server binary lands.
@@ -168,6 +202,69 @@ jobs:
             pacman -Qlp "$pkg" | grep -q usr/bin/llama-server \
               && echo "OK: llama-server present" \
               || { echo "FAIL: llama-server missing from package"; exit 1; }'
+
+  # aarch64 twin of llama-build (ADR-0021, issue #28). The PKGBUILD claims
+  # the same cmake invocation works on ARM (GGML_NATIVE=OFF adds no arch
+  # flag there); this is the job that has to prove it, per PR, rather than
+  # discovering it in the weekly image lane. Also asserts the shipped
+  # binary is genuinely aarch64.
+  llama-build-arm64:
+    runs-on: ubuntu-24.04-arm
+    needs: changes
+    if: needs.changes.outputs.llama == 'true'
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - name: makepkg llama.cpp in Arch Linux ARM
+        run: |
+          sudo podman run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+            sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+            pacman -Syu --noconfirm --needed base-devel git cmake file >/dev/null
+            useradd -m builder
+            printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
+            cp -r /src/os/packages/llama.cpp /home/builder/pkg
+            chown -R builder:builder /home/builder/pkg
+            su builder -c "cd ~/pkg && makepkg -s --nocheck --skippgpcheck --noconfirm"
+            pkg=$(ls /home/builder/pkg/llama.cpp-*.pkg.tar.* | grep -v -- -debug- | head -1)
+            echo "built: $pkg"
+            pacman -Qlp "$pkg" | grep -q usr/bin/llama-server \
+              && echo "OK: llama-server present" \
+              || { echo "FAIL: llama-server missing from package"; exit 1; }
+            bsdtar -xOf "$pkg" usr/bin/llama-server | file - | grep -q "ARM aarch64" \
+              && echo "OK: llama-server is an aarch64 binary" \
+              || { echo "FAIL: llama-server is not aarch64"; exit 1; }'
+
+  # zen-browser on aarch64 (ADR-0021, issue #28). Cheap but load-bearing:
+  # this package is a repackage of an upstream release asset, so what can
+  # rot is the PINNED DIGEST, not a compiler. makepkg fails on a sha256
+  # mismatch, which is exactly the check we want — an upstream that pulls
+  # or re-cuts zen.linux-aarch64.tar.xz breaks the build instead of
+  # silently shipping something unverified (CLAUDE.md rule 8). -d: binary
+  # repackage, runtime deps are resolved at image-install time.
+  zen-build-arm64:
+    runs-on: ubuntu-24.04-arm
+    needs: changes
+    if: needs.changes.outputs.zen == 'true'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: makepkg zen-browser in Arch Linux ARM
+        run: |
+          sudo podman run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+            sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+            pacman -Syu --noconfirm --needed base-devel file >/dev/null
+            useradd -m builder
+            cp -r /src/os/packages/zen-browser /home/builder/pkg
+            chown -R builder:builder /home/builder/pkg
+            su builder -c "cd ~/pkg && makepkg -d --nocheck --noconfirm"
+            pkg=$(ls /home/builder/pkg/zen-browser-*.pkg.tar.* | head -1)
+            echo "built: $pkg"
+            pacman -Qlp "$pkg" | grep -q opt/zen/zen \
+              && echo "OK: zen binary present" \
+              || { echo "FAIL: zen binary missing from package"; exit 1; }
+            bsdtar -xOf "$pkg" opt/zen/zen | file - | grep -q "ARM aarch64" \
+              && echo "OK: zen is an aarch64 binary" \
+              || { echo "FAIL: zen is not aarch64"; exit 1; }'
 
   # PLAN §5.1 acceptance forerunner: unmodified OpenAI Python client
   # against the OpenAI-compat endpoint.

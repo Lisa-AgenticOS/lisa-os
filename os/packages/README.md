@@ -26,3 +26,13 @@ yet.
 Build a local repo with `os/repo-tools/build-packages.sh`. The hosted,
 signed repo lands in M1; `lisa-modeld.service` lands with the M1 daemon
 loop.
+
+**Architectures.** Every PKGBUILD here is `arch=(x86_64 aarch64)` (bar
+`lisa-shell`, `arch=(any)`) — there is no Lisa package that ships on
+x86_64 only (ADR-0021, issue #28). x86_64 is built and published by
+`release.yml`; aarch64 is built and folded into the ARM image by
+`aarch64-image.yml`, on an Arch Linux ARM base. Per-arch notes live in
+each PKGBUILD's header: llama.cpp needs no ARM cmake flags but takes an
+armv8-a baseline, and `zen-browser` pins a separate verified digest per
+architecture. Anything that genuinely cannot ship on an architecture is
+excluded there explicitly — never faked (CLAUDE.md rule 8).

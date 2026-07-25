@@ -67,6 +67,15 @@ claim below is enforced by CI on `main`, not aspirational.
 - **Apple Silicon:** BOTH halves proven — the full Track L e2e passes
   natively on aarch64 (podman/ALARM), and the ARM64 Track I image now
   **builds and boots in CI** (aarch64-image.yml, ALARM base, ADR-0021).
+  That image is no longer bare: `aarch64-image.yml` builds the **same**
+  package set as the x86_64 release lane natively on ARM — the `lisa-*`
+  split packages, llama.cpp, the forked gnome-control-center, and
+  zen-browser (upstream does ship an arm64 tarball; the earlier
+  "x86_64-only" note in ADR-0021 was an unchecked assumption) — folds
+  them into the image and asserts the binaries are there and aarch64
+  before the boot check (issue #28). The only remaining per-arch delta is
+  the kernel (`linux-aarch64` vs `linux`). Unproven until the workflow
+  runs: that the three source packages compile on ARM.
 
 **Recent (2026-07-24, after v25):**
 - **Intelligence panel** in the gnome-control-center fork works (fixed the

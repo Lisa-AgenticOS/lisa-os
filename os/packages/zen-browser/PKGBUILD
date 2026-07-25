@@ -1,20 +1,33 @@
 # Zen browser — a calm, Firefox-based browser bundled in the image so the
 # desktop has a real browser out of the box (user request, 2026-07-23).
-# Repackages the upstream x86_64 release tarball (no compilation). The
-# sha256 is the pinned GitHub release-asset digest — a re-uploaded/tampered
-# asset fails the build (HTTPS + a version tag alone is not integrity).
+# Repackages the upstream release tarball (no compilation). Each sha256 is
+# the pinned GitHub release-asset digest — a re-uploaded/tampered asset
+# fails the build (HTTPS + a version tag alone is not integrity).
+#
+# aarch64 (ADR-0021, issue #28): upstream DOES ship a Linux arm64 build.
+# The 1.21.8b release carries `zen.linux-aarch64.tar.xz` alongside the
+# x86_64 one; the digest below was taken by downloading that exact asset
+# (2026-07-25), not guessed — the same download also confirmed it unpacks
+# to the same top-level `zen/` dir, that `zen/zen` is an aarch64 ELF, and
+# that the icon path the .desktop below points at exists in it. The
+# x86_64 digest re-verified byte-identical to the one already pinned here,
+# which is what makes the arm64 one trustworthy. ADR-0021's original
+# "no aarch64 artifact — exclude it" line was an assumption, now corrected
+# there. Both runtime deps (gtk3, nss, …) exist on Arch Linux ARM.
 pkgname=zen-browser
 pkgver=1.21.8b
 pkgrel=1
 pkgdesc="Zen — a calm, Firefox-based browser"
-arch=(x86_64)
+arch=(x86_64 aarch64)
 url="https://zen-browser.app"
 license=(MPL-2.0)
 depends=(gtk3 libxt mailcap nss)
 optdepends=('ffmpeg: video and audio playback')
 options=(!strip !debug)
-source=("zen-${pkgver}.tar.xz::https://github.com/zen-browser/desktop/releases/download/${pkgver}/zen.linux-x86_64.tar.xz")
-sha256sums=('05a36657e4c9dbe700e54a2e3941f7af4656abbe330690aa74d8cf793af396f4')
+source_x86_64=("zen-${pkgver}-x86_64.tar.xz::https://github.com/zen-browser/desktop/releases/download/${pkgver}/zen.linux-x86_64.tar.xz")
+sha256sums_x86_64=('05a36657e4c9dbe700e54a2e3941f7af4656abbe330690aa74d8cf793af396f4')
+source_aarch64=("zen-${pkgver}-aarch64.tar.xz::https://github.com/zen-browser/desktop/releases/download/${pkgver}/zen.linux-aarch64.tar.xz")
+sha256sums_aarch64=('0586ff279d7a1f93207fdb195c5586ef0d6813bd4f4318badcd0984adc39db39')
 
 package() {
   # The tarball unpacks to a top-level `zen/` dir.

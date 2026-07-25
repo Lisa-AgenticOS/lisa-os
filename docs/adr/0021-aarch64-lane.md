@@ -89,17 +89,35 @@ marked otherwise:
 
 ### Package deltas (aarch64 vs x86_64)
 
+Amended 2026-07-25 (issue #28) — the three "backlog/excluded" rows are
+resolved and **there is now no package delta at all** beyond the kernel:
+
 | Package | x86_64 | aarch64 | Note |
 |---|---|---|---|
 | kernel | `linux` | `linux-aarch64` | ALARM has no `linux` |
 | everything else in `mkosi.conf` | ✓ | ✓ | verified present on ALARM |
-| `zen-browser` (release lane) | ✓ | **excluded** | our PKGBUILD repackages the upstream x86_64 binary; `arch=(x86_64)`. No aarch64 upstream artifact verified — excluded until one is, not guessed (CLAUDE.md rule 8) |
-| `llama.cpp` (release lane) | ✓ | backlog | source build, `arch=(x86_64)` today; should compile on aarch64 (portable CPU build) — flip to `arch=(x86_64 aarch64)` when the release lane extends |
-| `gnome-control-center-lisa` (release lane) | ✓ | backlog | source build, `arch=(x86_64)`; same treatment |
+| `lisa-*` split packages | ✓ | ✓ | already `arch=(x86_64 aarch64)`; `lisa-shell` is `arch=(any)` (pure GJS). Proven by the Track L container e2e |
+| `llama.cpp` | ✓ | ✓ | `arch+=(aarch64)`, **no cmake delta**. With `GGML_NATIVE=OFF` and neither `GGML_CPU_ARM_ARCH` nor `GGML_CPU_ALL_VARIANTS` set, ggml adds no `-march`/`-mcpu` on ARM at all (read from `ggml/src/ggml-cpu/CMakeLists.txt` at the pinned tag `b10093`) — armv8-a baseline, the same portability trade the x86_64 build makes. Cost: no dotprod/i8mm-accelerated quantized matmul. See the follow-up below |
+| `gnome-control-center-lisa` | ✓ | ✓ | `arch+=(aarch64)`, no other delta. ALARM builds stock `gnome-control-center` **50.3-1** for aarch64 — the exact version this fork pins — so upstream compiles there and `pkgrel=2` outranks it exactly as on Arch proper. Every `depends`/`makedepends` entry (incl. `devtools` for `arch-meson`, `blueprint-compiler`, `glib2-devel`) resolves on ALARM, checked one by one against `mirror.archlinuxarm.org`'s core/extra DBs |
+| `zen-browser` | ✓ | ✓ | **This ADR's original "no aarch64 artifact" line was wrong** — an assumption, not a check. Upstream's 1.21.8b release publishes `zen.linux-aarch64.tar.xz` beside the x86_64 one. Downloaded and hashed on 2026-07-25: same top-level `zen/` layout, `zen/zen` is an aarch64 ELF, the icon the `.desktop` points at is present; the x86_64 asset re-hashed byte-identical to the digest already pinned, which is what makes the arm64 digest trustworthy. Per-arch `source_*`/`sha256sums_*` now; a pulled or tampered asset fails the build rather than shipping unverified (rule 8 satisfied by verifying, not by excluding) |
 
-The release lane (`release.yml`) stays x86_64-only for now; this ADR
-covers the **nightly-equivalent base image**. Extending release artifacts
-to aarch64 is follow-up work gated on the deltas above.
+`release.yml` still **publishes** x86_64 only. The arm64 packages are
+built and proven in `aarch64-image.yml` instead, which now folds the same
+package set into the arm64 image (`PackageDirectories=` +
+`Packages=` drop-in, generated in CI, mirroring release.yml's
+`50-release.conf`) and asserts the binaries are present and aarch64 in
+the built image before the boot check. Giving `release.yml` an
+architecture matrix would additionally mean arm64 sysupdate transfers,
+per-arch release assets and per-arch installed-version detection — none
+of which is needed to answer "does the Lisa stack build and install on
+ARM", and all of which is separate work.
+
+Follow-up, not blocking: a faster ARM llama.cpp. Either
+`-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod` (narrows the baseline — drops
+armv8.0 parts such as the Cortex-A72 the CI boot check emulates) or
+runtime dispatch (`GGML_CPU_ALL_VARIANTS=ON` + `GGML_BACKEND_DL=ON` and
+shared libs, which changes what the package ships). Neither should be
+taken silently.
 
 ## What the container e2e already proved
 
@@ -144,6 +162,24 @@ Verified live (ALARM container on the arm64 dev host, 2026-07-25):
   virtiofs-mounted directory (the xattr-preserving final copy fails);
   CI's bind mount is ext4.
 
+Verified for the package lane (issue #28, from the macOS dev host,
+2026-07-25) — evidence, not inference:
+
+- `zen.linux-aarch64.tar.xz` exists for the pinned 1.21.8b tag;
+  downloaded, sha256 recorded in the PKGBUILD, `zen/zen` confirmed
+  `ELF 64-bit … ARM aarch64`, `zen/` top-level layout and the
+  `default128.png` icon path both confirmed. The x86_64 asset re-hashed
+  to the digest already in the PKGBUILD — the method is sound.
+- Every `depends`/`makedepends` of the forked gnome-control-center, plus
+  the whole package-build toolchain the workflow installs
+  (`base-devel rust git glib2 cmake devtools`, and `sudo`), exists in
+  ALARM's aarch64 core/extra DBs; ALARM carries stock
+  `gnome-control-center 50.3-1`, matching this fork's pin.
+- llama.cpp needs no ARM cmake flags: read from the pinned tag's own
+  `ggml/src/ggml-cpu/CMakeLists.txt` (ARM branch), `GGML_NATIVE=OFF`
+  with neither `GGML_CPU_ARM_ARCH` nor `GGML_CPU_ALL_VARIANTS` appends
+  no arch flag and there is no fatal path.
+
 Needs the first CI run to confirm:
 
 - The `ubuntu-24.04-arm` runner label (documented as GA for public
@@ -154,6 +190,19 @@ Needs the first CI run to confirm:
   build pinpointed the failure; no rebuild was run after it).
 - The end-to-end boot check (never run locally — no KVM in the podman
   machine VM, and the local build stopped one step short of a UKI).
+- **That the three source packages actually compile on aarch64.** Their
+  dependencies and build flags are verified; the compiles themselves are
+  not — no aarch64 Arch container build was run for this change. The
+  workflow is the proof: it fails if any package fails, and the
+  `Verify the Lisa stack is inside the arm64 image` step fails if a
+  binary is missing or not aarch64.
+- **Runner budget.** The job now compiles the Rust workspace, llama.cpp
+  and gnome-control-center before the image build; timeout raised
+  90 → 180 min, and it inherits the x86_64 release lane's ~14 GB disk
+  squeeze (same `rm -rf */src */pkg` reclaim). Either could bite on the
+  first run.
+- Loop-mounting the btrfs root slot on the `ubuntu-24.04-arm` runner
+  (the verify step) — expected to work, not exercised.
 
 ## Consequences
 

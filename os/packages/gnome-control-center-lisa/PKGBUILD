@@ -7,6 +7,15 @@
 #
 # Built in CI / a container (arch), never on the macOS dev host. Our
 # package repo is layered above [extra] so this build wins over stock.
+#
+# aarch64 (ADR-0021, issue #28): no per-arch delta. Arch Linux ARM builds
+# stock gnome-control-center 50.3-1 for aarch64 itself — the exact version
+# this PKGBUILD pins — so upstream is known to compile there, every
+# depends/makedepends entry below resolves on ALARM (checked against
+# mirror.archlinuxarm.org's core/extra DBs, 2026-07-25), and the Lisa
+# delta (a C panel + two anchored sed edits + a blueprint removal) is
+# architecture-independent. pkgrel=2 still outranks ALARM's 50.3-1, so the
+# local repo wins there for the same reason it wins on Arch proper.
 
 pkgbase=gnome-control-center
 pkgname=(
@@ -21,7 +30,7 @@ pkgrel=2
 pkgdesc="GNOME's main interface to configure various aspects of the desktop (Lisa build: + Intelligence panel)"
 url="https://apps.gnome.org/Settings/"
 license=(GPL-2.0-or-later)
-arch=(x86_64)
+arch=(x86_64 aarch64)
 depends=(
   accountsservice bolt cairo colord-gtk4 cups-pk-helper dconf fontconfig
   gcr-4 gdk-pixbuf2 glib2 glibc gnome-bluetooth-3.0 gnome-color-manager
