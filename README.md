@@ -75,6 +75,8 @@ $ curl 127.0.0.1:7777/v1/chat/completions ...   # any OpenAI client works
 ## Building
 
 Requires Rust (stable) and [`just`](https://github.com/casey/just).
+Developing on a Mac? [docs/DEV-MACOS.md](docs/DEV-MACOS.md) is the
+clone-to-green quickstart.
 
 ```console
 $ just build   # cargo build --workspace
