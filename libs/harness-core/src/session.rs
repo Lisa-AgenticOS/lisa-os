@@ -1,30 +1,38 @@
 //! Sessions — persistent multi-turn conversations (the flakerimi/harness
-//! "Sessions" pillar). One SQLite file at a caller-supplied path holds any
-//! number of sessions; messages are appended per session and read back as
-//! a bounded, chronological window for the next turn. Plain sync API —
-//! the caller owns threading; there is no daemon.
+//! "Sessions" pillar), stored on Lisa's context fabric instead of a
+//! private database: each session is one JSON value in the caller's
+//! `dev.lisaos.Context1` app-memory namespace (key `session/<id>`), plus
+//! one index value (key `sessions`) listing them. That is the same
+//! substrate the Assistant already persists its single conversation
+//! through (`shell/assistant/lib/model.js`, key `conversation`), and the
+//! turn wire shape matches its `{role, text, model}` payload — so the
+//! Assistant can adopt multi-conversation support by pointing at these
+//! keys, with no new daemon surface.
+//!
+//! [`crate::KvStore`] is the seam: a `Context1` D-Bus bridge on Lisa,
+//! [`crate::MemKv`] in tests. One writer per app namespace is assumed
+//! (the app owns its namespace); the index is read-modify-write.
+//!
+//! Stored values are never trusted to parse: a corrupt index degrades to
+//! empty / junk entries dropped (the Assistant's own convention), while
+//! a corrupt session record surfaces as [`Error::Corrupt`] — losing a
+//! conversation silently is worse than an error.
 
+use crate::store::KvStore;
 use crate::{Error, now_millis};
-use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS sessions (
-        id         TEXT PRIMARY KEY,
-        title      TEXT NOT NULL,
-        created_ts INTEGER NOT NULL,
-        updated_ts INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL REFERENCES sessions(id),
-        ts         INTEGER NOT NULL,
-        role       TEXT NOT NULL,
-        content    TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, id);";
+/// The index key: a JSON array of [`SessionInfo`].
+pub const INDEX_KEY: &str = "sessions";
+
+/// Per-session key prefix; the full key is `session/<id>`.
+pub const SESSION_KEY_PREFIX: &str = "session/";
+
+/// The app-memory key holding session `id`.
+pub fn session_key(id: &str) -> String {
+    format!("{SESSION_KEY_PREFIX}{id}")
+}
 
 /// The role of a chat message — the OpenAI chat-completions roles a
 /// session stores.
@@ -55,7 +63,7 @@ impl Role {
     }
 }
 
-/// One stored message — the chat-completions shape (role + content).
+/// One message in a [`crate::Turn`]'s history window (role + content).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
@@ -71,7 +79,22 @@ impl Message {
     }
 }
 
-/// A session's listing entry (for pickers, `lisa sessions`, ...).
+/// One logged turn. The wire name for `content` is `text`, and `model`
+/// serializes as `null` when absent — byte-compatible with the turn
+/// shape the Assistant already stores (`serializeConversation` in
+/// `shell/assistant/lib/model.js`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTurn {
+    pub role: Role,
+    #[serde(rename = "text")]
+    pub content: String,
+    /// The model that produced an assistant turn; `None` for user turns.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// A session's listing entry — what the index key stores, for pickers
+/// and `lisa sessions`-style listings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -81,124 +104,154 @@ pub struct SessionInfo {
     pub updated_ts: i64,
 }
 
-/// A handle on one conversation in the store at `path`.
+/// One conversation, loaded whole (a session is one KV value).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
-    conn: Mutex<Connection>,
-    id: String,
-    title: String,
+    pub id: String,
+    pub title: String,
+    /// Unix milliseconds.
+    pub created_ts: i64,
+    pub updated_ts: i64,
+    #[serde(default)]
+    pub turns: Vec<SessionTurn>,
 }
 
 impl Session {
-    /// Open (creating if needed) the store at `path` and start a new
-    /// session titled `title`.
-    pub fn create(path: impl AsRef<Path>, title: &str) -> Result<Self, Error> {
-        let conn = open_store(path.as_ref())?;
-        let id = new_session_id();
-        let now = now_millis();
-        conn.execute(
-            "INSERT INTO sessions (id, title, created_ts, updated_ts) VALUES (?1, ?2, ?3, ?3)",
-            params![id, title, now],
-        )?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-            id,
-            title: title.to_string(),
-        })
-    }
-
-    /// Re-open the store at `path` and continue an existing session.
-    pub fn resume(path: impl AsRef<Path>, id: &str) -> Result<Self, Error> {
-        let conn = open_store(path.as_ref())?;
-        let title: Option<String> = conn
-            .query_row("SELECT title FROM sessions WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let Some(title) = title else {
-            return Err(Error::SessionNotFound(id.to_string()));
-        };
-        Ok(Self {
-            conn: Mutex::new(conn),
-            id: id.to_string(),
-            title,
-        })
-    }
-
-    /// Every session in the store, most recently active first.
-    pub fn list(path: impl AsRef<Path>) -> Result<Vec<SessionInfo>, Error> {
-        let conn = open_store(path.as_ref())?;
-        let mut stmt = conn.prepare(
-            "SELECT id, title, created_ts, updated_ts FROM sessions ORDER BY updated_ts DESC",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(SessionInfo {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                created_ts: r.get(2)?,
-                updated_ts: r.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// Append a message; returns its store id. Also bumps the session's
-    /// `updated_ts` (this is a conversation log, not the append-only
-    /// Ledger — sessions are mutable by design).
-    pub fn append(&self, role: Role, content: &str) -> Result<i64, Error> {
-        let now = now_millis();
-        let mut conn = self.conn.lock().expect("session lock");
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO messages (session_id, ts, role, content) VALUES (?1, ?2, ?3, ?4)",
-            params![self.id, now, role.as_str(), content],
-        )?;
-        let msg_id = tx.last_insert_rowid();
-        tx.execute(
-            "UPDATE sessions SET updated_ts = ?2 WHERE id = ?1",
-            params![self.id, now],
-        )?;
-        tx.commit()?;
-        Ok(msg_id)
-    }
-
-    /// The most recent `limit` messages, oldest first — the window a
-    /// caller feeds into [`crate::Turn::history`].
-    pub fn history(&self, limit: usize) -> Result<Vec<Message>, Error> {
-        let conn = self.conn.lock().expect("session lock");
-        let mut stmt = conn.prepare(
-            "SELECT role, content FROM messages
-             WHERE session_id = ?1 ORDER BY id DESC LIMIT ?2",
-        )?;
-        let raw = stmt.query_map(params![self.id, limit as i64], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        let mut msgs = Vec::new();
-        for row in raw {
-            let (role, content) = row?;
-            let role = Role::parse(&role).ok_or(Error::UnknownRole(role))?;
-            msgs.push(Message { role, content });
+    pub fn info(&self) -> SessionInfo {
+        SessionInfo {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            created_ts: self.created_ts,
+            updated_ts: self.updated_ts,
         }
-        msgs.reverse();
-        Ok(msgs)
+    }
+
+    /// The most recent `limit` turns as [`Message`]s, oldest first — the
+    /// window a caller feeds into [`crate::Turn::history`].
+    pub fn history(&self, limit: usize) -> Vec<Message> {
+        let skip = self.turns.len().saturating_sub(limit);
+        self.turns[skip..]
+            .iter()
+            .map(|t| Message::new(t.role, t.content.clone()))
+            .collect()
     }
 }
 
-fn open_store(path: &Path) -> Result<Connection, Error> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+/// Session CRUD over one app-memory namespace.
+pub struct SessionStore<S: KvStore> {
+    kv: S,
+}
+
+impl<S: KvStore> SessionStore<S> {
+    pub fn new(kv: S) -> Self {
+        SessionStore { kv }
     }
-    let conn = Connection::open(path)?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.execute_batch(SCHEMA)?;
-    Ok(conn)
+
+    /// The underlying store (e.g. to share it with other pillars).
+    pub fn kv(&self) -> &S {
+        &self.kv
+    }
+
+    /// Start a new session titled `title`: writes its record and adds it
+    /// to the index.
+    pub fn create(&self, title: &str) -> Result<Session, Error> {
+        let now = now_millis();
+        let session = Session {
+            id: new_session_id(),
+            title: title.to_string(),
+            created_ts: now,
+            updated_ts: now,
+            turns: Vec::new(),
+        };
+        self.write(&session)?;
+        let mut index = self.list()?;
+        index.insert(0, session.info());
+        self.write_index(&index)?;
+        Ok(session)
+    }
+
+    /// Every session in the namespace, most recently active first. A
+    /// missing, tombstoned, or corrupt index reads as empty; junk
+    /// entries inside a well-formed array are dropped, not trusted.
+    pub fn list(&self) -> Result<Vec<SessionInfo>, Error> {
+        let raw = match self.kv.get(INDEX_KEY)? {
+            Some(raw) if !raw.is_empty() => raw,
+            _ => return Ok(Vec::new()),
+        };
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+        let mut index: Vec<SessionInfo> = entries
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        // Stable sort: ties keep insertion order (newest inserted first).
+        index.sort_by_key(|e| std::cmp::Reverse(e.updated_ts));
+        Ok(index)
+    }
+
+    /// Load session `id` whole. Missing and tombstoned keys are
+    /// [`Error::SessionNotFound`]; an unparseable record is
+    /// [`Error::Corrupt`].
+    pub fn load(&self, id: &str) -> Result<Session, Error> {
+        let raw = match self.kv.get(&session_key(id))? {
+            Some(raw) if !raw.is_empty() => raw,
+            _ => return Err(Error::SessionNotFound(id.to_string())),
+        };
+        serde_json::from_str(&raw).map_err(|e| Error::Corrupt(format!("session {id}: {e}")))
+    }
+
+    /// Append one turn to session `id`, bumping its `updated_ts` in both
+    /// the record and the index (re-adding it to the index if it was
+    /// somehow lost). Returns the updated session.
+    pub fn append(
+        &self,
+        id: &str,
+        role: Role,
+        content: &str,
+        model: Option<&str>,
+    ) -> Result<Session, Error> {
+        let mut session = self.load(id)?;
+        session.turns.push(SessionTurn {
+            role,
+            content: content.to_string(),
+            model: model.map(str::to_string),
+        });
+        session.updated_ts = now_millis();
+        self.write(&session)?;
+        // Move the entry to the front (re-adding it if it was somehow
+        // lost): array position breaks same-millisecond ties, so the
+        // listing's activity order is exact even within one ms.
+        let mut index = self.list()?;
+        index.retain(|e| e.id != session.id);
+        index.insert(0, session.info());
+        self.write_index(&index)?;
+        Ok(session)
+    }
+
+    /// Keep the `keep` most recently active sessions and remove the
+    /// rest (tombstoned on substrates without per-key delete). Returns
+    /// the removed ids, oldest last.
+    pub fn prune(&self, keep: usize) -> Result<Vec<String>, Error> {
+        let index = self.list()?;
+        if index.len() <= keep {
+            return Ok(Vec::new());
+        }
+        let (kept, dropped) = index.split_at(keep);
+        for info in dropped {
+            self.kv.remove(&session_key(&info.id))?;
+        }
+        self.write_index(kept)?;
+        Ok(dropped.iter().map(|i| i.id.clone()).collect())
+    }
+
+    fn write(&self, session: &Session) -> Result<(), Error> {
+        let json = serde_json::to_string(session).expect("session serializes");
+        self.kv.set(&session_key(&session.id), &json)
+    }
+
+    fn write_index(&self, index: &[SessionInfo]) -> Result<(), Error> {
+        let json = serde_json::to_string(index).expect("index serializes");
+        self.kv.set(INDEX_KEY, &json)
+    }
 }
 
 /// Unique-enough session id without a uuid/rand dependency: nanosecond
@@ -219,26 +272,100 @@ fn new_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::MemKv;
+
+    fn store() -> SessionStore<MemKv> {
+        SessionStore::new(MemKv::default())
+    }
 
     #[test]
-    fn append_and_history_window() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.db");
-        let s = Session::create(&path, "demo").unwrap();
-        s.append(Role::User, "one").unwrap();
-        s.append(Role::Assistant, "two").unwrap();
-        s.append(Role::Tool, "three").unwrap();
+    fn create_append_load_round_trip() {
+        let store = store();
+        let s = store.create("demo").unwrap();
+        assert!(s.turns.is_empty());
+        assert_eq!(s.created_ts, s.updated_ts);
 
-        let all = s.history(10).unwrap();
-        assert_eq!(all.len(), 3);
+        store
+            .append(&s.id, Role::User, "theme this app", None)
+            .unwrap();
+        let after = store
+            .append(&s.id, Role::Assistant, "done", Some("qwen3"))
+            .unwrap();
+        assert_eq!(after.turns.len(), 2);
+        assert!(after.updated_ts >= s.updated_ts);
+
+        let loaded = store.load(&s.id).unwrap();
+        assert_eq!(loaded, after);
+        assert_eq!(loaded.turns[0].model, None);
+        assert_eq!(loaded.turns[1].model.as_deref(), Some("qwen3"));
+
+        assert!(matches!(
+            store.load("s-nope"),
+            Err(Error::SessionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn wire_shape_matches_the_assistants_conversation_payload() {
+        // The Assistant stores turns as {role, text, model} (model.js
+        // serializeConversation); the session record's `turns` must be
+        // that exact shape so it can adopt these keys.
+        let store = store();
+        let s = store.create("demo").unwrap();
+        store.append(&s.id, Role::User, "hi", None).unwrap();
+        store
+            .append(&s.id, Role::Assistant, "hello", Some("qwen3"))
+            .unwrap();
+
+        let raw = store.kv().get(&session_key(&s.id)).unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(
-            all.iter().map(|m| m.role).collect::<Vec<_>>(),
-            vec![Role::User, Role::Assistant, Role::Tool]
+            value["turns"],
+            serde_json::json!([
+                {"role": "user", "text": "hi", "model": null},
+                {"role": "assistant", "text": "hello", "model": "qwen3"},
+            ])
         );
-        assert_eq!(all[0].content, "one", "chronological within the window");
+    }
 
-        // The window is the most recent `limit`, still oldest-first.
-        let window = s.history(2).unwrap();
+    #[test]
+    fn list_orders_by_activity_and_appending_bumps() {
+        let store = store();
+        let a = store.create("a").unwrap();
+        let b = store.create("b").unwrap();
+        assert_eq!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![b.id.as_str(), a.id.as_str()],
+            "newest first on ties"
+        );
+
+        // Sessions are isolated; activity reorders the listing.
+        store.append(&a.id, Role::User, "hello a", None).unwrap();
+        assert!(store.load(&b.id).unwrap().turns.is_empty());
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, a.id, "appended session is most recent");
+        assert_eq!(listed[0].title, "a");
+    }
+
+    #[test]
+    fn history_windows_oldest_first() {
+        let store = store();
+        let s = store.create("demo").unwrap();
+        store.append(&s.id, Role::User, "one", None).unwrap();
+        store.append(&s.id, Role::Assistant, "two", None).unwrap();
+        let s = store.append(&s.id, Role::Tool, "three", None).unwrap();
+
+        let all = s.history(10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0], Message::new(Role::User, "one"));
+
+        let window = s.history(2);
         assert_eq!(
             window,
             vec![
@@ -249,47 +376,86 @@ mod tests {
     }
 
     #[test]
-    fn persist_and_resume_across_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.db");
-        let id;
-        {
-            let s = Session::create(&path, "notes for friday").unwrap();
-            id = s.id().to_string();
-            s.append(Role::User, "remember the milk").unwrap();
-            s.append(Role::Assistant, "noted").unwrap();
-        } // store closed
+    fn prune_keeps_the_most_recent_and_removes_the_rest() {
+        let store = store();
+        let old = store.create("old").unwrap();
+        let mid = store.create("mid").unwrap();
+        let hot = store.create("hot").unwrap();
+        store
+            .append(&mid.id, Role::User, "still busy", None)
+            .unwrap();
 
-        let resumed = Session::resume(&path, &id).unwrap();
-        assert_eq!(resumed.title(), "notes for friday");
-        let history = resumed.history(10).unwrap();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0], Message::new(Role::User, "remember the milk"));
-        resumed.append(Role::User, "and eggs").unwrap();
-        assert_eq!(resumed.history(10).unwrap().len(), 3);
-
-        // The listing reflects the session and its activity.
-        let listed = Session::list(&path).unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, id);
-        assert_eq!(listed[0].title, "notes for friday");
-        assert!(listed[0].updated_ts >= listed[0].created_ts);
-
-        // Unknown ids fail cleanly.
+        assert!(store.prune(3).unwrap().is_empty(), "nothing over the cap");
+        let removed = store.prune(2).unwrap();
+        assert_eq!(removed, vec![old.id.clone()], "least recent goes");
         assert!(matches!(
-            Session::resume(&path, "s-nope"),
+            store.load(&old.id),
             Err(Error::SessionNotFound(_))
         ));
+        assert_eq!(store.list().unwrap().len(), 2);
+        assert!(store.load(&mid.id).is_ok());
+        assert!(store.load(&hot.id).is_ok());
+
+        // prune(0) clears the namespace's sessions entirely.
+        let removed = store.prune(0).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[test]
-    fn sessions_are_isolated_within_one_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("chat.db");
-        let a = Session::create(&path, "a").unwrap();
-        let b = Session::create(&path, "b").unwrap();
-        a.append(Role::User, "hello a").unwrap();
-        assert_eq!(b.history(10).unwrap().len(), 0);
-        assert_eq!(Session::list(&path).unwrap().len(), 2);
+    fn tombstoned_records_read_as_absent() {
+        // A Context1-shaped store can only tombstone (empty string).
+        struct GetSetOnly(MemKv);
+        impl KvStore for GetSetOnly {
+            fn get(&self, key: &str) -> Result<Option<String>, Error> {
+                self.0.get(key)
+            }
+            fn set(&self, key: &str, value: &str) -> Result<(), Error> {
+                self.0.set(key, value)
+            }
+        }
+        let store = SessionStore::new(GetSetOnly(MemKv::default()));
+        let s = store.create("doomed").unwrap();
+        store.prune(0).unwrap();
+        assert_eq!(
+            store.kv().get(&session_key(&s.id)).unwrap().as_deref(),
+            Some(""),
+            "tombstone, not deletion"
+        );
+        assert!(matches!(store.load(&s.id), Err(Error::SessionNotFound(_))));
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stored_junk_degrades_instead_of_breaking_startup() {
+        let store = store();
+        let s = store.create("demo").unwrap();
+
+        // Corrupt index: unparseable → empty; junk entries → dropped.
+        store.kv().set(INDEX_KEY, "not json").unwrap();
+        assert!(store.list().unwrap().is_empty());
+        store
+            .kv()
+            .set(
+                INDEX_KEY,
+                &format!(
+                    "[{{\"bogus\": true}}, {}]",
+                    serde_json::to_string(&s.info()).unwrap()
+                ),
+            )
+            .unwrap();
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, s.id);
+
+        // A corrupt session record is an explicit error, not silent loss.
+        store.kv().set(&session_key(&s.id), "{broken").unwrap();
+        assert!(matches!(store.load(&s.id), Err(Error::Corrupt(_))));
+
+        // Appending to a session missing from the index self-heals it.
+        store.write(&s).unwrap();
+        store.kv().set(INDEX_KEY, "[]").unwrap();
+        store.append(&s.id, Role::User, "hi", None).unwrap();
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 }
