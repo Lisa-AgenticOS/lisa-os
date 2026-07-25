@@ -1130,6 +1130,101 @@ fn assert_transfers_protect_booted() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Stage an update through systemd-sysupdated's D-Bus surface
+/// (`org.freedesktop.sysupdate1`, systemd ≥257). Unlike execing
+/// systemd-sysupdate — root-only, because the ESP and partition writes
+/// need privilege — this path is polkit-mediated, so a desktop user (the
+/// Settings Update button, issue #19) gets an auth prompt instead of a
+/// permission error. Returns Ok(false) when the service isn't on the bus
+/// (older image, no sysupdated build) — the caller falls back to the
+/// exec path. A real update failure is an error: falling back would just
+/// fail again with a worse message.
+fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
+    use zbus::blocking::{Connection, Proxy};
+
+    let Ok(conn) = Connection::system() else {
+        return Ok(false);
+    };
+    let manager: Proxy = match Proxy::new(
+        &conn,
+        "org.freedesktop.sysupdate1",
+        "/org/freedesktop/sysupdate1",
+        "org.freedesktop.sysupdate1.Manager",
+    ) {
+        Ok(p) => p,
+        Err(_) => return Ok(false),
+    };
+    // Subscribe before starting the job so completion can't race us.
+    let mut removals = match manager.receive_signal("JobRemoved") {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+    let targets: Vec<(String, String, zbus::zvariant::OwnedObjectPath)> =
+        match manager.call("ListTargets", &()) {
+            Ok(t) => t,
+            // Name exists but the call failed → service not usable here.
+            Err(_) => return Ok(false),
+        };
+    let Some((_, name, path)) = targets.into_iter().find(|(class, _, _)| class == "host") else {
+        return Ok(false);
+    };
+
+    let target: Proxy = Proxy::new(
+        &conn,
+        "org.freedesktop.sysupdate1",
+        path,
+        "org.freedesktop.sysupdate1.Target",
+    )?;
+    println!(">> staging via systemd-sysupdated (target {name}) — polkit may prompt");
+    let (version, job): (String, zbus::zvariant::OwnedObjectPath) =
+        match target.call("Update", &("", 0u64)) {
+            Ok(r) => r,
+            Err(zbus::Error::MethodError(ref err_name, ref msg, _))
+                if err_name.as_str().ends_with("NoCandidate") =>
+            {
+                println!(
+                    "already up to date{}",
+                    msg.as_deref()
+                        .map(|m| format!(" ({m})"))
+                        .unwrap_or_default()
+                );
+                return Ok(true);
+            }
+            Err(e) => bail!("sysupdated refused the update: {e}"),
+        };
+    println!(">> update to {version} started — waiting for the job to finish");
+    // JobRemoved(t id, o path, i status): status 0 = success.
+    for signal in removals.by_ref() {
+        let Ok((_id, done_path, status)) = signal
+            .body()
+            .deserialize::<(u64, zbus::zvariant::OwnedObjectPath, i32)>()
+        else {
+            continue;
+        };
+        if done_path != job {
+            continue;
+        }
+        if status != 0 {
+            bail!("sysupdated job for {version} failed (status {status})");
+        }
+        break;
+    }
+    if reboot {
+        let login1: Proxy = Proxy::new(
+            &conn,
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+        )?;
+        login1.call::<_, _, ()>("Reboot", &(false))?;
+    } else {
+        println!(
+            "update staged in the inactive slot — reboot to use it (rollback is automatic on boot failure)"
+        );
+    }
+    Ok(true)
+}
+
 fn update_cmd(reboot: bool) -> anyhow::Result<()> {
     let sysupdate = std::path::Path::new("/usr/lib/systemd/systemd-sysupdate");
     if !sysupdate.exists() {
@@ -1139,6 +1234,11 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
         );
     }
     assert_transfers_protect_booted()?;
+    // Preferred: the polkit-mediated D-Bus path (works unprivileged).
+    if update_via_sysupdated(reboot)? {
+        return Ok(());
+    }
+    // Fallback: direct exec — needs root, kept for images without sysupdated.
     let status = std::process::Command::new(sysupdate)
         .arg("update")
         .status()?;
