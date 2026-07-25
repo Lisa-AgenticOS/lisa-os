@@ -227,9 +227,13 @@ enum Command {
         max_iters: usize,
         /// Forge a lisa_ui Flutter app: scaffolds the project (lisa_ui
         /// path dependency, LisaApp stub, smoke test) and verifies with
-        /// `flutter analyze`. Needs the flutter SDK.
+        /// `flutter analyze`. Needs the flutter SDK (see --setup).
         #[arg(long)]
         flutter: bool,
+        /// Provision the pinned Flutter SDK to /var/lib/lisa/flutter
+        /// (sha256-verified download; Lisa devices, x86_64) and exit.
+        #[arg(long)]
+        setup: bool,
     },
     /// Embed text into a vector (reads stdin when piped).
     Embed {
@@ -482,7 +486,14 @@ fn run() -> anyhow::Result<()> {
             url,
             max_iters,
             flutter,
-        } => forge_cmd(&task.join(" "), &project, model, &url, max_iters, flutter),
+            setup,
+        } => {
+            if setup {
+                forge_setup()
+            } else {
+                forge_cmd(&task.join(" "), &project, model, &url, max_iters, flutter)
+            }
+        }
         Command::Context { cmd } => context_cmd(cmd),
         Command::Memory { cmd, app } => memory_cmd(cmd, &app),
     }
@@ -851,22 +862,42 @@ fn forge_setup() -> anyhow::Result<()> {
         );
     }
     let dest = std::path::Path::new(FLUTTER_VAR_DIR);
+    // A leftover dest without bin/flutter would survive the early "already
+    // available" check and then fail the final rename after the whole
+    // download (#43) — surface it now, and let the user remove it (we
+    // never delete a directory we didn't just create).
+    if dest.exists() {
+        bail!(
+            "{} exists but holds no usable SDK (bin/flutter missing) — \
+             remove it (sudo rm -r {}) and rerun",
+            dest.display(),
+            dest.display()
+        );
+    }
     let parent = dest.parent().expect("FLUTTER_VAR_DIR has a parent");
     std::fs::create_dir_all(parent).with_context(|| {
         format!(
-            "creating {} — run with sudo on first setup",
+            "creating {} — run `sudo lisa forge --setup` on a device",
             parent.display()
         )
     })?;
     let part = parent.join("flutter.tar.xz.part");
     println!(">> downloading Flutter {FLUTTER_SDK_VERSION} (~1 GB, sha256-verified)");
-    {
+    // Everything fallible runs inside; any error cleans up the partial
+    // download instead of stranding ~1 GB on the durable partition (#43).
+    let staging = parent.join(".flutter-staging");
+    let fetch_and_unpack = || -> anyhow::Result<()> {
         use sha2::Digest;
         let mut resp = ureq::get(FLUTTER_SDK_URL)
             .call()
             .context("downloading the Flutter SDK")?;
         let mut reader = resp.body_mut().as_reader();
-        let mut file = std::fs::File::create(&part)?;
+        let mut file = std::fs::File::create(&part).with_context(|| {
+            format!(
+                "creating {} — run `sudo lisa forge --setup` on a device",
+                part.display()
+            )
+        })?;
         let mut hasher = sha2::Sha256::new();
         let mut buf = [0u8; 1 << 16];
         loop {
@@ -884,25 +915,26 @@ fn forge_setup() -> anyhow::Result<()> {
             .map(|b| format!("{b:02x}"))
             .collect();
         if got != FLUTTER_SDK_SHA256 {
-            let _ = std::fs::remove_file(&part);
             bail!("sha256 mismatch on the Flutter SDK (got {got}) — refusing to unpack");
         }
-    }
-    let staging = parent.join(".flutter-staging");
-    std::fs::create_dir_all(&staging)?;
-    let status = std::process::Command::new("tar")
-        .arg("-xJf")
-        .arg(&part)
-        .arg("-C")
-        .arg(&staging)
-        .status()
-        .context("unpacking (tar with xz support required)")?;
-    if !status.success() {
-        bail!("unpacking the Flutter SDK failed ({status})");
-    }
-    std::fs::rename(staging.join("flutter"), dest)?;
+        std::fs::create_dir_all(&staging)?;
+        let status = std::process::Command::new("tar")
+            .arg("-xJf")
+            .arg(&part)
+            .arg("-C")
+            .arg(&staging)
+            .status()
+            .context("unpacking (tar with xz support required)")?;
+        if !status.success() {
+            bail!("unpacking the Flutter SDK failed ({status})");
+        }
+        std::fs::rename(staging.join("flutter"), dest)?;
+        Ok(())
+    };
+    let result = fetch_and_unpack();
     let _ = std::fs::remove_file(&part);
-    let _ = std::fs::remove_dir(&staging);
+    let _ = std::fs::remove_dir_all(&staging);
+    result?;
     println!(
         ">> Flutter {FLUTTER_SDK_VERSION} installed at {FLUTTER_VAR_DIR} — \
          `lisa forge --flutter` will find it automatically"
@@ -990,10 +1022,6 @@ fn forge_cmd(
     max_iters: usize,
     flutter: bool,
 ) -> anyhow::Result<()> {
-    // `lisa forge setup` — provision the on-device Flutter SDK (#37).
-    if task.trim() == "setup" {
-        return forge_setup();
-    }
     std::fs::create_dir_all(project)?;
     let verifier = if flutter {
         // "Scaffolded" means pub get SUCCEEDED (its package_config is the

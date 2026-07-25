@@ -9,7 +9,7 @@ use crate::engine::{EngineError, TokenStream};
 use futures::StreamExt;
 use futures::stream::{AbortHandle, Abortable};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Priority {
@@ -26,12 +26,32 @@ impl Priority {
     }
 }
 
+/// The registry is a std (not tokio) mutex: every critical section is a
+/// short push/drain/retain with no await inside, and pruning must be able
+/// to run in `Drop` (#41 — a consumer that stops polling, or a stream
+/// dropped on client disconnect, still has to deregister).
+type BackgroundRegistry = Arc<std::sync::Mutex<Vec<(u64, AbortHandle)>>>;
+
+/// Deregisters one background unit when dropped — however its work ended:
+/// completion, error, preemption, or the consumer dropping the stream.
+struct PruneGuard {
+    id: u64,
+    registry: BackgroundRegistry,
+}
+
+impl Drop for PruneGuard {
+    fn drop(&mut self) {
+        if let Ok(mut reg) = self.registry.lock() {
+            reg.retain(|(i, _)| *i != self.id);
+        }
+    }
+}
+
 pub struct Scheduler {
     slots: Arc<Semaphore>,
-    /// Registered background work, keyed so completed entries prune
-    /// themselves (#40 — a long-lived daemon must not accumulate stale
-    /// handles). Drained wholesale on interactive preemption.
-    background: Arc<Mutex<Vec<(u64, AbortHandle)>>>,
+    /// Registered background work, keyed so entries prune themselves via
+    /// PruneGuard (#40/#41). Drained wholesale on interactive preemption.
+    background: BackgroundRegistry,
     next_id: std::sync::atomic::AtomicU64,
 }
 
@@ -39,7 +59,7 @@ impl Scheduler {
     pub fn new(slots: usize) -> Self {
         Self {
             slots: Arc::new(Semaphore::new(slots)),
-            background: Arc::new(Mutex::new(Vec::new())),
+            background: Arc::new(std::sync::Mutex::new(Vec::new())),
             next_id: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -51,7 +71,11 @@ impl Scheduler {
                 // Preempt: abort every registered background unit — running
                 // OR still waiting for the slot — then wait (freed when the
                 // aborted work drops).
-                for (_, handle) in self.background.lock().await.drain(..) {
+                let handles: Vec<(u64, AbortHandle)> = {
+                    let mut reg = self.background.lock().expect("registry poisoned");
+                    reg.drain(..).collect()
+                };
+                for (_, handle) in handles {
                     handle.abort();
                 }
                 Arc::clone(&self.slots)
@@ -67,17 +91,22 @@ impl Scheduler {
     /// interactive sweep missed the handle and then blocked behind the
     /// whole background unit. The permit is acquired inside the abortable
     /// scope, so preemption also cancels background work still queueing.
-    async fn register_background(&self) -> (u64, futures::stream::AbortRegistration) {
+    fn register_background(&self) -> (PruneGuard, futures::stream::AbortRegistration) {
         let id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (handle, registration) = AbortHandle::new_pair();
-        self.background.lock().await.push((id, handle));
-        (id, registration)
-    }
-
-    async fn prune_background(&self, id: u64) {
-        self.background.lock().await.retain(|(i, _)| *i != id);
+        self.background
+            .lock()
+            .expect("registry poisoned")
+            .push((id, handle));
+        (
+            PruneGuard {
+                id,
+                registry: Arc::clone(&self.background),
+            },
+            registration,
+        )
     }
 
     /// Admit one non-streaming unit of engine work under `priority` —
@@ -95,7 +124,7 @@ impl Scheduler {
                 fut.await
             }
             Priority::Background => {
-                let (id, registration) = self.register_background().await;
+                let (guard, registration) = self.register_background();
                 let slots = Arc::clone(&self.slots);
                 let work = async move {
                     let _permit = slots
@@ -108,7 +137,7 @@ impl Scheduler {
                     Ok(result) => result,
                     Err(futures::stream::Aborted) => Err(EngineError::Preempted),
                 };
-                self.prune_background(id).await;
+                drop(guard);
                 outcome
             }
         }
@@ -130,9 +159,8 @@ impl Scheduler {
                 })
             }
             Priority::Background => {
-                let (id, registration) = self.register_background().await;
+                let (guard, registration) = self.register_background();
                 let slots = Arc::clone(&self.slots);
-                let background = Arc::clone(&self.background);
                 // Permit acquisition happens inside the abortable stream,
                 // so a preemption sweep also cancels queued (not-yet-
                 // running) background streams (#39).
@@ -148,6 +176,10 @@ impl Scheduler {
                 });
                 let mut abortable = Abortable::new(gated, registration);
                 Box::pin(async_stream::stream! {
+                    // Moved into the generator: dropping the returned
+                    // stream (client disconnect, error break) still runs
+                    // the guard's deregistration (#41).
+                    let _guard = guard;
                     loop {
                         match abortable.next().await {
                             Some(item) => yield item,
@@ -159,7 +191,6 @@ impl Scheduler {
                             }
                         }
                     }
-                    background.lock().await.retain(|(i, _)| *i != id);
                 })
             }
         }
