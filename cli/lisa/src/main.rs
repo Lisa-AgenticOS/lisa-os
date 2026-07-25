@@ -829,7 +829,15 @@ fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
     let ui = lisa_ui_path()?;
     std::fs::create_dir_all(project.join("lib"))?;
     std::fs::create_dir_all(project.join("test"))?;
-    std::fs::write(
+    // Write-if-absent: a rerun after a failed `pub get` (#38) must retry
+    // resolution without clobbering files the model (or user) edited.
+    let write_if_absent = |path: PathBuf, content: String| -> anyhow::Result<()> {
+        if !path.exists() {
+            std::fs::write(path, content)?;
+        }
+        Ok(())
+    };
+    write_if_absent(
         project.join("pubspec.yaml"),
         format!(
             "name: lisa_app\ndescription: An app forged by LisaCode.\n\
@@ -840,18 +848,20 @@ fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
             ui.display()
         ),
     )?;
-    std::fs::write(
+    write_if_absent(
         project.join("lib/main.dart"),
         "import 'package:lisa_ui/lisa_ui.dart';\n\n\
          void main() {\n  runApp(\n    const LisaApp(\n      title: 'Lisa App',\n      \
          home: LisaScaffold(\n        title: 'Lisa App',\n        \
-         body: Center(child: Text('Forged by LisaCode')),\n      ),\n    ),\n  );\n}\n",
+         body: Center(child: Text('Forged by LisaCode')),\n      ),\n    ),\n  );\n}\n"
+            .into(),
     )?;
-    std::fs::write(
+    write_if_absent(
         project.join("test/smoke_test.dart"),
         "import 'package:flutter_test/flutter_test.dart';\nimport 'package:lisa_app/main.dart' as app;\n\n\
          void main() {\n  testWidgets('app builds', (tester) async {\n    app.main();\n    \
-         await tester.pump();\n  });\n}\n",
+         await tester.pump();\n  });\n}\n"
+            .into(),
     )?;
     let status = std::process::Command::new("flutter")
         .args(["pub", "get"])
@@ -874,7 +884,20 @@ fn forge_cmd(
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(project)?;
     let verifier = if flutter {
-        if !project.join("pubspec.yaml").exists() {
+        // "Scaffolded" means pub get SUCCEEDED (its package_config is the
+        // marker) — gating on pubspec existence let a failed pub get leave
+        // a half-scaffold that reruns silently skipped (#38).
+        let pubspec = project.join("pubspec.yaml");
+        if pubspec.exists()
+            && !std::fs::read_to_string(&pubspec).is_ok_and(|p| p.contains("sdk: flutter"))
+        {
+            bail!(
+                "{} already holds a non-Flutter project — pick a fresh --project \
+                 directory for --flutter",
+                project.display()
+            );
+        }
+        if !project.join(".dart_tool/package_config.json").exists() {
             scaffold_flutter_app(project)?;
             println!(
                 ">> scaffolded a lisa_ui Flutter app in {}",

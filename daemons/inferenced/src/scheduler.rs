@@ -28,7 +28,11 @@ impl Priority {
 
 pub struct Scheduler {
     slots: Arc<Semaphore>,
-    background: Arc<Mutex<Vec<AbortHandle>>>,
+    /// Registered background work, keyed so completed entries prune
+    /// themselves (#40 — a long-lived daemon must not accumulate stale
+    /// handles). Drained wholesale on interactive preemption.
+    background: Arc<Mutex<Vec<(u64, AbortHandle)>>>,
+    next_id: std::sync::atomic::AtomicU64,
 }
 
 impl Scheduler {
@@ -36,56 +40,76 @@ impl Scheduler {
         Self {
             slots: Arc::new(Semaphore::new(slots)),
             background: Arc::new(Mutex::new(Vec::new())),
+            next_id: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    async fn acquire(&self, priority: Priority) -> tokio::sync::OwnedSemaphorePermit {
-        match priority {
-            Priority::Interactive => match Arc::clone(&self.slots).try_acquire_owned() {
-                Ok(p) => p,
-                Err(_) => {
-                    // Preempt: abort every running background stream, then
-                    // wait for a slot (freed when the aborted stream drops).
-                    for handle in self.background.lock().await.drain(..) {
-                        handle.abort();
-                    }
-                    Arc::clone(&self.slots)
-                        .acquire_owned()
-                        .await
-                        .expect("scheduler semaphore never closes")
+    async fn acquire_interactive(&self) -> tokio::sync::OwnedSemaphorePermit {
+        match Arc::clone(&self.slots).try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                // Preempt: abort every registered background unit — running
+                // OR still waiting for the slot — then wait (freed when the
+                // aborted work drops).
+                for (_, handle) in self.background.lock().await.drain(..) {
+                    handle.abort();
                 }
-            },
-            Priority::Background => Arc::clone(&self.slots)
-                .acquire_owned()
-                .await
-                .expect("scheduler semaphore never closes"),
+                Arc::clone(&self.slots)
+                    .acquire_owned()
+                    .await
+                    .expect("scheduler semaphore never closes")
+            }
         }
+    }
+
+    /// Register background work for preemption BEFORE it waits on the
+    /// slot (#39): registering after acquisition left a window where an
+    /// interactive sweep missed the handle and then blocked behind the
+    /// whole background unit. The permit is acquired inside the abortable
+    /// scope, so preemption also cancels background work still queueing.
+    async fn register_background(&self) -> (u64, futures::stream::AbortRegistration) {
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (handle, registration) = AbortHandle::new_pair();
+        self.background.lock().await.push((id, handle));
+        (id, registration)
+    }
+
+    async fn prune_background(&self, id: u64) {
+        self.background.lock().await.retain(|(i, _)| *i != id);
     }
 
     /// Admit one non-streaming unit of engine work under `priority` —
     /// the tools passthrough lane (issue #34). Same slot pool and
     /// preemption contract as `admit`: interactive arrivals abort
-    /// running background work, including background tool turns.
+    /// background work, including background tool turns.
     pub async fn admit_future<T: Send + 'static>(
         &self,
         priority: Priority,
         fut: futures::future::BoxFuture<'static, Result<T, EngineError>>,
     ) -> Result<T, EngineError> {
-        let permit = self.acquire(priority).await;
         match priority {
             Priority::Interactive => {
-                let _permit = permit;
+                let _permit = self.acquire_interactive().await;
                 fut.await
             }
             Priority::Background => {
-                let (handle, registration) = AbortHandle::new_pair();
-                self.background.lock().await.push(handle);
-                let abortable = Abortable::new(fut, registration);
-                let _permit = permit;
-                match abortable.await {
+                let (id, registration) = self.register_background().await;
+                let slots = Arc::clone(&self.slots);
+                let work = async move {
+                    let _permit = slots
+                        .acquire_owned()
+                        .await
+                        .expect("scheduler semaphore never closes");
+                    fut.await
+                };
+                let outcome = match Abortable::new(work, registration).await {
                     Ok(result) => result,
                     Err(futures::stream::Aborted) => Err(EngineError::Preempted),
-                }
+                };
+                self.prune_background(id).await;
+                outcome
             }
         }
     }
@@ -94,22 +118,36 @@ impl Scheduler {
     /// slot until it completes; background streams can be aborted
     /// mid-flight when an interactive request needs the slot.
     pub async fn admit(&self, priority: Priority, stream: TokenStream) -> TokenStream {
-        let permit = self.acquire(priority).await;
-
         match priority {
-            Priority::Interactive => Box::pin(async_stream::stream! {
-                let _permit = permit;
-                let mut stream = stream;
-                while let Some(item) = stream.next().await {
-                    yield item;
-                }
-            }),
-            Priority::Background => {
-                let (handle, registration) = AbortHandle::new_pair();
-                self.background.lock().await.push(handle);
-                let mut abortable = Abortable::new(stream, registration);
+            Priority::Interactive => {
+                let permit = self.acquire_interactive().await;
                 Box::pin(async_stream::stream! {
                     let _permit = permit;
+                    let mut stream = stream;
+                    while let Some(item) = stream.next().await {
+                        yield item;
+                    }
+                })
+            }
+            Priority::Background => {
+                let (id, registration) = self.register_background().await;
+                let slots = Arc::clone(&self.slots);
+                let background = Arc::clone(&self.background);
+                // Permit acquisition happens inside the abortable stream,
+                // so a preemption sweep also cancels queued (not-yet-
+                // running) background streams (#39).
+                let gated: TokenStream = Box::pin(async_stream::stream! {
+                    let _permit = slots
+                        .acquire_owned()
+                        .await
+                        .expect("scheduler semaphore never closes");
+                    let mut stream = stream;
+                    while let Some(item) = stream.next().await {
+                        yield item;
+                    }
+                });
+                let mut abortable = Abortable::new(gated, registration);
+                Box::pin(async_stream::stream! {
                     loop {
                         match abortable.next().await {
                             Some(item) => yield item,
@@ -121,6 +159,7 @@ impl Scheduler {
                             }
                         }
                     }
+                    background.lock().await.retain(|(i, _)| *i != id);
                 })
             }
         }
