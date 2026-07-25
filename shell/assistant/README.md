@@ -11,10 +11,31 @@ that leave the machine. It complements the transient Super+Shift+Space overlay
 While a reply streams, **Send flips to Stop** (`Overlay1.Cancel` — the partial
 text stays, #11); the entry stays typeable, only sending is gated. The header
 bar **exports the conversation as Markdown** (#8) — cloud turns keep their
-"left this machine" note — and the conversation **persists across restarts**
-in `dev.lisaos.Context1` app memory (namespace `app.lisaos.Assistant`, key
-`conversation`; "New conversation" clears it). All Context1 calls fail soft:
-without `lisa-contextd` the app simply runs without persistence.
+"left this machine" note.
+
+## Conversations
+
+A sidebar lists every conversation, most recently active first: **New**
+(header or sidebar), click to switch, trash to delete after a confirm.
+Titles come from the first user turn. Each conversation **persists across
+restarts** in `dev.lisaos.Context1` app memory (namespace
+`app.lisaos.Assistant`) under the key layout of harness-core's `SessionStore`
+(`libs/harness-core/src/session.rs`, ADR-0013) — one record per session at
+`session/<id>`, one index at `sessions`, with the same field order and the
+same `{role, text, model}` turns, so records written here load in Rust and
+vice versa. Launch reopens the most recent conversation.
+
+- A new conversation is written only when its **first turn completes** —
+  abandoning one leaves nothing behind.
+- Delete **tombstones** the record (empty string) because `Context1` has no
+  per-key delete, only a namespace-wide `MemoryWipe` that would take the other
+  conversations with it. Readers treat empty as absent.
+- Upgrading from the single-conversation build: the old `conversation` key is
+  folded into the first session on the next launch, then tombstoned so it
+  happens once.
+- All Context1 calls **fail soft**: without `lisa-contextd` the app runs
+  exactly as before — conversations live for the run of the window, and the
+  user is told once.
 
 ## How it fits
 
@@ -43,11 +64,14 @@ lisa-inferenced → (remote:*) → remoted broker → Claude / GPT
 
 ## Layout
 
-- `lisa-assistant.js` — the window (model picker, conversation, composer,
-  Stop/export, Context1 persistence).
+- `lisa-assistant.js` — the window (model picker, conversation list, chat log,
+  composer, Stop/export, Context1 persistence).
 - `lib/model.js` — pure view-model (model-list assembly, send payload, egress
-  marker, Markdown export, conversation (de)serialization); unit-tested in
+  marker, Markdown export, turn (de)serialization); unit-tested in
   `tests/model.test.js`.
+- `lib/sessions.js` — pure session logic (key layout, records and index,
+  titles, ordering, the legacy migration); unit-tested in
+  `tests/sessions.test.js`.
 - `app.lisaos.Assistant.desktop` + `lisa-assistant-symbolic.svg` — launcher entry.
 - The chat lane itself lives in the backend
   (`../overlay-extension/backend/lisa-overlayd.js`) with pure helpers in

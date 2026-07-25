@@ -307,9 +307,10 @@ mod tests {
 
     #[test]
     fn wire_shape_matches_the_assistants_conversation_payload() {
-        // The Assistant stores turns as {role, text, model} (model.js
-        // serializeConversation); the session record's `turns` must be
-        // that exact shape so it can adopt these keys.
+        // The Assistant writes these same keys from GJS
+        // (shell/assistant/lib/sessions.js, issue #25) and rewrites
+        // whole records, so both the turn shape and the field order are
+        // contract, not implementation detail.
         let store = store();
         let s = store.create("demo").unwrap();
         store.append(&s.id, Role::User, "hi", None).unwrap();
@@ -326,6 +327,12 @@ mod tests {
                 {"role": "assistant", "text": "hello", "model": "qwen3"},
             ])
         );
+        let head = format!(
+            "{{\"id\":\"{}\",\"title\":\"demo\",\"created_ts\":{},\"updated_ts\":",
+            s.id, s.created_ts
+        );
+        assert!(raw.starts_with(&head), "field order changed: {raw}");
+        assert!(raw.ends_with("]}"), "turns stays last: {raw}");
     }
 
     #[test]

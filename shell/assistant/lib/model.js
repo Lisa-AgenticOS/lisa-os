@@ -127,27 +127,31 @@ export function conversationMarkdown(turns, models) {
 }
 
 /**
- * The conversation as the Context1 app-memory payload: completed turns
- * as plain {role, text, model} — no widgets, no streaming state.
+ * Completed turns as the stored payload: plain {role, text, model} —
+ * no widgets, no in-flight text. This is the wire shape harness-core's
+ * SessionStore reads and writes byte for byte (`SessionTurn` in
+ * libs/harness-core/src/session.rs), so it is validated the same way
+ * coming from a widget list or from stored JSON.
  * @param {{role: string, text: string, model?: ?string}[]} turns
- * @returns {string}  JSON array
+ * @returns {{role: string, text: string, model: ?string}[]}
  */
-export function serializeConversation(turns) {
-    return JSON.stringify((turns ?? [])
+export function normalizeTurns(turns) {
+    return (turns ?? [])
         .filter(t => t && (t.role === 'user' || t.role === 'assistant') &&
             typeof t.text === 'string' && t.text !== '')
         .map(t => ({
             role: t.role,
             text: t.text,
             model: typeof t.model === 'string' ? t.model : null,
-        })));
+        }));
 }
 
 /**
- * Parse a stored conversation back into renderable turns. Shape-validated
- * per turn; anything malformed — bad JSON, non-array, junk entries — is
- * dropped rather than trusted, so a corrupt memory value can never break
- * startup.
+ * Parse a stored conversation array back into renderable turns — the
+ * pre-sessions `conversation` value on upgrade (lib/sessions.js), and a
+ * session record's `turns`. Shape-validated per turn; anything
+ * malformed — bad JSON, non-array, junk entries — is dropped rather
+ * than trusted, so a corrupt memory value can never break startup.
  * @param {string} json
  * @returns {{role: string, text: string, model: ?string}[]}
  */
@@ -158,14 +162,5 @@ export function deserializeConversation(json) {
     } catch {
         return [];
     }
-    if (!Array.isArray(parsed))
-        return [];
-    return parsed
-        .filter(t => t && (t.role === 'user' || t.role === 'assistant') &&
-            typeof t.text === 'string' && t.text !== '')
-        .map(t => ({
-            role: t.role,
-            text: t.text,
-            model: typeof t.model === 'string' ? t.model : null,
-        }));
+    return Array.isArray(parsed) ? normalizeTurns(parsed) : [];
 }

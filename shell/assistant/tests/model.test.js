@@ -5,7 +5,7 @@ import {test, assert, assertEq, finish} from '../../testing/harness.js';
 import {
     isRemote, parseLocalModels, usableProviders, cloudEntries,
     mergeModelList, historyPayload, conversationMarkdown,
-    serializeConversation, deserializeConversation,
+    normalizeTurns, deserializeConversation,
 } from '../lib/model.js';
 
 test('parseLocalModels reads /v1/models data ids', () => {
@@ -111,13 +111,13 @@ test('conversationMarkdown preserves multiline text', () => {
 
 // ---- Context1 persistence helpers -----------------------------------
 
-test('serializeConversation keeps only completed turns, no widgets', () => {
+test('normalizeTurns keeps only completed turns, no widgets', () => {
     const turns = [
         {role: 'user', text: 'hi', widget: {}, body: {}},
         {role: 'assistant', text: 'hello', model: 'qwen', widget: {}},
         {role: 'assistant', text: ''},   // in-flight — dropped
     ];
-    assertEq(JSON.parse(serializeConversation(turns)), [
+    assertEq(normalizeTurns(turns), [
         {role: 'user', text: 'hi', model: null},
         {role: 'assistant', text: 'hello', model: 'qwen'},
     ]);
@@ -144,7 +144,8 @@ test('conversation persistence round-trips', () => {
         {role: 'user', text: 'q', model: null},
         {role: 'assistant', text: 'a', model: 'remote:anthropic:claude-x'},
     ];
-    assertEq(deserializeConversation(serializeConversation(turns)), turns);
+    assertEq(deserializeConversation(JSON.stringify(normalizeTurns(turns))),
+        turns);
 });
 
 finish('assistant-model');

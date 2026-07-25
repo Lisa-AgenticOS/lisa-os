@@ -10,15 +10,18 @@
 // ListModels). Cloud turns route as `remote:<provider>:<model>` and are
 // ledgered `remote.*` by the broker. This app renders; the daemons enforce.
 //
-// The conversation persists across restarts in dev.lisaos.Context1 app
-// memory (namespace `app.lisaos.Assistant`, key `conversation`) — fail-soft
-// when contextd is absent. Send flips to Stop while a reply streams
+// Conversations persist across restarts in dev.lisaos.Context1 app memory
+// (namespace `app.lisaos.Assistant`), one key per session under the key
+// layout harness-core's SessionStore uses (lib/sessions.js, issue #25) —
+// fail-soft when contextd is absent, which is still the shipped state on
+// devices without lisa-contextd. Send flips to Stop while a reply streams
 // (Overlay1.Cancel, #11); the header exports Markdown via a pure helper
 // (conversationMarkdown, #8).
 
 import Adw from 'gi://Adw?version=1';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk?version=4.0';
 import Soup from 'gi://Soup?version=3.0';
 
@@ -28,8 +31,13 @@ import {
 import {
     parseLocalModels, usableProviders, cloudEntries, mergeModelList,
     historyPayload, isRemote, conversationMarkdown,
-    serializeConversation, deserializeConversation,
 } from './lib/model.js';
+import {
+    INDEX_KEY, LEGACY_CONVERSATION_KEY, UNTITLED, sessionKey, newSession,
+    sessionInfo, parseSessionIndex, serializeSessionIndex, parseSession,
+    serializeSession, sessionWithTurns, upsertIndex, removeFromIndex,
+    displayIndex, formatSessionTime, migrateLegacyConversation,
+} from './lib/sessions.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
@@ -43,10 +51,18 @@ const CONTEXTD_NAME = 'dev.lisaos.Context1';      // name = iface (contextd)
 const CONTEXTD_PATH = '/dev/lisaos/Context1';
 const CONTEXTD_IFACE = 'dev.lisaos.Context1';
 const APP_ID = 'app.lisaos.Assistant';            // Context1 memory namespace
-const CONVERSATION_KEY = 'conversation';
 const EGRESS_COLOR = '#E66100';                 // the Ledger "leaves" colour
 
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
+
+/// Breakpoint setters take a GValue; box it here rather than lean on
+/// GJS's implicit conversion, which is not the same across versions.
+function boolValue(b) {
+    const value = new GObject.Value();
+    value.init(GObject.TYPE_BOOLEAN);
+    value.set_boolean(b);
+    return value;
+}
 
 class AssistantWindow {
     constructor(app) {
@@ -56,21 +72,38 @@ class AssistantWindow {
         this._activeQid = null; // in-flight query id
         this._current = null;   // the streaming assistant turn
         this._persistWarned = false; // one note max when contextd is absent
+        // The open conversation, and the stored index behind the list.
+        // A new session lives only here until its first completed turn,
+        // so abandoning one leaves nothing in app memory.
+        this._session = newSession();
+        this._sessions = [];
+        this._rows = [];        // sidebar rows, by position
+        this._listUpdating = false;
 
         this._http = new Soup.Session();
         this.window = new Adw.ApplicationWindow({
             application: app,
             title: 'Lisa Assistant',
-            default_width: 720,
+            default_width: 980,
             default_height: 760,
         });
 
         const header = new Adw.HeaderBar();
+        this._title = new Adw.WindowTitle({
+            title: 'Lisa Assistant', subtitle: UNTITLED,
+        });
+        header.title_widget = this._title;
         this._modelDrop = new Gtk.DropDown({
             model: Gtk.StringList.new(['Loading models…']),
             tooltip_text: 'Model — local runs here, cloud leaves the machine',
         });
         this._modelDrop.connect('notify::selected', () => this._onModelPicked());
+        this._sidebarBtn = new Gtk.ToggleButton({
+            icon_name: 'sidebar-show-symbolic',
+            tooltip_text: 'Conversations',
+            active: true,
+        });
+        header.pack_start(this._sidebarBtn);
         header.pack_start(this._modelDrop);
         // Signing in to a provider happens in Settings, in another
         // window — so re-read the model list whenever this window comes
@@ -78,14 +111,16 @@ class AssistantWindow {
         // saw at startup and a fresh Claude sign-in only appears after
         // restarting the app (field-found on v30).
         this.window.connect('notify::is-active', () => {
-            if (this.window.is_active && !this._streaming)
+            // Never mid-stream: swapping the picker's model would
+            // relabel the turn that is still arriving.
+            if (this.window.is_active && this._activeQid === null)
                 this._refreshModels().catch(() => {});
         });
 
-        const clear = Gtk.Button.new_from_icon_name('document-new-symbolic');
-        clear.tooltip_text = 'New conversation';
-        clear.connect('clicked', () => this._reset());
-        header.pack_end(clear);
+        const fresh = Gtk.Button.new_from_icon_name('document-new-symbolic');
+        fresh.tooltip_text = 'New conversation';
+        fresh.connect('clicked', () => this._newSession());
+        header.pack_end(fresh);
 
         const exportBtn =
             Gtk.Button.new_from_icon_name('document-save-symbolic');
@@ -128,17 +163,187 @@ class AssistantWindow {
 
         const view = new Adw.ToolbarView({content: box});
         view.add_top_bar(header);
-        this.window.set_content(view);
+
+        this._split = new Adw.OverlaySplitView({
+            sidebar: this._buildSidebar(),
+            content: view,
+            show_sidebar: true,
+            min_sidebar_width: 200,
+            max_sidebar_width: 280,
+        });
+        this._sidebarBtn.bind_property('active', this._split, 'show-sidebar',
+            GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE);
+        // Narrow window: the list overlays the conversation instead of
+        // squeezing it — the composer needs the width more than the list.
+        const narrow = new Adw.Breakpoint({
+            condition: Adw.BreakpointCondition.parse('max-width: 680px'),
+        });
+        narrow.add_setter(this._split, 'collapsed', boolValue(true));
+        narrow.add_setter(this._split, 'show-sidebar', boolValue(false));
+        this.window.add_breakpoint(narrow);
+        this.window.set_content(this._split);
 
         this._connectBackend();
         this._systemNote('Ask a local model, or sign in to a cloud provider ' +
             'in Settings → Intelligence for Claude / GPT.');
+        this._renderSessionList();
         // Models first so restored headings resolve to picker labels;
-        // then the prior conversation from Context1 app memory.
+        // then the stored sessions from Context1 app memory.
         this._loadModels()
             .catch(e => logError(e, 'model list'))
-            .then(() => this._restoreConversation())
-            .catch(e => logError(e, 'restore conversation'));
+            .then(() => this._restoreSessions())
+            .catch(e => logError(e, 'restore sessions'));
+    }
+
+    // ---- conversation list ----------------------------------------------
+
+    _buildSidebar() {
+        const header = new Adw.HeaderBar({
+            title_widget: new Adw.WindowTitle({title: 'Conversations'}),
+            show_end_title_buttons: false,
+        });
+        const add = Gtk.Button.new_from_icon_name('document-new-symbolic');
+        add.tooltip_text = 'New conversation';
+        add.connect('clicked', () => this._newSession());
+        header.pack_end(add);
+
+        this._list = new Gtk.ListBox({
+            selection_mode: Gtk.SelectionMode.SINGLE,
+            css_classes: ['navigation-sidebar'],
+        });
+        this._list.connect('row-selected', (_l, row) => {
+            if (this._listUpdating || !row)
+                return;
+            const info = this._rows[row.get_index()];
+            if (info)
+                this._openSession(info.id).catch(e => logError(e, 'open session'));
+        });
+
+        const sidebar = new Adw.ToolbarView({
+            content: new Gtk.ScrolledWindow({vexpand: true, child: this._list}),
+        });
+        sidebar.add_top_bar(header);
+        return sidebar;
+    }
+
+    /// Rebuild the list from the stored index plus the open conversation.
+    /// Cheap enough to redo wholesale: the index is a handful of rows and
+    /// only activity, switching, and deletion touch it.
+    _renderSessionList() {
+        this._rows = displayIndex(this._sessions, this._session);
+        this._listUpdating = true;
+        let child = this._list.get_first_child();
+        while (child) {
+            const next = child.get_next_sibling();
+            this._list.remove(child);
+            child = next;
+        }
+        for (const info of this._rows) {
+            const row = new Adw.ActionRow({
+                title: GLib.markup_escape_text(info.title, -1),
+                subtitle: formatSessionTime(info.updated_ts),
+                tooltip_text: info.title,
+            });
+            const del = Gtk.Button.new_from_icon_name('user-trash-symbolic');
+            del.tooltip_text = 'Delete conversation';
+            del.valign = Gtk.Align.CENTER;
+            del.add_css_class('flat');
+            del.connect('clicked', () => this._confirmDelete(info));
+            row.add_suffix(del);
+            this._list.append(row);
+            if (info.id === this._session.id)
+                this._list.select_row(row);
+        }
+        this._listUpdating = false;
+        this._title.subtitle = this._session.title;
+    }
+
+    /// Switch to a stored conversation. Refuses mid-stream: the reply
+    /// belongs to the conversation that asked for it.
+    async _openSession(id) {
+        if (id === this._session.id)
+            return;
+        if (this._activeQid !== null) {
+            this._renderSessionList();  // put the selection back
+            return;
+        }
+        const record = parseSession(await this._memoryGet(sessionKey(id)));
+        if (!record) {
+            // The index knows about it but the record is gone or corrupt;
+            // say so rather than silently opening an empty conversation.
+            this._sessions = removeFromIndex(this._sessions, id);
+            this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+            this._showSession(newSession(), []);
+            this._systemNote('That conversation could not be read — it has ' +
+                'been removed from the list.');
+            return;
+        }
+        this._showSession(sessionInfo(record), record.turns);
+    }
+
+    _newSession() {
+        if (this._activeQid !== null)
+            return;             // don't drop a stream mid-flight
+        if (this._turns.length === 0)
+            return;             // already on a blank conversation
+        this._showSession(newSession(), []);
+    }
+
+    /// Make `info` the open conversation and render `turns` into the log.
+    _showSession(info, turns) {
+        this._session = sessionInfo(info);
+        this._turns = [];
+        let child = this._log.get_first_child();
+        while (child) {
+            const next = child.get_next_sibling();
+            this._log.remove(child);
+            child = next;
+        }
+        for (const t of turns)
+            this._addTurn(t.role, t.text, t.model ?? undefined);
+        this._renderSessionList();
+    }
+
+    _confirmDelete(info) {
+        const dialog = new Adw.AlertDialog({
+            heading: 'Delete conversation?',
+            body: `“${info.title}” and its turns are removed from this ` +
+                'machine. The Ledger entries for its turns remain — this ' +
+                'deletes the transcript, not the record that it happened.',
+        });
+        dialog.add_response('cancel', 'Cancel');
+        dialog.add_response('delete', 'Delete');
+        dialog.set_response_appearance('delete',
+            Adw.ResponseAppearance.DESTRUCTIVE);
+        dialog.set_default_response('cancel');
+        dialog.set_close_response('cancel');
+        dialog.connect('response', (_d, response) => {
+            if (response === 'delete')
+                this._deleteSession(info.id);
+        });
+        dialog.present(this.window);
+    }
+
+    _deleteSession(id) {
+        if (this._activeQid !== null && id === this._session.id)
+            return;
+        if (this._sessions.some(e => e.id === id)) {
+            this._sessions = removeFromIndex(this._sessions, id);
+            // Context1 has no per-key delete (only a namespace-wide wipe,
+            // which would take the other conversations with it), so the
+            // record is tombstoned with the empty string — what
+            // SessionStore does too.
+            this._memorySet(sessionKey(id), '');
+            this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+        }
+        if (id !== this._session.id) {
+            this._renderSessionList();
+            return;
+        }
+        const next = this._sessions[0];
+        this._showSession(newSession(), []);
+        if (next)
+            this._openSession(next.id).catch(e => logError(e, 'open session'));
     }
 
     // ---- backend (dev.lisaos.Overlay1) -----------------------------------
@@ -180,7 +385,7 @@ class AssistantWindow {
         this._current = null;
         this._setBusy(false);
         this._scrollToBottom();
-        this._persistConversation();
+        this._persistSession();
     }
 
     // ---- sending -------------------------------------------------------
@@ -273,21 +478,6 @@ class AssistantWindow {
             margin_top: 6, margin_bottom: 6, margin_start: 24, margin_end: 24,
         });
         this._log.append(label);
-    }
-
-    _reset() {
-        if (this._activeQid !== null)
-            return; // don't drop a stream mid-flight
-        this._turns = [];
-        let child = this._log.get_first_child();
-        while (child) {
-            const next = child.get_next_sibling();
-            this._log.remove(child);
-            child = next;
-        }
-        // An empty array, not MemoryWipe — wiping would nuke every key
-        // in the app's namespace, not just the conversation.
-        this._persistConversation();
     }
 
     _export() {
@@ -416,36 +606,78 @@ class AssistantWindow {
             Gio.DBusCallFlags.NONE, 4000, null);
     }
 
-    // ---- conversation history (dev.lisaos.Context1 app memory) ---------
+    // ---- sessions (dev.lisaos.Context1 app memory) ---------------------
     //
     // Every call fails soft: with lisa-contextd absent the app behaves
-    // exactly as before — no persistence, at most one system note.
+    // exactly as it always has — conversations live for the run of the
+    // window, and the user is told once.
 
-    async _restoreConversation() {
-        let json;
-        try {
-            const reply = await this._contextCall('MemoryGet',
-                new GLib.Variant('(ss)', [APP_ID, CONVERSATION_KEY]), '(s)');
-            [json] = reply.deepUnpack();
-        } catch {
-            return; // daemon absent or no saved conversation — start fresh
-        }
+    async _restoreSessions() {
+        this._sessions = parseSessionIndex(await this._memoryGet(INDEX_KEY));
+        if (this._sessions.length === 0 && await this._migrateLegacy())
+            return;
+        this._renderSessionList();
         if (this._turns.length > 0)
             return; // the user beat the restore to it — don't interleave
-        for (const t of deserializeConversation(json))
-            this._addTurn(t.role, t.text, t.model ?? undefined);
+        const recent = this._sessions[0];
+        if (recent)
+            await this._openSession(recent.id);
     }
 
-    _persistConversation() {
-        const json = serializeConversation(this._turns);
+    /// Fold the pre-sessions `conversation` key into session one, then
+    /// tombstone it so an upgrade happens exactly once. Returns whether
+    /// anything was migrated.
+    async _migrateLegacy() {
+        const session = migrateLegacyConversation(
+            await this._memoryGet(LEGACY_CONVERSATION_KEY));
+        if (!session || this._turns.length > 0)
+            return false;
+        this._showSession(sessionInfo(session), session.turns);
+        this._sessions = upsertIndex(this._sessions, session);
+        this._memorySet(sessionKey(session.id), serializeSession(session));
+        this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+        this._memorySet(LEGACY_CONVERSATION_KEY, '');
+        this._renderSessionList();
+        return true;
+    }
+
+    /// Write the open conversation and re-file it at the top of the index.
+    /// Called when a turn completes — a conversation nobody spoke in is
+    /// never written.
+    _persistSession() {
+        if (this._turns.length === 0)
+            return;
+        const record = sessionWithTurns(this._session, this._turns);
+        this._session = sessionInfo(record);
+        this._sessions = upsertIndex(this._sessions, record);
+        this._memorySet(sessionKey(record.id), serializeSession(record));
+        this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+        this._renderSessionList();
+    }
+
+    /// A missing key and an absent daemon are both '' — the same thing
+    /// as far as the window is concerned, and the same thing a tombstone
+    /// means.
+    async _memoryGet(key) {
+        try {
+            const reply = await this._contextCall('MemoryGet',
+                new GLib.Variant('(ss)', [APP_ID, key]), '(s)');
+            const [value] = reply.deepUnpack();
+            return value;
+        } catch {
+            return '';
+        }
+    }
+
+    _memorySet(key, value) {
         this._contextCall('MemorySet',
-            new GLib.Variant('(sss)', [APP_ID, CONVERSATION_KEY, json]), null)
+            new GLib.Variant('(sss)', [APP_ID, key, value]), null)
             .catch(() => {
                 if (this._persistWarned)
                     return;
                 this._persistWarned = true;
-                this._systemNote('Context daemon unavailable — this ' +
-                    'conversation will not survive a restart.');
+                this._systemNote('Context daemon unavailable — ' +
+                    'conversations will not survive a restart.');
             });
     }
 
