@@ -1,0 +1,28 @@
+# Lisa OS image-level session defaults. The lisa-shell package ships the
+# fuller override (extensions, keybindings) — but nightly/base images
+# built without the lisa packages were falling back to GNOME stock
+# branding (blue wallpaper in every CI screenshot). The pure-branding
+# defaults live here in the image itself so ANY image build looks like
+# Lisa. Stanzas duplicate lisa-shell's values; identical keys merge
+# cleanly, and unknown-schema stanzas are ignored with a warning.
+# Compiled by glib-compile-schemas in mkosi.postinst.chroot.
+
+[org.gnome.desktop.interface]
+font-name='Rubik 11'
+document-font-name='Rubik 11'
+accent-color='purple'
+
+[org.gnome.desktop.background]
+picture-uri='file:///usr/share/backgrounds/lisa/lisa-light.svg'
+picture-uri-dark='file:///usr/share/backgrounds/lisa/lisa-dark.svg'
+picture-options='zoom'
+primary-color='#6D45C9'
+
+[org.gnome.desktop.screensaver]
+picture-uri='file:///usr/share/backgrounds/lisa/lisa-light.svg'
+picture-options='zoom'
+primary-color='#6D45C9'
+
+[org.gnome.settings-daemon.plugins.power]
+sleep-inactive-ac-type='nothing'
+sleep-inactive-battery-type='nothing'

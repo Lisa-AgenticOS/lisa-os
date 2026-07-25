@@ -158,3 +158,12 @@ fi
 if command -v dconf >/dev/null 2>&1 && [ -d /etc/dconf/db/gdm.d ]; then
     dconf update || true
 fi
+
+# Compile the image-level gschema overrides (wallpaper/accent/font in
+# mkosi.extra) into gschemas.compiled — base images without the lisa
+# packages otherwise show GNOME stock branding (every CI screenshot was
+# the blue wallpaper). Package installs re-run this via pacman hooks.
+if command -v glib-compile-schemas >/dev/null 2>&1 &&
+    [ -d /usr/share/glib-2.0/schemas ]; then
+    glib-compile-schemas /usr/share/glib-2.0/schemas || true
+fi
