@@ -135,3 +135,11 @@ h1,h2,h3{letter-spacing:-.028em;line-height:1.05;font-weight:800;text-wrap:balan
 footer{border-top:1px solid var(--line);padding:34px 0 48px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;color:var(--ink-faint);font-size:13.5px}
 footer a{color:var(--ink-soft)}
 footer .mono{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;letter-spacing:.04em}
+
+/* self-shot screenshots */
+.shots{margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:820px){.shots{grid-template-columns:1fr}}
+.shots figure{margin:0;background:var(--ground);border:1px solid var(--line);border-radius:16px;
+  overflow:hidden;box-shadow:0 24px 60px -34px rgba(30,20,60,.34)}
+.shots img{display:block;width:100%;height:auto}
+.shots figcaption{padding:12px 16px;font-size:13.5px;color:var(--ink-faint);border-top:1px solid var(--line)}

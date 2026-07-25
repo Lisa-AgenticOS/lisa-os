@@ -14,6 +14,7 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       <div class="menu">
         <a href="#why">Why Lisa</a>
         <a href="#ledger">The Ledger</a>
+        <a href="#screens">Screenshots</a>
         <a href="#status">Status</a>
         <a :href="docs">Docs</a>
       </div>
@@ -82,6 +83,24 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
           <div class="bub you"><span class="w">YOU</span>Summarize the three files I dropped in ~/notes today.</div>
           <div class="bub lisa"><span class="w">LISA</span>Across all three: the roadmap moved M6 up, the meeting settled the ledger schema, and the spec adds an offline mode.</div>
         </div>
+      </div>
+    </section>
+
+    <section id="screens" class="sec">
+      <div class="lead-2">
+        <span class="eyebrow">See it running</span>
+        <h2>Photographed by the OS itself.</h2>
+        <p>These aren't mockups: our CI boots the real image in a VM and screenshots it — every release photographs itself, so what you see here can never drift from what ships.</p>
+      </div>
+      <div class="shots">
+        <figure>
+          <img src="/screens/desktop.png" alt="The Lisa OS GNOME desktop, booted in the CI verification VM" loading="lazy">
+          <figcaption>The desktop, seconds after boot in the CI verification VM.</figcaption>
+        </figure>
+        <figure>
+          <img src="/screens/assistant.png" alt="The Lisa Assistant chat window running in the CI VM, honestly reporting that no models are installed in the bare test image" loading="lazy">
+          <figcaption>The Assistant — here in the bare test image, honestly reporting its empty model store.</figcaption>
+        </figure>
       </div>
     </section>
 
