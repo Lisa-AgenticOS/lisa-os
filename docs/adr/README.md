@@ -52,3 +52,4 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0020](0020-app-update-channel.md) — App updates decoupled from the OS image
 - [ADR-0021](0021-aarch64-lane.md) — aarch64 image lane on an Arch Linux ARM base
 - [ADR-0022](0022-rescue-boot-path.md) — User-survivable rescue boot path (pinned rescue UKI + self-repair)
+- [ADR-0023](0023-slim-core-var-grows.md) — Slim core, /var grows: apps and heavy payloads leave the image
