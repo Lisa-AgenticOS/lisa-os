@@ -61,6 +61,12 @@ pub struct LlamaConfig {
     pub extra_args: Vec<String>,
     /// Resident-model cap: children beyond this are LRU-evicted (§5.1).
     pub max_resident: usize,
+    /// Budget (seconds) for a spawned child to finish loading its model
+    /// (/health == 200). 60 s was enough for a small model on NVMe but a
+    /// multi-GiB gguf on spinning rust or a VM's virtio disk takes
+    /// minutes — a cold load slower than this budget surfaced as a
+    /// spurious 503 on the first request (found on the M4 aarch64 rig).
+    pub health_timeout_secs: u64,
 }
 
 impl Default for LlamaConfig {
@@ -73,6 +79,7 @@ impl Default for LlamaConfig {
             port: 7778,
             extra_args: Vec::new(),
             max_resident: 2,
+            health_timeout_secs: 300,
         }
     }
 }

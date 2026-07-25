@@ -98,11 +98,13 @@ impl Inner {
         self.wait_healthy().await
     }
 
-    /// Poll llama-server's /health until 200 (model loaded). ~60 s budget
-    /// to cover cold model loads.
+    /// Poll llama-server's /health until 200 (model loaded). The budget is
+    /// `llama.health_timeout_secs` (default 300 s): a multi-GiB gguf on a
+    /// slow disk loads for minutes, and giving up early turns a working
+    /// cold start into a spurious 503 on the first request.
     async fn wait_healthy(&self) -> Result<(), EngineError> {
         let url = format!("http://127.0.0.1:{}/health", self.cfg.port);
-        for _ in 0..600 {
+        for _ in 0..self.cfg.health_timeout_secs.saturating_mul(10) {
             if let Ok(r) = self.client.get(&url).send().await
                 && r.status().is_success()
             {
