@@ -1,6 +1,7 @@
 # ADR-0017: Plymouth + the lisa theme move into the mkosi-initrd
 
-- **Status:** accepted
+- **Status:** accepted; the `simpledrm`-only display clause is amended by
+  [ADR-0026](0026-native-drm-in-initrd.md)
 - **Date:** 2026-07-24
 
 ## Context
@@ -33,6 +34,13 @@ Carry Plymouth **and the lisa theme** in the mkosi-initrd, via mkosi's
   blob**, so Plymouth has a surface to render on inside the initrd. `amdgpu`
   (which needs firmware) is intentionally NOT forced into the initrd; it takes
   over in the rooted system, a possible brief mode-switch but no black gap.
+
+  > **Amended by [ADR-0026](0026-native-drm-in-initrd.md) (2026-07-26).** Two
+  > things were wrong here. The option name is `KernelInitrdModules=` (issue
+  > #46), and `simpledrm` is *built into* Arch's kernel, so that entry matched
+  > no module and shipped nothing. The iMac stayed black from the Apple logo to
+  > GDM. `amdgpu` **and its firmware** now go into the initrd — the way Ubuntu
+  > does it — with `virtio_gpu` for the VM.
 
 Because the theme ships with it, this is never the theme-less flash the earlier
 design avoided — it addresses that concern head-on rather than working around

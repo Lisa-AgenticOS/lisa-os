@@ -28,3 +28,4 @@ os/packages/*/*.log
 # Local model stores / scratch
 *.gguf
 .claude/
+lisa-app/

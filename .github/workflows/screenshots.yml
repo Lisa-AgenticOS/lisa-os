@@ -127,8 +127,11 @@ jobs:
           # past the early phase. Run-2 lesson: even at 2s the framebuffer
           # is BLACK through the initrd — Plymouth's units run (serial log)
           # but its painting never reaches the captured scanout in this VM.
-          # Likely fix: virtio_gpu in the initrd modules or -device VGA;
-          # until then splash visuals are verified on hardware, not here.
+          # ADR-0025 landed the first half of the suspected fix: `virtio_gpu`
+          # now rides KernelInitrdModules=, so a real DRM driver — not just
+          # the builtin simpledrm on the EFI GOP — drives virtio-vga during
+          # the initrd. If these frames are still black, the remaining lever
+          # is the display device (`-device VGA`). Issue #26.
           sleep 3
           n=0
           for i in $(seq 1 20); do

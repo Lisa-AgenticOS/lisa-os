@@ -128,10 +128,8 @@ via the `mkosi.initrd/` overlay (`mkosi.initrd/mkosi.conf` adds `plymouth`;
 `mkosi.initrd/mkosi.extra/` ships the theme, `plymouthd.conf`, and a
 `sysinit.target.wants/plymouth-start.service` symlink), so the violet Lisa
 splash comes up **during the initrd phase — right after the Apple logo**, not
-only at `sysinit.target` in the rooted system. `simpledrm`
-(`KernelModulesInitrdInclude`) gives Plymouth the EFI framebuffer with no
-firmware blob; `amdgpu` (firmware-dependent) takes over later in the rooted
-system. Because the theme ships alongside, this is never the theme-less
+only at `sysinit.target` in the rooted system. Because the theme ships
+alongside, this is never the theme-less
 non-Lisa flash — the reason it used to be kept out. Earlier this was a
 rooted-system-only splash with a black window between the Apple logo and
 `sysinit`; on the field iMac that window was long enough to read as "powered
@@ -141,6 +139,22 @@ still pulls Plymouth + the `lisa` theme into any **dracut**-built initrd
 `plymouth-read-write.service` are held enabled in `00-lisa.preset` so the
 handoff to GDM is not disabled by a stock `disable *` preset. A missing
 or failed splash never blocks boot — Plymouth degrades to blank/text.
+
+**The surface Plymouth paints on (ADR-0025).** A splash in the initrd is
+worth nothing without a DRM device in the initrd, and ADR-0017's
+`simpledrm` entry shipped none: `simpledrm`, `drm` and `drm_kms_helper`
+are **built into** Arch's kernel (`modules.builtin`), so a
+`KernelInitrdModules=` glob — which only ever matches `.ko` files —
+matched nothing. The iMac18,2 stayed black from the Apple logo to GDM.
+So `KernelInitrdModules=` now carries the **native** driver the way
+Ubuntu's initramfs does: **`amdgpu`** (with the `amdgpu/*.bin` firmware
+and the twelve `depends=` DRM helpers mkosi resolves automatically) and
+**`virtio_gpu`** for QEMU's `-device virtio-vga`. Cost: ~36 MB per UKI,
+against a 1 GiB ESP holding three of them. `FirmwareFiles=` is
+deliberately left unset — it would also switch on mkosi's image-wide
+firmware pruning and delete every blob no module declares, Bluetooth's
+`brcm/*.hcd` among them (see ADR-0025). The nightly asserts `amdgpu.ko`
++ `polaris11_*` firmware inside the built UKI.
 
 **CI is unaffected.** Both boot-checks direct-kernel-boot with their own
 `-append` (`nightly.yml`, `release.yml`) and never read this

@@ -183,6 +183,12 @@ Pantheon. Feeds the M4 shell ADR.
   verified: extensions ACTIVE (after the shell-version fix),
   `dev.lisaos.Overlay1.UI` owned by gnome-shell, Summon → overlay shows →
   ledgered context retrieval. `lisa install <disk>` already done.
+- **Boot splash on hardware (ADR-0025, issue #26):** the initrd now
+  carries `amdgpu` + its firmware (and `virtio_gpu` for QEMU) — ADR-0017's
+  `simpledrm` entry matched nothing, since simpledrm is built into Arch's
+  kernel, so the iMac booted black from the Apple logo to GDM. Mechanism
+  landed and asserted in the nightly; **appearance still unconfirmed on
+  the device** — needs one graphical boot after the next release.
 - **iMac as CI runner:** not yet registered (needs a fresh registration
   token minted at the machine); unlocks perf gates + the Flutter Linux
   spike half + real M4 desktop work.

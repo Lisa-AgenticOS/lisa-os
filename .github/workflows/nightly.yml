@@ -76,6 +76,58 @@ jobs:
           print('initrd storage/HID stack: OK')
           PY
           rm -f initrd.img uki.efi discard.efi
+      - name: Initrd must carry the display stack (amdgpu + its firmware)
+        run: |
+          # ADR-0025. The splash is only as good as the DRM device the
+          # initrd can bind: ADR-0017 listed `simpledrm`, which is BUILT IN
+          # on Arch (modules.builtin) and therefore matched no .ko at all —
+          # the field iMac18,2 booted black from the Apple logo to GDM.
+          # The fix is Ubuntu's: the native driver AND its firmware in the
+          # initrd. Both halves are asserted here, because either one
+          # missing gives the same black screen: amdgpu.ko without
+          # amdgpu/polaris11_* firmware cannot bring up the Radeon Pro 560,
+          # and mkosi's automatic firmware-dependency resolution is the
+          # kind of implicit behaviour that breaks silently on an upgrade
+          # (cf. issue #46). Extraction mirrors the storage/HID step: every
+          # zstd frame, because the kernel-modules initrd is appended as
+          # separate frames.
+          sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils zstd >/dev/null
+          RAW=""
+          for c in os/mkosi/lisa.raw lisa.raw; do [ -f "$c" ] && RAW="$c" && break; done
+          if [ -n "$RAW" ]; then
+            OFF=$(( $(sfdisk -J "$RAW" | jq -r '.partitiontable.partitions[0].start') * 512 ))
+            NAME=$(mdir -b -i "$RAW@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1 || true)
+            if [ -n "$NAME" ]; then
+              mcopy -i "$RAW@@$OFF" "::/EFI/Linux/$NAME" uki-drm.efi
+              objcopy --dump-section .initrd=initrd-drm.img uki-drm.efi discard-drm.efi || true
+            fi
+          fi
+          [ -f initrd-drm.img ] || cp os/mkosi/lisa.initrd initrd-drm.img
+          python3 - <<'PY'
+          import subprocess, sys
+          d = open('initrd-drm.img','rb').read()
+          offs = [i for i in range(len(d)) if d[i:i+4] == b'\x28\xb5\x2f\xfd'] or [0]
+          blob = b''
+          for off in offs:
+              blob += subprocess.run(['zstd','-dc'], input=d[off:], capture_output=True).stdout
+          blob += d  # uncompressed cpio segments too
+          # Modules: the driver plus two of the helpers modinfo lists in its
+          # depends= — proof that mkosi resolved dependencies, not just the
+          # one name we spelled out.
+          missing = [m for m in (b'amdgpu.ko', b'ttm.ko', b'gpu-sched.ko') if m not in blob]
+          # Firmware: the blobs Polaris11/Baffin (Radeon Pro 560) actually
+          # loads. Matches the .zst-suffixed names too.
+          missing += [f for f in (b'polaris11_smc.bin', b'polaris11_pfp.bin',
+                                  b'polaris11_mec.bin', b'polaris11_sdma.bin')
+                      if f not in blob]
+          if missing:
+              print('FAIL: initrd missing display stack:', [m.decode() for m in missing])
+              print('      amdgpu + amdgpu/polaris11_* must be in the initrd or the')
+              print('      iMac boots black from the Apple logo to GDM (ADR-0025).')
+              sys.exit(1)
+          print('initrd display stack (amdgpu + polaris11 firmware): OK')
+          PY
+          rm -f initrd-drm.img uki-drm.efi discard-drm.efi
       - name: "Image must ship the whole sysupdate pull stack (issue #45)"
         run: |
           # `lisa update` is only as good as what the image can execute.

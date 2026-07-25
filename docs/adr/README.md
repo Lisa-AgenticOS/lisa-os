@@ -53,4 +53,6 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0021](0021-aarch64-lane.md) — aarch64 image lane on an Arch Linux ARM base
 - [ADR-0022](0022-rescue-boot-path.md) — User-survivable rescue boot path (pinned rescue UKI + self-repair)
 - [ADR-0023](0023-slim-core-var-grows.md) — Slim core, /var grows: apps and heavy payloads leave the image
+- [ADR-0024](0024-apple-cs8409-out-of-tree-codec.md) — Out-of-tree CS8409 codec module for Apple speakers
 - [ADR-0025](0025-one-agent-loop.md) — One agent loop: sessions, memory, skills and every tool family in a single harness
+- [ADR-0026](0026-native-drm-in-initrd.md) — The native GPU driver + its firmware ride the initrd
