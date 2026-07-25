@@ -5,6 +5,15 @@
 # SHA256SUMS). Installed systems point at releases/latest/download/, so
 # each new release IS the update: `lisa update` pulls it into the B slot
 # (PLAN §6 channels; ADR-0001/0003).
+#
+# Gates, in order, all before `gh release create`: the image must boot
+# ("no boot, no release"), and it must survive the A/B sysupdate scenario
+# — the same one the nightly runs, shared via
+# .github/actions/ab-sysupdate (issue #47). The A/B gate exists here
+# because this image is NOT the nightly one: the lisa-* split packages,
+# llama.cpp, zen-browser, the forked gnome-control-center and
+# lisa-audio-cs8409 only ever land in this lane, and a packaging
+# difference that breaks staging (issue #45) used to be invisible to CI.
 
 name: release
 
@@ -22,7 +31,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 60 -> 90: the A/B sysupdate gate below adds ~13 min (two 10 GiB
+    # root-slot copies + xz, then a UEFI QEMU update/reboot cycle) to a
+    # job that already runs ~30 min. Measured against the nightly's
+    # ab-sysupdate job (~9 min on the smaller image) plus the release
+    # image's fuller root.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - name: Compute version
@@ -182,6 +196,37 @@ jobs:
             --exclude='*/tests' --exclude='testing' .
           sha256sum "lisa_${VER}.root.xz" "lisa_${VER}.efi" "lisa-usb-${VER}.raw.zst" "lisa-apps_${VER}.tar.zst" > SHA256SUMS
           cat SHA256SUMS; ls -lh lisa_* lisa-usb-*
+      # The A/B gate, on the artifact devices actually receive (issue #47).
+      # Until now the ab-* jobs only ever ran against the NIGHTLY image,
+      # while release.yml builds a materially different one (the lisa-*
+      # split packages, llama.cpp, zen-browser, the forked
+      # gnome-control-center, lisa-audio-cs8409) and checked only "no boot,
+      # no release". A packaging difference that breaks staging — issue
+      # #45's failure class, which reached a real device — passed every
+      # gate. Same scenario, same code, this artifact.
+      #
+      # ORDERING IS LOAD-BEARING, twice:
+      #  * AFTER the extract step, because the scenario is destructive: it
+      #    rewrites the ESP, relabels partition 3 and lets the guest write
+      #    a root image over it. Every published artifact has already been
+      #    derived from the pristine image by this point, so nothing
+      #    downstream reads lisa-usb.raw again.
+      #  * BEFORE `gh release create`, because that is the whole point — a
+      #    staging failure must fail the release instead of reaching
+      #    devices.
+      # Do not move it, and do not add a step between here and Publish that
+      # reads lisa-usb.raw.
+      #
+      # v1 is the real release version (YYYYMMDD.run), not the nightly's
+      # "1": it is what mkosi baked into IMAGE_VERSION, what the root_@v
+      # slot label carries, and what ProtectVersion=%A resolves to. The
+      # scenario stages .run+1 and offers .run+2 — the shape consecutive
+      # releases actually take.
+      - name: A/B sysupdate gate on the release image
+        uses: ./.github/actions/ab-sysupdate
+        with:
+          image: lisa-usb.raw
+          version: ${{ steps.ver.outputs.ver }}
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -38,6 +38,20 @@ Verity partitions are the next backlog item. Nightly CI:
   into v3. The PLAN §10 "A/B update + rollback demonstrated" line is
   closed.
 
+The `ab-sysupdate` scenario is not nightly-only: it lives in
+`.github/actions/ab-sysupdate` (a composite action) and `release.yml`
+runs the *same* code against the release image, after every published
+artifact has been extracted from it and before `gh release create`
+(issue #47). It has to, because the two images are not the same build:
+the release lane folds in the `lisa-*` split packages, llama.cpp,
+zen-browser, the forked gnome-control-center and lisa-audio-cs8409, and
+a packaging difference that broke staging (issue #45) previously reached
+devices with every gate green. The action takes the image's baked
+`IMAGE_VERSION` as v1 — `1` for the nightly, `YYYYMMDD.run` for a
+release — and derives the staged v2 and the offered v3 from it, so
+`ProtectVersion=%A` is exercised against the version the image really
+carries.
+
 **The pull stack is declared, not inherited** (issue #45). Downloads
 are not done by `systemd-sysupdate` itself: for every `Type=url-file`
 source it forks `/usr/lib/systemd/systemd-pull`, which `dlopen()`s

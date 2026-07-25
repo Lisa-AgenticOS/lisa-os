@@ -19,11 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Build release binaries
+        env:
+          # Via env, not ${{ }} inline: a dispatch input interpolated
+          # straight into the script is a shell-injection surface, and an
+          # array keeps the word-splitting deliberate instead of accidental.
+          CRATES: ${{ github.event.inputs.crates }}
         run: |
           set -o pipefail
-          FLAGS=""
-          for c in ${{ github.event.inputs.crates }}; do FLAGS="$FLAGS -p $c"; done
-          cargo build --release $FLAGS
+          FLAGS=()
+          for c in $CRATES; do FLAGS+=(-p "$c"); done
+          cargo build --release "${FLAGS[@]}"
           mkdir -p out
           for f in target/release/*; do
             [ -f "$f" ] && [ -x "$f" ] && case "$f" in *.d|*.rlib|*.so) ;; *) cp "$f" out/ ;; esac

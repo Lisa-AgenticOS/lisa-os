@@ -48,7 +48,11 @@ claim below is enforced by CI on `main`, not aspirational.
   byte-copy duplicate btrfs fsid → btrfstune -m; and systemd-gpt-auto's
   phantom machine-id-keyed var.mount racing the fstab-generator →
   `systemd.gpt_auto=no`, with /var, /home, and /efi as explicit fstab
-  PARTLABEL mounts. Releases are gated on the nightly's ab-sysupdate job.
+  PARTLABEL mounts. The ab-sysupdate scenario now lives in
+  `.github/actions/ab-sysupdate` and runs in BOTH lanes — nightly and,
+  before publishing, release.yml against the artifact devices receive
+  (issue #47; it used to gate only the nightly image, which is a
+  different build).
 - **On-device (field iMac, .22): the Assistant chat is verified end-to-end** —
   streamed tokens, ledgered (`inference.generate/complete`), window renders
   with a live model picker. Two shipping bugs found live and fixed: the model

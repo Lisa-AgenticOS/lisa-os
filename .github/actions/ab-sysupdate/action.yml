@@ -1,0 +1,430 @@
+# The A/B update gate, in one place (issue #47).
+#
+# This composite action IS the ab-sysupdate scenario. It used to live
+# inline in nightly.yml and therefore only ever ran against the NIGHTLY
+# image; devices run the RELEASE image, which carries a materially
+# different package set (the lisa-* split packages, llama.cpp,
+# zen-browser, the forked gnome-control-center, lisa-audio-cs8409). A
+# packaging difference that breaks staging — exactly issue #45's failure
+# class — passed every gate and reached the field. Both lanes now call
+# this action: nightly.yml against the plain image, release.yml against
+# the artifact that is about to be published.
+#
+# What it proves (M0 acceptance, PLAN §10, ADR-0001 + the issue #20
+# regression): the update half of A/B in the THREE-version shape that
+# erased the field iMac's running root (booted v1 = OLDEST, v2 staged in
+# the other slot, v3 available on the server, InstancesMax=2). Mechanism,
+# verified against systemd main (src/sysupdate/sysupdate-transfer.c,
+# transfer_vacuum()) and sysupdate.d(5): sysupdate installs into an
+# `_empty`-labeled slot; if none exists it vacuums down to InstancesMax-1
+# by evicting the OLDEST installed version — it never checks which
+# partition backs `/` (its resource code only uses /usr's backing device
+# to LOCATE the disk). The only guard is opt-in: ProtectVersion=
+# (sysupdate.d(5), since v251) — "Protected versions are never removed
+# while making room for new, updated versions ... to ensure that the
+# currently booted OS version ... is not replaced/overwritten during
+# updates" — where %A expands to the running os-release IMAGE_VERSION. So
+# the incident is documented-but-surprising behavior our config triggered
+# (no ProtectVersion= in the transfer definitions), not an upstream bug
+# (cf. systemd/systemd#33339, the adjacent incomplete-version case) and
+# not the v22 device's root=PARTLABEL/fstab state, which sysupdate never
+# consults. The shipped transfers now carry ProtectVersion=%A; this
+# scenario proves it in the incident's shape: boot v1 (the OLDEST) with
+# v2 staged in slot B and v3 on the server, assert v3 installs OVER v2,
+# v1's partition survives untouched (PARTLABEL + fs UUID + canary hash),
+# and the reboot lands in v3. A two-version flow never covered this: with
+# one slot still _empty, vacuum has nothing to evict, so the erase path
+# is unreachable.
+#
+# DESTRUCTIVE: the scenario rewrites the image's ESP, relabels partition
+# 3 and lets the guest write a full root image over it. Callers must be
+# done with the image — release.yml runs this only after every published
+# artifact has been extracted from it.
+#
+# Cost on a GitHub-hosted ubuntu runner: ~9 min for the nightly image,
+# ~13 min for the (fuller) release image. Needs ~12 GiB of scratch on top
+# of the image: one uncompressed 10 GiB root-slot copy at a time, plus
+# its .xz.
+
+name: A/B sysupdate scenario
+description: >-
+  Run the three-version systemd-sysupdate regression (issue #20) against a
+  built Lisa disk image: booted-oldest slot protected, middle slot evicted,
+  reboot lands in the new version.
+
+inputs:
+  image:
+    description: >-
+      Path to the raw disk image, relative to the workspace. Consumed
+      destructively.
+    required: true
+  version:
+    description: >-
+      The image's baked IMAGE_VERSION, which is also its root_@v slot label
+      and its UKI's lisa_@v.efi name — "1" for the nightly image,
+      "YYYYMMDD.run" for a release image. This is v1, the booted-oldest
+      version the scenario protects; v2 (staged) and v3 (the update) are
+      derived by incrementing its last dot-separated numeric field, so a
+      release build stages 20260725.31 and 20260725.32 over 20260725.30 —
+      the same shape real consecutive releases take, and the ordering
+      systemd's version comparison actually applies.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: "A/B: plant sysupdate config + demo scripts (loop mounts)"
+      shell: bash
+      env:
+        AB_IMAGE: ${{ inputs.image }}
+        AB_VERSION: ${{ inputs.version }}
+      run: |
+        [ -f "$AB_IMAGE" ] || { echo "FAIL: no image at $AB_IMAGE"; exit 1; }
+        # Everything this scenario writes goes in its own directory, and the
+        # image is addressed absolutely. The release lane runs this in the
+        # SAME workspace that already holds the artifacts about to be
+        # published — and the demo UKIs it builds are named lisa_<v1>.efi,
+        # exactly the release's own artifact name. Working in the workspace
+        # root would silently publish a demo UKI.
+        AB_IMAGE="$(realpath "$AB_IMAGE")"
+        mkdir -p ab-scratch
+        cd ab-scratch
+        sudo apt-get update -qq
+        sudo apt-get install -qq -y --no-install-recommends \
+          fdisk jq binutils systemd-ukify systemd-boot-efi xz-utils \
+          btrfs-progs mtools >/dev/null
+
+        # v2/v3 by incrementing the last numeric field of v1: 1 -> 2, 3 and
+        # 20260725.30 -> .31, .32. systemd compares version strings with
+        # strverscmp_improved(), which compares digit runs numerically, so
+        # both shapes order correctly — and the booted version stays the
+        # OLDEST, which is the whole point of the scenario.
+        AB_V1="$AB_VERSION"
+        case "$AB_V1" in
+          *.*) AB_HEAD="${AB_V1%.*}."; AB_TAIL="${AB_V1##*.}" ;;
+          *)   AB_HEAD="";             AB_TAIL="$AB_V1" ;;
+        esac
+        case "$AB_TAIL" in
+          ''|*[!0-9]*) echo "FAIL: version '$AB_V1' does not end in a numeric field"; exit 1 ;;
+        esac
+        # 10#: a run number like "08" is not octal.
+        AB_V2="${AB_HEAD}$((10#$AB_TAIL + 1))"
+        AB_V3="${AB_HEAD}$((10#$AB_TAIL + 2))"
+        echo "versions: v1=$AB_V1 (booted, protected)  v2=$AB_V2 (staged)  v3=$AB_V3 (update)"
+        {
+          echo "AB_V1=$AB_V1"
+          echo "AB_V2=$AB_V2"
+          echo "AB_V3=$AB_V3"
+        } >>"$GITHUB_ENV"
+
+        LOOP=$(sudo losetup -P --show -f "$AB_IMAGE")
+        mkdir -p mnt-root mnt-esp
+        sudo mount "${LOOP}p2" mnt-root
+        sudo mount "${LOOP}p1" mnt-esp
+
+        # ProtectVersion=%A anchors on the running os-release
+        # IMAGE_VERSION, so the demo only exercises the real protection
+        # path if the image's baked version is the v1 we were told. The
+        # nightly image bakes ImageVersion=1 (mkosi.conf); release.yml
+        # rewrites it to YYYYMMDD.run. Assert the anchor before relying
+        # on it — a silent mismatch would turn every assertion below into
+        # a test of nothing.
+        if ! grep -Fqx "IMAGE_VERSION=$AB_V1" mnt-root/usr/lib/os-release &&
+           ! grep -Fqx "IMAGE_VERSION=\"$AB_V1\"" mnt-root/usr/lib/os-release; then
+          echo "FAIL: image os-release does not carry IMAGE_VERSION=$AB_V1"
+          grep -F IMAGE_VERSION mnt-root/usr/lib/os-release || true
+          exit 1
+        fi
+
+        # sysupdate transfers: root partition images by slot label, UKIs
+        # by ESP filename. Verify=no: the M1 hosted repo signs.
+        sudo mkdir -p mnt-root/etc/sysupdate.d mnt-root/efi
+        # HERMETIC: mask the image's baked production channel
+        # (/usr/lib/sysupdate.d → releases/latest). Without this, sysupdate
+        # merges both sources and picks the highest version — the PUBLISHED
+        # release (e.g. 20260724.25) beats the local demo's, so the test
+        # silently updates slot B to the real GitHub release instead of the
+        # build under test (the root cause of the ab-sysupdate failures
+        # since v25 shipped). Same-name /etc symlinks to /dev/null override
+        # /usr/lib per unit-file semantics. This matters twice as much in
+        # the release lane, where the local demo versions are adjacent to
+        # the real channel's.
+        for f in mnt-root/usr/lib/sysupdate.d/*; do
+          sudo ln -sf /dev/null "mnt-root/etc/sysupdate.d/$(basename "$f")"
+        done
+        sudo tee mnt-root/etc/sysupdate.d/50-root.conf >/dev/null <<'EOF'
+        [Transfer]
+        Verify=no
+        # Issue #20: sysupdate has NO built-in guard for the partition
+        # backing /. Vacuuming for InstancesMax evicts the OLDEST
+        # version — if that is the booted one, the running root is
+        # erased mid-session. ProtectVersion= (sysupdate.d(5), since
+        # v251) is the documented guard: %A = the running os-release
+        # IMAGE_VERSION. Mirrors the shipped 50-root.transfer.
+        ProtectVersion=%A
+        [Source]
+        Type=url-file
+        Path=http://10.0.2.2:8000/
+        MatchPattern=lisa_@v.root.xz
+        [Target]
+        Type=partition
+        Path=auto
+        MatchPattern=root_@v
+        MatchPartitionType=root
+        InstancesMax=2
+        EOF
+        sudo tee mnt-root/etc/sysupdate.d/60-uki.conf >/dev/null <<'EOF'
+        [Transfer]
+        Verify=no
+        # Same guard for the boot entry: keep the booted version's UKI
+        # while vacuuming (issue #20; mirrors the shipped
+        # 60-uki.transfer).
+        ProtectVersion=%A
+        [Source]
+        Type=url-file
+        Path=http://10.0.2.2:8000/
+        MatchPattern=lisa_@v.efi
+        [Target]
+        Type=regular-file
+        Path=/EFI/Linux
+        PathRelativeTo=esp
+        MatchPattern=lisa_@v.efi
+        InstancesMax=2
+        EOF
+
+        # QEMU user-net DHCP so the guest can reach the runner (10.0.2.2).
+        sudo tee mnt-root/etc/systemd/network/99-demo-dhcp.network >/dev/null <<'EOF'
+        [Match]
+        Name=en*
+        [Network]
+        DHCP=yes
+        EOF
+
+        # Slot generation marker (1/2/3), deliberately NOT the sysupdate
+        # version: it is what the console assertions grep for, and it stays
+        # legible whatever version shape the caller passes.
+        echo 1 | sudo tee mnt-root/etc/lisa-slot-version >/dev/null
+        # Canary: 1 MiB of random bytes baked into the v1 root. If the
+        # update ever writes to the booted slot again (issue #20), the
+        # canary hash — or the fs UUID, or the PARTLABEL — changes;
+        # all three are asserted host-side after the run.
+        head -c 1M /dev/urandom > canary.bin
+        sudo cp canary.bin mnt-root/usr/lib/lisa-canary
+        echo "AB_CANARY_SHA=$(sha256sum canary.bin | cut -d' ' -f1)" >>"$GITHUB_ENV"
+        # One driver for all slots, branching on the version marker —
+        # so every root stays a byte-copy of v1 except the marker and
+        # os-release. (systemd.run= is container-only; a real enabled
+        # unit is the way to script a VM boot.)
+        sudo tee mnt-root/usr/local/bin/lisa-demo.sh >/dev/null <<'EOF'
+        #!/bin/bash
+        v=$(cat /etc/lisa-slot-version)
+        echo "LISA_SLOT_BOOTED=$v" > /dev/console
+        if [ "$v" = "1" ]; then
+            systemctl start systemd-networkd
+            for _ in $(seq 1 60); do (echo > /dev/tcp/10.0.2.2/8000) 2>/dev/null && break; sleep 1; done
+            if /usr/lib/systemd/systemd-sysupdate update > /tmp/sysupdate.log 2>&1; then
+                tail -5 /tmp/sysupdate.log > /dev/console
+                echo "LISA_UPDATE_DONE" > /dev/console
+                # Drop the loader.conf pin that forced booting the
+                # OLDEST version (the field state). systemd-boot's
+                # normal highest-filename selection then picks the
+                # freshly installed UKI on reboot. /efi is the ESP,
+                # fstab-mounted (ADR-0018) — sysupdate just staged the
+                # UKI through it.
+                rm -f /efi/loader/loader.conf
+                systemctl reboot
+            else
+                tail -10 /tmp/sysupdate.log > /dev/console
+                echo "LISA_UPDATE_FAILED" > /dev/console
+                systemctl poweroff
+            fi
+        else
+            systemctl poweroff
+        fi
+        EOF
+        sudo chmod +x mnt-root/usr/local/bin/lisa-demo.sh
+        sudo tee mnt-root/etc/systemd/system/lisa-demo.service >/dev/null <<'EOF'
+        [Unit]
+        Description=Lisa A/B sysupdate demo driver
+        After=multi-user.target
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/lisa-demo.sh
+        EOF
+        sudo mkdir -p mnt-root/etc/systemd/system/multi-user.target.wants
+        sudo ln -sf ../lisa-demo.service mnt-root/etc/systemd/system/multi-user.target.wants/lisa-demo.service
+        # systemd-firstboot prompts interactively on first boot and
+        # blocks the console; the demo has no user.
+        sudo ln -sf /dev/null mnt-root/etc/systemd/system/systemd-firstboot.service
+
+        # Demo UKIs from the shipped kernel+initrd: v1 boots slot A and
+        # runs the update; v2 (staged, must NEVER boot) and v3 (the
+        # update) boot slot B. mkosi names its UKI lisa_<version>.efi, but
+        # older/other profiles use a dash — accept both, skip the rescue
+        # entry, and refuse to guess if the ESP has none.
+        NAME=""
+        shopt -s nullglob
+        for f in mnt-esp/EFI/Linux/lisa[-_]*.efi; do
+          case "$f" in *rescue*) continue ;; esac
+          NAME="$(basename "$f")"
+          break
+        done
+        shopt -u nullglob
+        [ -n "$NAME" ] || { echo "FAIL: no lisa UKI in the image's ESP"; ls -l mnt-esp/EFI/Linux/; exit 1; }
+        echo "baked UKI: $NAME"
+        objcopy --dump-section .linux=vmlinuz --dump-section .initrd=initrd.img "mnt-esp/EFI/Linux/$NAME" discard.efi
+        UKIFY=$(command -v ukify || echo /usr/lib/systemd/ukify)
+        "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
+          --cmdline='root=/dev/vda2 rw console=ttyS0 systemd.gpt_auto=no' \
+          --output="lisa_${AB_V1}.efi"
+        "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
+          --cmdline='root=/dev/vda3 rw console=ttyS0 systemd.gpt_auto=no' \
+          --output="lisa_${AB_V2}.efi"
+        "$UKIFY" build --linux=vmlinuz --initrd=initrd.img \
+          --cmdline='root=/dev/vda3 rw console=ttyS0 systemd.gpt_auto=no' \
+          --output="lisa_${AB_V3}.efi"
+        sudo rm "mnt-esp/EFI/Linux/$NAME"
+        sudo cp "lisa_${AB_V1}.efi" "lisa_${AB_V2}.efi" mnt-esp/EFI/Linux/
+        # Boot the OLDEST installed version first, like the field
+        # device (still running .22 with .25 staged). Without the pin
+        # systemd-boot would pick the v2 UKI (highest filename). The
+        # v1 driver removes the pin after the update; boot-order
+        # mechanics themselves are ab-rollback's business.
+        sudo mkdir -p mnt-esp/loader
+        printf 'default lisa_%s.efi\ntimeout 0\n' "$AB_V1" |
+          sudo tee mnt-esp/loader/loader.conf >/dev/null
+
+        # Diagnostics for the A/B UUID story (ADR-0018): what identifiers
+        # does the built image actually carry? If fs UUIDs repeat across
+        # runs, real A/B updates would collide the same way the byte-copy
+        # below used to.
+        echo "--- baked /etc/fstab:"; sudo cat mnt-root/etc/fstab 2>/dev/null || echo "(no fstab)"
+        echo "--- filesystem/partition identifiers:"; sudo blkid | grep "$LOOP" || true
+
+        sudo umount mnt-esp mnt-root
+
+        # Record what must SURVIVE the run: v1's btrfs fs UUID (the
+        # canary hash is already in env; the PARTLABEL is read from
+        # the table afterwards).
+        echo "AB_V1_UUID=$(sudo blkid -s UUID -o value "${LOOP}p2")" >>"$GITHUB_ENV"
+
+        # v2 root = byte-copy of slot A with a bumped version marker,
+        # written INTO the _empty B slot so the disk starts FULL —
+        # the issue #20 precondition (both slots populated, booted =
+        # oldest, next version on the server).
+        # A byte-copy carries slot A's btrfs fsid; two same-fsid devices on
+        # one disk send the kernel's btrfs device-scan into chaos (the
+        # by-uuid device never shows up → emergency mode — exactly what a
+        # real cloned-slot update would do). btrfstune -m gives the copy a
+        # fresh metadata_uuid/fsid, the supported way to make a clone
+        # mountable next to its origin (needs btrfs-progs).
+        sudo dd if="${LOOP}p2" of=upd.img bs=4M status=none
+        sudo chown "$USER:" upd.img
+        sudo btrfstune -f -m upd.img
+        echo "--- v2 root identifiers after re-uuid:"; sudo blkid upd.img || true
+        mkdir -p mnt-upd
+        sudo mount -o loop upd.img mnt-upd
+        echo 2 | sudo tee mnt-upd/etc/lisa-slot-version >/dev/null
+        # ProtectVersion=%A resolves per-slot: bump the baked
+        # IMAGE_VERSION to match the slot's sysupdate version.
+        grep -q '^IMAGE_VERSION=' mnt-upd/usr/lib/os-release
+        sudo sed -i "s/^IMAGE_VERSION=.*/IMAGE_VERSION=${AB_V2}/" mnt-upd/usr/lib/os-release
+        sudo umount mnt-upd
+        sudo dd if=upd.img of="${LOOP}p3" bs=4M status=none conv=fsync
+        sudo sfdisk --part-label "$LOOP" 3 "root_${AB_V2}"
+        rm upd.img
+
+        # v3 = another byte-copy of the pristine slot A (fresh fsid
+        # again, so v1/v2/v3 never collide on one disk), served over
+        # HTTP as the available update. Sequential copies keep peak
+        # scratch usage to one slot image.
+        sudo dd if="${LOOP}p2" of=upd.img bs=4M status=none
+        sudo chown "$USER:" upd.img
+        sudo btrfstune -f -m upd.img
+        echo "--- v3 root identifiers after re-uuid:"; sudo blkid upd.img || true
+        sudo mount -o loop upd.img mnt-upd
+        echo 3 | sudo tee mnt-upd/etc/lisa-slot-version >/dev/null
+        sudo sed -i "s/^IMAGE_VERSION=.*/IMAGE_VERSION=${AB_V3}/" mnt-upd/usr/lib/os-release
+        sudo umount mnt-upd
+        xz -T0 -1 upd.img
+        mkdir -p serve
+        mv upd.img.xz "serve/lisa_${AB_V3}.root.xz"
+        cp "lisa_${AB_V3}.efi" serve/
+        # sysupdate enumerates available versions via the SHA256SUMS
+        # manifest even with Verify=no (that flag only skips GPG).
+        (cd serve && sha256sum "lisa_${AB_V3}.root.xz" "lisa_${AB_V3}.efi" > SHA256SUMS)
+        sudo losetup -d "$LOOP"
+        echo "--- starting labels (expect root_${AB_V1} + root_${AB_V2} + _empty gone):"
+        sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[].name'
+        ls -lh serve/
+
+    - name: "A/B: update over the middle slot + reboot into v3 (UEFI QEMU)"
+      shell: bash
+      env:
+        AB_IMAGE: ${{ inputs.image }}
+      run: |
+        set -o pipefail
+        AB_IMAGE="$(realpath "$AB_IMAGE")"
+        cd ab-scratch   # same scratch directory the previous step set up
+        [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm
+        sudo apt-get install -qq -y --no-install-recommends qemu-system-x86 ovmf >/dev/null
+        (cd serve && python3 -m http.server 8000 >/dev/null 2>&1 &)
+        cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
+        # 1200s, not the 900 this scenario used when it was nightly-only:
+        # the release image's root carries ~8 GiB of packages, so the guest
+        # downloads a much bigger .xz over slirp before writing the slot.
+        # The job-level timeout is the real backstop; this one only decides
+        # how long a hang is given to prove itself.
+        timeout 1200 qemu-system-x86_64 \
+          -machine q35 -accel kvm -accel tcg -m 4G -nographic \
+          -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+          -drive if=pflash,format=raw,file=vars.fd \
+          -drive "file=$AB_IMAGE,format=raw,if=virtio" \
+          | tee console.log
+        echo "--- console assertions"
+        V1=$(grep -n "LISA_SLOT_BOOTED=1" console.log | head -1 | cut -d: -f1)
+        DONE=$(grep -n "LISA_UPDATE_DONE" console.log | head -1 | cut -d: -f1)
+        V3=$(grep -n "LISA_SLOT_BOOTED=3" console.log | head -1 | cut -d: -f1)
+        [ -n "$V1" ] && [ -n "$DONE" ] && [ -n "$V3" ]
+        [ "$V1" -lt "$DONE" ] && [ "$DONE" -lt "$V3" ]
+        grep -q "reboot: Power down" console.log
+        # v2 is a staging target only — it must never boot. (`!` would
+        # be swallowed by bash -e, hence the explicit if.)
+        if grep -q "LISA_SLOT_BOOTED=2" console.log; then
+          echo "FAIL: the staged middle version booted"; exit 1
+        fi
+        echo "--- disk assertions"
+        # v3 evicted the MIDDLE version's slot (root_v2 -> root_v3); the
+        # booted oldest slot keeps its label. This is the issue #20
+        # regression gate: on the field iMac root_1's partition (the
+        # running root) was relabeled and overwritten instead.
+        sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[].name' | tee labels.txt
+        grep -Fqx "root_${AB_V1}" labels.txt
+        grep -Fqx "root_${AB_V3}" labels.txt
+        if grep -Fqx "root_${AB_V2}" labels.txt; then
+          echo "FAIL: middle version still present — the wrong slot was evicted"; exit 1
+        fi
+        # The booted partition survived: same fs UUID, same version
+        # marker, same 1 MiB canary content.
+        LOOP=$(sudo losetup -P --show -f "$AB_IMAGE")
+        [ "$(sudo blkid -s UUID -o value "${LOOP}p2")" = "$AB_V1_UUID" ]
+        mkdir -p mnt-check
+        sudo mount -o ro "${LOOP}p2" mnt-check
+        [ "$(cat mnt-check/etc/lisa-slot-version)" = "1" ]
+        [ "$(sudo sha256sum mnt-check/usr/lib/lisa-canary | cut -d' ' -f1)" = "$AB_CANARY_SHA" ]
+        sudo umount mnt-check
+        # The B slot now carries v3's payload, not v2's.
+        sudo mount -o ro "${LOOP}p3" mnt-check
+        [ "$(cat mnt-check/etc/lisa-slot-version)" = "3" ]
+        sudo umount mnt-check
+        sudo losetup -d "$LOOP"
+        # ESP: the booted version's UKI is kept (protected), the
+        # middle one was vacuumed, v3's was installed.
+        OFF=$(( $(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[0].start') * 512 ))
+        mdir -b -i "$AB_IMAGE@@$OFF" ::/EFI/Linux/ | tee esp-after.txt
+        grep -Fq "lisa_${AB_V1}.efi" esp-after.txt
+        grep -Fq "lisa_${AB_V3}.efi" esp-after.txt
+        if grep -Fq "lisa_${AB_V2}.efi" esp-after.txt; then
+          echo "FAIL: middle UKI still in ESP — the wrong UKI was vacuumed"; exit 1
+        fi
+        echo "SYSUPDATE DEMO: PASS (booted-oldest v${AB_V1} protected, v${AB_V3} installed over v${AB_V2}, rebooted into v${AB_V3})"

@@ -134,12 +134,12 @@ jobs:
           # is the display device (`-device VGA`). Issue #26.
           sleep 3
           n=0
-          for i in $(seq 1 20); do
+          for _ in $(seq 1 20); do
             python3 qmp.py screendump "$PWD/shots/shot-$(printf '%02d' "$n").ppm" \
               || echo "::warning::early frame $n failed (framebuffer not ready?)"
             n=$((n+1)); sleep 2
           done
-          for i in $(seq 1 6); do
+          for _ in $(seq 1 6); do
             python3 qmp.py screendump "$PWD/shots/shot-$(printf '%02d' "$n").ppm" \
               || echo "::warning::early frame $n failed"
             n=$((n+1)); sleep 10
@@ -222,7 +222,11 @@ jobs:
             echo "::error::no frames were captured at all"
             exit 1
           fi
-          SPLASH=ABSENT
+          # The verdict is decided inside a `{ ... } | tee` pipeline, i.e. a
+          # SUBSHELL — a plain SPLASH=PRESENT there is discarded on exit and
+          # the summary below always printed ABSENT, however violet the
+          # frames were. Carry it out through a file instead.
+          rm -f splash.verdict
           {
             echo "frame                mean    r       g       b       note"
             for f in "${pngs[@]}"; do
@@ -233,13 +237,15 @@ jobs:
               awk -v m="$M" 'BEGIN{exit !(m>0.01)}' && note=content
               case "$f" in shots/shot-*)
                 if awk -v m="$M" -v g="$G" -v b="$B" 'BEGIN{exit !(m>0.02 && b>g*1.15)}'; then
-                  note=violet-splash; SPLASH=PRESENT
+                  note=violet-splash; echo PRESENT > splash.verdict
                 fi ;;
               esac
               printf '%-20s %-7.4f %-7.4f %-7.4f %-7.4f %s\n' \
                 "$(basename "$f")" "$M" "$R" "$G" "$B" "$note"
             done
           } | tee shots/index.txt
+          SPLASH=ABSENT
+          [ -f splash.verdict ] && SPLASH=$(cat splash.verdict)
           echo "SPLASH: $SPLASH"
       - name: Upload screenshots artifact
         if: always()
