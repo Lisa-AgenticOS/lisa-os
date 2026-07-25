@@ -236,6 +236,13 @@ enum Command {
         )]
         url: String,
     },
+    /// Print a shell completion script to stdout, e.g.
+    /// `lisa completions zsh > ~/.zfunc/_lisa`. Packages install these
+    /// at the standard paths — see os/packages/lisa/PKGBUILD.
+    Completions {
+        /// Target shell (bash, zsh, fish, elvish, powershell).
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -444,6 +451,10 @@ fn run() -> anyhow::Result<()> {
         Command::Undo => agent::undo_cmd(),
         Command::Ledger { tail, json, db } => ledger_cmd(tail, json, db),
         Command::Embed { text, url } => embed(text, &url),
+        Command::Completions { shell } => {
+            completions(shell, &mut std::io::stdout());
+            Ok(())
+        }
         Command::Install { target, from, yes } => install_cmd(&target, from, yes),
         Command::Update { reboot } => update_cmd(reboot),
         Command::Apps { cmd } => match cmd {
@@ -1395,6 +1406,38 @@ fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Generate a completion script for `shell` into `out` (issue #10).
+/// Split from the match arm so tests can capture the output in-process.
+fn completions(shell: clap_complete::Shell, out: &mut dyn Write) {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "lisa", out);
+}
+
+#[cfg(test)]
+mod completions_tests {
+    use clap::CommandFactory;
+
+    #[test]
+    fn subcommand_exists() {
+        assert!(
+            super::Cli::command()
+                .find_subcommand("completions")
+                .is_some(),
+            "`lisa completions` must exist"
+        );
+    }
+
+    #[test]
+    fn zsh_script_is_nonempty_and_names_the_function() {
+        let mut buf = Vec::new();
+        super::completions(clap_complete::Shell::Zsh, &mut buf);
+        let script = String::from_utf8(buf).expect("zsh completions are UTF-8");
+        assert!(!script.is_empty());
+        assert!(script.contains("_lisa"), "zsh script defines _lisa");
+    }
 }
 
 #[cfg(test)]
