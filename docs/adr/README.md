@@ -51,3 +51,4 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0019](0019-dedicated-home-partition.md) — Dedicated /home partition on fresh installs, weight-split with var
 - [ADR-0020](0020-app-update-channel.md) — App updates decoupled from the OS image
 - [ADR-0021](0021-aarch64-lane.md) — aarch64 image lane on an Arch Linux ARM base
+- [ADR-0022](0022-rescue-boot-path.md) — User-survivable rescue boot path (pinned rescue UKI + self-repair)
