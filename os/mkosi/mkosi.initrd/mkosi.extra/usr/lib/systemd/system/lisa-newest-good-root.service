@@ -5,7 +5,11 @@
 [Unit]
 Description=Resolve the newest mountable Lisa root slot (rescue entry)
 DefaultDependencies=no
-ConditionPathExists=/etc/initrd-release
+# No ConditionPathExists=/etc/initrd-release: mkosi-initrd does not
+# reliably ship that file, and a silently-skipped unit looked exactly
+# like a resolver bug in the nightly. The script's own cmdline check
+# (root=/dev/lisa/newest-good) is the real gate — it exits instantly
+# on any normal boot.
 Before=initrd-root-device.target sysroot.mount
 After=systemd-udevd.service
 Wants=systemd-udevd.service
