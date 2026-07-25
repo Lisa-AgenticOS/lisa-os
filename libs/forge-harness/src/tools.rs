@@ -57,14 +57,16 @@ pub struct ToolOutcome {
 }
 
 impl ToolOutcome {
-    fn ok(text: impl Into<String>, mutated: bool) -> Self {
+    pub fn ok(text: impl Into<String>, mutated: bool) -> Self {
         Self {
             text: text.into(),
             mutated,
         }
     }
 
-    fn err(text: impl Into<String>) -> Self {
+    /// Public so other tool families (ADR-0025) can report failures in
+    /// the same shape the loop's narration and history already expect.
+    pub fn err(text: impl Into<String>) -> Self {
         Self::ok(format!("error: {}", text.into()), false)
     }
 }

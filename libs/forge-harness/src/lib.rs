@@ -19,8 +19,9 @@ pub mod openai;
 pub mod tools;
 
 pub use agent::{
-    AgentAction, AgentConfig, AgentEvent, AgentReport, Message, Role, ScriptedBackend, Verifier,
-    forge_agent, forge_agent_observed,
+    AgentAction, AgentConfig, AgentEvent, AgentReport, Message, Role, ScriptedBackend,
+    ToolProvider, Verifier, WorkspaceTools, forge_agent, forge_agent_observed,
+    forge_agent_with_tools,
 };
 pub use openai::OpenAiBackend;
 pub use tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};

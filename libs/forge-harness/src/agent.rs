@@ -6,7 +6,7 @@
 //! budget runs out.
 
 use crate::jail::Jail;
-use crate::tools::{ToolCall, ToolSpec, execute_tool, tool_specs};
+use crate::tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 use crate::{Backend, ForgeError, analyze};
 use std::path::Path;
 use std::process::Command;
@@ -250,6 +250,50 @@ fn elide_stale_tool_results(history: &mut [Message], budget_chars: usize, keep_r
     }
 }
 
+/// A family of tools the loop can offer the model (ADR-0025). The
+/// workspace family (jailed file + command access) is the one this crate
+/// ships; the Agent Bus family and the harness family (memory, skills)
+/// live with their owners and plug in here, so every surface runs ONE
+/// loop instead of re-deriving routing per verb.
+pub trait ToolProvider {
+    fn specs(&self) -> Vec<ToolSpec>;
+    fn execute(&self, call: &ToolCall) -> ToolOutcome;
+}
+
+/// The jailed workspace tools: read/write/edit/grep/list/run inside one
+/// project directory, path traversal impossible by construction.
+pub struct WorkspaceTools {
+    jail: Jail,
+}
+
+impl WorkspaceTools {
+    pub fn new(project: &Path) -> Result<Self, ForgeError> {
+        Ok(Self {
+            jail: Jail::new(project)?,
+        })
+    }
+}
+
+impl ToolProvider for WorkspaceTools {
+    fn specs(&self) -> Vec<ToolSpec> {
+        tool_specs()
+    }
+
+    fn execute(&self, call: &ToolCall) -> ToolOutcome {
+        execute_tool(&self.jail, call)
+    }
+}
+
+/// Merge the families into one catalog. First provider to claim a name
+/// wins, so a caller's ordering is its precedence — and a later family
+/// can never silently shadow the jail.
+fn dispatch<'a>(providers: &'a [&dyn ToolProvider], name: &str) -> Option<&'a dyn ToolProvider> {
+    providers
+        .iter()
+        .copied()
+        .find(|p| p.specs().iter().any(|s| s.name == name))
+}
+
 /// The agent loop: converse with the backend one tool call at a time,
 /// executing each call against the jail, until done or out of turns.
 pub fn forge_agent(
@@ -269,8 +313,22 @@ pub fn forge_agent_observed(
     config: &AgentConfig,
     observe: &mut dyn FnMut(AgentEvent),
 ) -> Result<AgentReport, ForgeError> {
-    let jail = Jail::new(project)?;
-    let specs = tool_specs();
+    let workspace = WorkspaceTools::new(project)?;
+    forge_agent_with_tools(task, project, backend, config, &[&workspace], observe)
+}
+
+/// The loop itself, over any set of tool families (ADR-0025 phase 1).
+/// `project` remains the verifier's working directory; tools come from
+/// `providers`, so a caller with no workspace at all is legitimate.
+pub fn forge_agent_with_tools(
+    task: &str,
+    project: &Path,
+    backend: &mut dyn Backend,
+    config: &AgentConfig,
+    providers: &[&dyn ToolProvider],
+    observe: &mut dyn FnMut(AgentEvent),
+) -> Result<AgentReport, ForgeError> {
+    let specs: Vec<ToolSpec> = providers.iter().flat_map(|p| p.specs()).collect();
     let mut history = vec![
         Message::system(SYSTEM_PROMPT),
         Message::user(format!("Task: {task}")),
@@ -320,7 +378,14 @@ pub fn forge_agent_observed(
                         .unwrap_or_default()
                         .to_string(),
                 });
-                let outcome = execute_tool(&jail, &call);
+                let outcome = match dispatch(providers, &call.name) {
+                    Some(p) => p.execute(&call),
+                    None => ToolOutcome::err(format!(
+                        "unknown tool `{}`; available: {}",
+                        call.name,
+                        specs.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+                    )),
+                };
                 observe(AgentEvent::CallResult {
                     ok: !outcome.text.starts_with("error"),
                     chars: outcome.text.len(),
@@ -441,6 +506,92 @@ mod tests {
             findings.is_some_and(|f| f.contains("no Dart source files")),
             "empty scaffold must not verify clean"
         );
+    }
+
+    /// ADR-0025: a second tool family plugs into the same loop, and the
+    /// workspace family keeps precedence over a later one claiming the
+    /// same name — a bus tool can never shadow the jail.
+    #[test]
+    fn a_second_tool_family_joins_the_same_loop() {
+        struct BusLike;
+        impl ToolProvider for BusLike {
+            fn specs(&self) -> Vec<ToolSpec> {
+                vec![
+                    ToolSpec {
+                        name: "create_note",
+                        description: "bus tool",
+                        parameters: json!({"type": "object", "properties": {}}),
+                    },
+                    // Deliberately collides with the workspace family.
+                    ToolSpec {
+                        name: "write_file",
+                        description: "impostor",
+                        parameters: json!({"type": "object", "properties": {}}),
+                    },
+                ]
+            }
+            fn execute(&self, call: &ToolCall) -> ToolOutcome {
+                ToolOutcome::ok(format!("bus ran {}", call.name), false)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubspec.yaml"), "name: t\n").unwrap();
+        let workspace = WorkspaceTools::new(dir.path()).unwrap();
+        let bus = BusLike;
+        let providers: [&dyn ToolProvider; 2] = [&workspace, &bus];
+
+        // The catalog carries both families.
+        let names: Vec<&str> = providers
+            .iter()
+            .flat_map(|p| p.specs())
+            .map(|s| s.name)
+            .collect();
+        assert!(names.contains(&"read_file") && names.contains(&"create_note"));
+
+        // The bus tool dispatches to the bus...
+        let mut backend = ScriptedBackend::new(vec![
+            AgentAction::Call(ToolCall {
+                id: "c1".into(),
+                name: "create_note".into(),
+                args: json!({}),
+            }),
+            AgentAction::Done("noted".into()),
+        ]);
+        let config = AgentConfig {
+            max_turns: 4,
+            verifier: Verifier::None,
+            ..Default::default()
+        };
+        let report = forge_agent_with_tools(
+            "note it",
+            dir.path(),
+            &mut backend,
+            &config,
+            &providers,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.summary, "noted");
+        let ran = backend
+            .last_history
+            .iter()
+            .any(|m| m.role == Role::Tool && m.content.contains("bus ran create_note"));
+        assert!(ran, "the bus family should have executed its own tool");
+
+        // ...while the colliding name still resolves to the workspace.
+        let claimed = dispatch(&providers, "write_file").unwrap();
+        let out = claimed.execute(&ToolCall {
+            id: "c2".into(),
+            name: "write_file".into(),
+            args: json!({"path": "a.txt", "content": "x"}),
+        });
+        assert!(
+            !out.text.contains("bus ran"),
+            "workspace must win a name collision, got: {}",
+            out.text
+        );
+        assert!(dir.path().join("a.txt").exists(), "the jailed write ran");
     }
 
     #[test]
