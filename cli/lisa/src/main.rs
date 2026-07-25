@@ -1176,9 +1176,14 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
         "org.freedesktop.sysupdate1.Target",
     )?;
     println!(">> staging via systemd-sysupdated (target {name}) — polkit may prompt");
-    let (version, job): (String, zbus::zvariant::OwnedObjectPath) =
-        match target.call("Update", &("", 0u64)) {
-            Ok(r) => r,
+    // Without AllowInteractiveAuth, polkit can only consult static policy
+    // — it never shows the auth prompt this whole path exists for (#32).
+    let interactive = zbus::proxy::MethodFlags::AllowInteractiveAuth.into();
+    // Update returns (s new_version, t job_id, o job_path) — issue #30.
+    let (version, _job_id, job): (String, u64, zbus::zvariant::OwnedObjectPath) =
+        match target.call_with_flags("Update", interactive, &("", 0u64)) {
+            Ok(Some(r)) => r,
+            Ok(None) => bail!("sysupdated returned no reply to Update"),
             Err(zbus::Error::MethodError(ref err_name, ref msg, _))
                 if err_name.as_str().ends_with("NoCandidate") =>
             {
@@ -1193,21 +1198,40 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
             Err(e) => bail!("sysupdated refused the update: {e}"),
         };
     println!(">> update to {version} started — waiting for the job to finish");
-    // JobRemoved(t id, o path, i status): status 0 = success.
-    for signal in removals.by_ref() {
-        let Ok((_id, done_path, status)) = signal
-            .body()
-            .deserialize::<(u64, zbus::zvariant::OwnedObjectPath, i32)>()
-        else {
-            continue;
-        };
-        if done_path != job {
-            continue;
+    // JobRemoved(t id, o path, i status): status 0 = success. The wait is
+    // bounded, and a dead bus is an error, never success (#31) — with
+    // --reboot a false success would reboot on unfinished staging.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for signal in removals.by_ref() {
+            if let Ok(parsed) = signal
+                .body()
+                .deserialize::<(u64, zbus::zvariant::OwnedObjectPath, i32)>()
+                && tx.send(parsed).is_err()
+            {
+                return;
+            }
         }
-        if status != 0 {
-            bail!("sysupdated job for {version} failed (status {status})");
+        // Iterator exhausted: the connection died. Dropping tx reports it.
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60 * 60);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok((_, done_path, _)) if done_path != job => continue,
+            Ok((_, _, 0)) => break,
+            Ok((_, _, status)) => {
+                bail!("sysupdated job for {version} failed (status {status})")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => bail!(
+                "timed out waiting for the sysupdated job (60 min) — \
+                 check `journalctl -u systemd-sysupdated`"
+            ),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!(
+                "bus connection lost while waiting for the sysupdated job — \
+                 staging state unknown; check `journalctl -u systemd-sysupdated`"
+            ),
         }
-        break;
     }
     if reboot {
         let login1: Proxy = Proxy::new(
@@ -1216,7 +1240,9 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
             "/org/freedesktop/login1",
             "org.freedesktop.login1.Manager",
         )?;
-        login1.call::<_, _, ()>("Reboot", &(false))?;
+        login1
+            .call_with_flags::<_, _, ()>("Reboot", interactive, &(false))?
+            .unwrap_or(());
     } else {
         println!(
             "update staged in the inactive slot — reboot to use it (rollback is automatic on boot failure)"

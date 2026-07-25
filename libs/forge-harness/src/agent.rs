@@ -129,23 +129,28 @@ impl Verifier {
     }
 }
 
-/// Any `.dart` file under the project (skipping the `.dart_tool` cache)
-/// counts as source; the pubspec scaffold alone does not.
+/// Any `.dart` regular file under the project (skipping the `.dart_tool`
+/// cache) counts as source; the pubspec scaffold alone does not. Symlinks
+/// are not followed (#33): a linked directory could walk outside the
+/// project or cycle forever, and a dangling `x.dart` link is not source.
 fn has_dart_sources(project: &Path) -> bool {
     fn walk(dir: &Path) -> bool {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return false;
         };
         for entry in entries.flatten() {
+            let Ok(ftype) = entry.file_type() else {
+                continue;
+            };
             let path = entry.path();
-            if path.is_dir() {
+            if ftype.is_dir() {
                 if path.file_name().is_some_and(|n| n == ".dart_tool") {
                     continue;
                 }
                 if walk(&path) {
                     return true;
                 }
-            } else if path.extension().is_some_and(|e| e == "dart") {
+            } else if ftype.is_file() && path.extension().is_some_and(|e| e == "dart") {
                 return true;
             }
         }
@@ -355,6 +360,25 @@ mod tests {
             findings.is_some_and(|f| f.contains("no Dart source files")),
             "empty scaffold must not verify clean"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dart_source_walk_ignores_symlinks() {
+        // #33: a symlinked dir must not let the walk escape the project,
+        // and a dangling `x.dart` link is not source.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("real.dart"), "void main() {}\n").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubspec.yaml"), "name: t\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/x.dart", dir.path().join("ghost.dart")).unwrap();
+        assert!(
+            !has_dart_sources(dir.path()),
+            "symlinked/dangling entries must not count as source"
+        );
+        std::fs::write(dir.path().join("real.dart"), "void main() {}\n").unwrap();
+        assert!(has_dart_sources(dir.path()));
     }
 
     #[test]
