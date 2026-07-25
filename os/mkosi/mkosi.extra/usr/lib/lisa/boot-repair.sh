@@ -41,9 +41,15 @@ booted_ver=$(. /etc/os-release 2>/dev/null && echo "${IMAGE_VERSION:-}")
 [ -n "$booted_ver" ] || exit 0
 stash_dir=/var/lib/lisa/uki
 
-# The booted version's UKI under either naming convention.
+# The booted UKI: release-channel installs name it lisa_<imagever>.efi,
+# freshly-baked images name it lisa-<kernelver>.efi (mkosi), and boot
+# counting may append +<tries>. Match all of them.
+kver=$(uname -r)
 booted_uki=""
-for candidate in "$ukidir/lisa_${booted_ver}.efi" "$ukidir/lisa-${booted_ver}.efi"; do
+for candidate in \
+    "$ukidir/lisa_${booted_ver}.efi" "$ukidir/lisa-${booted_ver}.efi" \
+    "$ukidir/lisa_${booted_ver}"+*.efi "$ukidir/lisa-${booted_ver}"+*.efi \
+    "$ukidir/lisa-${kver}.efi" "$ukidir/lisa-${kver}"+*.efi; do
     if [ -f "$candidate" ]; then
         booted_uki="$candidate"
         break
@@ -88,6 +94,13 @@ for uki in "$ukidir"/lisa_*.efi "$ukidir"/lisa-*.efi; do
     # Boot-counting suffixes (`lisa_2+3-0.efi`) are not part of the
     # version — strip them or every counted entry looks dangling.
     ver=${ver%%+*}
+    # Only slot-version-shaped names (digits and dots, e.g. 20260725.29)
+    # are tied to root_<ver> partitions. Kernel-named baked UKIs
+    # (lisa-6.x.y-arch1-1.efi), rescue entries, anything else: never
+    # cleanup candidates.
+    case "$ver" in
+        *[!0-9.]*) continue ;;
+    esac
     [ "$ver" = "$booted_ver" ] && continue
     [ "$total" -le 1 ] && break
     if [ ! -e "/dev/disk/by-partlabel/root_${ver}" ]; then
