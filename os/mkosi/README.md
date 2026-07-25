@@ -120,7 +120,34 @@ real display, set the loader `timeout` to 0 so the Apple logo hands
 straight to the splash. There is no on-disk `loader.conf` to edit here
 yet (mkosi assembles the ESP), so this is left as a verify-in-CI item.
 
+## aarch64 lane (ADR-0021)
+
+The same profile builds for arm64 on an **Arch Linux ARM** base:
+`mkosi.conf.d/` carries the per-arch split (`[Match] Architecture=` —
+`aarch64.conf` picks `linux-aarch64`, appends `console=ttyAMA0`, and
+resets `ToolsTree=` because mkosi's default tools tree demands packages
+ALARM doesn't have; `x86_64.conf` carries `linux`, moved there because
+`Packages=` is append-only across drop-ins). mkosi ≥ 25 targets ALARM's
+mirrors natively when the architecture is arm. The resolved x86_64
+package set is unchanged by the split.
+
+`.github/workflows/aarch64-image.yml` (weekly + dispatch, native arm64
+runner) builds inside the `menci/archlinuxarm` container and boot-checks
+with `qemu-system-aarch64 -machine virt` to `poweroff.target`. First
+target is QEMU/UTM guests; Asahi bare-metal is explicitly deferred, and
+the A/B jobs and the release lane (zen-browser is an x86_64 binary
+repackage; llama.cpp needs its PKGBUILD arch extended) are follow-ups —
+see the ADR for the verified-vs-first-CI-run ledger.
+
 Remaining for the full Track I story: dm-verity on the root slots,
 swtpm in the boot test, signed sysupdate sources (M1 repo).
 
-Requires Linux; on macOS dev hosts this directory is CI-only.
+Requires Linux; on macOS dev hosts this directory is CI-only. The
+aarch64 build has, however, been exercised in a local ALARM container on
+the Apple Silicon dev host up to final image assembly (repos, full
+package install, initrd, partitioning all pass); it stopped at "no
+kernel found" because ALARM's kernel lands at /boot/Image — the postinst
+now copies it to the modules dir mkosi scans, a fix the first CI run
+still has to confirm. Local quirk: the output dir must be
+container-local (virtiofs mounts reject the xattr-preserving final
+copy).

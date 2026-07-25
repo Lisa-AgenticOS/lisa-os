@@ -4,10 +4,18 @@
 # macOS
 .DS_Store
 
-# mkosi build outputs (Track I images are CI artifacts, never committed)
+# mkosi build outputs (Track I images are CI artifacts, never committed).
+# CI writes lisa.raw / lisa.vmlinuz / lisa.initrd / initrd.cpio.zst
+# straight into os/mkosi/ (no OutputDirectory=), so a local build drops
+# them there too — keep them out of the tree.
 os/mkosi/mkosi.output/
 os/mkosi/*.cache/
 os/mkosi/mkosi.builddir/
+os/mkosi/lisa.raw
+os/mkosi/lisa.vmlinuz
+os/mkosi/lisa.initrd
+os/mkosi/lisa*.efi
+os/mkosi/initrd.cpio.zst
 
 # Local model stores / scratch
 *.gguf

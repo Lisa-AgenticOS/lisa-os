@@ -98,6 +98,19 @@ if id lisa &>/dev/null; then
     cp -a /home/lisa /usr/share/factory/home/lisa
 fi
 
+# aarch64 (ADR-0021): ALARM's linux-aarch64 still uses mkinitcpio-era
+# packaging — the kernel lands at /boot/Image and NOT at
+# /usr/lib/modules/<kver>/vmlinuz, which is where mkosi discovers kernels
+# for UKI assembly. Without this, the build dies at the end with "A
+# bootable image was requested but no kernel was found" (exactly where
+# the local ALARM container build stopped, 2026-07-25). Copy it into
+# place; no-op on x86_64, where Arch's `linux` ships vmlinuz in modules.
+if [ -e /boot/Image ]; then
+    for _d in /usr/lib/modules/*/; do
+        [ -e "${_d}vmlinuz" ] || cp /boot/Image "${_d}vmlinuz"
+    done
+fi
+
 # The ESP mounts at /efi from the baked fstab (gpt-auto is disabled,
 # ADR-0018) — the mountpoint must exist.
 install -d /efi

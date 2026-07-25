@@ -1,0 +1,86 @@
+# aarch64 image lane (ADR-0021). Builds the Track I image for arm64 on an
+# Arch Linux ARM base and boot-checks it in qemu-system-aarch64 — the
+# arm64 twin of nightly.yml's `image` job. Weekly, not nightly: this lane
+# targets QEMU/UTM guests (Asahi bare-metal is explicitly deferred) and
+# earns a faster cadence once it has a consumer.
+#
+# Runner: GitHub's free arm64 runners for public repos. The label below is
+# per GitHub's runner docs; unverified from the dev host — if the first
+# run never gets picked up, the label is the first thing to check.
+#
+# A/B rollback/sysupdate ports (the UEFI jobs, via AAVMF/QEMU_EFI from
+# Ubuntu's qemu-efi-aarch64 package — /usr/share/qemu-efi-aarch64/QEMU_EFI.fd,
+# paths verified in an Ubuntu 24.04 arm64 container) are follow-up, once
+# this boot check is green.
+
+name: aarch64-image
+
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: Expose /dev/kvm
+        run: |
+          # KVM availability on arm64 hosted runners is unconfirmed until
+          # the first run; the boot check falls back to TCG either way.
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; else echo "no KVM; QEMU will fall back to TCG"; fi
+      - name: Build image in Arch Linux ARM container
+        run: |
+          # menci/archlinuxarm is the same ALARM container the Track L e2e
+          # already runs in. mkosi cannot come from ALARM's repos (extra
+          # ships the pre-rewrite mkosi 14, which cannot parse this
+          # config) and is not on PyPI; the Arch-proper package is
+          # arch=(any), so install the exact build nightly.yml gets from
+          # `pacman -Syu mkosi`, pinned via the permanent Arch archive.
+          # Bump this pin together with whatever version the x86_64 lane
+          # resolves.
+          sudo podman run --rm --privileged \
+            -v "$PWD":/src -w /src docker.io/menci/archlinuxarm:latest bash -ec '
+              # pacman >= 7 sandbox cannot apply inside the container
+              sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+              pacman -Syu --noconfirm
+              # mkosi.conf.d/aarch64.conf resets ToolsTree= (mkosi'\''s
+              # default tools tree demands dnf5 + edk2-ovmf, which ALARM
+              # does not carry), so the build uses the container'\''s own
+              # tools — install the set the image build actually calls.
+              pacman -S --noconfirm --needed \
+                btrfs-progs dosfstools mtools cpio kmod xz zstd \
+                e2fsprogs util-linux systemd-ukify sbsigntools
+              pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
+              mkosi --directory os/mkosi --architecture=arm64 summary
+              mkosi --directory os/mkosi --architecture=arm64 build
+            '
+          # Outputs were written by root inside the container.
+          sudo chown -R "$USER:" os/mkosi
+      # Direct kernel boot to poweroff.target, like nightly.yml: reaching
+      # poweroff exits QEMU cleanly; a hang is caught by the timeout;
+      # "Welcome to" proves systemd came up from the image's own initrd +
+      # root. -machine virt has a PL011 UART: the console is ttyAMA0, not
+      # ttyS0. swtpm is left to the A/B follow-up jobs (parity with the
+      # x86_64 lane's split of concerns, minimal first lane).
+      - name: Boot check (qemu-system-aarch64)
+        run: |
+          set -o pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends qemu-system-arm >/dev/null
+          timeout 900 qemu-system-aarch64 \
+            -machine virt -cpu max -accel kvm -accel tcg -m 4G -nographic -no-reboot \
+            -kernel os/mkosi/lisa.vmlinuz -initrd os/mkosi/lisa.initrd \
+            -append "root=PARTLABEL=root_1 rw console=ttyAMA0 systemd.unit=poweroff.target systemd.show_status=1 systemd.gpt_auto=no" \
+            -drive file=os/mkosi/lisa.raw,format=raw,if=virtio \
+            | tee boot-console.log
+          grep -q "Welcome to" boot-console.log
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lisa-image-aarch64
+          path: os/mkosi/lisa*.raw
+          if-no-files-found: warn
+          retention-days: 7

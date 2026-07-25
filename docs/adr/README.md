@@ -41,3 +41,13 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0009](0009-agent-bus-core.md) — Agent Bus core: `dev.lisaos.Agent1`, tier enforcement at the bus, staged MCP transport
 - [ADR-0010](0010-remote-providers.md) — BYO remote providers via the `lisa-remoted` egress broker
 - [ADR-0011](0011-ambient-assistant.md) — Lisa Ambient: always-on, wake-word-free, on-device, ledgered
+- [ADR-0012](0012-gnome-control-center-lisa-panel.md) — Native "Intelligence" panel in a forked gnome-control-center
+- [ADR-0013](0013-harness-intents-and-coding-agent.md) — The Lisa harness: intents + a coding agent on the existing substrate
+- [ADR-0014](0014-lisa-ui-material-fork.md) — lisa_ui is the kit Lisa apps import — Material-backed now, vendored fork later
+- [ADR-0015](0015-assistant-app.md) — Persistent Assistant chat window
+- [ADR-0016](0016-reverse-dns-naming.md) — Reverse-DNS identifiers move to the real domains (dev.lisaos.* / app.lisaos.*)
+- [ADR-0017](0017-plymouth-in-initrd.md) — Plymouth + the lisa theme move into the mkosi-initrd
+- [ADR-0018](0018-var-pinned-partuuid.md) — /var is mounted by partition LABEL, not by UUID
+- [ADR-0019](0019-dedicated-home-partition.md) — Dedicated /home partition on fresh installs, weight-split with var
+- [ADR-0020](0020-app-update-channel.md) — App updates decoupled from the OS image
+- [ADR-0021](0021-aarch64-lane.md) — aarch64 image lane on an Arch Linux ARM base
