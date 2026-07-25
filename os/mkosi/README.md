@@ -23,11 +23,19 @@ Verity partitions are the next backlog item. Nightly CI:
   fails twice (reboots), exhausts its counters (renamed `+0-2` in the
   ESP), and the good entry boots to a clean poweroff. Real UEFI via
   OVMF, so systemd-boot itself is exercised.
-- `ab-sysupdate` job: **the update direction demonstrated** — v1 boots,
-  `systemd-sysupdate` pulls a v2 (root partition image + UKI, with
-  SHA256SUMS manifest) over HTTP, installs it into the `_empty` slot
-  (relabeled `root_2`), reboots, and v2 boots from slot B to a clean
-  poweroff. The PLAN §10 "A/B update + rollback demonstrated" line is
+- `ab-sysupdate` job: **the update direction demonstrated, in the
+  issue #20 three-version shape** — the disk starts FULL (v1 booted =
+  oldest in slot A, v2 staged in slot B) with v3 (root partition image
+  + UKI, with SHA256SUMS manifest) served over HTTP.
+  `systemd-sysupdate` must install v3 OVER v2's slot and never touch
+  the booted v1 partition: sysupdate has no built-in guard for the
+  partition backing `/` — vacuuming for `InstancesMax=` evicts the
+  OLDEST version, which on the field iMac was the running root. The
+  shipped transfer definitions therefore carry `ProtectVersion=%A`
+  (sysupdate.d(5), since systemd v251; `%A` = running os-release
+  `IMAGE_VERSION`), and the job asserts v1's PARTLABEL, fs UUID,
+  version marker, and a baked 1 MiB canary all survive, then reboots
+  into v3. The PLAN §10 "A/B update + rollback demonstrated" line is
   closed.
 
 Desktop (M4 §5.7 host): gdm + gnome-shell + a hand-picked supporting

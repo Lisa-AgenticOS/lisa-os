@@ -1,5 +1,10 @@
 [Transfer]
 Verify=no
+# Keep the booted version's UKI while vacuuming for InstancesMax —
+# without this the boot entry of the running (oldest) version can be
+# deleted during staging (issue #20; see 50-root.transfer for the full
+# story; sysupdate.d(5) ProtectVersion=, since systemd v251).
+ProtectVersion=%A
 
 [Source]
 Type=url-file

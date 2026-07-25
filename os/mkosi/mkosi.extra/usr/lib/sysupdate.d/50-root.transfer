@@ -5,6 +5,18 @@
 # SHA256SUMS integrity.
 [Transfer]
 Verify=no
+# Issue #20 (field iMac, v22→v26): sysupdate has NO built-in guard for
+# the partition backing / — vacuuming for InstancesMax evicts the OLDEST
+# installed version, and when the booted slot is the oldest of a full
+# slot set, the RUNNING root gets erased mid-session. The documented
+# guard is this opt-in setting (sysupdate.d(5), since systemd v251):
+# "Protected versions are never removed while making room for new,
+# updated versions ... to ensure that the currently booted OS version
+# ... is not replaced/overwritten during updates". %A expands to the
+# running os-release IMAGE_VERSION, which release.yml bakes to match the
+# root_@v slot label. Nightly ab-sysupdate proves this in the incident's
+# three-version shape.
+ProtectVersion=%A
 
 [Source]
 Type=url-file
