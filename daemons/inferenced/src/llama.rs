@@ -85,6 +85,11 @@ impl Inner {
             .arg("--embeddings")
             .arg("--pooling")
             .arg("mean")
+            // Render the model's own chat template: without this the
+            // server ignores `tools` and never emits OpenAI tool_calls,
+            // so agent surfaces (forge, agentd) read every reply as
+            // plain text — a bare "done" each turn on the M4 rig.
+            .arg("--jinja")
             .args(&self.cfg.extra_args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
