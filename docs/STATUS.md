@@ -13,8 +13,34 @@ complete; M2 (Ledger) and M3 (context fabric) have working cores. Every
 claim below is enforced by CI on `main`, not aspirational.
 
 - Repo: **github.com/Lisa-AgenticOS/lisa-os** · License: GPL-2.0-only (ADR-0005)
-- Latest release: **v20260724.26** (GNOME desktop image) (runs-from-USB image + sysupdate transfer set)
+- Latest release: **v20260725.27** — first release whose sysupdate transfers
+  carry `ProtectVersion=%A` (the issue-#20 booted-slot guard), gated by the
+  nightly's 3-version regression test
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
+
+**2026-07-25 early-morning (autonomous loop, continued):**
+- **Local M4 test rig**: the CI-built aarch64 image boots on the dev Mac
+  (QEMU + HVF, ~30 s to desktop) and replaced the broken iMac as the
+  feature-test device. Verified there: ADR-0018 PARTLABEL mounts, ADR-0019
+  runtime repart (grow disk → var+home split created), never-suspend
+  masking, `lisa ask` at ~3 s round-trip, the **overlay live end-to-end**
+  (D-Bus `Summon` → streamed local answer, chips, ledgered badge) — with the
+  whole Rust stack built natively inside the VM. QMP screendumps + key
+  injection give visual "computer-use" driving.
+- **Harness chase, three substrate fixes from one test session**: the Dart
+  verifier passed vacuously on an empty scaffold (issue #29 — bare "done"
+  converged with zero files; fixed, empty project is now findings); a cold
+  llama-server load slower than the fixed 60 s window surfaced as a spurious
+  503 (now `llama.health_timeout_secs`, default 300); and llama-server was
+  spawned without `--jinja`, so OpenAI `tools` were ignored and every agent
+  turn degraded to plain text (now fixed — tool calling actually reaches the
+  model).
+- **Issue #16 (dual-disk ambiguity) landed in three layers**:
+  `lisa-boot-disk-generator` pins var/home/efi to the booted disk (verified
+  on the rig), `lisa install` regenerates copied btrfs fsids with
+  `btrfstune -m`, and `lisa update` refuses transfer configs lacking
+  `ProtectVersion=` (escape hatch: `LISA_UPDATE_ALLOW_UNPROTECTED=1`).
+  Open remainder: initrd-side `root=` scoping.
 
 **Overnight 2026-07-24→25 (autonomous loop):**
 - **A/B update emergency-mode bug root-caused in three layers** (ADR-0018):
