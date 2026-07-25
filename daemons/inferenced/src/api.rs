@@ -173,10 +173,18 @@ async fn chat_completions_tools(state: AppState, mut raw: serde_json::Value) -> 
     let model = model_req
         .clone()
         .unwrap_or_else(|| state.model_name.clone());
-    let prompt_all = raw
-        .get("messages")
-        .map(std::string::ToString::to_string)
-        .unwrap_or_default();
+    let priority = Priority::parse(raw.get("lisa_priority").and_then(serde_json::Value::as_str));
+    // Hash covers the tool schemas too (#36) — they steer the output as
+    // much as the messages do, and the ledger hash is the audit anchor.
+    let prompt_all = format!(
+        "{}{}",
+        raw.get("messages")
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default(),
+        raw.get("tools")
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default()
+    );
     let started_at = std::time::Instant::now();
     let entry_id = match ledger_gate(
         &state.ledger,
@@ -199,7 +207,13 @@ async fn chat_completions_tools(state: AppState, mut raw: serde_json::Value) -> 
         Err(e) => return engine_error_response(e),
     };
     raw["stream"] = serde_json::Value::Bool(false);
-    match engine.raw_chat(raw).await {
+    // Same slot pool and preemption contract as the token lane (#34):
+    // a tool turn must not run outside the scheduler's view.
+    match state
+        .scheduler
+        .admit_future(priority, engine.raw_chat(raw))
+        .await
+    {
         Ok(child) => {
             let output_tokens = child
                 .pointer("/usage/completion_tokens")
@@ -223,12 +237,20 @@ async fn chat_completions_tools(state: AppState, mut raw: serde_json::Value) -> 
                 app_id: "host".into(),
                 model,
                 status: "error".into(),
-                detail: e.to_string(),
+                // Child error bodies can be huge — cap like the other
+                // lanes do (#36).
+                detail: e.to_string().chars().take(200).collect(),
                 ref_id: Some(entry_id),
                 duration_ms: started_at.elapsed().as_millis() as i64,
                 ..Default::default()
             });
-            engine_error_response(e)
+            // Engine failure here is unavailability, not a bad route:
+            // 503 like the typed lane, never 404 (#36).
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": {"message": e.to_string()}})),
+            )
+                .into_response()
         }
     }
 }
@@ -258,8 +280,24 @@ async fn chat_completions(
     // carry null content and extra roles the typed ChatMessage cannot
     // represent, and the child's tool_calls must reach the client
     // verbatim (found on the M4 rig — forge got plain text back).
-    if raw.get("tools").is_some() {
-        return chat_completions_tools(state, raw).await;
+    // Routing keys on a NON-EMPTY tools array (#35): OpenAI SDKs send
+    // "tools": null / [] on plain requests, and those must stay on the
+    // typed lane with its guided-generation and scheduler guarantees.
+    match raw.get("tools") {
+        Some(serde_json::Value::Array(tools)) if !tools.is_empty() => {
+            return chat_completions_tools(state, raw).await;
+        }
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Array(_)) => {}
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": {
+                    "message": "tools must be an array of tool definitions",
+                    "type": "invalid_request_error",
+                }})),
+            )
+                .into_response();
+        }
     }
     let req: ChatCompletionRequest = match serde_json::from_value(raw) {
         Ok(r) => r,

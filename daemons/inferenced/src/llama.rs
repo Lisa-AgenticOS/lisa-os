@@ -179,7 +179,13 @@ impl Engine for LlamaEngine {
             // The passthrough lane is non-streaming; cap tokens like the
             // typed lane so a runaway generation can't hold the slot.
             body["stream"] = serde_json::Value::Bool(false);
-            if body.get("max_tokens").is_none() {
+            // `"max_tokens": null` must also get the cap (#36) —
+            // llama-server's own default is unlimited.
+            if body
+                .get("max_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .is_none()
+            {
                 body["max_tokens"] = serde_json::json!(2048);
             }
             let response = inner

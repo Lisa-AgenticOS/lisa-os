@@ -39,11 +39,8 @@ impl Scheduler {
         }
     }
 
-    /// Admit `stream` under `priority`. The returned stream holds its
-    /// slot until it completes; background streams can be aborted
-    /// mid-flight when an interactive request needs the slot.
-    pub async fn admit(&self, priority: Priority, stream: TokenStream) -> TokenStream {
-        let permit = match priority {
+    async fn acquire(&self, priority: Priority) -> tokio::sync::OwnedSemaphorePermit {
+        match priority {
             Priority::Interactive => match Arc::clone(&self.slots).try_acquire_owned() {
                 Ok(p) => p,
                 Err(_) => {
@@ -62,7 +59,42 @@ impl Scheduler {
                 .acquire_owned()
                 .await
                 .expect("scheduler semaphore never closes"),
-        };
+        }
+    }
+
+    /// Admit one non-streaming unit of engine work under `priority` —
+    /// the tools passthrough lane (issue #34). Same slot pool and
+    /// preemption contract as `admit`: interactive arrivals abort
+    /// running background work, including background tool turns.
+    pub async fn admit_future<T: Send + 'static>(
+        &self,
+        priority: Priority,
+        fut: futures::future::BoxFuture<'static, Result<T, EngineError>>,
+    ) -> Result<T, EngineError> {
+        let permit = self.acquire(priority).await;
+        match priority {
+            Priority::Interactive => {
+                let _permit = permit;
+                fut.await
+            }
+            Priority::Background => {
+                let (handle, registration) = AbortHandle::new_pair();
+                self.background.lock().await.push(handle);
+                let abortable = Abortable::new(fut, registration);
+                let _permit = permit;
+                match abortable.await {
+                    Ok(result) => result,
+                    Err(futures::stream::Aborted) => Err(EngineError::Preempted),
+                }
+            }
+        }
+    }
+
+    /// Admit `stream` under `priority`. The returned stream holds its
+    /// slot until it completes; background streams can be aborted
+    /// mid-flight when an interactive request needs the slot.
+    pub async fn admit(&self, priority: Priority, stream: TokenStream) -> TokenStream {
+        let permit = self.acquire(priority).await;
 
         match priority {
             Priority::Interactive => Box::pin(async_stream::stream! {
