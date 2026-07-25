@@ -122,15 +122,22 @@ jobs:
             exit 1
           fi
 
-          # Phase 1 — early boot: a frame every ~10s for the first ~95s
-          # catches systemd-boot and the Plymouth splash (under KVM the
-          # tail frames may already show GDM; under TCG the splash lasts
-          # much longer — either way the timeline brackets it).
-          sleep 5
-          for i in $(seq 0 9); do
-            python3 qmp.py screendump "$PWD/shots/shot-$(printf '%02d' "$i").ppm" \
-              || echo "::warning::early frame $i failed (framebuffer not ready?)"
-            sleep 10
+          # Phase 1 — early boot. First run's lesson: under KVM the whole
+          # splash fits BETWEEN 10s frames (the desktop was up by frame 02).
+          # Hunt it densely: a frame every 2s for the first 40s, then every
+          # 10s to ~100s. Under TCG the splash lasts minutes — either
+          # cadence brackets it.
+          sleep 3
+          n=0
+          for i in $(seq 1 20); do
+            python3 qmp.py screendump "$PWD/shots/shot-$(printf '%02d' "$n").ppm" \
+              || echo "::warning::early frame $n failed (framebuffer not ready?)"
+            n=$((n+1)); sleep 2
+          done
+          for i in $(seq 1 6); do
+            python3 qmp.py screendump "$PWD/shots/shot-$(printf '%02d' "$n").ppm" \
+              || echo "::warning::early frame $n failed"
+            n=$((n+1)); sleep 10
           done
           echo "early-boot frames captured"
 
