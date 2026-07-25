@@ -197,32 +197,13 @@ jobs:
       # hazard, and sd-boot's selection rules deserve a dedicated
       # experiment rather than another guess against a 20-minute gate.
       # make-rescue-uki.sh stays in the tree, unused, until that lands.
-      - name: Initrd must carry the rescue root resolver
-        run: |
-          # The resolver is inert without the rescue cmdline, but if it is
-          # missing from the initrd entirely the rescue entry can never
-          # work — and Boot 3 below would fail for a reason that looks
-          # like a resolver bug. Assert presence, not behaviour.
-          if ! grep -aq 'newest-good-root' initrd-check.img 2>/dev/null; then
-            OFF=$(( $(sfdisk -J os/mkosi/lisa.raw | jq -r '.partitiontable.partitions[0].start') * 512 ))
-            NAME=$(mdir -b -i "os/mkosi/lisa.raw@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1)
-            mcopy -i "os/mkosi/lisa.raw@@$OFF" "::/EFI/Linux/$NAME" uki2.efi
-            objcopy --dump-section .initrd=initrd-check.img uki2.efi d2.efi
-          fi
-          python3 - <<'PY'
-          import subprocess, sys
-          d = open('initrd-check.img','rb').read()
-          offs = [i for i in range(len(d)) if d[i:i+4] == b'\x28\xb5\x2f\xfd'] or [0]
-          blob = b''
-          for off in offs:
-              blob += subprocess.run(['zstd','-dc'], input=d[off:], capture_output=True).stdout
-          blob += d
-          if b'newest-good-root.sh' not in blob:
-              print('FAIL: initrd has no rescue resolver — mkosi.initrd/mkosi.extra did not apply')
-              sys.exit(1)
-          print('rescue resolver present in initrd: OK')
-          PY
-          rm -f initrd-check.img uki2.efi d2.efi
+      # NOTE: mkosi.initrd/mkosi.extra does NOT apply — a nightly with an
+      # assertion here proved the rescue resolver never reaches the initrd
+      # (mkosi.initrd/mkosi.conf's Packages= works, its mkosi.extra does
+      # not). Getting files into the default initrd needs a different
+      # mechanism (Initrds= / the io.mkosi.initrd artifact dir). Until that
+      # lands there is nothing to assert: ADR-0022 phase 2 is deferred and
+      # its entry is not installed. Tracked in issue #23.
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
@@ -441,7 +422,6 @@ jobs:
             echo "FAIL: dangling UKI survived"; exit 1
           fi
           echo "AB-RECOVERY: PASS (stash -> damage -> restore + cleanup)"
-      - name: Boot 3 — the rescue cmdline finds a root with no baked label
         run: |
           set -o pipefail
           # The Lisa Rescue entry carries root=/dev/lisa/newest-good: no
