@@ -1,0 +1,20 @@
+# Resolve the Lisa Rescue entry's root device in the initrd (ADR-0022
+# phase 2): pick the newest root slot that actually mounts. Inert for
+# normal boots — the script exits immediately unless the cmdline asks
+# for /dev/lisa/newest-good.
+[Unit]
+Description=Resolve the newest mountable Lisa root slot (rescue entry)
+DefaultDependencies=no
+ConditionPathExists=/etc/initrd-release
+Before=initrd-root-device.target sysroot.mount
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/lisa/newest-good-root.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=initrd-root-device.target

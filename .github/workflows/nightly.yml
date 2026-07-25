@@ -98,6 +98,11 @@ jobs:
           grep -q "Welcome to" boot-console.log
           # The guest saw the emulated TPM.
           grep -qi "tpm" boot-console.log
+      - name: Add the Lisa Rescue boot entry (ADR-0022 phase 2)
+        run: |
+          sudo apt-get install -qq -y --no-install-recommends \
+            mtools fdisk jq binutils systemd-ukify systemd-boot-efi >/dev/null
+          os/mkosi/make-rescue-uki.sh os/mkosi/lisa.raw
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
@@ -605,3 +610,19 @@ jobs:
             echo "FAIL: dangling UKI survived"; exit 1
           fi
           echo "AB-RECOVERY: PASS (stash -> damage -> restore + cleanup)"
+      - name: Boot 3 — the rescue cmdline finds a root with no baked label
+        run: |
+          set -o pipefail
+          # The Lisa Rescue entry carries root=/dev/lisa/newest-good: no
+          # baked PARTLABEL at all. The initrd resolver must probe the
+          # root slots and mount the newest one that actually works —
+          # the hand-edit the field iMac needed three times, automated.
+          timeout 600 qemu-system-x86_64 \
+            -machine q35 -accel kvm -accel tcg -m 3G -nographic -no-reboot \
+            -kernel vmlinuz -initrd initrd.img \
+            -append "root=/dev/lisa/newest-good rw console=ttyS0 systemd.gpt_auto=no" \
+            -drive file=lisa.raw,format=raw,if=virtio \
+            | tee boot3.log
+          grep -q "lisa-rescue: booting newest mountable root" boot3.log
+          grep -q "Welcome to" boot3.log
+          echo "AB-RECOVERY RESCUE: PASS (no baked root label; resolver found a good slot)"
