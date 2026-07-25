@@ -3,7 +3,7 @@
 Living snapshot of where the build actually is, so any machine (or a
 fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
-"where are we on it" companion. **Last updated: 2026-07-24.**
+"where are we on it" companion. **Last updated: 2026-07-25.**
 
 ## TL;DR
 
@@ -13,7 +13,7 @@ complete; M2 (Ledger) and M3 (context fabric) have working cores. Every
 claim below is enforced by CI on `main`, not aspirational.
 
 - Repo: **github.com/Lisa-AgenticOS/lisa-os** · License: GPL-2.0-only (ADR-0005)
-- Latest release: **v20260724.25** (GNOME desktop image) (runs-from-USB image + sysupdate transfer set)
+- Latest release: **v20260724.26** (GNOME desktop image) (runs-from-USB image + sysupdate transfer set)
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
 
 **Overnight 2026-07-24→25 (autonomous loop):**
@@ -38,9 +38,9 @@ claim below is enforced by CI on `main`, not aspirational.
   IPC surface), a dedicated /home partition for fresh installs (ADR-0019),
   and the **app-update channel** (`lisa apps update`, ADR-0020 — app updates
   without an image release).
-- **Apple Silicon:** the full Track L e2e **passes natively on aarch64**
-  (podman/ALARM on the dev Mac) — the userland half of the aarch64 lane is
-  proven; the image/boot half is the open task.
+- **Apple Silicon:** BOTH halves proven — the full Track L e2e passes
+  natively on aarch64 (podman/ALARM), and the ARM64 Track I image now
+  **builds and boots in CI** (aarch64-image.yml, ALARM base, ADR-0021).
 
 **Recent (2026-07-24, after v25):**
 - **Intelligence panel** in the gnome-control-center fork works (fixed the
