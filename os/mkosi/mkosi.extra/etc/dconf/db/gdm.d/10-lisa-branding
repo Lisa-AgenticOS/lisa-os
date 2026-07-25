@@ -13,3 +13,15 @@ logo='/usr/share/icons/hicolor/scalable/apps/lisa-wordmark-white.svg'
 # Lisa violet (#6D45C9). Exact-hex accent needs a libadwaita CSS override
 # (follow-up) — this kills the Arch blue, which is the point for now.
 accent-color='purple'
+
+[org/gnome/desktop/background]
+# Lisa wallpaper for the greeter (issue #24) — the dark variant in both
+# slots: the login screen is a dark surface regardless of user theme.
+# Honesty note: recent GNOME greeters render their own grey backdrop and
+# may ignore picture-uri entirely; where that's the case these keys are
+# inert, and the session wallpaper (gschema override) still carries the
+# branding. Harmless either way.
+picture-uri='file:///usr/share/backgrounds/lisa/lisa-dark.svg'
+picture-uri-dark='file:///usr/share/backgrounds/lisa/lisa-dark.svg'
+picture-options='zoom'
+primary-color='#1A1230'

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3840 2160">
+  <!-- Lisa default wallpaper, dark variant (issue #24). Same composition
+       as lisa-light.svg on the deep end of the violet family; the arc
+       sits a touch quieter so shell text stays effortless. -->
+  <defs>
+    <linearGradient id="field" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2A1D4E"/>
+      <stop offset="1" stop-color="#1A1230"/>
+    </linearGradient>
+  </defs>
+  <rect width="3840" height="2160" fill="url(#field)"/>
+  <circle cx="2980" cy="2560" r="2050" fill="#FFFFFF" fill-opacity="0.04"/>
+</svg>

@@ -28,6 +28,23 @@ document-font-name='Rubik 11'
 # accent would need a libadwaita CSS override — a follow-up.
 accent-color='purple'
 
+# Default Lisa wallpaper (issue #24) — the violet field replaces GNOME's
+# stock blue. The SVGs ship in the Track I image (os/mkosi/mkosi.extra);
+# Track L installs this package but not those files, so primary-color is
+# the honest fallback there: a solid brand violet, not a broken path.
+# User-changeable in Settings as normal (these are defaults, not locks).
+[org.gnome.desktop.background]
+picture-uri='file:///usr/share/backgrounds/lisa/lisa-light.svg'
+picture-uri-dark='file:///usr/share/backgrounds/lisa/lisa-dark.svg'
+picture-options='zoom'
+primary-color='#6D45C9'
+
+# Lock screen blurs the same field (GNOME blurs/dims whatever this names).
+[org.gnome.desktop.screensaver]
+picture-uri='file:///usr/share/backgrounds/lisa/lisa-light.svg'
+picture-options='zoom'
+primary-color='#6D45C9'
+
 [org.gnome.desktop.wm.keybindings]
 switch-input-source=['<Control><Super>space']
 switch-input-source-backward=[]
