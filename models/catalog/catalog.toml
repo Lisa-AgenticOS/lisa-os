@@ -46,6 +46,17 @@ min_ram_gb = 2
 notes = "Dev/test model — the first pinned artifact (verified 2026-07-21). Not a shipping tier default."
 
 [[model]]
+id = "qwen3-1.7b-instruct-q8"
+task = "system"
+tiers = [0, 1]
+license = "Apache-2.0"
+engine = "llama-server"
+source = "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf"
+blake3 = "10e76ad409a9068ca66927b8f854402f882aba8a9add45a54b27ef151d3f8227"
+min_ram_gb = 3
+notes = "Qwen3-1.7B Q8_0 (official Qwen GGUF, ungated, 1834426016 bytes / ~1.71 GiB). Downloaded + blake3-verified 2026-07-25; sha256 cross-checked against the HF LFS oid. The step up from 0.6B on Tier 0 hardware."
+
+[[model]]
 id = "qwen3-8b-instruct-q4"
 task = "system"
 tiers = [2]
@@ -60,8 +71,10 @@ task = "system"
 tiers = [0, 1]
 license = "Apache-2.0"
 engine = "llama-server"
-min_ram_gb = 8
-notes = "Small system model; honest floor for Tier 0/1."
+source = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
+blake3 = "31db7d8e7d9a25aae71ef5e276ea153bdc600ca63c825bfca274a9718c0a3e4c"
+min_ram_gb = 6
+notes = "Qwen3-4B Q4_K_M (official Qwen GGUF, ungated, 2497280256 bytes / ~2.33 GiB). Downloaded + blake3-verified 2026-07-25; sha256 cross-checked against the HF LFS oid. Assistant default for 8-16 GB machines. The gated *-Instruct-2507 GGUF repos were rejected (HTTP 401 without auth)."
 
 [[model]]
 id = "qwen3-30b-a3b-q4"
@@ -87,8 +100,10 @@ task = "embeddings"
 tiers = [0, 1, 2, 3, 4]
 license = "Apache-2.0"
 engine = "llama-server"
-min_ram_gb = 4
-notes = "Context Fabric embeddings; EmbeddingGemma-300m is the alternate."
+source = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf"
+blake3 = "d997a269c4e621fee318f0bbdc29b1f3a4cec33af4e21c2e8a32d4b97ebd4e7b"
+min_ram_gb = 1
+notes = "Context Fabric embeddings. Q8_0 GGUF (ungated, 146146432 bytes / ~139 MiB). Downloaded + blake3-verified 2026-07-25; sha256 cross-checked against the HF LFS oid. BERT-arch model served by llama-server --embeddings --pooling mean (inferenced already passes both). EmbeddingGemma-300m is the alternate."
 
 [[model]]
 id = "bge-reranker-v2-m3"

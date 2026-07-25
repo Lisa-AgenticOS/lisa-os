@@ -89,8 +89,10 @@ claim below is enforced by CI on `main`, not aspirational.
 **Model store — `daemons/modeld` (§5.2):** blake3 content-addressed
 store (dedupe/verify/gc, pinned-hash ingest), hardware profiler (§8
 tiers; `lisa models profile`), HTTP-Range resumable pulls. Catalog
-(`models/catalog/catalog.toml`) carries one fully pinned artifact
-(qwen3-0.6b-instruct-q8).
+(`models/catalog/catalog.toml`) carries six fully pinned artifacts:
+whisper-base-en, gemma-3-1b-it-q8, qwen3-0.6b-instruct-q8,
+qwen3-1.7b-instruct-q8, qwen3-4b-instruct-q4, and
+nomic-embed-text-v1.5 — each downloaded and blake3-verified (issue #7).
 
 **The Ledger — `libs/lisa-ledger` (M2, §5.7.6):** append-only SQLite
 (UPDATE/DELETE aborted by triggers). Enforced as the inference gate
