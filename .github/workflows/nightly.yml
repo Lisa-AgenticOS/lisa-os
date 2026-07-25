@@ -52,7 +52,7 @@ jobs:
           sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils zstd >/dev/null
           OFF=$(( $(sfdisk -J lisa.raw 2>/dev/null | jq -r '.partitiontable.partitions[0].start' || echo 0) * 512 ))
           if [ "$OFF" -gt 0 ]; then
-            NAME=$(mdir -b -i "lisa.raw@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | head -1 || true)
+            NAME=$(mdir -b -i "lisa.raw@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1 || true)
             if [ -n "$NAME" ]; then
               mcopy -i "lisa.raw@@$OFF" "::/EFI/Linux/$NAME" uki.efi
               objcopy --dump-section .initrd=initrd.img uki.efi discard.efi || true
@@ -134,7 +134,7 @@ jobs:
           # ESP = partition 1; mtools addresses it as an offset into the raw.
           OFF=$(( $(sfdisk -J lisa.raw | jq -r '.partitiontable.partitions[0].start') * 512 ))
           ESP="lisa.raw@@$OFF"
-          NAME=$(mdir -b -i "$ESP" ::/EFI/Linux/ | grep -o 'lisa-[^/]*\.efi' | head -1)
+          NAME=$(mdir -b -i "$ESP" ::/EFI/Linux/ | grep -o 'lisa-[^/]*\.efi' | grep -v rescue | head -1)
           echo "good UKI: $NAME (ESP offset $OFF)"
           mcopy -i "$ESP" "::/EFI/Linux/$NAME" good.efi
           # The mkosi UKI carries no .cmdline section, so rebuild demo
@@ -561,7 +561,7 @@ jobs:
           sudo apt-get install -qq -y --no-install-recommends binutils >/dev/null
           OFF=$(( $(sfdisk -J lisa.raw | jq -r '.partitiontable.partitions[0].start') * 512 ))
           ESP="lisa.raw@@$OFF"
-          NAME=$(mdir -b -i "$ESP" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | head -1)
+          NAME=$(mdir -b -i "$ESP" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1)
           echo "baked UKI: $NAME"
           mcopy -i "$ESP" "::/EFI/Linux/$NAME" baked.efi
           objcopy --dump-section .linux=vmlinuz --dump-section .initrd=initrd.img baked.efi discard.efi

@@ -70,13 +70,17 @@ if [ -n "$booted_uki" ]; then
     fi
 else
     # --- restore: /var stash -> ESP (the incident's missing case) ------
-    for stash in "$stash_dir/lisa_${booted_ver}.efi" "$stash_dir/lisa-${booted_ver}.efi"; do
-        if [ -f "$stash" ]; then
-            target="$ukidir/${stash##*/}"
-            cp "$stash" "$target.tmp" && mv "$target.tmp" "$target" && sync &&
-                log "RESTORED missing ${target##*/} from stash (boot.repair)"
-            break
-        fi
+    # Restore WHATEVER is stashed rather than guessing its name: the
+    # stash holds exactly one UKI (older ones are pruned above) and it
+    # was, by construction, the UKI this system booted. Keying on
+    # IMAGE_VERSION missed image-baked names (lisa-<kver>.efi) and left
+    # the ESP empty — caught by the ab-recovery job.
+    for stash in "$stash_dir"/lisa_*.efi "$stash_dir"/lisa-*.efi; do
+        [ -f "$stash" ] || continue
+        target="$ukidir/${stash##*/}"
+        cp "$stash" "$target.tmp" && mv "$target.tmp" "$target" && sync &&
+            log "RESTORED missing ${target##*/} from stash (boot.repair)"
+        break
     done
 fi
 

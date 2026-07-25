@@ -13,9 +13,13 @@
 # It also drops `quiet splash` and keeps the console on tty0, so a rescue
 # boot is readable instead of a black screen.
 #
-# Sorting: the embedded os-release carries SORT_KEY=zz-lisa-rescue so
-# systemd-boot ranks it below every versioned entry — present in the
-# menu, never the default.
+# Never the default: SORT_KEY alone was NOT enough — a nightly proved
+# systemd-boot happily booted the rescue entry, and with no console= on
+# its cmdline the CI boots went silent and timed out. So the file is
+# named `zz-lisa-rescue.efi` (outside the `lisa*` glob) and loader.conf
+# pins `default lisa*.efi`, which matches both the release naming
+# (lisa_<ver>.efi) and the image-baked one (lisa-<kver>.efi) and cannot
+# match the rescue entry.
 #
 # Requires: mtools, fdisk, jq, binutils, systemd-ukify (CI installs them).
 set -euo pipefail
@@ -53,9 +57,19 @@ UKIFY=$(command -v ukify || echo /usr/lib/systemd/ukify)
     --linux="$WORK/vmlinuz" \
     --initrd="$WORK/initrd.img" \
     --os-release="@$WORK/osrel.rescue" \
-    --cmdline='root=/dev/lisa/newest-good rw systemd.gpt_auto=no' \
+    --cmdline='root=/dev/lisa/newest-good rw console=tty0 console=ttyS0 systemd.gpt_auto=no' \
     --output="$WORK/lisa-rescue.efi"
 
-mcopy -o -i "$ESP" "$WORK/lisa-rescue.efi" ::/EFI/Linux/lisa-rescue.efi
-echo "make-rescue-uki: installed ::/EFI/Linux/lisa-rescue.efi"
+mcopy -o -i "$ESP" "$WORK/lisa-rescue.efi" ::/EFI/Linux/zz-lisa-rescue.efi
+echo "make-rescue-uki: installed ::/EFI/Linux/zz-lisa-rescue.efi"
+
+# Pin the default so entry sorting can never promote the rescue entry.
+if mcopy -i "$ESP" ::/loader/loader.conf "$WORK/loader.conf" 2>/dev/null; then
+    grep -v '^default' "$WORK/loader.conf" > "$WORK/loader.new" || true
+else
+    : > "$WORK/loader.new"
+fi
+echo 'default lisa*.efi' >> "$WORK/loader.new"
+mcopy -o -i "$ESP" "$WORK/loader.new" ::/loader/loader.conf
+echo "make-rescue-uki: pinned loader default to lisa*.efi"
 mdir -b -i "$ESP" ::/EFI/Linux/
