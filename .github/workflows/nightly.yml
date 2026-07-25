@@ -38,6 +38,21 @@ jobs:
       # poweroff.target: reaching poweroff exits QEMU cleanly; a hang is
       # caught by the timeout; "Welcome to" proves systemd came up from
       # the image's own initrd + root.
+      - name: Initrd must carry the bare-metal storage/HID stack
+        run: |
+          # v26-v29 shipped initrds with ZERO storage modules (the custom
+          # mkosi.initrd config ignored the parent's module list): USB
+          # sticks could load the UKI via firmware and then Linux couldn't
+          # see the stick — every USB boot dead. Never again.
+          zstd -dc os/mkosi/lisa.initrd > initrd.cpio || cat os/mkosi/lisa.initrd > initrd.cpio
+          for mod in usb-storage uas sd_mod xhci-pci ahci nvme btrfs; do
+            if ! cpio -it < initrd.cpio 2>/dev/null | grep -q "${mod}\.ko"; then
+              echo "FAIL: initrd is missing ${mod}.ko — USB/bare-metal boot would be broken"
+              exit 1
+            fi
+          done
+          echo "initrd storage/HID stack: OK"
+          rm -f initrd.cpio
       - name: Boot check (QEMU + swtpm)
         run: |
           set -o pipefail
