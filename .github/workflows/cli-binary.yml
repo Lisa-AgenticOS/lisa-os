@@ -1,0 +1,38 @@
+# Build the x86_64 Linux CLI + daemons on demand, for testing a change on
+# a real device without turning that device into a build box (ADR-0023's
+# spirit: the device stays representative). Dispatch, download the
+# artifact, scp it over, run it.
+name: cli-binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      crates:
+        description: 'cargo -p flags (space separated)'
+        required: false
+        default: 'lisa lisa-inferenced lisa-agentd lisa-remoted lisa-contextd'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build release binaries
+        run: |
+          set -o pipefail
+          FLAGS=""
+          for c in ${{ github.event.inputs.crates }}; do FLAGS="$FLAGS -p $c"; done
+          cargo build --release $FLAGS
+          mkdir -p out
+          for f in target/release/*; do
+            [ -f "$f" ] && [ -x "$f" ] && case "$f" in *.d|*.rlib|*.so) ;; *) cp "$f" out/ ;; esac
+          done
+          ls -la out/
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: lisa-linux-x86_64
+          path: out/*
+          if-no-files-found: error
+          retention-days: 3

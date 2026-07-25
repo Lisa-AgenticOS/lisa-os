@@ -91,6 +91,103 @@ fn run_task(
     serde_json::from_str(content).context("parsing guided-generation output")
 }
 
+/// OpenAI tool names allow `[A-Za-z0-9_-]{1,64}`; bus ids are
+/// `app.lisaos.notes::create_note`. Flatten deterministically so the
+/// reply maps back to exactly one catalog entry.
+fn wire_name(t: &ToolInfo) -> String {
+    let flat = format!("{}__{}", t.app_id.replace(['.', '-'], "_"), t.tool);
+    flat.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .chars()
+        .take(64)
+        .collect()
+}
+
+/// Route by NATIVE TOOL CALLING — the path Claude/GPT are built for, and
+/// the only one available to them: the grammar router below constrains
+/// the sampler, which no remote provider exposes (a `remote:` model hits
+/// it as a 503). The bus catalog goes over as OpenAI `tools`, and the
+/// model's `tool_calls` reply *is* the routed intent, arguments included,
+/// so one round-trip replaces the local two-stage dance.
+fn route_via_tool_calling(
+    url: &str,
+    model: Option<&str>,
+    tools: &[ToolInfo],
+    utterance: &str,
+) -> anyhow::Result<Option<intent::IntentCall>> {
+    let specs: Vec<Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": wire_name(t),
+                    "description": t.description,
+                    "parameters": if t.input_schema.is_object() {
+                        t.input_schema.clone()
+                    } else {
+                        serde_json::json!({"type": "object", "properties": {}})
+                    },
+                },
+            })
+        })
+        .collect();
+    let mut body = serde_json::json!({
+        "messages": [
+            {"role": "system", "content":
+             "You route one user request to at most one tool on the Lisa Agent Bus. \
+              Call the tool that fulfils it, with arguments taken from the request. \
+              If nothing fits, reply in words and call no tool."},
+            {"role": "user", "content": utterance},
+        ],
+        "tools": specs,
+        "stream": false,
+    });
+    if let Some(m) = model {
+        body["model"] = Value::String(m.to_string());
+    }
+    let endpoint = format!("{}/v1/chat/completions", url.trim_end_matches('/'));
+    let mut response = ureq::post(&endpoint)
+        .send_json(&body)
+        .with_context(|| format!("tool-call routing via {endpoint}"))?;
+    let reply: Value = response.body_mut().read_json()?;
+    let Some(call) = reply["choices"][0]["message"]["tool_calls"]
+        .as_array()
+        .and_then(|c| c.first())
+    else {
+        return Ok(None); // model declined to call anything
+    };
+    let name = call["function"]["name"]
+        .as_str()
+        .ok_or_else(|| anyhow!("tool_call without a function name"))?;
+    let chosen = tools
+        .iter()
+        .find(|t| wire_name(t) == name)
+        .ok_or_else(|| anyhow!("model called `{name}`, which is not on the bus"))?;
+    // Arguments arrive as a JSON *string* per the OpenAI wire format.
+    let args: Value = match call["function"]["arguments"].as_str() {
+        Some(s) if !s.trim().is_empty() => {
+            serde_json::from_str(s).context("parsing tool_call arguments")?
+        }
+        _ => serde_json::json!({}),
+    };
+    Ok(Some(intent::IntentCall::from_user(
+        &intent::Choice {
+            app_id: chosen.app_id.clone(),
+            tool: chosen.tool.clone(),
+            confidence: 1.0,
+        },
+        args,
+    )))
+}
+
 /// `lisa do "<utterance>"` — route and (unless dry-run) execute.
 pub fn do_cmd(
     utterance: &str,
@@ -103,6 +200,22 @@ pub fn do_cmd(
     let tools = catalog(&conn)?;
     if tools.is_empty() {
         bail!("no tools on the Agent Bus — install an app manifest first (lisa tools)");
+    }
+
+    // Capability, not preference: remote providers expose tool calling
+    // but not sampler grammars, so they take the native path; local
+    // llamas take the grammar router, whose output is *guaranteed*
+    // well-formed — which small models badly need.
+    if model.is_some_and(|m| m.starts_with("remote:")) {
+        let Some(call) = route_via_tool_calling(url, model, &tools, utterance)? else {
+            println!("nothing on the bus fits that request (intent: none)");
+            return Ok(());
+        };
+        println!("→ {}::{} args {}", call.app_id, call.tool, call.args);
+        if dry_run {
+            return Ok(());
+        }
+        return request_and_confirm(&conn, &call.app_id, &call.tool, &call.args, yes);
     }
 
     // Stage 1: pick the tool (grammar-guaranteed one of the catalog).
@@ -241,6 +354,33 @@ fn prompt_yes(prompt: &str) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wire_names_are_openai_legal_and_round_trip() {
+        let tools = parse_catalog(
+            r#"[{"app_id":"app.lisaos.notes","name":"create_note","description":"d"},
+                {"app_id":"app.lisaos.notes","name":"list_notes","description":"d"},
+                {"app_id":"dev.lisaos.files-x","name":"read","description":"d"}]"#,
+        )
+        .unwrap();
+        let names: Vec<String> = tools.iter().map(wire_name).collect();
+        for n in &names {
+            assert!(
+                n.len() <= 64
+                    && n.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "`{n}` is not a legal OpenAI tool name"
+            );
+        }
+        // Distinct tools must never collide — the reply is mapped back by name.
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "wire names collided: {names:?}");
+        // And each maps back to exactly the tool it came from.
+        for (t, n) in tools.iter().zip(&names) {
+            let back = tools.iter().find(|c| &wire_name(c) == n).unwrap();
+            assert_eq!((&back.app_id, &back.tool), (&t.app_id, &t.tool));
+        }
+    }
 
     #[test]
     fn parse_catalog_maps_list_tools_json() {
