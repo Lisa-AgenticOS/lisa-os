@@ -1,0 +1,46 @@
+#!/bin/sh
+# lisa-boot-disk-generator — pin PARTLABEL mounts to the booted disk.
+#
+# With the installer USB still inserted after `lisa install`, every
+# PARTLABEL this OS mounts by (var, home, esp) exists on TWO disks, and
+# udev enumeration order decides which one wins (issue #16): the Ledger
+# can land on the stick and updates can stage to the stick's ESP. The
+# fstab keeps the generic PARTLABEL= sources (correct on the common
+# one-disk machine, and on hosts missing this generator); here we add
+# What= drop-ins pinning var/home/efi to the partitions that live on the
+# same disk backing / — authoritative for "the machine we booted".
+#
+# Exits silently in the initrd (/ is the initramfs, no parent disk) and
+# wherever the topology can't be resolved: the fstab defaults then apply.
+
+GENDIR="$1"
+[ -n "$GENDIR" ] || exit 0
+
+rootsrc=$(findmnt -n -o SOURCE / 2>/dev/null) || exit 0
+rootsrc=${rootsrc%%[\[]*} # btrfs: /dev/vda2[/subvol] -> /dev/vda2
+case "$rootsrc" in /dev/*) ;; *) exit 0 ;; esac
+
+disk=$(lsblk -nro PKNAME "$rootsrc" 2>/dev/null | head -n1)
+[ -n "$disk" ] || exit 0
+
+pin() {
+    label="$1" unit="$2"
+    part=$(lsblk -nro PATH,PARTLABEL "/dev/$disk" 2>/dev/null |
+        while read -r path plabel; do
+            if [ "$plabel" = "$label" ]; then
+                echo "$path"
+                break
+            fi
+        done)
+    [ -n "$part" ] || return 0
+    mkdir -p "$GENDIR/$unit.d"
+    {
+        echo "# pinned to the booted disk ($disk) by lisa-boot-disk-generator (issue #16)"
+        echo "[Mount]"
+        echo "What=$part"
+    } >"$GENDIR/$unit.d/50-lisa-boot-disk.conf"
+}
+
+pin var var.mount
+pin home home.mount
+pin esp efi.mount

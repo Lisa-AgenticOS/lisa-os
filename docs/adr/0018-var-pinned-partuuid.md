@@ -66,5 +66,12 @@ with **no disk surgery**.
 - The **existing field iMac needs nothing** — its `/var` is already labeled
   `var`, so a release carrying this change mounts it correctly on first update.
 - gpt-auto stays inert (explicit `root=`), so the explicit `var.mount` is what
-  drives the mount. Cross-disk label ambiguity (two Lisa disks in one machine)
-  is out of scope.
+  drives the mount.
+- ~~Cross-disk label ambiguity (two Lisa disks in one machine) is out of
+  scope.~~ **Revised (issue #16):** `lisa install`'s byte-copy makes the
+  two-disk case the *normal* post-install state (installer USB still
+  inserted), not an exotic one. Three layers now address it:
+  `lisa-boot-disk-generator` pins `var`/`home`/`efi` to partitions on the
+  disk backing `/` via drop-ins over the fstab units; `lisa install` runs
+  `btrfstune -m` on every copied btrfs so fsids never collide; and the
+  fstab `PARTLABEL=` sources remain as the fallback for the one-disk case.

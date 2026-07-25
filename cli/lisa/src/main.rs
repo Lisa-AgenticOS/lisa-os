@@ -737,6 +737,9 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
         }
     };
     sink.sync_all()?;
+    if is_block {
+        individualize_copied_fsids(target);
+    }
     println!(
         ">> wrote {:.1} GiB to {} — remove the USB stick and reboot; \
          first boot grows /var to fill the disk",
@@ -744,6 +747,53 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
         target.display()
     );
     Ok(())
+}
+
+/// The byte-copy leaves the target disk with btrfs filesystems whose fsids
+/// are identical to the installer USB's — a state btrfs explicitly does not
+/// support while both disks are visible (device-scan can associate devices
+/// across the copies; issue #16). Regenerate each copied btrfs fsid with
+/// `btrfstune -m`, the same tool the nightly A/B test trusts for exactly
+/// this. Best-effort: a missing tool degrades to the old behavior plus a
+/// loud warning, never a failed install.
+fn individualize_copied_fsids(disk: &std::path::Path) {
+    let run = |cmd: &str, args: &[&str]| {
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+    };
+    let disk_str = disk.to_string_lossy();
+    // The kernel still has the pre-copy (empty) partition table cached.
+    run("blockdev", &["--rereadpt", &disk_str]);
+    run("udevadm", &["settle"]);
+    let Some(out) = run("lsblk", &["-nro", "PATH,FSTYPE", &disk_str]) else {
+        eprintln!(
+            "!! could not enumerate {} — btrfs fsids on it still match the USB; \
+             remove the stick before first boot",
+            disk_str
+        );
+        return;
+    };
+    let mut done = 0;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut cols = line.split_whitespace();
+        let (Some(path), Some(fstype)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        if fstype != "btrfs" {
+            continue;
+        }
+        if run("btrfstune", &["-f", "-m", path]).is_some() {
+            done += 1;
+        } else {
+            eprintln!("!! btrfstune -m {path} failed — its fsid still matches the USB");
+        }
+    }
+    if done > 0 {
+        println!(">> individualized {done} btrfs fsid(s) on {disk_str}");
+    }
 }
 
 fn forge_cmd(
@@ -1027,6 +1077,59 @@ fn remote_cmd(cmd: RemoteCmd) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Defense-in-depth for the issue-#20 class: sysupdate's vacuum evicts the
+/// oldest instance of each transfer and never checks what backs `/` —
+/// `ProtectVersion=%A` in every transfer is the only thing standing between
+/// an update and erasing the booted slot. Refuse to update through a config
+/// that lost that guard. `/etc/sysupdate.d` overrides same-named files in
+/// `/usr/lib/sysupdate.d`, so collect with that precedence.
+fn assert_transfers_protect_booted() -> anyhow::Result<()> {
+    let mut transfers: std::collections::BTreeMap<String, PathBuf> = Default::default();
+    for dir in ["/usr/lib/sysupdate.d", "/etc/sysupdate.d"] {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "transfer")
+                && let Some(name) = path.file_name()
+            {
+                transfers.insert(name.to_string_lossy().into_owned(), path);
+            }
+        }
+    }
+    let unguarded: Vec<String> = transfers
+        .into_iter()
+        .filter(|(_, path)| {
+            std::fs::read_to_string(path).is_ok_and(|text| {
+                !text
+                    .lines()
+                    .any(|l| l.trim().starts_with("ProtectVersion="))
+            })
+        })
+        .map(|(name, _)| name)
+        .collect();
+    if !unguarded.is_empty() {
+        if std::env::var_os("LISA_UPDATE_ALLOW_UNPROTECTED").is_some() {
+            eprintln!(
+                "!! proceeding despite unguarded transfer config ({}) — \
+                 LISA_UPDATE_ALLOW_UNPROTECTED is set",
+                unguarded.join(", ")
+            );
+            return Ok(());
+        }
+        bail!(
+            "refusing to update: transfer config without ProtectVersion= ({}) — \
+             sysupdate's vacuum could erase the slot this system is booted from \
+             (issue #20). v27+ images ship the guard; to update anyway (e.g. to \
+             reach the fixed release from an old image), set \
+             LISA_UPDATE_ALLOW_UNPROTECTED=1.",
+            unguarded.join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn update_cmd(reboot: bool) -> anyhow::Result<()> {
     let sysupdate = std::path::Path::new("/usr/lib/systemd/systemd-sysupdate");
     if !sysupdate.exists() {
@@ -1035,6 +1138,7 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
              updates are published at https://github.com/Lisa-AgenticOS/lisa-os/releases"
         );
     }
+    assert_transfers_protect_booted()?;
     let status = std::process::Command::new(sysupdate)
         .arg("update")
         .status()?;
