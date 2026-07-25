@@ -92,7 +92,20 @@ impl Verifier {
     /// Ok(None) when clean, Ok(Some(findings)) when not.
     pub fn check(&self, project: &Path) -> Result<Option<String>, ForgeError> {
         match self {
-            Verifier::Dart => analyze(project),
+            // `dart analyze` exits clean on a project with no sources at
+            // all, which let a model's bare "done" converge on an empty
+            // scaffold (issue #29). No sources = findings, not a pass.
+            Verifier::Dart => {
+                if !has_dart_sources(project) {
+                    return Ok(Some(
+                        "the project contains no Dart source files yet — \
+                         nothing has been written, so the task cannot be done. \
+                         Write the code first."
+                            .into(),
+                    ));
+                }
+                analyze(project)
+            }
             Verifier::Command { program, args } => {
                 let out = Command::new(program)
                     .args(args)
@@ -114,6 +127,31 @@ impl Verifier {
             Verifier::None => Ok(None),
         }
     }
+}
+
+/// Any `.dart` file under the project (skipping the `.dart_tool` cache)
+/// counts as source; the pubspec scaffold alone does not.
+fn has_dart_sources(project: &Path) -> bool {
+    fn walk(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == ".dart_tool") {
+                    continue;
+                }
+                if walk(&path) {
+                    return true;
+                }
+            } else if path.extension().is_some_and(|e| e == "dart") {
+                return true;
+            }
+        }
+        false
+    }
+    walk(project)
 }
 
 pub struct AgentConfig {
@@ -303,6 +341,36 @@ mod tests {
 
     fn available(program: &str) -> bool {
         Command::new(program).arg("--version").output().is_ok()
+    }
+
+    #[test]
+    fn dart_verifier_reports_findings_on_a_sourceless_project() {
+        // Issue #29: `dart analyze` passes vacuously with no sources, so
+        // check() must report findings before ever invoking dart — which
+        // also keeps this test independent of a dart install.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubspec.yaml"), "name: t\n").unwrap();
+        let findings = Verifier::Dart.check(dir.path()).unwrap();
+        assert!(
+            findings.is_some_and(|f| f.contains("no Dart source files")),
+            "empty scaffold must not verify clean"
+        );
+    }
+
+    #[test]
+    fn bare_done_on_an_empty_scaffold_does_not_converge() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubspec.yaml"), "name: t\n").unwrap();
+        let mut backend = ScriptedBackend::new(vec![
+            AgentAction::Done("all done".into()),
+            AgentAction::Done("really done".into()),
+        ]);
+        let config = AgentConfig {
+            max_turns: 2,
+            verifier: Verifier::Dart,
+        };
+        let err = forge_agent("build", dir.path(), &mut backend, &config).unwrap_err();
+        assert!(matches!(err, ForgeError::NoConvergence(2)));
     }
 
     #[test]
