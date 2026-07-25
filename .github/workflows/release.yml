@@ -91,6 +91,10 @@ jobs:
                    lisa-agentd
                    lisa-notes
                    lisa-remoted
+                   # M3 context fabric: without it the Assistant reports
+                   # "Context daemon unavailable" and conversations do
+                   # not survive a restart (field-found on v30).
+                   lisa-contextd
                    llama.cpp
                    zen-browser
           ExtraTrees=/build/extra

@@ -72,6 +72,15 @@ class AssistantWindow {
         });
         this._modelDrop.connect('notify::selected', () => this._onModelPicked());
         header.pack_start(this._modelDrop);
+        // Signing in to a provider happens in Settings, in another
+        // window — so re-read the model list whenever this window comes
+        // back to the front. Without this the picker keeps whatever it
+        // saw at startup and a fresh Claude sign-in only appears after
+        // restarting the app (field-found on v30).
+        this.window.connect('notify::is-active', () => {
+            if (this.window.is_active && !this._streaming)
+                this._refreshModels().catch(() => {});
+        });
 
         const clear = Gtk.Button.new_from_icon_name('document-new-symbolic');
         clear.tooltip_text = 'New conversation';
@@ -333,6 +342,27 @@ class AssistantWindow {
             : ['No models — is lisa-inferenced running?'];
         this._modelDrop.set_model(Gtk.StringList.new(labels));
         this._modelDrop.set_selected(0);
+        this._onModelPicked();
+    }
+
+    /// Re-read the model list, keeping the user's pick if it survived.
+    /// Silent when nothing changed — a window focus must not disturb the
+    /// picker mid-conversation.
+    async _refreshModels() {
+        const [local, cloud] = await Promise.all([
+            this._fetchLocalModels(), this._fetchCloudModels(),
+        ]);
+        const models = mergeModelList(local, cloud);
+        const same = models.length === this._models?.length &&
+            models.every((m, i) => m.id === this._models[i].id);
+        if (same || models.length === 0)
+            return;
+        const chosen = this._model;
+        this._models = models;
+        this._modelDrop.set_model(
+            Gtk.StringList.new(models.map(m => m.label)));
+        const keep = models.findIndex(m => m.id === chosen);
+        this._modelDrop.set_selected(keep >= 0 ? keep : 0);
         this._onModelPicked();
     }
 
