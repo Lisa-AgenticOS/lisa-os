@@ -1,0 +1,15 @@
+# ESP self-repair on every successful boot (ADR-0022 phase 1, issue
+# #23): stash the booted UKI on /var, restore it if the ESP lost it,
+# remove UKIs whose root partition vanished. Runs only in a boot healthy
+# enough to reach multi-user — a failing boot must not "repair" anything.
+[Unit]
+Description=Self-repair the ESP boot entries (stash/restore/cleanup)
+After=local-fs.target var.mount
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/lisa/boot-repair.sh
+
+[Install]
+WantedBy=multi-user.target

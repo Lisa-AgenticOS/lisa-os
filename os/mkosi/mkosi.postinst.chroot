@@ -51,6 +51,13 @@ if [ -f /usr/lib/systemd/system/lisa-boot-report.service ]; then
     systemctl enable lisa-boot-report.service
 fi
 
+# ESP self-repair on every healthy boot (ADR-0022 phase 1): stash the
+# booted UKI on /var, restore it when the ESP lost it, drop dangling
+# entries — the #20 incident's manual rescue, automated.
+if [ -f /usr/lib/systemd/system/lisa-boot-repair.service ]; then
+    systemctl enable lisa-boot-repair.service
+fi
+
 # Bluetooth for Apple Magic input devices when the stack is present.
 if [ -f /usr/lib/systemd/system/bluetooth.service ]; then
     systemctl enable bluetooth.service

@@ -464,3 +464,106 @@ jobs:
             echo "FAIL: middle UKI still in ESP — the wrong UKI was vacuumed"; exit 1
           fi
           echo "SYSUPDATE DEMO: PASS (booted-oldest v1 protected, v3 installed over v2, rebooted into v3)"
+
+  # ADR-0022 phase 1 (issue #23): the #20 disk state, reconstructed.
+  # Boot 1 (pristine) lets lisa-boot-repair stash the booted UKI on the
+  # durable /var partition. Then mtools damage: delete the booted UKI
+  # from the ESP and plant a dangling one for a slot that never existed.
+  # Boot 2 must self-repair — restore the real UKI from the stash and
+  # remove the dangling entry — with the assertions read back from the
+  # ESP afterwards. Direct-kernel boots: the repair unit is loader-
+  # agnostic, and this keeps the job fast.
+  ab-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: image
+    steps:
+      - name: Download built image
+        uses: actions/download-artifact@v4
+        with:
+          name: lisa-image
+      - name: Expose /dev/kvm
+        run: |
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; else echo "no KVM; TCG fallback"; fi
+      - name: Tools + poweroff unit (loop mount)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends \
+            qemu-system-x86 mtools fdisk jq btrfs-progs >/dev/null
+          LOOP=$(sudo losetup -P --show -f lisa.raw)
+          mkdir -p mnt-root
+          sudo mount "${LOOP}p2" mnt-root
+          # Deterministic boots: power off right after the repair ran.
+          sudo tee mnt-root/usr/lib/systemd/system/lisa-test-poweroff.service >/dev/null <<'UNIT'
+          [Unit]
+          Description=Power off after boot-repair (ab-recovery test)
+          After=lisa-boot-repair.service multi-user.target
+          Wants=lisa-boot-repair.service
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/systemctl poweroff
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          sudo ln -sf ../lisa-test-poweroff.service \
+            mnt-root/usr/lib/systemd/system/multi-user.target.wants/lisa-test-poweroff.service
+          # The baked sysupdate channel must stay quiet (hermetic test).
+          sudo ln -sf /dev/null mnt-root/etc/systemd/system/systemd-sysupdate.timer
+          sudo umount mnt-root
+          sudo losetup -d "$LOOP"
+          # No boot menu concerns: direct kernel. Extract kernel+initrd
+          # from the ESP UKI copy? Not needed — the image job's direct-
+          # kernel pair is not in the artifact, so pull them from the
+          # baked UKI with mtools + objcopy.
+          sudo apt-get install -qq -y --no-install-recommends binutils >/dev/null
+          OFF=$(( $(sfdisk -J lisa.raw | jq -r '.partitiontable.partitions[0].start') * 512 ))
+          ESP="lisa.raw@@$OFF"
+          NAME=$(mdir -b -i "$ESP" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | head -1)
+          echo "baked UKI: $NAME"
+          mcopy -i "$ESP" "::/EFI/Linux/$NAME" baked.efi
+          objcopy --dump-section .linux=vmlinuz --dump-section .initrd=initrd.img baked.efi discard.efi
+          ls -l vmlinuz initrd.img
+          echo "ESP=$ESP" >>"$GITHUB_ENV"
+          echo "UKINAME=$NAME" >>"$GITHUB_ENV"
+      - name: Boot 1 — pristine, repair stashes the booted UKI
+        run: |
+          set -o pipefail
+          timeout 600 qemu-system-x86_64 \
+            -machine q35 -accel kvm -accel tcg -m 3G -nographic -no-reboot \
+            -kernel vmlinuz -initrd initrd.img \
+            -append "root=PARTLABEL=root_1 rw console=ttyS0 systemd.gpt_auto=no" \
+            -drive file=lisa.raw,format=raw,if=virtio \
+            | tee boot1.log
+          grep -q "Welcome to" boot1.log
+          # Unit stdout lands in the journal, not the serial console —
+          # assert on STATE: the stash on the var partition.
+          LOOP=$(sudo losetup -P --show -f lisa.raw)
+          mkdir -p mnt-var
+          sudo mount "${LOOP}p4" mnt-var
+          ls -l mnt-var/lib/lisa/uki/
+          test -f mnt-var/lib/lisa/uki/"$UKINAME" || { echo "FAIL: no stash"; exit 1; }
+          sudo umount mnt-var
+          sudo losetup -d "$LOOP"
+      - name: Damage the ESP (#20 reconstruction)
+        run: |
+          mdel -i "$ESP" "::/EFI/Linux/$UKINAME"
+          # A dangling UKI for a slot that never existed.
+          mcopy -i "$ESP" baked.efi "::/EFI/Linux/lisa_19990101.1.efi"
+          mdir -i "$ESP" ::/EFI/Linux/
+      - name: Boot 2 — self-repair restores + cleans
+        run: |
+          set -o pipefail
+          timeout 600 qemu-system-x86_64 \
+            -machine q35 -accel kvm -accel tcg -m 3G -nographic -no-reboot \
+            -kernel vmlinuz -initrd initrd.img \
+            -append "root=PARTLABEL=root_1 rw console=ttyS0 systemd.gpt_auto=no" \
+            -drive file=lisa.raw,format=raw,if=virtio \
+            | tee boot2.log
+          grep -q "Welcome to" boot2.log
+          # State-based assertions (journal is not on the console).
+          mdir -b -i "$ESP" ::/EFI/Linux/ | tee esp-final.txt
+          grep -q "$UKINAME" esp-final.txt
+          if grep -q 'lisa_19990101.1.efi' esp-final.txt; then
+            echo "FAIL: dangling UKI survived"; exit 1
+          fi
+          echo "AB-RECOVERY: PASS (stash -> damage -> restore + cleanup)"
