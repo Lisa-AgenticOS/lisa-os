@@ -1,0 +1,39 @@
+# Re-index modules for the ONE kernel release this package targets.
+#
+# Arch's kmod already ships 60-depmod.hook, but its trigger is the
+# `usr/lib/modules/*/` directory glob and this package's only reason to
+# exist is that the right module wins the depmod tie-break — too
+# load-bearing to leave to a glob we do not own. Explicit and idempotent;
+# running depmod twice costs a second and changes nothing.
+#
+# Never `depmod -a`: that resolves `uname -r`, which inside the image
+# build chroot is the BUILD HOST's kernel, not the image's.
+
+_modrel=7.1.4-arch1-1
+
+_lisa_depmod() {
+  if [ -d "/usr/lib/modules/${_modrel}" ]; then
+    depmod "${_modrel}"
+  fi
+}
+
+post_install() {
+  _lisa_depmod
+  cat <<'MSG'
+:: lisa-audio-cs8409 installed (Apple CS8409/CS42L83 speaker override).
+::   Takes effect on the next boot, or now with:
+::     sudo modprobe -r snd_hda_codec_cs8409 && sudo modprobe snd_hda_codec_cs8409
+::   Verify: dmesg | grep -i -e cs8409 -e cs42l83
+::           speaker-test -c 2 -t sine -f 440 -l 1
+MSG
+}
+
+post_upgrade() {
+  _lisa_depmod
+}
+
+post_remove() {
+  # Drops back to the in-tree Dell-only module — i.e. back to silence on
+  # Apple hardware. Deliberate: leaving a stale index would be worse.
+  _lisa_depmod
+}

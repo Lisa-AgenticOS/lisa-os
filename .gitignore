@@ -17,6 +17,14 @@ os/mkosi/lisa.initrd
 os/mkosi/lisa*.efi
 os/mkosi/initrd.cpio.zst
 
+# makepkg working dirs and built packages (os/packages/*). CI builds in a
+# throwaway container clone, but a local `makepkg` drops these in-tree —
+# and lisa-audio-cs8409/src/ alone holds a ~150 MB kernel tarball.
+os/packages/*/src/
+os/packages/*/pkg/
+os/packages/*/*.pkg.tar.*
+os/packages/*/*.log
+
 # Local model stores / scratch
 *.gguf
 .claude/

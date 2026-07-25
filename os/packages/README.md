@@ -23,6 +23,16 @@ Track I release image folds it in (release.yml); the fcitx5 addon
 (§5.7.3 layer 2) needs its own native-build lane and is not packaged
 yet.
 
+`lisa-audio-cs8409/` is hardware enablement, not Lisa code: an
+out-of-tree `snd-hda-codec-cs8409` for Apple Macs whose CS8409 bridge
+needs a CS42L83 companion mainline has never heard of — the reference
+iMac18,2's silent speakers (issue #44, ADR-0024). Unlike every other
+package here it is welded to one kernel release and **fails the release
+build when Arch's kernel moves**, deliberately: a codec module built for
+another kernel does not load at all, so drift has to be loud. Re-pinning
+and the on-hardware verification procedure are in its README — CI can
+prove it compiles, only a human can prove it makes sound.
+
 Build a local repo with `os/repo-tools/build-packages.sh`. The hosted,
 signed repo lands in M1; `lisa-modeld.service` lands with the M1 daemon
 loop.

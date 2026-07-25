@@ -1,0 +1,222 @@
+# lisa-audio-cs8409 — internal speakers on Apple Macs with the Cirrus
+# Logic CS8409 HDA bridge + CS42L83 companion codec (issue #44, ADR-0024).
+#
+# WHY THIS EXISTS
+# The reference device is an iMac18,2 (codec subsystem 0x106b:0x0f00).
+# Mainline's CS8409 driver quirk table
+# (sound/hda/codecs/cirrus/cs8409-tables.c) contains ONLY Dell (0x1028)
+# entries — verified by hand against the linux-7.1.4 tarball: 80
+# SND_PCI_QUIRK rows, every one of them 0x1028, and the string "CS42L83"
+# appears nowhere in the directory. So on an Apple machine the fixup
+# lookup misses, the CS42L83 companion that actually drives the speakers
+# is never initialized, and the pipeline plays silence into a dead amp.
+# No kernel bump fixes this; there is nothing upstream to bump *to*.
+#
+# WHAT THIS PACKAGE DOES
+# Builds davidjo/snd_hda_macbookpro's replacement snd-hda-codec-cs8409
+# against the image's exact kernel and installs it into
+# /usr/lib/modules/<release>/updates/ with a depmod `override` so it wins
+# over the in-tree module. Upstream's hook: when
+# snd_hda_pick_fixup() leaves fixup_id == HDA_FIXUP_ID_NOT_SET (i.e. not
+# a Dell), probe falls through to cs8409_apple(), which gates on
+# codec->core.subsystem_id and has explicit iMac18,1/18,2/18,3 + 19,1
+# (0x106b0e00 / 0x0f00 / 0x1000) paths with iMac-specific pin NIDs and
+# exec-verb handlers.
+#
+# KERNEL PINNING IS THE WHOLE POINT
+# A codec module built for another kernel release is not "degraded", it
+# is silently absent — modprobe refuses it, the in-tree Dell-only module
+# loads instead, and the user gets the exact bug this package fixes with
+# no error anywhere. So the pins below are hard: build() aborts if the
+# container's kernel moved. Re-pinning is a deliberate, hardware-retested
+# act — see README.md "Re-pinning".
+#
+# Built in CI / an Arch container (release.yml), never on the macOS dev
+# host. x86_64 only: these are Intel Macs; the aarch64 lane (ADR-0021)
+# has no such hardware.
+
+pkgname=lisa-audio-cs8409
+# 0.1 tracks upstream's own PACKAGE_VERSION in dkms.conf; the date is the
+# pinned commit's date. Bump the date when re-pinning _commit.
+pkgver=0.1.20260504
+pkgrel=1
+pkgdesc="Apple CS8409/CS42L83 HD-audio codec override — internal speakers on iMac18,x and MacBookPro13,1/14,x (out-of-tree, kernel-pinned)"
+arch=(x86_64)
+url="https://github.com/davidjo/snd_hda_macbookpro"
+license=(GPL-2.0-only)
+options=(!strip !debug)
+install=$pkgname.install
+
+# ---------------------------------------------------------------------
+# THE PINS. All four move together. See README.md "Re-pinning".
+# ---------------------------------------------------------------------
+# davidjo/snd_hda_macbookpro master @ 2026-05-04 ("fix(dkms): prevent
+# uname -r from overriding target kernel flag"). Verified: both diffs
+# apply cleanly to linux-7.1.4's sound/hda tree.
+_commit=cb27cc483f4fe98be03a4f4bef466c00aa7d244b
+# Mainline tarball the codec sources come from — upstream's build needs
+# the real sound/hda/*.c, which linux-headers does not ship.
+_kernver=7.1.4
+# `pacman -Q linux` output for that kernel.
+_archkernver=7.1.4.arch1-1
+# /usr/lib/modules/<this> — i.e. `uname -r` on the booted image.
+_modrel=7.1.4-arch1-1
+
+depends=("linux=${_archkernver}")
+makedepends=("linux-headers=${_archkernver}" bc git kmod xz zstd)
+
+source=(
+  "git+https://github.com/davidjo/snd_hda_macbookpro.git#commit=${_commit}"
+  "https://cdn.kernel.org/pub/linux/kernel/v${_kernver%%.*}.x/linux-${_kernver}.tar.xz"
+)
+# sha256 rather than this repo's usual b2sums for one reason: kernel.org
+# publishes sha256sums.asc, so this is a *verified upstream* digest, not
+# one we computed ourselves. Cross-checked against
+# https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc.
+sha256sums=('SKIP'
+            '1c63922a119675d38e3ae0f8f6ee07f15c41a786ab9ed66563749bb8c9a08e2e')
+# The tarball is ~150 MB and expands to ~1.5 GB; the release runner has
+# ~14 GB total. prepare() unpacks only sound/hda (a few hundred KB).
+noextract=("linux-${_kernver}.tar.xz")
+
+_bail() {
+  echo "" >&2
+  echo "!! lisa-audio-cs8409: $1" >&2
+  echo "!! Refusing to build. A CS8409 module that does not match the" >&2
+  echo "!! image kernel loads as NOTHING — silent no-audio, no error." >&2
+  echo "!! See os/packages/lisa-audio-cs8409/README.md 'Re-pinning'." >&2
+  echo "" >&2
+  return 1
+}
+
+prepare() {
+  # --- Guard 1: the kernel we are building against ------------------
+  local have
+  have=$(pacman -Q linux-headers 2>/dev/null | awk '{print $2}') || true
+  [ -n "$have" ] || _bail "linux-headers is not installed in this build root"
+  [ "$have" = "$_archkernver" ] || _bail \
+    "kernel moved: linux-headers is $have, this package is pinned to $_archkernver"
+
+  # --- Guard 2: the module tree that pin implies really exists ------
+  [ -d "/usr/lib/modules/${_modrel}/build" ] || _bail \
+    "/usr/lib/modules/${_modrel}/build missing — _modrel does not match linux-headers $have"
+  local rel
+  rel=$(< "/usr/lib/modules/${_modrel}/build/include/config/kernel.release")
+  [ "$rel" = "$_modrel" ] || _bail \
+    "kernel.release is '$rel', _modrel is '$_modrel'"
+
+  # The scriptlet carries its own copy of the release (pacman scriptlets
+  # cannot see PKGBUILD variables). Keep the two from drifting.
+  grep -qx "_modrel=${_modrel}" "$startdir/${pkgname}.install" || _bail \
+    "${pkgname}.install pins a different _modrel than this PKGBUILD (${_modrel})"
+
+  # --- Unpack just the codec sources --------------------------------
+  rm -rf "$srcdir/kbuild"
+  mkdir -p "$srcdir/kbuild/build"
+  tar --strip-components=2 -xf "$srcdir/linux-${_kernver}.tar.xz" \
+    -C "$srcdir/kbuild/build" "linux-${_kernver}/sound/hda"
+
+  local hda="$srcdir/kbuild/build/hda"
+  local dj="$srcdir/snd_hda_macbookpro"
+
+  # --- Guard 3: is this package still necessary? --------------------
+  # The endgame for issue #44 is an upstream Apple quirk. The day
+  # mainline grows a 0x106b row in the CS8409 table, this out-of-tree
+  # module stops being the answer and starts being a liability. Fail
+  # loudly so a human re-reads ADR-0024 instead of shipping this by
+  # inertia.
+  if grep -q 'SND_PCI_QUIRK(0x106b' "$hda/codecs/cirrus/cs8409-tables.c"; then
+    _bail "linux-${_kernver} cs8409-tables.c now has Apple (0x106b) quirks — mainline may have fixed issue #44; re-evaluate ADR-0024 before shipping an out-of-tree override"
+  fi
+
+  # --- Assemble the build tree (mirrors upstream's ------------------
+  #     install.cirrus.driver.sh, kernel >= 6.17 / non-Ubuntu path;
+  #     done here rather than by running that script because it wgets
+  #     the kernel tarball itself, unpinned and unverified, and has
+  #     already broken in the field when kernel.org rotated point
+  #     releases out of the CDN — davidjo issue #196.)
+  mv "$hda/Makefile"                "$hda/Makefile.orig"
+  mv "$hda/common/Makefile"         "$hda/common/Makefile.orig"
+  mv "$hda/codecs/Makefile"         "$hda/codecs/Makefile.orig"
+  mv "$hda/codecs/cirrus/Makefile"  "$hda/codecs/cirrus/Makefile.orig"
+  install -m644 "$dj/makefiles/Makefile"         "$hda/Makefile"
+  install -m644 "$dj/makefiles/Makefile_common"  "$hda/common/Makefile"
+  install -m644 "$dj/makefiles/Makefile_codecs"  "$hda/codecs/Makefile"
+  install -m644 "$dj/makefiles/Makefile_cirrus"  "$hda/codecs/cirrus/Makefile"
+
+  local h
+  for h in cirrus_apple.h patch_cirrus_boot84.h patch_cirrus_new84.h \
+           patch_cirrus_real84.h patch_cirrus_hda_generic_copy.h \
+           patch_cirrus_real84_i2c.h; do
+    install -m644 "$dj/patch_cirrus/$h" "$hda/codecs/cirrus/$h"
+  done
+
+  # The two diffs that graft the Apple path onto the in-tree driver.
+  # No fuzz: a hunk that only *almost* applies is a kernel-drift signal.
+  ( cd "$hda" && patch -p1 -F0 -i "$dj/patch_cs8409.c.diff" ) \
+    || _bail "patch_cs8409.c.diff no longer applies to linux-${_kernver}"
+  ( cd "$hda" && patch -p1 -F0 -i "$dj/patch_cs8409.h.diff" ) \
+    || _bail "patch_cs8409.h.diff no longer applies to linux-${_kernver}"
+
+  # Upstream's driver Makefile expects ./build/hda beneath its own cwd.
+  install -m644 "$dj/Makefile" "$srcdir/kbuild/Makefile"
+}
+
+build() {
+  cd "$srcdir/kbuild"
+  # Upstream's own top-level target; it re-enters kbuild with the
+  # APPLE_CODECS / APPLE_PINSENSE_FIXUP defines the Apple path needs.
+  make KERNELRELEASE="${_modrel}"
+
+  # --- Guard 4: the artifact is for the kernel we think it is -------
+  local ko="$srcdir/kbuild/build/hda/codecs/cirrus/snd-hda-codec-cs8409.ko"
+  [ -f "$ko" ] || _bail "build produced no snd-hda-codec-cs8409.ko"
+  local vm
+  vm=$(modinfo -F vermagic "$ko")
+  case "$vm" in
+    "${_modrel} "*|"${_modrel}") : ;;
+    *) _bail "built module vermagic is '$vm', expected to start with '${_modrel}'" ;;
+  esac
+  # --- Guard 5: it is the Apple build, not a stock rebuild ----------
+  # Source-level: the fall-through entry point exists.
+  grep -q 'cs8409_apple' "$srcdir/kbuild/build/hda/codecs/cirrus/cs8409.c" \
+    || _bail "cs8409.c has no cs8409_apple entry point — the Apple patch did not land"
+  # Binary-level: the Apple branch is actually compiled in and not
+  # preprocessed away by a missing -DAPPLE_CODECS. This string is the
+  # printk on the "not a Dell, try Apple" path — if it is not in the
+  # .ko, the module we built is functionally the stock one.
+  strings "$ko" | grep -q 'trying APPLE' \
+    || _bail "built module does not contain the Apple fall-through path — check the APPLE_CODECS build flags"
+}
+
+package() {
+  local ko="$srcdir/kbuild/build/hda/codecs/cirrus/snd-hda-codec-cs8409.ko"
+  local dest="$pkgdir/usr/lib/modules/${_modrel}/updates"
+
+  install -Dm644 "$ko" "$dest/snd-hda-codec-cs8409.ko"
+  strip --strip-debug "$dest/snd-hda-codec-cs8409.ko"
+  # Arch ships kernel modules zstd-compressed; match it so nothing in
+  # the image has to special-case ours.
+  zstd -q -19 --rm "$dest/snd-hda-codec-cs8409.ko"
+
+  # depmod tie-break. `updates/` is kmod's conventional override dir,
+  # but say it out loud rather than rely on the built-in default: the
+  # in-tree module still exists at
+  # kernel/sound/hda/codecs/cirrus/snd-hda-codec-cs8409.ko.zst and
+  # exactly one of the two must win. `override` only reorders this one
+  # module — it does not touch the global search order.
+  install -d "$pkgdir/usr/lib/depmod.d"
+  cat > "$pkgdir/usr/lib/depmod.d/50-lisa-audio-cs8409.conf" <<EOF
+# Prefer the Lisa-built Apple CS8409/CS42L83 module (issue #44, ADR-0024)
+# over the in-tree Dell-only one. Kernel-release-specific on purpose:
+# this package only ever ships a module for ${_modrel}.
+override snd-hda-codec-cs8409 ${_modrel} updates
+EOF
+
+  install -Dm644 "$srcdir/snd_hda_macbookpro/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$startdir/README.md" \
+    "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
+
+# vim:set sw=2 sts=-1 et:

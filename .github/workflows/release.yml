@@ -38,7 +38,12 @@ jobs:
               # makepkg without -s, so makedepends must be preinstalled).
               # cmake: the llama.cpp engine build. devtools: arch-meson,
               # used by the forked gnome-control-center PKGBUILD.
-              pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake devtools
+              # linux-headers (+ bc, which base-devel lacks): the CS8409
+              # codec module build (ADR-0024). Preinstalled so its makepkg
+              # can run with -d, and so the PKGBUILD can compare the
+              # installed headers against its kernel pin.
+              pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake devtools \
+                linux-headers bc
 
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build
@@ -63,6 +68,20 @@ jobs:
               # precedence installs it instead of the stock Arch package.
               sudo -u builder bash -c "cd /build/os/packages/gnome-control-center-lisa && makepkg -s --nocheck --skippgpcheck --noconfirm"
               cp $(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
+              # Apple CS8409/CS42L83 codec override — internal speakers on
+              # the reference iMac18,2 (issue #44, ADR-0024). -d: its deps
+              # are the kernel itself, pinned and checked inside the
+              # PKGBUILD rather than installed here.
+              #
+              # THIS STEP FAILS THE RELEASE WHEN THE ARCH KERNEL MOVES, on
+              # purpose. A codec module built for another kernel release
+              # does not load at all, and the machine goes back to silent
+              # speakers with nothing logged — so kernel drift has to be a
+              # red build, not a quiet regression. Fix: re-pin
+              # os/packages/lisa-audio-cs8409 (README "Re-pinning") and
+              # re-verify on hardware. Do NOT paper over it here.
+              sudo -u builder bash -c "cd /build/os/packages/lisa-audio-cs8409 && makepkg -d --nocheck --noconfirm"
+              cp /build/os/packages/lisa-audio-cs8409/lisa-audio-cs8409-*.pkg.tar.* /build/repo-out/
               # Reclaim disk before the image build — the llama.cpp and
               # gnome-control-center build trees are multi-GB and the runner
               # has ~14 GB. The built .pkg.tar are already in repo-out.
@@ -97,6 +116,12 @@ jobs:
                    lisa-contextd
                    llama.cpp
                    zen-browser
+                   # Apple CS8409/CS42L83 speaker override (issue #44,
+                   # ADR-0024). depends=(linux=<exact version>), so if the
+                   # image resolves a different kernel than the one this
+                   # module was built for, pacman refuses here — a second,
+                   # independent guard against shipping a dead module.
+                   lisa-audio-cs8409
           ExtraTrees=/build/extra
           Autologin=yes
           EOF
