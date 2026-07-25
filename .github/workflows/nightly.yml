@@ -76,6 +76,41 @@ jobs:
           print('initrd storage/HID stack: OK')
           PY
           rm -f initrd.img uki.efi discard.efi
+      - name: "Image must ship the whole sysupdate pull stack (issue #45)"
+        run: |
+          # `lisa update` is only as good as what the image can execute.
+          # systemd-pull dlopen()s libcurl.so.4 and reports ANY dlopen
+          # failure as EOPNOTSUPP — the field iMac's
+          # "Failed to allocate puller: Operation not supported". Arch lists
+          # libcurl as an *optional* systemd dependency, so nothing in the
+          # package graph guarantees the update path can download; today it
+          # only arrives because networkmanager pulls curl. Assert the
+          # binaries, the library, the CA bundle and the guarded transfer
+          # configs on the built image, so a dependency reshuffle upstream
+          # breaks CI instead of the field.
+          LOOP=$(sudo losetup -P --show -f os/mkosi/lisa.raw)
+          mkdir -p mnt-pull
+          sudo mount -o ro "${LOOP}p2" mnt-pull
+          fail=0
+          for b in usr/lib/systemd/systemd-pull usr/lib/systemd/systemd-sysupdate; do
+            [ -x "mnt-pull/$b" ] || { echo "FAIL: /$b missing from the image"; fail=1; }
+          done
+          ls mnt-pull/usr/lib/libcurl.so.4* >/dev/null 2>&1 || {
+            echo "FAIL: libcurl.so.4 missing — systemd-pull cannot allocate a puller"; fail=1; }
+          [ -s mnt-pull/etc/ssl/certs/ca-certificates.crt ] ||
+            [ -s mnt-pull/etc/ca-certificates/extracted/tls-ca-bundle.pem ] || {
+              echo "FAIL: no CA bundle — the HTTPS release channel cannot be verified"; fail=1; }
+          shopt -s nullglob
+          transfers=(mnt-pull/usr/lib/sysupdate.d/*.transfer)
+          [ "${#transfers[@]}" -gt 0 ] || { echo "FAIL: image ships no sysupdate transfers"; fail=1; }
+          for t in "${transfers[@]}"; do
+            # Issue #20: without this, vacuuming can erase the booted slot.
+            grep -q '^ProtectVersion=' "$t" || { echo "FAIL: $t lacks ProtectVersion="; fail=1; }
+          done
+          sudo umount mnt-pull
+          sudo losetup -d "$LOOP"
+          [ "$fail" -eq 0 ] || exit 1
+          echo "sysupdate pull stack: OK"
       - name: Boot check (QEMU + swtpm)
         run: |
           set -o pipefail

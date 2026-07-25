@@ -9,12 +9,29 @@
 # mid-flight. Runs in the initrd, before initrd-root-device.target.
 #
 # Selection: every root_<ver> partition, newest version first, each
+# rejected if sysupdate marked it as an unfinished transfer target, then
 # probed by a read-only mount that must expose /usr/lib/os-release. The
 # first that passes wins. Nothing is written; a failed probe just moves
 # on. If nothing passes we exit silently and the boot fails the way it
 # would have anyway — this can only ever improve the outcome.
 
 set -u
+
+# Discoverable-partitions root types (systemd src/systemd/sd-gpt.h:
+# SD_GPT_ROOT_X86_64 / SD_GPT_ROOT_ARM64). A slot only carries one of
+# these once sysupdate has COMMITTED an install: during a transfer the
+# target partition wears a derived "partial" type, and between download
+# and commit a derived "pending" type
+# (src/sysupdate/sysupdate-transfer.c sets partition_type_partial before
+# the download, partition_type_pending after it, and the real root type
+# only in the final patch_partition()). Crucially the partition is
+# relabelled to root_<newver> BEFORE a single byte is downloaded — so an
+# aborted or killed run leaves a slot whose PARTLABEL advertises the new
+# version over the OLD (or half-written) contents. That is issue #45's
+# "initrd mounts them, Failed to start Switch Root" on BOTH slots after
+# an interrupted rerun. The marker for it is already on the disk; read it.
+ROOT_TYPE_X86_64=4f68bce3-e8cd-4db1-96e7-fbcaf984b709
+ROOT_TYPE_ARM64=b921b045-1df0-41c3-af44-4c6f280d3fae
 
 link=/dev/lisa/newest-good
 probe=/run/lisa-rootprobe
@@ -63,8 +80,24 @@ list_candidates() {
 }
 candidates=$(list_candidates)
 
+# True when the partition's GPT type is a real root type, i.e. sysupdate
+# finished with it. Unknown (no udevadm, no property) counts as committed:
+# this guard may only ever reject slots we can PROVE are half-finished —
+# never make an otherwise bootable machine unbootable.
+slot_is_committed() {
+    command -v udevadm >/dev/null 2>&1 || return 0
+    ptype=$(udevadm info --query=property --name="$1" 2>/dev/null |
+        sed -n 's/^ID_PART_ENTRY_TYPE=//p' | tr '[:upper:]' '[:lower:]' | tr -d ' \r\n')
+    [ -n "$ptype" ] || return 0
+    [ "$ptype" = "$ROOT_TYPE_X86_64" ] || [ "$ptype" = "$ROOT_TYPE_ARM64" ]
+}
+
 for dev in $candidates; do
     [ -b "$dev" ] || continue
+    if ! slot_is_committed "$dev"; then
+        echo "lisa-rescue: $dev is an unfinished sysupdate target (GPT type is not a root type) — skipping"
+        continue
+    fi
     if mount -o ro "$dev" "$probe" 2>/dev/null; then
         if [ -f "$probe/usr/lib/os-release" ]; then
             umount "$probe" 2>/dev/null

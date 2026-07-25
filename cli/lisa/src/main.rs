@@ -1519,6 +1519,65 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+/// `systemd-run` argv that stages the update inside its own transient
+/// unit instead of as a child of the caller's shell.
+///
+/// Why this is not a nicety (issue #45): sysupdate relabels and retypes
+/// the TARGET partition before it downloads a single byte
+/// (systemd src/sysupdate/sysupdate-transfer.c, transfer_acquire_instance:
+/// "Set the partition label and change the partition type to the derived
+/// 'partial' type UUID"). A staging run killed part way therefore leaves a
+/// slot advertising the new version's PARTLABEL over old or half-written
+/// bytes. On the field iMac exactly that happened — a debug rerun died
+/// with the SSH session and both root slots stopped switch-rooting. A
+/// transient unit is not in the login session's scope, so a dropped
+/// connection, a Ctrl-C or a closed lid cannot SIGHUP the transfer any
+/// more; `--wait` only makes *us* wait for it.
+///
+/// Progress goes to the journal rather than this terminal — the follow
+/// command is printed, and it is the same journal that carries the
+/// `SYSTEMD_LOG_LEVEL=debug` detail when something goes wrong.
+fn staging_unit_argv(unit: &str, sysupdate: &str, debug: bool) -> Vec<String> {
+    let mut argv = vec![
+        format!("--unit={unit}"),
+        "--collect".into(),
+        "--wait".into(),
+        "--service-type=oneshot".into(),
+        "--description=Lisa OS update staging".into(),
+    ];
+    if debug {
+        // The ONLY place the real reason for "Failed to allocate puller:
+        // Operation not supported" is written: systemd logs the underlying
+        // dlopen error at debug level ("Shared library 'libcurl.so.4' is
+        // not available: …", src/basic/dlfcn-util.c) and returns a bare
+        // EOPNOTSUPP to its caller.
+        argv.push("--setenv=SYSTEMD_LOG_LEVEL=debug".into());
+    }
+    argv.push(sysupdate.into());
+    argv.push("update".into());
+    argv
+}
+
+/// What to tell an operator whose staging run just failed. The two things
+/// that cost the field device a USB reinstall were (a) not knowing that a
+/// failed run leaves the target slot mislabelled and (b) rerunning the
+/// diagnosis in a foreground SSH session that then dropped.
+fn staging_failure_help(unit: &str) -> String {
+    format!(
+        "the target slot may be mid-transfer: sysupdate relabels and retypes it \
+         BEFORE downloading, so its PARTLABEL can now advertise the new version \
+         over stale bytes (issue #45). Do NOT reboot into it and do NOT interrupt \
+         a retry.\n  logs:  journalctl -u {unit} --no-pager\n  \
+         retry with full detail, detached from this session (survives an SSH drop):\n    \
+         sudo systemd-run --unit=lisa-update-debug --collect \
+         --setenv=SYSTEMD_LOG_LEVEL=debug \
+         /usr/lib/systemd/systemd-sysupdate update\n    \
+         journalctl -fu lisa-update-debug\n  \
+         a line of the form \"Shared library '…' is not available: …\" names the \
+         real cause of a puller failure; nothing else does."
+    )
+}
+
 fn update_cmd(reboot: bool) -> anyhow::Result<()> {
     let sysupdate = std::path::Path::new("/usr/lib/systemd/systemd-sysupdate");
     if !sysupdate.exists() {
@@ -1528,16 +1587,45 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
         );
     }
     assert_transfers_protect_booted()?;
-    // Preferred: the polkit-mediated D-Bus path (works unprivileged).
-    if update_via_sysupdated(reboot)? {
-        return Ok(());
+    // Preferred: the polkit-mediated D-Bus path (works unprivileged). Its
+    // work runs inside systemd-sysupdated.service, so it already survives a
+    // dropped session.
+    match update_via_sysupdated(reboot) {
+        Ok(true) => return Ok(()),
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("!! {}", staging_failure_help("systemd-sysupdated"));
+            return Err(e);
+        }
     }
-    // Fallback: direct exec — needs root, kept for images without sysupdated.
-    let status = std::process::Command::new(sysupdate)
-        .arg("update")
-        .status()?;
+    // Fallback: direct exec — needs root, kept for images without
+    // sysupdated. Staged inside a transient unit so an interrupted session
+    // cannot leave a slot half written (issue #45); if systemd-run is not
+    // usable we still run it directly rather than refuse to update.
+    let sysupdate_str = sysupdate.to_string_lossy().into_owned();
+    let unit = format!("lisa-update-{}", std::process::id());
+    let debug = std::env::var_os("LISA_UPDATE_DEBUG").is_some();
+    println!(">> staging in transient unit {unit} — follow with `journalctl -fu {unit}`");
+    let status = match std::process::Command::new("systemd-run")
+        .args(staging_unit_argv(&unit, &sysupdate_str, debug))
+        .status()
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "!! systemd-run unavailable ({e}) — staging in this session instead; \
+                       do not interrupt it"
+            );
+            std::process::Command::new(sysupdate)
+                .arg("update")
+                .status()?
+        }
+    };
     if !status.success() {
-        bail!("systemd-sysupdate failed ({status})");
+        bail!(
+            "systemd-sysupdate failed ({status}) — {}",
+            staging_failure_help(&unit)
+        );
     }
     if reboot {
         std::process::Command::new(sysupdate)
@@ -1935,6 +2023,43 @@ mod completions_tests {
         let script = String::from_utf8(buf).expect("zsh completions are UTF-8");
         assert!(!script.is_empty());
         assert!(script.contains("_lisa"), "zsh script defines _lisa");
+    }
+}
+
+#[cfg(test)]
+mod update_staging_tests {
+    use super::{staging_failure_help, staging_unit_argv};
+
+    #[test]
+    fn staging_runs_detached_in_its_own_unit() {
+        let argv = staging_unit_argv("lisa-update-7", "/usr/lib/systemd/systemd-sysupdate", false);
+        // The unit is the point: a transient unit outlives the login
+        // session, so an SSH drop cannot kill a partition write half way
+        // through (issue #45).
+        assert_eq!(argv[0], "--unit=lisa-update-7");
+        assert!(argv.iter().any(|a| a == "--wait"));
+        assert_eq!(
+            argv[argv.len() - 2..],
+            ["/usr/lib/systemd/systemd-sysupdate", "update"]
+        );
+        // Debug detail is opt-in and must not leak into normal runs.
+        assert!(!argv.iter().any(|a| a.contains("SYSTEMD_LOG_LEVEL")));
+    }
+
+    #[test]
+    fn debug_staging_asks_for_the_only_log_level_that_names_the_cause() {
+        let argv = staging_unit_argv("u", "/s", true);
+        assert!(argv.iter().any(|a| a == "--setenv=SYSTEMD_LOG_LEVEL=debug"));
+        assert_eq!(argv[argv.len() - 2..], ["/s", "update"]);
+    }
+
+    #[test]
+    fn failure_help_names_the_unit_and_warns_about_the_half_labelled_slot() {
+        let help = staging_failure_help("lisa-update-7");
+        assert!(help.contains("journalctl -u lisa-update-7"));
+        assert!(help.contains("mid-transfer"));
+        assert!(help.contains("Shared library"));
+        assert!(help.contains("systemd-run"));
     }
 }
 

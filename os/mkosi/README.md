@@ -38,6 +38,32 @@ Verity partitions are the next backlog item. Nightly CI:
   into v3. The PLAN §10 "A/B update + rollback demonstrated" line is
   closed.
 
+**The pull stack is declared, not inherited** (issue #45). Downloads
+are not done by `systemd-sysupdate` itself: for every `Type=url-file`
+source it forks `/usr/lib/systemd/systemd-pull`, which `dlopen()`s
+`libcurl.so.4` at runtime and reports *any* dlopen failure as a bare
+`EOPNOTSUPP` — the field iMac's `Failed to allocate puller: Operation
+not supported` (systemd `src/import/pull.c` → `curl_glue_new` →
+`dlopen_curl`). Arch ships libcurl only as an **optional** dependency
+of systemd ("curl: … machinectl pull-tar and pull-raw"), so before
+this the image's ability to update itself rode on `networkmanager`
+happening to depend on `curl`. `curl` and `ca-certificates` are now
+named in `Packages=`, and the nightly `image` job asserts
+`systemd-pull`, `systemd-sysupdate`, `libcurl.so.4`, a CA bundle and
+`ProtectVersion=` in every shipped transfer on the built image.
+
+**Unfinished transfer targets are never booted.** `transfer_acquire_
+instance()` relabels *and* retypes the target partition **before** the
+first byte is downloaded — new PARTLABEL, plus a derived "partial" GPT
+type that is only promoted to the real root type once the install
+commits. So an interrupted staging run leaves a slot advertising the
+new version over stale or half-written bytes (issue #45: after a
+killed rerun, *both* slots stopped switch-rooting). The rescue path's
+`newest-good-root.sh` therefore skips any candidate whose GPT type is
+not `SD_GPT_ROOT_X86_64`/`SD_GPT_ROOT_ARM64`, and `lisa update` stages
+inside a transient `systemd-run` unit so a dropped SSH session cannot
+SIGHUP a partition write half way through.
+
 Desktop (M4 §5.7 host): gdm + gnome-shell + a hand-picked supporting
 set (each justified inline in `mkosi.conf` — no `gnome` group). The
 release build folds in `lisa-shell` (os/packages/lisa), which installs
