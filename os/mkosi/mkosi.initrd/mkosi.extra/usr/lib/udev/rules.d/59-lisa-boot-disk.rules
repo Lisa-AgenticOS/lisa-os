@@ -1,0 +1,15 @@
+# Deterministic /dev/disk/by-* on multi-Lisa-disk machines (issue #16):
+# after `lisa install`, the internal disk and the installer USB carry
+# identical PARTLABELs, and whichever partition udev enumerates last owns
+# the contended by-partlabel symlink. Partitions on the disk the boot
+# loader actually ran from (systemd-stub's LoaderDevicePartUUID, resolved
+# by the lisa-loader-disk helper) get a higher link_priority, so
+# root=PARTLABEL=… and every other by-* lookup resolve to the booted
+# disk — in the initrd and in the rooted system. Without stub info
+# (direct-kernel CI boots) the helper marks every disk, which reproduces
+# stock behavior. Runs before 60-persistent-storage.rules creates the
+# symlinks.
+ACTION=="remove", GOTO="lisa_boot_disk_end"
+SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", IMPORT{program}="lisa-loader-disk %k"
+ENV{LISA_LOADER_DISK}=="1", OPTIONS+="link_priority=90"
+LABEL="lisa_boot_disk_end"

@@ -1,0 +1,37 @@
+#!/bin/sh
+# lisa-loader-disk <kernel-partition-name> — emit LISA_LOADER_DISK=1 when
+# the partition's parent disk is the disk the boot loader ran from.
+#
+# systemd-stub records the ESP it was loaded from in the EFI variable
+# LoaderDevicePartUUID; a disk whose GPT contains that partition is the
+# booted disk. Used by 59-lisa-boot-disk.rules to give the booted disk's
+# partitions a higher udev link_priority, so contended /dev/disk/by-*
+# symlinks (identical PARTLABELs after `lisa install`, issue #16) resolve
+# deterministically — in the initrd (root=PARTLABEL=…) and after.
+#
+# Without stub info (direct-kernel CI boots, non-EFI) every disk
+# qualifies: identical priorities reproduce stock udev behavior.
+
+part="$1"
+[ -n "$part" ] || exit 0
+
+efivar=/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+if [ ! -r "$efivar" ]; then
+    echo "LISA_LOADER_DISK=1"
+    exit 0
+fi
+# Payload: 4 bytes of attributes, then the PartUUID as UTF-16LE.
+loader=$(tail -c +5 "$efivar" 2>/dev/null | tr -d '\000' |
+    tr '[:upper:]' '[:lower:]' | tr -d ' \r\n')
+if [ -z "$loader" ]; then
+    echo "LISA_LOADER_DISK=1"
+    exit 0
+fi
+
+disk=$(basename "$(readlink -f "/sys/class/block/$part/..")")
+[ -b "/dev/$disk" ] || exit 0
+if sfdisk -J "/dev/$disk" 2>/dev/null | tr '[:upper:]' '[:lower:]' |
+    grep -q "\"uuid\": *\"$loader\""; then
+    echo "LISA_LOADER_DISK=1"
+fi
+exit 0
