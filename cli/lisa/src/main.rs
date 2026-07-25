@@ -802,6 +802,114 @@ fn individualize_copied_fsids(disk: &std::path::Path) {
     }
 }
 
+/// The pinned Flutter SDK `lisa forge setup` installs on-device (issue
+/// #37). Version, URL, and sha256 come from Google's signed releases
+/// manifest (releases_linux.json, checked 2026-07-25) — never guessed.
+const FLUTTER_SDK_VERSION: &str = "3.44.7";
+const FLUTTER_SDK_URL: &str = "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.44.7-stable.tar.xz";
+const FLUTTER_SDK_SHA256: &str = "a0edd646c159c0e816788c0e46a4f071199c1320495898f5a679599b583a05a4";
+const FLUTTER_VAR_DIR: &str = "/var/lib/lisa/flutter";
+
+/// Resolve the flutter launcher: PATH first (dev hosts, distro installs),
+/// then the on-device /var install `lisa forge setup` creates.
+fn flutter_program() -> String {
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join("flutter").is_file()));
+    if on_path {
+        return "flutter".into();
+    }
+    let var_bin = std::path::Path::new(FLUTTER_VAR_DIR).join("bin/flutter");
+    if var_bin.is_file() {
+        return var_bin.to_string_lossy().into_owned();
+    }
+    "flutter".into() // let the spawn error carry the message
+}
+
+/// `lisa forge setup`: fetch the pinned Flutter SDK into /var (ADR-0020
+/// spirit — the image stays lean, the durable partition carries the
+/// toolchain). Streaming download with mandatory sha256 verification,
+/// stage-then-rename so a partial fetch is never visible.
+fn forge_setup() -> anyhow::Result<()> {
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join("flutter").is_file()));
+    if on_path
+        || std::path::Path::new(FLUTTER_VAR_DIR)
+            .join("bin/flutter")
+            .is_file()
+    {
+        println!("flutter is already available — nothing to do");
+        return Ok(());
+    }
+    if !cfg!(target_os = "linux") {
+        bail!("`lisa forge setup` provisions Lisa devices; install Flutter yourself on dev hosts");
+    }
+    if std::env::consts::ARCH != "x86_64" {
+        bail!(
+            "no official Flutter Linux SDK exists for {} — see issue #37 \
+             for the aarch64 story",
+            std::env::consts::ARCH
+        );
+    }
+    let dest = std::path::Path::new(FLUTTER_VAR_DIR);
+    let parent = dest.parent().expect("FLUTTER_VAR_DIR has a parent");
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "creating {} — run with sudo on first setup",
+            parent.display()
+        )
+    })?;
+    let part = parent.join("flutter.tar.xz.part");
+    println!(">> downloading Flutter {FLUTTER_SDK_VERSION} (~1 GB, sha256-verified)");
+    {
+        use sha2::Digest;
+        let mut resp = ureq::get(FLUTTER_SDK_URL)
+            .call()
+            .context("downloading the Flutter SDK")?;
+        let mut reader = resp.body_mut().as_reader();
+        let mut file = std::fs::File::create(&part)?;
+        let mut hasher = sha2::Sha256::new();
+        let mut buf = [0u8; 1 << 16];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            file.write_all(&buf[..n])?;
+        }
+        file.sync_all()?;
+        let got: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if got != FLUTTER_SDK_SHA256 {
+            let _ = std::fs::remove_file(&part);
+            bail!("sha256 mismatch on the Flutter SDK (got {got}) — refusing to unpack");
+        }
+    }
+    let staging = parent.join(".flutter-staging");
+    std::fs::create_dir_all(&staging)?;
+    let status = std::process::Command::new("tar")
+        .arg("-xJf")
+        .arg(&part)
+        .arg("-C")
+        .arg(&staging)
+        .status()
+        .context("unpacking (tar with xz support required)")?;
+    if !status.success() {
+        bail!("unpacking the Flutter SDK failed ({status})");
+    }
+    std::fs::rename(staging.join("flutter"), dest)?;
+    let _ = std::fs::remove_file(&part);
+    let _ = std::fs::remove_dir(&staging);
+    println!(
+        ">> Flutter {FLUTTER_SDK_VERSION} installed at {FLUTTER_VAR_DIR} — \
+         `lisa forge --flutter` will find it automatically"
+    );
+    Ok(())
+}
+
 /// Locate the lisa_ui package for a forged Flutter app's path dependency:
 /// `LISA_UI_PATH` first (dev trees), then the installed location.
 fn lisa_ui_path() -> anyhow::Result<PathBuf> {
@@ -863,7 +971,7 @@ fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
          await tester.pump();\n  });\n}\n"
             .into(),
     )?;
-    let status = std::process::Command::new("flutter")
+    let status = std::process::Command::new(flutter_program())
         .args(["pub", "get"])
         .current_dir(project)
         .status()
@@ -882,6 +990,10 @@ fn forge_cmd(
     max_iters: usize,
     flutter: bool,
 ) -> anyhow::Result<()> {
+    // `lisa forge setup` — provision the on-device Flutter SDK (#37).
+    if task.trim() == "setup" {
+        return forge_setup();
+    }
     std::fs::create_dir_all(project)?;
     let verifier = if flutter {
         // "Scaffolded" means pub get SUCCEEDED (its package_config is the
@@ -905,7 +1017,7 @@ fn forge_cmd(
             );
         }
         forge_harness::Verifier::Command {
-            program: "flutter".into(),
+            program: flutter_program(),
             args: vec!["analyze".into(), "--no-pub".into()],
         }
     } else {

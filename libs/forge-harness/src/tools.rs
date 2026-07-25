@@ -368,8 +368,16 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
             ));
         }
     }
+    // On Lisa devices the Flutter SDK lives on the durable partition
+    // (`lisa forge setup`, issue #37) — extend the child's PATH so the
+    // agent's `flutter`/`dart` calls resolve there too.
+    let path = match std::env::var("PATH") {
+        Ok(p) => format!("{p}:/var/lib/lisa/flutter/bin"),
+        Err(_) => "/var/lib/lisa/flutter/bin".to_string(),
+    };
     match Command::new(program)
         .args(argv)
+        .env("PATH", path)
         .current_dir(jail.root())
         .output()
     {

@@ -180,6 +180,17 @@ package_lisa-cli() {
         > "$pkgdir/usr/share/zsh/site-functions/_lisa"
     target/release/lisa completions fish \
         > "$pkgdir/usr/share/fish/vendor_completions.d/lisa.fish"
+    # lisa_ui package sources (issue #37): `lisa forge --flutter` scaffolds
+    # apps with this as their path dependency. Sources only — no build
+    # products, no lockfile (each app resolves its own).
+    install -d "$pkgdir/usr/share/lisa/lisa_ui"
+    cp -r libs/lisa_ui/lib "$pkgdir/usr/share/lisa/lisa_ui/lib"
+    install -Dm644 libs/lisa_ui/pubspec.yaml \
+        "$pkgdir/usr/share/lisa/lisa_ui/pubspec.yaml"
+    install -Dm644 libs/lisa_ui/analysis_options.yaml \
+        "$pkgdir/usr/share/lisa/lisa_ui/analysis_options.yaml"
+    install -Dm644 libs/lisa_ui/LICENSE \
+        "$pkgdir/usr/share/lisa/lisa_ui/LICENSE"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
