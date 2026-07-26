@@ -148,16 +148,19 @@ skill. There was no location convention, so this ADR sets one:
   lisa-cli package for Track L.
 - Forged apps appear in the app grid, survive rebuilds, and keep one
   rollback generation — without adding a byte to the image.
-- **Open, deliberately not decided here: the build toolchain on Track I.**
-  `flutter build linux` needs clang (or gcc), cmake, ninja and pkg-config,
-  and the immutable image ships none of them — you cannot `pacman -S` them
-  on a Track I device. So `lisa forge --build` works today on **Track L**
-  (the current distribution channel) and on dev hosts, not on a Track I
-  image. The options, in ADR-0023's terms, are (a) put ~250 MB of
-  toolchain in the image — paid twice, against the grain of the slim-core
-  decision, or (b) make the toolchain another hash-pinned /var payload
-  fetched by `lisa forge --setup`, the way ADR-0021 pinned mkosi from the
-  permanent Arch archive. (b) fits the architecture; it needs its own
-  change and the owner's call on the size/complexity trade.
+- **Decided (2026-07-26): the build toolchain is a /var payload, not image
+  content.** `flutter build linux` needs clang (or gcc), cmake, ninja and
+  pkg-config, and the immutable image ships none of them — you cannot
+  `pacman -S` them on a Track I device. Rather than bake ~250 MB into the
+  image (paid twice, once per A/B slot, on every device whether or not it
+  ever builds an app), `lisa forge --setup` fetches a hash-pinned
+  toolchain payload into `/var/lib/lisa/toolchain`, the way ADR-0021
+  pinned mkosi from the permanent Arch archive and the way the Flutter SDK
+  itself already installs. This follows ADR-0023 exactly: the image
+  carries the OS contract, `/var` carries what the user grows — and a
+  build toolchain is unambiguously the latter. Consequences accepted:
+  building needs network once, the payload lives outside boot-rollback
+  (it has its own re-fetch by pin), and packages pulled from the Arch
+  archive must be pinned by exact version+hash, never "latest".
 - gtk3 is already in the image transitively (xdg-desktop-portal-gtk), so a
   forged app *runs* on Track I once it has been built somewhere.
