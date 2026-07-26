@@ -58,3 +58,7 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0026](0026-native-drm-in-initrd.md) — The native GPU driver + its firmware ride the initrd
 - [ADR-0027](0027-flutter-on-device-aarch64-and-forged-app-launch.md) — The Flutter lane on-device: aarch64 SDK, forged-app build + launch, and where skills live
 - [ADR-0028](0028-initrd-overlay-mechanism.md) — Files reach the default initrd through `io.mkosi.initrd`, not `mkosi.initrd/`
+- [ADR-0029](0029-hard-guardrails-for-agent-actions.md) — Hard guardrails for agent actions: deterministic policy outside the model
+- [ADR-0030](0030-the-guardrail-boundary.md) — The guardrail boundary: probabilistic inside, logical outside — and the owner is outside
+- [ADR-0031](0031-server-mode-two-edges-and-artifact-publishing.md) — Server mode, the two network edges, and artifact publishing (proposed)
+- [ADR-0032](0032-construct-and-lisa-one-contract-two-levels.md) — Construct and Lisa: one contract, two levels (proposed)

@@ -61,6 +61,15 @@ Run `just lint && just test` before every commit; CI enforces both.
 6. **Provenance is load-bearing.** Context chunks carry provenance tags;
    untrusted provenance never triggers privileged tool calls without
    escalated confirmation (PLAN §5.10, Appendix C).
+6a. **Probabilistic inside, logical outside** (ADR-0029, ADR-0030). Agent
+   safety is deterministic code the model cannot reach, never prompt
+   text. Two tests before shipping any guardrail: *is it reachable from
+   inside?* (if yes it is not a guardrail) and *is it aimed at the model
+   or at the owner?* (guardrails sit between the model and the machine,
+   never between a person and their own machine). New rule ids join the
+   catalogue in `cli/lisa/src/guard.rs` and a corpus entry in
+   `libs/lisa-guard/tests/corpus.rs` — a rule with no corpus entry is one
+   nobody will notice regressing.
 7. **One command center.** User-facing CLI verbs live under `lisa <verb>`
    — no scattered `lisa-*` helper scripts (Appendix E, rule 4).
 8. **No invented external references.** Model sources, URLs, and hashes

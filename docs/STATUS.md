@@ -19,6 +19,40 @@ claim below is enforced by CI on `main`, not aspirational.
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
 
 **2026-07-26:**
+- **The vision got a spine** (ADR-0030, ADR-0031, ADR-0032; `docs/VISION.md`).
+  A day of guardrail work and a long design conversation produced three
+  things worth treating as core rather than as chat:
+  1. **"Probabilistic reasoning inside, logical guardrails outside"** is now
+     the governing principle (CLAUDE.md rule 6a), with a testable
+     invariant — *the boundary must not be reachable from inside* — and
+     the corollary that **the owner is outside it too**. ADR-0029 had made
+     `Deny` absolute, which put a guardrail between a person and their own
+     machine; that was a category error. `lisa guard list|allow|forbid`
+     now lets the machine's owner relax a rule out-of-band, where no tool
+     call can reach it, and a relaxed rule *warns* rather than going
+     silent. `lisa suggest` honours relaxations because a human is
+     present; the forge loop deliberately does not, because nobody is
+     watching it.
+  2. **Make and serve** — Lisa builds the artifact and serves it from your
+     hardware under your domain. ChatGPT/Claude make but don't serve;
+     Vercel/CapRover serve but don't make; v0/Lovable do both on *their*
+     infrastructure. The closure is the differentiator. Server mode, the
+     private (WireGuard) and public (domain + ACME) edges, Cockpit for
+     management vs our own surface for use, and publishing as a
+     confirm-tier ledgered act are specified in ADR-0031 — **proposed,
+     no code, sequenced after v31** and gated on #55 + the injection
+     suite, because publishing is the first capability whose failure
+     harms someone other than the owner.
+  3. **Construct and Lisa are one idea at two levels** (ADR-0032). They
+     share a *contract* — manifest, provenance vocabulary, Ledger event
+     shape, design tokens — not code; a Vue Space does not port to a
+     Flutter app and never will. The contract is defined in Lisa because
+     a constrained spec relaxes onto a platform easily and a permissive
+     one never grows enforcement.
+  Also recorded: what the Forge may **produce** is now a security
+  boundary sequenced by blast radius (GUI apps → CLI → system units, the
+  last gated on Landlock #53), and Lisa's two UI stacks have a stated
+  line — GJS for shell surfaces, Flutter for applications.
 - **Hard guardrails for agent actions** (ADR-0029, new crate
   `libs/lisa-guard`, issues #53–#58). An audit of the two agent execution
   surfaces found the Agent Bus genuinely guarded — tiers, provenance

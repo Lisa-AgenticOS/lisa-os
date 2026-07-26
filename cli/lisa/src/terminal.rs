@@ -123,7 +123,22 @@ pub(crate) fn suggest_task() -> liblisa::tasks::Task {
 /// shell's edit buffer, so a refused command must not reach it. `Ok(Some)`
 /// = show it, with this warning first. `Ok(None)` = ordinary.
 fn screen_suggestion(command: &str) -> Result<Option<String>, String> {
-    let verdict = lisa_guard::check_shell_line(command);
+    screen_suggestion_with(command, &lisa_guard::active_overrides())
+}
+
+/// The screening logic, with the machine owner's relaxations passed in
+/// so it stays testable (ADR-0030).
+///
+/// A human is present on this path — the suggestion lands in their shell
+/// buffer and waits for Enter — so a relaxed rule downgrades to a printed
+/// warning. The forge loop deliberately does **not** consult overrides:
+/// nobody is watching it, and relaxing a rule there would remove the only
+/// check with no one to see the warning.
+fn screen_suggestion_with(
+    command: &str,
+    overrides: &lisa_guard::Overrides,
+) -> Result<Option<String>, String> {
+    let verdict = overrides.relax(lisa_guard::check_shell_line(command));
     let (rule, reason) = match (verdict.rule(), verdict.reason()) {
         (Some(rule), Some(reason)) => (rule, reason.to_string()),
         _ => return Ok(None),
@@ -253,6 +268,22 @@ mod tests {
             .expect("git reset should still be offered")
             .expect("…but not silently");
         assert!(warning.contains("git.destructive"), "{warning}");
+    }
+
+    /// ADR-0030: the owner is outside the boundary, so they may relax a
+    /// rule — and the result warns rather than going silent.
+    #[test]
+    fn an_owner_relaxed_rule_warns_instead_of_refusing() {
+        let mut overrides = lisa_guard::Overrides::new();
+        overrides.allow("escalate.privilege");
+
+        let warning = screen_suggestion_with("sudo systemctl restart gdm", &overrides)
+            .expect("relaxed, so it should be offered")
+            .expect("but never silently");
+        assert!(warning.contains("escalate.privilege"), "{warning}");
+
+        // Relaxing one rule relaxes exactly one rule.
+        assert!(screen_suggestion_with("rm -rf /", &overrides).is_err());
     }
 
     #[test]

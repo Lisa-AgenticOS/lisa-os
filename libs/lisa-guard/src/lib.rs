@@ -12,17 +12,25 @@
 //! shell involved, the second for the free-form string `lisa suggest`
 //! types into the user's prompt.
 //!
-//! The [`Verdict::Deny`] class is deliberately not overridable. A tier
+//! The [`Verdict::Deny`] class is not overridable *from inside*. A tier
 //! system whose every level is reachable by clicking "yes" is a speed
 //! bump; the point of a guardrail is the action that is simply not
-//! available.
+//! available to the model.
+//!
+//! It is overridable from **outside** — by the person who owns the
+//! machine, out-of-band, via [`Overrides`] (ADR-0030). The boundary this
+//! crate draws is around the probabilistic system, and the human is on
+//! the far side of it along with the guard. The invariant that keeps
+//! that honest is that the mechanism is unreachable from any tool call.
 
 mod command;
+mod overrides;
 mod path;
 mod rules;
 mod shell;
 
 pub use command::{ALLOWED_COMMANDS, check_command};
+pub use overrides::{Overrides, active as active_overrides, overrides_path};
 pub use path::{ContainError, contain, write_contained};
 pub use shell::{Invocation, check_shell_line};
 

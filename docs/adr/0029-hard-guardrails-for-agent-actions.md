@@ -8,6 +8,12 @@
 - Supersedes in part: the "the same jail confines BYO agent backends"
   claim in `libs/forge-harness/src/jail.rs`, which was true of `..` and
   absolute paths and false of symlinks.
+- **Amended by [ADR-0030](0030-the-guardrail-boundary.md):** this ADR
+  made `Deny` absolute with no override, which placed a guardrail between
+  the owner and their own machine. It is now relaxable by the human,
+  out-of-band, via `lisa guard allow` — and still unreachable from inside
+  the probabilistic system, which is the property that actually mattered.
+  Read ADR-0030 for where the boundary falls and the test for it.
 
 ## Context
 

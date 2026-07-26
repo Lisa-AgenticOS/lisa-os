@@ -8,6 +8,7 @@
 
 mod agent;
 mod apps;
+mod guard;
 mod skills;
 mod terminal;
 mod voice;
@@ -90,6 +91,14 @@ enum Command {
         url: String,
         #[arg(long)]
         model: Option<String>,
+    },
+    /// Inspect and relax the action guard (ADR-0029, ADR-0030).
+    ///
+    /// This is the outside of the boundary: you set policy for the model
+    /// running on your machine. Nothing the agent can invoke reaches it.
+    Guard {
+        #[command(subcommand)]
+        cmd: GuardCmd,
     },
     /// Manage the local model store (PLAN §5.2).
     Models {
@@ -267,6 +276,16 @@ enum Command {
         /// Target shell (bash, zsh, fish, elvish, powershell).
         shell: clap_complete::Shell,
     },
+}
+
+#[derive(Subcommand)]
+enum GuardCmd {
+    /// Every rule, what it stops, and whether you have relaxed it.
+    List,
+    /// Relax a rule: it warns instead of refusing. Never silent.
+    Allow { rule: String },
+    /// Enforce a rule again.
+    Forbid { rule: String },
 }
 
 #[derive(Subcommand)]
@@ -476,6 +495,11 @@ fn run() -> anyhow::Result<()> {
             url,
             model,
         } => terminal::suggest_cmd(&request.join(" "), &url, model, json),
+        Command::Guard { cmd } => match cmd {
+            GuardCmd::List => guard::list_cmd(),
+            GuardCmd::Allow { rule } => guard::allow_cmd(&rule),
+            GuardCmd::Forbid { rule } => guard::forbid_cmd(&rule),
+        },
         Command::Models { cmd, store } => models(cmd, store),
         Command::Do {
             utterance,

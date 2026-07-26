@@ -55,6 +55,82 @@ macOS 27 gives you Apple's intelligence. Lisa gives you yours.
   they don't get cut off. Big models run on your other box or a provider
   you consented to, never silently.
 
+## Probabilistic inside, logical outside
+
+The governing principle for everything agentic in Lisa, and the sentence
+to reach for when a design question is genuinely hard:
+
+> **Probabilistic reasoning inside. Logical guardrails outside.**
+
+The model is inside the boundary and is allowed to be probabilistic —
+that is what it is for. Enforcement lives outside it, in deterministic
+code that does not consult a model, cannot be prompted away, and is
+testable as a pure function. Not a paragraph in a system prompt; a crate
+with a corpus (`libs/lisa-guard`, ADR-0029).
+
+**And you are outside it too** — on the same side as the guard, not the
+thing it is aimed at. Guardrails sit between the model and the machine,
+never between the owner and their machine. That is why a hard refusal can
+still be lifted with `lisa guard allow`, and why lifting it turns a
+refusal into a warning rather than into silence (ADR-0030).
+
+What keeps that from being a slogan is one testable invariant:
+
+> **The boundary must not be reachable from inside.**
+
+A config file you edit out-of-band passes. A dialog the model can
+re-trigger until you click yes fails — which is why confirmation fatigue
+is a security property, not a UX complaint. Provenance the caller merely
+*asserts* fails, because then the inside is writing the input the outside
+reasons over.
+
+This has a corollary worth stating: the logical layer can only reason
+over what is **typed and declared**. The manifest, the provenance
+vocabulary, the Ledger schema, the guard's rule ids — that is Lisa's
+ontology, and a capability the ontology cannot describe is one the guard
+cannot govern. Growing what Lisa can do means growing that vocabulary
+first.
+
+## Make and serve
+
+Lisa builds the thing, and Lisa serves it — from your hardware, under
+your domain.
+
+Ask for a small tool and watch it get written, verified, built and
+installed while you talk. Ask for a research report and get back a link
+you can send someone. The Forge is the producer; the apps-channel
+mechanics are the store; the machine you own is the host (ADR-0031).
+
+Neither half is new alone. ChatGPT and Claude make but don't serve —
+output lives in someone else's walled garden. Vercel and CapRover serve
+but don't make. v0 and Lovable do both, on *their* infrastructure, and
+you rent the URL. **The closure is the thing: your hardware makes it,
+your hardware serves it, and the record of what happened is yours and
+append-only.**
+
+It is also where "your machine, your rules" stops being a complete
+answer. The moment an artifact has a public URL, a stranger visits it —
+so publishing is a deliberate, ledgered, revocable act, and never a side
+effect of the agent having produced something.
+
+## Two levels: Construct and Lisa
+
+Lisa's idea came from [Construct](https://construct.space), which is
+ours. Construct is the same thesis as an **application platform** —
+Spaces, an Operator, shared memory, a store. Lisa is that thesis one
+level down, as an **operating system**.
+
+They are complementary, not redundant. Construct installs in a minute and
+runs anywhere; that reach is the on-ramp Lisa cannot match. Lisa can
+*enforce* what a platform can only *offer* — a Space cannot be stopped by
+the plugin layer it lives in, whereas a Lisa app genuinely cannot reach
+your files without a portal grant.
+
+They share a **contract**, not code: one manifest, one provenance
+vocabulary, one Ledger event shape, one set of design tokens. The view
+layers stay different on purpose — Vue where reach matters, Flutter where
+the machine is ours (ADR-0032).
+
 ## The feeling: *Her*, but it's yours
 
 The experiential north star is the movie *Her* — an operating system you

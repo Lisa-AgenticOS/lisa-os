@@ -294,15 +294,24 @@ Unified-memory APUs (Strix Halo-class, 64–128 GB) are the flagship experience 
 ### 5.11 Personal Compute Node (our answer to Private Cloud Compute)
 Some tasks want a 70B+ model. Apple's answer is their cloud; ours is **your other machine**: a headless `lisa-node` package (same `inferenced`/`modeld`, no desktop) for a home server/workstation. Pairing via QR/short-code → WireGuard tunnel; the laptop's `inferenced` gains a `remote:personal` tier used only when a request's declared context scopes are permitted to leave the device (default: same-owner nodes trusted like local; a per-scope "may offload" switch in Settings). Discovery on LAN via mDNS; roaming via the WG endpoint. Explicit non-goal: any Lisa-operated cloud. Optional third-party endpoints (an OpenAI-compat URL the user supplies) are supported but rendered in the Ledger and status UI in a distinct "leaves your hardware" color, every request.
 
+**The node also needs a human interface (ADR-0031).** As specified above it is purely a *peer* — there is no way for a person to pull a model, check what it is doing, or read the Ledger without SSH, and an invisible Ledger on a headless box defeats the point of having one. Server mode is therefore a first-class install choice (M7 OOBE), and it splits its surfaces: **management** via a Cockpit module (systemd/D-Bus native, brings PAM auth and TLS, so we do not write those), and **use** — chat, harness — via our own. Two network edges, chosen at install because the target machines differ: a **private edge** (WireGuard, the pairing above as authentication) is the default and the only option for a home machine behind NAT/CGNAT; a **public edge** (wildcard DNS, ACME, reverse proxy) is opt-in and viable on a VPS. The public edge publishes an explicit whitelist of surfaces — never "what is listening" — and its primary content is **published artifacts**, not the inference API. See ADR-0031 for the whitelist, per-key Ledger attribution, and the isolated inbound terminator.
+
 ---
 
 ### 5.12 App framework strategy: the Flutter lane + the Forge (ADR-0004)
 
 **Decision: two app lanes, one native and one Flutter — and the Flutter lane exists to power the Forge, a Claude Code-style app-building harness shipped in the OS.**
 
-**Lane split:**
-- **Native lane (unchanged):** GTK4/libadwaita + Qt via `liblisa` (§5.6) for the shell, portals, Settings, and system apps that must integrate at OS depth (Files, Ledger).
+**Lane split** — the line is *shell surface versus application*, not preference (ADR-0032 §5):
+- **Native lane (unchanged):** GTK4/libadwaita + Qt via `liblisa` (§5.6) for the shell, portals, Settings, and system apps that must integrate at OS depth (Files, Ledger). GJS specifically where GNOME Shell requires it — the overlay, launcher, Assistant, Ledger app, Settings panel.
 - **Flutter lane (new):** the default framework for user-facing apps, third-party apps, and everything the Forge generates.
+
+**What the Forge may produce is a security boundary, not a feature list (ADR-0031 §5).** Sequenced by blast radius, because the capability that makes Lisa able to build anything is the same fact that makes it dangerous:
+1. **GUI apps** — user session, bounded by the tool jail and the command allowlist. Shipping.
+2. **CLI tools** — same session, same bound. Next.
+3. **Units, timers, services — anything running at boot or outside the session** — this is arbitrary persistent execution chosen by a model. **Not before** Landlock confinement of forge subprocesses (issue #53) and the model-in-the-loop injection suite. Today the harness is jailed for its own file tools and *unconfined* for the toolchains it invokes; a forged systemd unit turns that gap from theoretical into shipped.
+
+**The Forge is also the producer half of "make and serve" (ADR-0031 §4):** `--web` emits a static site the machine can publish under the owner's domain, stored with the ADR-0020 apps-channel mechanics. Publishing is a confirm-tier, ledgered, revocable act — never a side effect of having generated something.
 
 **Why Flutter for the generative lane:**
 1. **Hot reload *is* the agent loop.** The harness's iterate cycle (edit → rebuild → observe) drops from ~10 s of native compile to sub-second stateful reload — the single biggest determinant of whether "talk an app into existence" feels magical or miserable.
@@ -394,7 +403,7 @@ lisa/
 - **M4 — Surfaces:** assistant overlay, semantic launcher, Writing Tools layers 1–2, voice v1, Ledger app. *Accept:* §5.7 budgets.
 - **M5 — Agent Bus:** MCP manifests, `agentd`, confirmation tiers, undo, first-party apps expose tools, injection suite green. *Accept:* §5.4 block.
 - **M6 — Apps, Forge alpha & polish:** §5.8 app set (Notes/Recorder in the Flutter lane), screen context, model adapters (LoRA) trained + shipped, `lisa_ui` v0 + `lisa_flutter` parity samples, **Forge alpha meeting the §5.12.1 acceptance block**.
-- **M7 — Personal Compute Node** + nonfree image variant + installer OOBE.
+- **M7 — Personal Compute Node** + nonfree image variant + installer OOBE, which now also chooses **server or desktop** and, for server, which network edge (ADR-0031). Server mode is close to free: the nightly already builds and boot-tests a minimal no-desktop image.
 - **M8 — Public alpha ISO:** docs site, SDK quickstarts, eval dashboard, security review pass.
 
 ## 11. Testing strategy
