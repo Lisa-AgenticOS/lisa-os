@@ -8,6 +8,7 @@
 
 mod agent;
 mod apps;
+mod skills;
 mod terminal;
 mod voice;
 
@@ -231,9 +232,22 @@ enum Command {
         #[arg(long)]
         flutter: bool,
         /// Provision the pinned Flutter SDK to /var/lib/lisa/flutter
-        /// (sha256-verified download; Lisa devices, x86_64) and exit.
+        /// (hash-pinned; Lisa devices, x86_64 + aarch64) and exit.
         #[arg(long)]
         setup: bool,
+        /// Build --project for Linux and install it: bundle under the
+        /// forge apps dir, plus a .desktop entry so it shows up in the
+        /// app grid. No model runs.
+        #[arg(long)]
+        build: bool,
+        /// --build, then launch the app.
+        #[arg(long)]
+        run: bool,
+    },
+    /// Skills: the SKILL.md workflows Lisa loads on demand (ADR-0025).
+    Skills {
+        #[command(subcommand)]
+        cmd: SkillsCmd,
     },
     /// Embed text into a vector (reads stdin when piped).
     Embed {
@@ -252,6 +266,14 @@ enum Command {
         /// Target shell (bash, zsh, fish, elvish, powershell).
         shell: clap_complete::Shell,
     },
+}
+
+#[derive(Subcommand)]
+enum SkillsCmd {
+    /// The catalog: one `name: description` line per skill.
+    List,
+    /// Print a skill's full workflow.
+    Show { name: String },
 }
 
 #[derive(Subcommand)]
@@ -487,13 +509,21 @@ fn run() -> anyhow::Result<()> {
             max_iters,
             flutter,
             setup,
+            build,
+            run,
         } => {
             if setup {
                 forge_setup()
+            } else if build || run {
+                forge_build(&project, run)
             } else {
                 forge_cmd(&task.join(" "), &project, model, &url, max_iters, flutter)
             }
         }
+        Command::Skills { cmd } => match cmd {
+            SkillsCmd::List => skills::list(),
+            SkillsCmd::Show { name } => skills::show(&name),
+        },
         Command::Context { cmd } => context_cmd(cmd),
         Command::Memory { cmd, app } => memory_cmd(cmd, &app),
     }
@@ -814,12 +844,65 @@ fn individualize_copied_fsids(disk: &std::path::Path) {
 }
 
 /// The pinned Flutter SDK `lisa forge setup` installs on-device (issue
-/// #37). Version, URL, and sha256 come from Google's signed releases
-/// manifest (releases_linux.json, checked 2026-07-25) — never guessed.
+/// #37). Version, URL, and sha256 come from Google's releases manifest
+/// (releases_linux.json, re-checked 2026-07-26) — never guessed.
 const FLUTTER_SDK_VERSION: &str = "3.44.7";
 const FLUTTER_SDK_URL: &str = "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.44.7-stable.tar.xz";
 const FLUTTER_SDK_SHA256: &str = "a0edd646c159c0e816788c0e46a4f071199c1320495898f5a679599b583a05a4";
+/// The framework commit 3.44.7 is cut from. Two independent sources agree:
+/// the `hash` field of the 3.44.7 entry in Google's releases_linux.json,
+/// and the `3.44.7` tag on flutter/flutter (both read 2026-07-26). A git
+/// commit id is a hash over the whole tree, so this pins the aarch64
+/// install as tightly as the sha256 pins the x86_64 tarball (ADR-0027).
+const FLUTTER_SDK_COMMIT: &str = "84fc5cbb223bc12f83d65b647ff8a56caf779ffd";
+const FLUTTER_GIT_URL: &str = "https://github.com/flutter/flutter.git";
 const FLUTTER_VAR_DIR: &str = "/var/lib/lisa/flutter";
+
+/// How the pinned SDK is obtained for a given CPU architecture.
+///
+/// Google publishes the convenience **tarball** for linux-x64 only —
+/// `releases_linux.json` carries `dart_sdk_arch: x64` and nothing else,
+/// and `flutter_linux_arm64_*.tar.xz` is a 404 (checked 2026-07-26). The
+/// *artifacts* an arm64 SDK needs do exist under the same pinned engine
+/// revision (`dart-sdk-linux-arm64.zip`, `linux-arm64/artifacts.zip`,
+/// `linux-arm64-release/linux-arm64-flutter-gtk.zip` — all HTTP 200), so
+/// on aarch64 the SDK is a commit-pinned checkout that bootstraps itself
+/// from those artifacts. See ADR-0027.
+#[derive(Debug, PartialEq, Eq)]
+enum FlutterInstall {
+    /// sha256-pinned release tarball (linux-x64).
+    Tarball {
+        url: &'static str,
+        sha256: &'static str,
+    },
+    /// Commit-pinned checkout of the release tag (linux-arm64).
+    GitTag {
+        url: &'static str,
+        tag: &'static str,
+        commit: &'static str,
+    },
+}
+
+/// Pick the install route for `arch` (`std::env::consts::ARCH` values).
+/// Unknown architectures refuse rather than guess an artifact URL.
+fn flutter_install_plan(arch: &str) -> anyhow::Result<FlutterInstall> {
+    match arch {
+        "x86_64" => Ok(FlutterInstall::Tarball {
+            url: FLUTTER_SDK_URL,
+            sha256: FLUTTER_SDK_SHA256,
+        }),
+        "aarch64" => Ok(FlutterInstall::GitTag {
+            url: FLUTTER_GIT_URL,
+            tag: FLUTTER_SDK_VERSION,
+            commit: FLUTTER_SDK_COMMIT,
+        }),
+        other => bail!(
+            "no pinned Flutter SDK for {other} — Google publishes neither a \
+             tarball nor engine artifacts for it (issue #37, ADR-0027); \
+             install a Flutter SDK yourself and put it on PATH"
+        ),
+    }
+}
 
 /// Resolve the flutter launcher: PATH first (dev hosts, distro installs),
 /// then the on-device /var install `lisa forge setup` creates.
@@ -854,13 +937,7 @@ fn forge_setup() -> anyhow::Result<()> {
     if !cfg!(target_os = "linux") {
         bail!("`lisa forge setup` provisions Lisa devices; install Flutter yourself on dev hosts");
     }
-    if std::env::consts::ARCH != "x86_64" {
-        bail!(
-            "no official Flutter Linux SDK exists for {} — see issue #37 \
-             for the aarch64 story",
-            std::env::consts::ARCH
-        );
-    }
+    let plan = flutter_install_plan(std::env::consts::ARCH)?;
     let dest = std::path::Path::new(FLUTTER_VAR_DIR);
     // A leftover dest without bin/flutter would survive the early "already
     // available" check and then fail the final rename after the whole
@@ -881,6 +958,32 @@ fn forge_setup() -> anyhow::Result<()> {
             parent.display()
         )
     })?;
+    match plan {
+        FlutterInstall::Tarball { url, sha256 } => {
+            install_flutter_tarball(parent, dest, url, sha256)?
+        }
+        FlutterInstall::GitTag { url, tag, commit } => {
+            install_flutter_git(parent, dest, url, tag, commit)?
+        }
+    }
+    // Bootstrap in place, after the rename: the first `flutter` run fetches
+    // this architecture's Dart SDK (the whole aarch64 story) and caches
+    // absolute paths, so it must see its final home.
+    flutter_bootstrap(dest);
+    println!(
+        ">> Flutter {FLUTTER_SDK_VERSION} installed at {FLUTTER_VAR_DIR} — \
+         `lisa forge --flutter` will find it automatically"
+    );
+    Ok(())
+}
+
+/// x86_64: stream the pinned tarball, verify sha256, unpack, rename.
+fn install_flutter_tarball(
+    parent: &std::path::Path,
+    dest: &std::path::Path,
+    url: &str,
+    sha256: &str,
+) -> anyhow::Result<()> {
     let part = parent.join("flutter.tar.xz.part");
     println!(">> downloading Flutter {FLUTTER_SDK_VERSION} (~1 GB, sha256-verified)");
     // Everything fallible runs inside; any error cleans up the partial
@@ -888,7 +991,7 @@ fn forge_setup() -> anyhow::Result<()> {
     let staging = parent.join(".flutter-staging");
     let fetch_and_unpack = || -> anyhow::Result<()> {
         use sha2::Digest;
-        let mut resp = ureq::get(FLUTTER_SDK_URL)
+        let mut resp = ureq::get(url)
             .call()
             .context("downloading the Flutter SDK")?;
         let mut reader = resp.body_mut().as_reader();
@@ -914,7 +1017,7 @@ fn forge_setup() -> anyhow::Result<()> {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        if got != FLUTTER_SDK_SHA256 {
+        if got != sha256 {
             bail!("sha256 mismatch on the Flutter SDK (got {got}) — refusing to unpack");
         }
         std::fs::create_dir_all(&staging)?;
@@ -934,12 +1037,70 @@ fn forge_setup() -> anyhow::Result<()> {
     let result = fetch_and_unpack();
     let _ = std::fs::remove_file(&part);
     let _ = std::fs::remove_dir_all(&staging);
-    result?;
-    println!(
-        ">> Flutter {FLUTTER_SDK_VERSION} installed at {FLUTTER_VAR_DIR} — \
-         `lisa forge --flutter` will find it automatically"
-    );
-    Ok(())
+    result
+}
+
+/// aarch64: clone the release tag and refuse anything but the pinned
+/// commit. There is no arm64 tarball to hash, so the commit id *is* the
+/// pin — and it is the same id Google's manifest publishes for 3.44.7
+/// (ADR-0027). The SDK then downloads its own arm64 Dart SDK and engine
+/// artifacts, which Google does publish, on first run.
+fn install_flutter_git(
+    parent: &std::path::Path,
+    dest: &std::path::Path,
+    url: &str,
+    tag: &str,
+    commit: &str,
+) -> anyhow::Result<()> {
+    let staging = parent.join(".flutter-staging");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    let work = staging.join("flutter");
+    // ~250 MB shallow, ~850 MB once bootstrapped (measured on the pinned tag).
+    println!(">> cloning Flutter {tag} (~250 MB, pinned to commit {commit})");
+    let clone_and_verify = || -> anyhow::Result<()> {
+        let status = std::process::Command::new("git")
+            .args(["clone", "--depth", "1", "--branch", tag, url])
+            .arg(&work)
+            .status()
+            .context("running git — the aarch64 SDK install needs it (it ships in the image)")?;
+        if !status.success() {
+            bail!("git clone of the Flutter SDK failed ({status})");
+        }
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&work)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .context("reading the cloned Flutter revision")?;
+        let head = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if head != commit {
+            bail!("Flutter checkout is {head}, not the pinned {commit} — refusing to install");
+        }
+        std::fs::rename(&work, dest).context("moving the checkout into place")?;
+        Ok(())
+    };
+    let result = clone_and_verify();
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// First run of the freshly installed SDK: fetches this architecture's
+/// Dart SDK and the Linux desktop engine artifacts `flutter build linux`
+/// needs. Best effort — a device that is offline at this point still has
+/// a usable SDK, it just pays the download on the first build.
+fn flutter_bootstrap(dest: &std::path::Path) {
+    println!(">> bootstrapping the SDK (Dart SDK + Linux desktop engine artifacts)");
+    let ok = std::process::Command::new(dest.join("bin/flutter"))
+        .args(["precache", "--linux"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        eprintln!(
+            "!! `flutter precache --linux` did not finish — rerun it (or just \
+             `lisa forge --build`, which fetches on demand) once the device is online"
+        );
+    }
 }
 
 /// Locate the lisa_ui package for a forged Flutter app's path dependency:
@@ -962,11 +1123,49 @@ fn lisa_ui_path() -> anyhow::Result<PathBuf> {
     );
 }
 
+/// A forged app's Dart package name, derived from the project directory:
+/// lowercased, non-alphanumerics folded to `_`, leading digits prefixed —
+/// the pub naming rules. It becomes the pubspec `name`, the built binary
+/// (CMake `BINARY_NAME`), and the tail of the desktop id, so the app that
+/// lands in the app grid is named after what the user asked for instead of
+/// every forged app being `lisa_app`.
+fn dart_package_name(project: &std::path::Path) -> String {
+    let raw = project
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut out = String::new();
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    let out = out.trim_matches('_').to_string();
+    match out.chars().next() {
+        None => "lisa_app".to_string(),
+        Some(c) if c.is_ascii_digit() => format!("app_{out}"),
+        _ => out,
+    }
+}
+
+/// Read the `name:` field out of a pubspec (top level, first match) —
+/// the built binary and the desktop id follow it.
+fn pubspec_name(pubspec: &str) -> Option<String> {
+    pubspec.lines().find_map(|l| {
+        let rest = l.strip_prefix("name:")?;
+        let name = rest.trim();
+        (!name.is_empty()).then(|| name.trim_matches(['"', '\'']).to_string())
+    })
+}
+
 /// Scaffold a runnable lisa_ui Flutter app: pubspec with the lisa_ui path
 /// dependency, a LisaApp main stub the analyzer accepts, and one smoke
 /// test — so the verifier judges real app code from turn one.
 fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
     let ui = lisa_ui_path()?;
+    let pkg = dart_package_name(project);
     std::fs::create_dir_all(project.join("lib"))?;
     std::fs::create_dir_all(project.join("test"))?;
     // Write-if-absent: a rerun after a failed `pub get` (#38) must retry
@@ -980,7 +1179,7 @@ fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
     write_if_absent(
         project.join("pubspec.yaml"),
         format!(
-            "name: lisa_app\ndescription: An app forged by LisaCode.\n\
+            "name: {pkg}\ndescription: An app forged by LisaCode.\n\
              publish_to: none\nversion: 0.1.0\n\
              environment:\n  sdk: ^3.9.0\n\
              dependencies:\n  flutter:\n    sdk: flutter\n  lisa_ui:\n    path: {}\n\
@@ -998,10 +1197,11 @@ fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
     )?;
     write_if_absent(
         project.join("test/smoke_test.dart"),
-        "import 'package:flutter_test/flutter_test.dart';\nimport 'package:lisa_app/main.dart' as app;\n\n\
-         void main() {\n  testWidgets('app builds', (tester) async {\n    app.main();\n    \
-         await tester.pump();\n  });\n}\n"
-            .into(),
+        format!(
+            "import 'package:flutter_test/flutter_test.dart';\nimport 'package:{pkg}/main.dart' as app;\n\n\
+             void main() {{\n  testWidgets('app builds', (tester) async {{\n    app.main();\n    \
+             await tester.pump();\n  }});\n}}\n"
+        ),
     )?;
     let status = std::process::Command::new(flutter_program())
         .args(["pub", "get"])
@@ -1053,7 +1253,10 @@ fn forge_cmd(
         if !pubspec.exists() {
             std::fs::write(
                 &pubspec,
-                "name: lisa_app\ndescription: An app forged by LisaCode.\nenvironment:\n  sdk: ^3.0.0\n",
+                format!(
+                    "name: {}\ndescription: An app forged by LisaCode.\nenvironment:\n  sdk: ^3.0.0\n",
+                    dart_package_name(project)
+                ),
             )?;
             std::fs::create_dir_all(project.join("bin"))?;
         }
@@ -1092,10 +1295,282 @@ fn forge_cmd(
                 report.turns,
                 project.display()
             );
+            if flutter {
+                println!(
+                    "next: `lisa forge --run --project {}` builds it and puts it in the app grid",
+                    project.display()
+                );
+            }
             Ok(())
         }
         Err(e) => bail!("forge did not finish: {e}"),
     }
+}
+
+// ---------------------------------------------------------------------
+// `lisa forge --build` / `--run`: from source to an app in the grid.
+// ---------------------------------------------------------------------
+
+/// Reverse-DNS org for locally forged apps (ADR-0016 app namespace). The
+/// Flutter Linux template turns `--org X --project-name p` into
+/// `APPLICATION_ID = X.p`, and `my_application.cc` calls
+/// `g_set_prgname(APPLICATION_ID)` — so this is simultaneously the GTK
+/// app id, the WM class, and the `.desktop` basename. Keeping the three
+/// equal is what makes GNOME match the window to its launcher entry.
+const FORGED_APP_ORG: &str = "app.lisaos.forge";
+
+/// Durable, non-image home for forged app bundles (ADR-0023: the image
+/// carries the OS contract, /var carries what the user grows). Same
+/// shape as `default_store_root`: the group-writable system dir when the
+/// device has one (tmpfiles.d/lisa-forge.conf), else the user's own data
+/// dir — which on Lisa is its own partition too (ADR-0019), so the image
+/// stays slim either way.
+fn forge_apps_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("LISA_FORGE_APPS_DIR") {
+        return PathBuf::from(p);
+    }
+    let system = PathBuf::from("/var/lib/lisa/forge/apps");
+    if system.is_dir() {
+        return system;
+    }
+    user_data_dir().join("lisa/forge/apps")
+}
+
+/// `$XDG_DATA_HOME`, or the spec default `~/.local/share`.
+fn user_data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|h| h.join(".local/share"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The `.desktop` file a forged app is launched by. Names and ids all
+/// derive from the app id so GNOME can tie window → icon → entry.
+fn desktop_entry(app_id: &str, name: &str, exec: &std::path::Path) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Version=1.0\n\
+         Name={name}\n\
+         Comment=Forged on this device by LisaCode\n\
+         Exec=\"{}\"\n\
+         Icon=application-x-executable\n\
+         Terminal=false\n\
+         Categories=Utility;\n\
+         StartupNotify=true\n\
+         StartupWMClass={app_id}\n\
+         X-Lisa-Forged=true\n",
+        exec.display()
+    )
+}
+
+/// `tip_calc` → `Tip Calc`: the human-facing name in the app grid.
+fn display_name(pkg: &str) -> String {
+    pkg.split('_')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_ascii_uppercase().to_string() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Read `APPLICATION_ID` back out of a generated `linux/CMakeLists.txt` —
+/// on a rebuild the runner already exists, and the id baked into it is the
+/// truth, not whatever we would generate now.
+fn cmake_application_id(cmake: &str) -> Option<String> {
+    cmake.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix("set(APPLICATION_ID")?;
+        let inner = rest.trim().trim_end_matches(')').trim();
+        Some(inner.trim_matches('"').to_string()).filter(|s| !s.is_empty())
+    })
+}
+
+/// `flutter build linux` writes to `build/linux/<arch>/<mode>/bundle`.
+/// Prefer the host arch's directory, then accept any that exists — the
+/// arch spelling is the SDK's, not ours.
+fn built_bundle(project: &std::path::Path) -> Option<PathBuf> {
+    let host = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let root = project.join("build/linux");
+    let candidate = |arch: &str| {
+        let p = root.join(arch).join("release/bundle");
+        p.is_dir().then_some(p)
+    };
+    candidate(host).or_else(|| {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(&root)
+            .ok()?
+            .flatten()
+            .filter_map(|e| candidate(&e.file_name().to_string_lossy()))
+            .collect();
+        found.sort();
+        found.pop()
+    })
+}
+
+/// Recursive copy, permissions included (`fs::copy` carries the mode, so
+/// the built executable stays executable).
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)
+                .with_context(|| format!("copying {} → {}", src.display(), dst.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Install a built bundle as `<apps dir>/<app id>/bundle`, staging then
+/// renaming so a half-copied tree is never launchable, and keeping the
+/// previous build beside it as this payload's own rollback (ADR-0023
+/// delivery rule 2). Returns the installed executable.
+fn install_forged_bundle(
+    app_id: &str,
+    exe_name: &str,
+    src: &std::path::Path,
+) -> anyhow::Result<PathBuf> {
+    let root = forge_apps_dir().join(app_id);
+    std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+    let staging = root.join(format!(".stage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    let result = copy_tree(src, &staging);
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result?;
+    let live = root.join("bundle");
+    let previous = root.join("bundle.previous");
+    if live.exists() {
+        let _ = std::fs::remove_dir_all(&previous);
+        std::fs::rename(&live, &previous).context("rotating the previous build out of the way")?;
+    }
+    std::fs::rename(&staging, &live).context("moving the new build into place")?;
+    Ok(live.join(exe_name))
+}
+
+/// `flutter build linux` needs the CMake/GTK runner under `linux/`, which
+/// the forge scaffold deliberately does not hand-write — it comes from the
+/// SDK's own template. Generated into a scratch directory and copied in,
+/// so an existing `lib/`, pubspec or test can never be clobbered.
+fn ensure_linux_runner(project: &std::path::Path, pkg: &str) -> anyhow::Result<()> {
+    if project.join("linux/CMakeLists.txt").is_file() {
+        return Ok(());
+    }
+    let scratch = std::env::temp_dir().join(format!("lisa-forge-runner-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    println!(">> generating the Linux runner (flutter create --platforms=linux)");
+    let generate = || -> anyhow::Result<()> {
+        let status = std::process::Command::new(flutter_program())
+            .args([
+                "create",
+                "--platforms=linux",
+                "--template=app",
+                "--no-pub",
+                "--org",
+                FORGED_APP_ORG,
+                "--project-name",
+                pkg,
+            ])
+            .arg(&scratch)
+            .status()
+            .context(
+                "running flutter create (is the flutter SDK installed? see `lisa forge --setup`)",
+            )?;
+        if !status.success() {
+            bail!("flutter create failed ({status})");
+        }
+        copy_tree(&scratch.join("linux"), &project.join("linux"))
+    };
+    let result = generate();
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+/// `lisa forge --build` / `--run`: compile the forged app for Linux and
+/// install it where the shell can launch it. No model runs here — this is
+/// the step that turns source into something you can click.
+fn forge_build(project: &std::path::Path, launch: bool) -> anyhow::Result<()> {
+    let pubspec_path = project.join("pubspec.yaml");
+    let pubspec = std::fs::read_to_string(&pubspec_path).with_context(|| {
+        format!(
+            "{} is not a Flutter project — forge one first with \
+             `lisa forge --flutter --project {}`",
+            project.display(),
+            project.display()
+        )
+    })?;
+    if !pubspec.contains("sdk: flutter") {
+        bail!(
+            "{} is a plain Dart project — only Flutter apps have a Linux build",
+            project.display()
+        );
+    }
+    let pkg = pubspec_name(&pubspec)
+        .with_context(|| format!("{} has no `name:` field", pubspec_path.display()))?;
+    ensure_linux_runner(project, &pkg)?;
+    let app_id = std::fs::read_to_string(project.join("linux/CMakeLists.txt"))
+        .ok()
+        .and_then(|c| cmake_application_id(&c))
+        .unwrap_or_else(|| format!("{FORGED_APP_ORG}.{pkg}"));
+
+    println!(">> flutter build linux --release ({})", project.display());
+    let status = std::process::Command::new(flutter_program())
+        .args(["build", "linux", "--release"])
+        .current_dir(project)
+        .status()
+        .context("running flutter build linux (see `lisa forge --setup`)")?;
+    if !status.success() {
+        bail!(
+            "flutter build linux failed in {} — it runs on a Linux host only, and \
+             needs clang, cmake, ninja, pkg-config and gtk3 installed there",
+            project.display()
+        );
+    }
+    let bundle = built_bundle(project).with_context(|| {
+        format!(
+            "the build produced no bundle under {}/build/linux",
+            project.display()
+        )
+    })?;
+    let exe = install_forged_bundle(&app_id, &pkg, &bundle)?;
+
+    let name = display_name(&pkg);
+    let apps = user_data_dir().join("applications");
+    std::fs::create_dir_all(&apps).with_context(|| format!("creating {}", apps.display()))?;
+    let entry = apps.join(format!("{app_id}.desktop"));
+    std::fs::write(&entry, desktop_entry(&app_id, &name, &exe))
+        .with_context(|| format!("writing {}", entry.display()))?;
+    println!(
+        ">> installed {} — \"{name}\" is in the app grid ({})",
+        exe.display(),
+        entry.display()
+    );
+
+    if launch {
+        std::process::Command::new(&exe)
+            .spawn()
+            .with_context(|| format!("launching {}", exe.display()))?;
+        println!(">> launched {name}");
+    }
+    Ok(())
 }
 
 fn ambient_cmd(cmd: AmbientCmd) -> anyhow::Result<()> {
@@ -2060,6 +2535,145 @@ mod update_staging_tests {
         assert!(help.contains("mid-transfer"));
         assert!(help.contains("Shared library"));
         assert!(help.contains("systemd-run"));
+    }
+}
+
+#[cfg(test)]
+mod forge_tests {
+    use super::*;
+
+    #[test]
+    fn every_supported_arch_has_a_pinned_artifact_and_the_rest_refuse() {
+        // x86_64 keeps the sha256-pinned tarball Google publishes.
+        assert_eq!(
+            flutter_install_plan("x86_64").unwrap(),
+            FlutterInstall::Tarball {
+                url: FLUTTER_SDK_URL,
+                sha256: FLUTTER_SDK_SHA256,
+            }
+        );
+        // aarch64 has no tarball at all, so the pin is the release commit —
+        // the same id Google's manifest publishes for this version.
+        assert_eq!(
+            flutter_install_plan("aarch64").unwrap(),
+            FlutterInstall::GitTag {
+                url: FLUTTER_GIT_URL,
+                tag: FLUTTER_SDK_VERSION,
+                commit: FLUTTER_SDK_COMMIT,
+            }
+        );
+        assert_eq!(FLUTTER_SDK_COMMIT.len(), 40);
+        // Anything else refuses rather than guessing a URL (CLAUDE.md rule 8).
+        let err = flutter_install_plan("riscv64").unwrap_err().to_string();
+        assert!(err.contains("riscv64"), "{err}");
+        assert!(err.contains("issue #37"), "{err}");
+    }
+
+    #[test]
+    fn package_names_follow_the_project_directory_within_pub_rules() {
+        assert_eq!(
+            dart_package_name(std::path::Path::new("./tip-calc")),
+            "tip_calc"
+        );
+        assert_eq!(
+            dart_package_name(std::path::Path::new("/x/My App!")),
+            "my_app"
+        );
+        // A leading digit is not a legal Dart identifier.
+        assert_eq!(dart_package_name(std::path::Path::new("2048")), "app_2048");
+        assert_eq!(dart_package_name(std::path::Path::new("---")), "lisa_app");
+    }
+
+    #[test]
+    fn pubspec_name_and_display_name_round_trip() {
+        let pubspec = "name: tip_calc\ndescription: An app forged by LisaCode.\n";
+        assert_eq!(pubspec_name(pubspec).as_deref(), Some("tip_calc"));
+        assert_eq!(pubspec_name("description: x\n"), None);
+        assert_eq!(display_name("tip_calc"), "Tip Calc");
+    }
+
+    #[test]
+    fn the_application_id_is_read_back_from_the_generated_runner() {
+        // Verbatim shape of flutter's linux/CMakeLists.txt (SDK 3.44.7).
+        let cmake = "cmake_minimum_required(VERSION 3.13)\n\
+                     set(BINARY_NAME \"tip_calc\")\n\
+                     set(APPLICATION_ID \"app.lisaos.forge.tip_calc\")\n";
+        assert_eq!(
+            cmake_application_id(cmake).as_deref(),
+            Some("app.lisaos.forge.tip_calc")
+        );
+        assert_eq!(cmake_application_id("set(BINARY_NAME \"x\")\n"), None);
+    }
+
+    #[test]
+    fn the_desktop_entry_ties_window_icon_and_launcher_together() {
+        let entry = desktop_entry(
+            "app.lisaos.forge.tip_calc",
+            "Tip Calc",
+            std::path::Path::new(
+                "/var/lib/lisa/forge/apps/app.lisaos.forge.tip_calc/bundle/tip_calc",
+            ),
+        );
+        assert!(entry.starts_with("[Desktop Entry]\n"));
+        assert!(entry.contains("Name=Tip Calc\n"));
+        assert!(entry.contains("Type=Application\n"));
+        // GNOME matches a Wayland window to its entry by app id; the
+        // Flutter runner sets prgname to APPLICATION_ID, so these agree.
+        assert!(entry.contains("StartupWMClass=app.lisaos.forge.tip_calc\n"));
+        assert!(entry.contains("Exec=\"/var/lib/lisa/forge/apps/"));
+    }
+
+    #[test]
+    fn the_built_bundle_is_found_whatever_the_sdk_calls_the_arch() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(built_bundle(dir.path()).is_none());
+        // An arch directory we do not run on is still discovered — the
+        // spelling belongs to the SDK, not to us.
+        let bundle = dir.path().join("build/linux/riscv64/release/bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        assert_eq!(built_bundle(dir.path()).unwrap(), bundle);
+    }
+
+    #[test]
+    fn installing_a_build_stages_then_swaps_and_keeps_one_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let apps = dir.path().join("apps");
+        // SAFETY: test-scoped env; no other test reads this variable.
+        unsafe { std::env::set_var("LISA_FORGE_APPS_DIR", &apps) };
+
+        let build = |marker: &str| {
+            let src = dir.path().join(format!("build-{marker}"));
+            std::fs::create_dir_all(src.join("data")).unwrap();
+            std::fs::write(src.join("tip_calc"), marker).unwrap();
+            std::fs::write(src.join("data/flutter_assets"), marker).unwrap();
+            src
+        };
+
+        let exe =
+            install_forged_bundle("app.lisaos.forge.tip_calc", "tip_calc", &build("v1")).unwrap();
+        assert!(exe.ends_with("bundle/tip_calc"));
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "v1");
+        // Nested files come along.
+        assert!(exe.parent().unwrap().join("data/flutter_assets").exists());
+        // No staging directory survives a successful install.
+        let root = apps.join("app.lisaos.forge.tip_calc");
+        assert!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with(".stage")),
+        );
+
+        // A rebuild swaps in place and keeps exactly one previous build.
+        let exe =
+            install_forged_bundle("app.lisaos.forge.tip_calc", "tip_calc", &build("v2")).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "v2");
+        assert_eq!(
+            std::fs::read_to_string(root.join("bundle.previous/tip_calc")).unwrap(),
+            "v1"
+        );
+
+        unsafe { std::env::remove_var("LISA_FORGE_APPS_DIR") };
     }
 }
 

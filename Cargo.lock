@@ -1259,6 +1259,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "forge-harness",
+ "harness-core",
  "hex",
  "liblisa",
  "lisa-contextd",

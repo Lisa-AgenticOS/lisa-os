@@ -171,6 +171,26 @@ package:dbus client) pending.
 plan→edit(jailed)→`dart analyze`→iterate loop with guided `{path,
 content}` edits; tested against real dart analyze.
 
+**Flutter lane on-device (issue #37, ADR-0027):** `lisa forge --setup`
+installs the pinned 3.44.7 SDK to `/var/lib/lisa/flutter` — sha256-pinned
+tarball on x86_64, and on **aarch64** a commit-pinned checkout of the same
+release (Google publishes no arm64 tarball, but does publish the arm64
+Dart SDK and `linux-arm64` engine artifacts; the pinned commit is the id
+Google's own manifest carries). `lisa forge --build` / `--run` generate the
+Linux runner from the SDK template, `flutter build linux --release`,
+install the bundle to `/var/lib/lisa/forge/apps/<app-id>/bundle`
+(stage-then-rename, one rollback generation, ADR-0023) and write a
+`~/.local/share/applications/app.lisaos.forge.<pkg>.desktop` entry.
+**Open:** the Track I image ships no clang/cmake/ninja, so building on an
+immutable device needs the toolchain decision in ADR-0027; Track L and dev
+hosts work today. The end-to-end `flutter build linux` has never run — no
+Linux desktop here.
+
+**Skills (ADR-0025 phase 4 groundwork):** `skills/<name>/SKILL.md` in the
+repo, `/usr/share/lisa/skills` on device; `lisa skills list|show` resolves
+`$LISA_SKILLS_DIR` → `~/.local/share/lisa/skills` → the packaged set. First
+skill shipped: `build-lisa-ui-app`.
+
 ## Design direction
 
 Owner likes **elementary OS** (restrained, humane, one visual voice).

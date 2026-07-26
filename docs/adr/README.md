@@ -56,3 +56,4 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0024](0024-apple-cs8409-out-of-tree-codec.md) — Out-of-tree CS8409 codec module for Apple speakers
 - [ADR-0025](0025-one-agent-loop.md) — One agent loop: sessions, memory, skills and every tool family in a single harness
 - [ADR-0026](0026-native-drm-in-initrd.md) — The native GPU driver + its firmware ride the initrd
+- [ADR-0027](0027-flutter-on-device-aarch64-and-forged-app-launch.md) — The Flutter lane on-device: aarch64 SDK, forged-app build + launch, and where skills live

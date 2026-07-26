@@ -154,6 +154,17 @@ package_lisa-remoted() {
 package_lisa-cli() {
     pkgdesc="Lisa OS command center CLI (lisa ask, lisa models, ...)"
     depends=(gcc-libs)
+    # The Flutter lane (issue #37, ADR-0027) is opt-in: `lisa forge --setup`
+    # fetches the SDK to /var, and only then does anything here get used.
+    # git is how the aarch64 SDK is installed (no arm64 tarball exists);
+    # clang/cmake/ninja/pkgconf/gtk3 are what `flutter build linux` — i.e.
+    # `lisa forge --build` — links a forged app against.
+    optdepends=('git: aarch64 Flutter SDK install (lisa forge --setup)'
+                'clang: build forged Flutter apps (lisa forge --build)'
+                'cmake: build forged Flutter apps'
+                'ninja: build forged Flutter apps'
+                'pkgconf: build forged Flutter apps'
+                'gtk3: run forged Flutter apps')
     cd "$pkgbase-$pkgver"
     install -Dm755 target/release/lisa "$pkgdir/usr/bin/lisa"
     # App launcher indirection (ADR-0020): prefers the updated apps tree on
@@ -191,6 +202,11 @@ package_lisa-cli() {
         "$pkgdir/usr/share/lisa/lisa_ui/analysis_options.yaml"
     install -Dm644 libs/lisa_ui/LICENSE \
         "$pkgdir/usr/share/lisa/lisa_ui/LICENSE"
+    # Skills: SKILL.md workflows the harness loads on demand (ADR-0025).
+    # `lisa skills` resolves $LISA_SKILLS_DIR → ~/.local/share/lisa/skills →
+    # here, so a user skill shadows a packaged one.
+    install -d "$pkgdir/usr/share/lisa/skills"
+    cp -r skills/. "$pkgdir/usr/share/lisa/skills/"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 

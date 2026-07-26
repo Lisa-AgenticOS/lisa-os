@@ -6,4 +6,17 @@ Everything under lisa <verb>: ask (pipes are context), models, and — with the 
 
 **M0 state:** ask streams from the OpenAI-compat endpoint (stdin piping works: git log | lisa ask "changelog"); models list/verify/gc/rm/pull against the local store (rm prompts before removing; data reclaimed only by explicit gc). M5 verbs fail loudly with their milestone pointer.
 
+**Forge verbs (PLAN §5.12.1, ADR-0027):** `lisa forge --setup` installs the
+pinned Flutter SDK to `/var/lib/lisa/flutter` (sha256-pinned tarball on
+x86_64, commit-pinned checkout on aarch64); `lisa forge --flutter "…"`
+scaffolds a lisa_ui app and runs the loop against `flutter analyze`;
+`lisa forge --build` / `--run` build it for Linux, install the bundle under
+the forge apps dir on /var and write the `.desktop` entry that puts it in
+the app grid.
+
+**Skills (ADR-0025):** `lisa skills list` prints the catalog (one
+`name: description` line each — the part a prompt carries), `lisa skills
+show <name>` prints the workflow body. Resolution: `$LISA_SKILLS_DIR` →
+`~/.local/share/lisa/skills` → `/usr/share/lisa/skills`.
+
 **Terminal verbs (PLAN §5.8):** `lisa explain [--exit N] [command…]` explains a failed command (args, piped output, or what the shell hooks stashed) in a few plain streamed sentences; `lisa suggest "<plain words>"` turns natural language into ONE shell command via guided generation and only *prints* it — stdout is exactly the command, the explanation goes to stderr, `--json` emits `{command, explanation}`. The opt-in hooks (error hint, Ctrl+G review gate) live in `apps/terminal-integration/`.

@@ -10,6 +10,7 @@ blake3 = "1.8.5"
 clap = { version = "4.6.3", features = ["derive", "env"] }
 clap_complete = "4.6.7"
 forge-harness = { version = "0.1.0", path = "../../libs/forge-harness" }
+harness-core = { version = "0.1.0", path = "../../libs/harness-core" }
 hex = "0.4.3"
 liblisa = { version = "0.1.0", path = "../../libs/liblisa" }
 lisa-contextd = { version = "0.1.0", path = "../../daemons/contextd" }
