@@ -1,12 +1,35 @@
 # forge-harness — the agentic app-building loop
 
 Spec: docs/PLAN.md §5.12.1. Milestone: M6. Governance: ADR-0004 (Flutter
-lane), ADR-0027 (on-device SDK + launch).
+lane), ADR-0027 (on-device SDK + launch), ADR-0029 (guardrails).
 
 plan → edit files (jailed to project dir) → `dart analyze` / `flutter
 analyze` → iterate. Pluggable backends: local coder models, a remote
 provider, or any agent CLI over the same tool jail. Hot-reload preview and
 VLM screenshot self-inspection are still ahead.
+
+## What confines this loop
+
+Nobody is watching it, so the boundaries are deterministic and live in
+[`lisa-guard`](../lisa-guard/) rather than in prompt text (ADR-0029):
+
+- **Files** — the agent reaches the directory it was spawned in and
+  nothing above it. Absolute paths, `..`, and symlinks that leave the root
+  at any depth are refused before any I/O.
+- **Commands** — a small program allowlist, plus denied flags for the
+  ones that can launch a child. `find` keeps its search predicates and
+  loses `-exec`/`-delete`.
+- **Verdicts** — there is no human in this loop, so a command that would
+  need confirmation is refused, not assumed; the reason comes back as
+  tool output for the model to route around.
+
+**The limit, stated plainly:** none of that confines a *subprocess*.
+`run_tests` invokes `cargo test` / `flutter test` over source the model
+just wrote, which executes `build.rs` and test bodies as the user,
+outside every guard above. So: **jailed for its own file tools,
+unconfined for the toolchains it invokes.** Landlock closes this
+(ADR-0029 phase 3); until it lands, run the forge loop on projects you'd
+already be willing to `cargo test`.
 
 Driven from the CLI (`cli/lisa`, `lisa forge`):
 

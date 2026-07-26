@@ -3,16 +3,28 @@
 //! backend is constrained to those schemas, so a tool call arrives
 //! grammar-valid and never as free-form text the harness has to parse.
 //!
-//! Every file operation is mediated by the [`Jail`]: the model only ever
-//! supplies project-relative paths, and traversal stays impossible no
-//! matter which tool it calls. Tool *failures* (bad path, missing file,
-//! rejected command) are returned as result text so the model can see the
-//! mistake and retry — the jail boundary itself never softens.
+//! Every file operation is mediated by the [`Jail`], and every command by
+//! `lisa-guard` (ADR-0029): the model only ever supplies project-relative
+//! paths, and neither traversal nor a pivot to a shell is reachable from
+//! any tool it can call. Tool *failures* (bad path, missing file, rejected
+//! command) are returned as result text so the model can see the mistake
+//! and retry — the boundary itself never softens.
+//!
+//! The limit worth stating out loud: `run_tests` spawns the project's own
+//! toolchain over source the model just wrote, and that subprocess is not
+//! confined by anything here. Containing it needs Landlock (ADR-0029
+//! phase 3).
 
 use crate::Edit;
 use crate::jail::Jail;
+use lisa_guard::{Verdict, check_command};
 use serde_json::{Value, json};
 use std::process::Command;
+
+/// Programs `run_command` may execute — the allowlist lives in
+/// `lisa-guard` so the policy has one home (ADR-0029); re-exported here
+/// because the `run_command` input schema advertises it as an enum.
+pub use lisa_guard::ALLOWED_COMMANDS;
 
 /// One tool invocation, decoded from a backend tool call.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,14 +82,6 @@ impl ToolOutcome {
         Self::ok(format!("error: {}", text.into()), false)
     }
 }
-
-/// Programs `run_command` may execute. Deliberately small: file reads,
-/// searches, and the Dart/Rust toolchains. No shell — arguments are passed
-/// to `exec` directly, so there is no shell expansion to abuse.
-pub const ALLOWED_COMMANDS: &[&str] = &[
-    "dart", "flutter", "cargo", "rustc", "ls", "cat", "grep", "find", "echo", "pwd", "mkdir",
-    "touch",
-];
 
 const MAX_FILE_CHARS: usize = 30_000;
 const MAX_CMD_CHARS: usize = 12_000;
@@ -349,26 +353,18 @@ fn run_tests(jail: &Jail) -> ToolOutcome {
 }
 
 fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
-    if !ALLOWED_COMMANDS.contains(&program) {
-        return ToolOutcome::err(format!(
-            "`{program}` is not allowlisted; allowed: {}",
-            ALLOWED_COMMANDS.join(", ")
-        ));
-    }
-    // Command arguments never pass through the jail's path validator, so
-    // keep them inside the project the cheap way: no absolute paths, no
-    // `..`. Heuristic, but with no shell involved it closes the escape
-    // routes an allowlisted program could otherwise open.
-    for arg in argv {
-        let p = std::path::Path::new(arg);
-        if p.is_absolute()
-            || p.components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return ToolOutcome::err(format!(
-                "argument `{arg}` leaves the project; run_command only works inside it"
-            ));
-        }
+    // One policy point for every surface (ADR-0029). The previous check
+    // here — reject absolute paths and `..` — let `find . -exec sh -c
+    // '<anything>' \;` through, because every token in it is a plain
+    // relative name.
+    //
+    // Nobody is watching this loop, so a verdict that would ask a human
+    // is refused rather than assumed: `Confirm` needs consent that does
+    // not exist here. The reason goes back as tool output so the model
+    // can pick another route instead of retrying blind.
+    match check_command(program, argv) {
+        Verdict::Allow => {}
+        verdict => return ToolOutcome::err(verdict.to_string()),
     }
     // On Lisa devices the Flutter SDK lives on the durable partition
     // (`lisa forge setup`, issue #37) — extend the child's PATH so the
@@ -569,23 +565,42 @@ mod tests {
                 json!({"program": "sh", "args": ["-c", "id"]}),
             ),
         );
-        assert!(out.text.contains("not allowlisted"));
+        assert!(out.text.contains("command.not_allowlisted"), "{}", out.text);
+        for escaping in ["../../etc/passwd", "/etc/passwd"] {
+            let out = execute_tool(
+                &jail,
+                &call("run_command", json!({"program": "cat", "args": [escaping]})),
+            );
+            assert!(out.text.contains("command.path_escape"), "{}", out.text);
+        }
+    }
+
+    /// ADR-0029: `find` is allowlisted and every token below is a plain
+    /// relative name, so the old absolute/`..` check waved this straight
+    /// through to a full shell.
+    #[test]
+    fn run_command_cannot_pivot_to_a_shell_through_find() {
+        let (_dir, jail) = jail();
         let out = execute_tool(
             &jail,
             &call(
                 "run_command",
-                json!({"program": "cat", "args": ["../../etc/passwd"]}),
+                json!({"program": "find", "args": [".", "-exec", "sh", "-c", "id", ";"]}),
             ),
         );
-        assert!(out.text.contains("leaves the project"));
+        assert!(out.text.contains("command.exec_predicate"), "{}", out.text);
+        assert!(!out.mutated);
+
+        jail.write("lib/a.dart", "void main() {}").unwrap();
         let out = execute_tool(
             &jail,
             &call(
                 "run_command",
-                json!({"program": "cat", "args": ["/etc/passwd"]}),
+                json!({"program": "find", "args": [".", "-delete"]}),
             ),
         );
-        assert!(out.text.contains("leaves the project"));
+        assert!(out.text.contains("command.exec_predicate"), "{}", out.text);
+        assert!(jail.read("lib/a.dart").is_ok(), "the tree was deleted");
     }
 
     #[test]

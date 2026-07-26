@@ -675,6 +675,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 name = "forge-harness"
 version = "0.1.0"
 dependencies = [
+ "lisa-guard",
  "serde",
  "serde_json",
  "tempfile",
@@ -1263,6 +1264,7 @@ dependencies = [
  "hex",
  "liblisa",
  "lisa-contextd",
+ "lisa-guard",
  "lisa-ledger",
  "lisa-modeld",
  "serde",
@@ -1311,6 +1313,14 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
  "zbus",
+]
+
+[[package]]
+name = "lisa-guard"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

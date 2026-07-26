@@ -1,8 +1,20 @@
 //! The tool jail (`docs/PLAN.md` §5.12.1): every file operation the
 //! harness performs on behalf of a model is confined to the project
-//! directory — path traversal and absolute paths are rejected before
-//! any I/O. The same jail confines BYO agent backends.
+//! directory — the agent reaches the directory it was given and nothing
+//! above it.
+//!
+//! Containment itself lives in `lisa-guard` (ADR-0029), which is also
+//! what the shell-facing surfaces call, so there is one implementation of
+//! "inside the project" rather than one per caller. This module is the
+//! I/O built on top of it.
+//!
+//! Scope, stated plainly: this jail confines the harness's own file
+//! tools. It does **not** confine a subprocess — `run_tests` invokes
+//! `cargo test`/`flutter test` over source the model just wrote, and that
+//! code runs unrestricted. Closing that needs Landlock, which is ADR-0029
+//! phase 3.
 
+use lisa_guard::{ContainError, contain};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
@@ -12,6 +24,15 @@ pub enum JailError {
     Escape(String),
     #[error("jail io: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl From<ContainError> for JailError {
+    fn from(e: ContainError) -> Self {
+        match e {
+            ContainError::Escape(p) => JailError::Escape(p),
+            ContainError::Io(e) => JailError::Io(e),
+        }
+    }
 }
 
 pub struct Jail {
@@ -25,19 +46,10 @@ impl Jail {
         })
     }
 
-    /// Validate a project-relative path: no absolute paths, no `..`.
+    /// Validate a project-relative path: no absolute paths, no `..`, and
+    /// no symlink that leaves the root at any depth.
     fn resolve(&self, rel: &str) -> Result<PathBuf, JailError> {
-        let rel_path = Path::new(rel);
-        if rel_path.is_absolute() {
-            return Err(JailError::Escape(rel.into()));
-        }
-        for component in rel_path.components() {
-            match component {
-                Component::Normal(_) | Component::CurDir => {}
-                _ => return Err(JailError::Escape(rel.into())),
-            }
-        }
-        Ok(self.root.join(rel_path))
+        Ok(contain(&self.root, rel)?)
     }
 
     pub fn write(&self, rel: &str, content: &str) -> Result<(), JailError> {
@@ -143,6 +155,27 @@ mod tests {
         ));
         assert!(matches!(
             jail.write("ok/../../outside.txt", "x"),
+            Err(JailError::Escape(_))
+        ));
+    }
+
+    // ADR-0029: the component check passed and `fs::write` followed the
+    // link, so a legal-looking relative path wrote outside the project.
+    #[cfg(unix)]
+    #[test]
+    fn writes_do_not_follow_a_symlink_out_of_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let jail = Jail::new(dir.path()).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
+
+        assert!(matches!(
+            jail.write("escape/owned.txt", "pwned"),
+            Err(JailError::Escape(_))
+        ));
+        assert!(!outside.path().join("owned.txt").exists());
+        assert!(matches!(
+            jail.read("escape/owned.txt"),
             Err(JailError::Escape(_))
         ));
     }
