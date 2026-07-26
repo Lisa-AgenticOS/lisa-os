@@ -23,7 +23,7 @@ mod rules;
 mod shell;
 
 pub use command::{ALLOWED_COMMANDS, check_command};
-pub use path::{ContainError, contain};
+pub use path::{ContainError, contain, write_contained};
 pub use shell::{Invocation, check_shell_line};
 
 use std::fmt;

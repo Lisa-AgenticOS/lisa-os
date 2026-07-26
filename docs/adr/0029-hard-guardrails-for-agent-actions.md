@@ -88,9 +88,18 @@ component exists on disk, canonicalizes it and re-asserts
 `starts_with(root)`. A symlink at any depth that leaves the root is an
 escape at the moment it is traversed, not after the write lands.
 
-Writes additionally refuse a target whose own `symlink_metadata` says it
-is a symlink, contained or not — the agent writes files, never through
-links.
+A check is not a guarantee, though, and the first review round measured
+exactly how much not: against a check-then-`fs::write` jail, a thread
+swapping the target for an outside symlink landed **18,599 of 20,001
+writes outside the root**. So writes do not go through `fs::write` at
+all — `write_contained` opens with `O_NOFOLLOW`, which makes the kernel
+refuse rather than trusting what we saw a moment earlier.
+
+`O_NOFOLLOW` guards the final component only. Swapping a *parent*
+directory between the check and the open remains possible; that needs
+`openat2(RESOLVE_BENEATH)` or Landlock, and is tracked with phase 3
+rather than papered over. Reads still rely on the check alone, which is
+a disclosure race, not a write race.
 
 This is the rule the user named: **the agent has access to the directory
 it was spawned in, and nothing above it.**
@@ -102,14 +111,27 @@ an allowlisted program with an exec predicate *is* a shell. Three layers,
 all deterministic:
 
 - **Program allowlist** (`ALLOWED_COMMANDS`, moved into the guard so one
-  crate owns policy).
-- **Per-program argument policy.** Programs that can execute a child get
-  an explicit denied-flag set — `find` loses `-exec`, `-execdir`, `-ok`,
-  `-okdir`, `-delete`, `-fprintf`, `-fprint`, `-fls`. This closes the
-  pivot at its source rather than trying to recognise the payload.
+  crate owns policy). A program is a bare name; naming one by path would
+  sidestep both the allowlist and every rule that matches on the program.
+- **Per-program argument policy.** Each allowlisted program declares
+  which flags are refused, which subcommands it may take, and which of
+  its arguments are patterns rather than paths. `find` loses `-exec`,
+  `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprintf`, `-fprint`,
+  `-fprint0`, `-fls`; `cargo` loses `--config` and any unrecognised
+  subcommand. This closes each pivot at its source rather than trying to
+  recognise the payload.
 - **Destructive-pattern scan** over the rendered invocation, shared with
   the shell-line path below, as the backstop for anything the first two
   layers let through.
+
+The generalization from "a denied-flag table for `find`" to "a policy per
+program" is the first review round's doing, and its reasoning is worth
+keeping: **an allowlisted program is only as narrow as its own flag
+surface.** `cargo --config 'target."cfg(all())".runner=["/bin/sh",…]'`
+is `find -exec` wearing a build tool, and an unknown `cargo <verb>`
+resolves to whatever `cargo-<verb>` sits on `PATH`. `rustc` left the
+allowlist entirely for the same reason — a raw compiler invocation can
+emit a binary anywhere, and the loop only ever needs `cargo`.
 
 ### 3. One corpus, one gate
 
@@ -125,11 +147,57 @@ reads a green gate as "the agent cannot do damage".
 
 ### 4. `lisa suggest` is guarded before it reaches the prompt buffer
 
-The shell-line analyzer splits on `;`, `&&`, `||`, `|`, unwraps
-`sudo`/`doas`/`env` prefixes, and runs the same pattern rules per
+The shell-line analyzer splits on `;`, `&&`, `||`, `|`, on subshells and
+brace groups, unwraps `sudo`/`doas`/`env`/`busybox` prefixes and shell
+keywords, reduces each program to its basename, recurses into command
+substitution, `eval`, and `sh -c` scripts, and runs the same rules per
 segment. A `Deny` suppresses the suggestion and says why; a `Confirm`
 still pre-types it but prints the reason first, so the user's Enter is
 informed rather than reflexive.
+
+Its governing rule, added after the first review round: **fail closed on
+anything it cannot model.** This is a conservative *reader* of a shell,
+not a shell, and the gap between those two is where `rm${IFS}-rf${IFS}/`
+and `$'\x72\x6d' -rf /` lived. Expansions it understands are normalized
+first; a program name still computed at runtime (`${CMD} -rf /`) is
+refused outright rather than guessed at.
+
+## Review round 1 (2026-07-26, same day)
+
+Phase 1 shipped with a green corpus and an adversarial review found
+**eight bypasses**, every one demonstrated by execution rather than
+argued (issues #59–#66). They are recorded here because the pattern
+matters more than the individual bugs:
+
+| # | what got through | why |
+|---|---|---|
+| 59 | `/bin/rm -rf /`, `busybox rm -rf /` | every rule matched a bare basename |
+| 60 | `rm${IFS}-rf${IFS}/`, `$'\x72\x6d' -rf /` | the reader modelled no expansion at all |
+| 61 | `( rm -rf / )`, `{ rm -rf /; }`, `eval`, `f(){…}`, `<(…)` | compound commands were never split |
+| 62 | `/usr/../etc`, `//etc` | target normalization was suffix-stripping, not path-aware |
+| 63 | `cargo test --config '…runner=["/bin/sh",…]'` | `find -exec` again, through the build tool |
+| 64 | `grep -f/etc/passwd` | attached short-option values were never inspected |
+| 65 | `grep /etc/passwd src` refused | the same scan was also too broad |
+| 66 | 18,599/20,001 writes escaped | check-then-write is a race a symlink swap wins |
+
+Three conclusions, all now load-bearing:
+
+1. **The corpus proves the spellings it contains and nothing else.** It
+   was green because it listed each attack in its plainest form. Every
+   line above is in it now, and new rules must arrive with a corpus entry.
+2. **A conservative reader must fail closed.** #60 and #61 were not
+   missing rules; they were a parser quietly returning "nothing to see"
+   for input it could not read. `shell.unreadable` exists for that.
+3. **The ADR and the code disagreed, and the ADR was the optimistic
+   one.** §1 claimed writes refuse a symlink target; nothing implemented
+   it. Design text written before the code has to be re-read against the
+   code afterwards, which is the same lesson ADR-0023 learned about
+   estimates versus measurements.
+
+#65 is worth naming separately: it is a *false positive*, and it was
+filed alongside the escapes deliberately. A guard that blocks
+`grep /etc/passwd src` is a guard people route around, and a routed-around
+guard protects nothing.
 
 ## What was rejected
 

@@ -14,7 +14,7 @@
 //! code runs unrestricted. Closing that needs Landlock, which is ADR-0029
 //! phase 3.
 
-use lisa_guard::{ContainError, contain};
+use lisa_guard::{ContainError, contain, write_contained};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
@@ -52,13 +52,11 @@ impl Jail {
         Ok(contain(&self.root, rel)?)
     }
 
+    /// Write a project file. Goes through `lisa-guard`'s `O_NOFOLLOW`
+    /// write rather than `fs::write`, because check-then-write is a race
+    /// a symlink swap wins nearly every time (ADR-0029, issue #66).
     pub fn write(&self, rel: &str, content: &str) -> Result<(), JailError> {
-        let path = self.resolve(rel)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, content)?;
-        Ok(())
+        Ok(write_contained(&self.root, rel, content)?)
     }
 
     pub fn read(&self, rel: &str) -> Result<String, JailError> {

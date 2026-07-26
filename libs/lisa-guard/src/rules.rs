@@ -42,6 +42,7 @@ pub(crate) fn scan(inv: &Invocation) -> Verdict {
     for rule in [
         privilege_escalation,
         recursive_delete,
+        find_actions,
         device_write,
         recursive_permissions,
         system_path_write,
@@ -113,6 +114,33 @@ fn recursive_delete(inv: &Invocation) -> Verdict {
         );
     }
     Verdict::Allow
+}
+
+/// `find`'s action half. The forge harness refuses these predicates
+/// outright at the argv layer, but a *suggestion* is a different context:
+/// `find . -name '*.tmp' -exec rm {} \;` is a thing people legitimately
+/// want typed for them, so it asks rather than refuses — unless the
+/// search root makes the blast radius the whole system.
+fn find_actions(inv: &Invocation) -> Verdict {
+    if inv.program != "find" {
+        return Verdict::Allow;
+    }
+    const ACTIONS: &[&str] = &["-delete", "-exec", "-execdir", "-ok", "-okdir"];
+    let Some(action) = inv.args.iter().find(|a| ACTIONS.contains(&a.as_str())) else {
+        return Verdict::Allow;
+    };
+    for target in inv.operands() {
+        if is_system_target(target) {
+            return Verdict::deny(
+                "find.system_scope",
+                format!("runs `{action}` across `{target}`, which is a system or home root"),
+            );
+        }
+    }
+    Verdict::confirm(
+        "find.action",
+        format!("`{action}` runs on every match, and the match set is not visible here"),
+    )
 }
 
 fn device_write(inv: &Invocation) -> Verdict {
@@ -290,8 +318,8 @@ fn version_control(inv: &Invocation) -> Verdict {
 /// that one more component would not save it.
 fn is_system_target(target: &str) -> bool {
     let t = normalize_target(target);
-    if t.is_empty() || t == "/" {
-        return true; // `/`, `/*`, `/.` …
+    if t == "/" {
+        return true; // `/`, `//`, `/*`, `/.`, `/usr/..` …
     }
     if t == "~" || t == "$HOME" || t == "${HOME}" {
         return true;
@@ -322,19 +350,37 @@ fn is_under_system_root(target: &str) -> bool {
         .any(|r| t == *r || t.starts_with(&format!("{r}/")))
 }
 
-/// Strip the decorations that make two spellings of the same target look
-/// different: quotes, a trailing glob, a trailing slash, a trailing `/.`.
+/// Collapse the spellings of one path into a single canonical form, so a
+/// rule written against `/etc` also catches `/etc/`, `//etc`, `/./etc`,
+/// `/etc/*` and `/usr/../etc`.
+///
+/// Purely lexical — it never touches the filesystem, because the target
+/// may not exist and the rule holds either way. Review round 1 (#62)
+/// found the previous suffix-stripping version blind to `.`, `..` and
+/// doubled separators.
 fn normalize_target(target: &str) -> String {
-    let mut t = target.trim().trim_matches(['"', '\'']).to_string();
-    for suffix in ["/*", "/.", "/"] {
-        while t.len() > 1 && t.ends_with(suffix) {
-            t.truncate(t.len() - suffix.len());
+    let trimmed = target.trim().trim_matches(['"', '\'']);
+    if trimmed == "~" || trimmed == "$HOME" || trimmed == "${HOME}" {
+        return trimmed.to_string();
+    }
+    let absolute = trimmed.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in trimmed.split('/') {
+        match segment {
+            // Empty (`//`, trailing `/`), `.`, and a bare `*` glob all
+            // name the directory they sit in.
+            "" | "." | "*" => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
         }
     }
-    if t == "/*" || t.is_empty() && target.starts_with('/') {
-        return "/".into();
+    if absolute {
+        format!("/{}", parts.join("/"))
+    } else {
+        parts.join("/")
     }
-    t
 }
 
 #[cfg(test)]

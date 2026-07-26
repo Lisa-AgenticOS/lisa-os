@@ -76,6 +76,49 @@ pub fn contain(root: &Path, rel: &str) -> Result<PathBuf, ContainError> {
     Ok(cur)
 }
 
+/// Write `content` to `rel` inside `root`, refusing to follow a symlink
+/// at the final component **at open time**.
+///
+/// [`contain`] alone is a check, and a check is not a guarantee: between
+/// it returning and `fs::write` opening the file, anything may replace
+/// the target with a symlink pointing outside. Review round 1 (#66)
+/// measured that race against the previous check-then-write jail —
+/// **18,599 of 20,001 writes landed outside the root**. `O_NOFOLLOW`
+/// closes it by making the kernel refuse the open rather than trusting
+/// what we saw a moment ago.
+///
+/// Residual, and honestly stated: `O_NOFOLLOW` guards only the final
+/// component. Swapping a *parent* directory for a symlink between the
+/// check and the open is still possible; closing that needs
+/// `openat2(RESOLVE_BENEATH)` on Linux or Landlock (ADR-0029 phase 3).
+pub fn write_contained(root: &Path, rel: &str, content: &str) -> Result<(), ContainError> {
+    use std::io::Write;
+
+    let path = contain(root, rel)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let mut file = options.open(&path).map_err(|e| {
+        // ELOOP here means the target became a symlink after we checked.
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            ContainError::Escape(rel.into())
+        } else {
+            ContainError::Io(e)
+        }
+    })?;
+    file.write_all(content.as_bytes())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +196,68 @@ mod tests {
         assert_eq!(
             contain(&root, "link/file.txt").unwrap(),
             root.join("real/file.txt")
+        );
+    }
+
+    /// Review round 1 (#66). The previous jail checked, then wrote; a
+    /// thread flipping the target to an outside symlink in between landed
+    /// 18,599 of 20,001 writes outside the root. `O_NOFOLLOW` makes the
+    /// kernel refuse rather than trusting the earlier check.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_swapped_in_after_the_check_cannot_win_the_race() {
+        const ROUNDS: usize = 4000;
+        let (_d, root) = root();
+        let outside = tempfile::tempdir().unwrap();
+        let loot = outside.path().join("loot.txt");
+        let target = root.join("out.txt");
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flipper = {
+            let (stop, target, loot) = (stop.clone(), target.clone(), loot.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = std::fs::remove_file(&target);
+                    let _ = std::os::unix::fs::symlink(&loot, &target);
+                    let _ = std::fs::remove_file(&target);
+                    let _ = std::fs::write(&target, "plain");
+                }
+            })
+        };
+
+        for _ in 0..ROUNDS {
+            // Either outcome is fine — succeed inside, or refuse. What
+            // must never happen is the write landing at `loot`.
+            let _ = write_contained(&root, "out.txt", "agent output");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        flipper.join().unwrap();
+
+        let escaped = std::fs::read_to_string(&loot).unwrap_or_default();
+        assert!(
+            !escaped.contains("agent output"),
+            "a write escaped the root through a swapped symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_contained_refuses_a_symlink_target_and_writes_real_files() {
+        let (_d, root) = root();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("loot.txt"), root.join("link.txt")).unwrap();
+
+        assert!(matches!(
+            write_contained(&root, "link.txt", "pwned"),
+            Err(ContainError::Escape(_))
+        ));
+        assert!(!outside.path().join("loot.txt").exists());
+
+        write_contained(&root, "lib/src/main.dart", "void main() {}").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("lib/src/main.dart")).unwrap(),
+            "void main() {}"
         );
     }
 
