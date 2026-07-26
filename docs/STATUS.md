@@ -54,6 +54,22 @@ claim below is enforced by CI on `main`, not aspirational.
   checking, and `O_NOFOLLOW` writes. Corpus 49 → 75 denied entries.
   ADR-0029 gained a review-round section — including that its §1 claimed
   a mitigation the code never had.
+- **Round 2 found eleven more** (#67–#77, all closed in `4502a52`), each
+  one a round-1 fix being correct for exactly the spelling that prompted
+  it: `env -u FOO rm -rf /`, `&>`, `sh <<<`, `python3 -c 'os.system(…)'`,
+  `rm -rf $TARGET`, `/etc/systemd/system`, `dart pub global activate`.
+  **Two rounds, nineteen findings, in code whose entire claim is that it
+  cannot be talked past** — that is the honest character of shell-string
+  parsing. Three fixes changed strategy rather than adding a case, on the
+  principle that enumerating the dangerous spellings of a shell is a
+  losing game: wrapper option grammars are no longer modelled (every word
+  after a wrapper is judged as a candidate program), inline source in a
+  language the reader does not speak is refused rather than
+  approximated, and unresolved `$…` is refused in target position as well
+  as program position. Corpus 75 → 105 denied, 17 → 29 must-allow — the
+  must-allow half grew on purpose, since each round also produced a false
+  positive. If it leaks a third time the answer is to stop parsing shell:
+  have `lisa suggest` emit structured argv the guard can judge exactly.
 - **Zen browser moved to the apps channel** (ADR-0023 phase 1, issue #51).
   `zen-browser` is now a split build: `zen-browser-launcher` (the
   `.desktop`, hicolor icons and a `/usr/bin/zen-browser` resolver) stays in
