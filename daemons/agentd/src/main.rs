@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Manifest directories, in load order (later wins on app_id clash):
+/// Manifest directories, in precedence order — the FIRST definition of
+/// an app_id wins (issue #97), so a user-writable manifest can add a new
+/// app but never redefine a system one:
 /// system, then per-user; `LISA_MANIFEST_DIRS` (colon-separated)
 /// overrides both for testing.
 fn manifest_dirs() -> Vec<PathBuf> {

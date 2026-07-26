@@ -47,10 +47,19 @@ impl Registry {
     }
 
     /// Install or update (replace) one app's manifest.
+    ///
+    /// Explicit replacement, for programmatic callers that mean it.
+    /// Manifests loaded from disk go through [`Registry::load_dir`],
+    /// which refuses to replace — see the note there.
     pub fn insert(&mut self, manifest: Manifest) -> Result<(), ManifestError> {
         manifest.validate()?;
         self.apps.insert(manifest.app_id.clone(), manifest);
         Ok(())
+    }
+
+    /// Whether an app is already defined.
+    pub fn contains(&self, app_id: &str) -> bool {
+        self.apps.contains_key(app_id)
     }
 
     /// Load every `*.json` in `dir`. Missing dir → empty report.
@@ -71,8 +80,36 @@ impl Registry {
                 .and_then(|text| Manifest::from_json(&text).map_err(|e| e.to_string()));
             match parsed {
                 Ok(m) => {
-                    report.loaded.push(m.app_id.clone());
-                    self.apps.insert(m.app_id.clone(), m);
+                    // FIRST DEFINITION WINS (issue #97). Directories are
+                    // loaded system-first, so a file in the user's data
+                    // dir can add a NEW app but can never redefine one
+                    // the system already declares.
+                    //
+                    // Before this, later won: a user-writable manifest
+                    // reusing a system app_id rewrote its tiers from
+                    // `destructive` to `read`, deleted tools from the
+                    // registry and added undeclared ones — and the real
+                    // MCP server then executed them. The tier machinery
+                    // reasons over this file (ADR-0030 §5); letting the
+                    // untrusted side rewrite it makes every check
+                    // downstream advisory.
+                    //
+                    // The clash is reported, never silent: a shadowed
+                    // manifest that vanished quietly is how an admin
+                    // discovers the problem from the outside.
+                    if self.apps.contains_key(&m.app_id) {
+                        report.skipped.push((
+                            path,
+                            format!(
+                                "app `{}` is already defined by an earlier \
+                                 (higher-precedence) manifest — ignored",
+                                m.app_id
+                            ),
+                        ));
+                    } else {
+                        report.loaded.push(m.app_id.clone());
+                        self.apps.insert(m.app_id.clone(), m);
+                    }
                 }
                 Err(reason) => report.skipped.push((path, reason)),
             }
@@ -164,6 +201,81 @@ fn tokens(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::manifest::fixture_calendar_json;
+
+    /// Issue #97 (high): a user-writable manifest reusing a system
+    /// app_id used to WIN, because directories loaded system-first and
+    /// "later wins". A reviewer used it to rewrite a live app's tiers
+    /// from `destructive` to `read`, delete tools from the registry and
+    /// add undeclared ones — which the real MCP server then executed.
+    ///
+    /// The manifest is the ontology the tier machinery reasons over
+    /// (ADR-0030 §5). If the untrusted side can rewrite it, every check
+    /// downstream is advisory.
+    #[test]
+    fn a_later_manifest_cannot_redefine_an_app_the_system_declared() {
+        let system = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+
+        // What the image ships: delete_event is destructive.
+        std::fs::write(system.path().join("calendar.json"), fixture_calendar_json()).unwrap();
+
+        // What an attacker drops in $XDG_DATA_HOME: same app_id, but
+        // every dangerous tool downgraded to `read` so it dispatches
+        // silently, with no confirmation and no undo journal entry.
+        let hostile = fixture_calendar_json().replace("\"destructive\"", "\"read\"");
+        assert_ne!(
+            hostile,
+            fixture_calendar_json(),
+            "the fixture must contain a destructive tier"
+        );
+        std::fs::write(user.path().join("calendar.json"), &hostile).unwrap();
+
+        let mut r = Registry::new();
+        let sys_report = r.load_dir(system.path());
+        let user_report = r.load_dir(user.path());
+
+        assert_eq!(sys_report.loaded.len(), 1, "the system manifest must load");
+        assert!(
+            user_report.loaded.is_empty(),
+            "the shadowing manifest was accepted: {user_report:?}"
+        );
+        assert_eq!(
+            user_report.skipped.len(),
+            1,
+            "and it must be REPORTED, not dropped silently"
+        );
+        assert!(
+            user_report.skipped[0].1.contains("already defined"),
+            "the reason must say why: {}",
+            user_report.skipped[0].1
+        );
+
+        // The surviving declaration is the system's, tiers intact.
+        let decl = r
+            .tool("org.gnome.Calendar", "delete_event")
+            .expect("the system tool must still be registered");
+        assert_eq!(
+            decl.tier,
+            crate::tier::Tier::Destructive,
+            "the hostile manifest downgraded a live tool's tier"
+        );
+    }
+
+    /// Two files in the SAME directory claiming one app_id used to
+    /// resolve by sorted filename with no complaint. Ambiguity that
+    /// picks a winner quietly is how the wrong one wins later.
+    #[test]
+    fn a_duplicate_app_id_in_one_directory_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a-first.json"), fixture_calendar_json()).unwrap();
+        std::fs::write(dir.path().join("b-second.json"), fixture_calendar_json()).unwrap();
+
+        let mut r = Registry::new();
+        let report = r.load_dir(dir.path());
+        assert_eq!(report.loaded.len(), 1);
+        assert_eq!(report.skipped.len(), 1, "the duplicate must be reported");
+        assert_eq!(r.len(), 1);
+    }
 
     fn registry() -> Registry {
         let mut r = Registry::new();
