@@ -236,8 +236,17 @@ jobs:
           EOF
               mkosi --directory /build/mkosi build
               cp /build/mkosi/lisa.raw /src/lisa-usb.raw
+              # The packages are built into /build/repo-out, which lives
+              # inside this --rm container and dies with it. The runtime
+              # payload step (issue #52) runs on the HOST and needs the
+              # lisa-cli package, so hand it across the boundary. Without
+              # this that step cannot ever have worked — it was added
+              # after v30 and this release is its first execution.
+              mkdir -p /src/repo-out
+              cp /build/repo-out/lisa-cli-*.pkg.tar.* /src/repo-out/
             '
-          sudo chown "$USER:" lisa-usb.raw
+          sudo chown -R "$USER:" lisa-usb.raw repo-out
+          ls -lh repo-out/
       - name: Boot check — no boot, no release
         run: |
           set -o pipefail

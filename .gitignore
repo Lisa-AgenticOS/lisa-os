@@ -30,3 +30,4 @@ os/packages/*/*.log
 .claude/
 lisa-app/
 .ci-cache/
+repo-out/
