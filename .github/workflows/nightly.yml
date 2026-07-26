@@ -232,6 +232,21 @@ jobs:
             # Issue #20: without this, vacuuming can erase the booted slot.
             grep -q '^ProtectVersion=' "$t" || { echo "FAIL: $t lacks ProtectVersion="; fail=1; }
           done
+          # Services must be ENABLED, not merely installed. Arch's stock
+          # presets disable most units and silently override the postinst
+          # `systemctl enable` — the reason 00-lisa.preset exists at all.
+          # Only the aarch64 job checked this, and it caught
+          # lisa-apps-sync.timer shipping disabled on BOTH arches: the
+          # safety net that fetches app payloads for a device that was
+          # offline when its slot updated (ADR-0023 phase 1). Without it,
+          # such a device loses its browser with no way to know why.
+          for w in timers.target.wants/lisa-apps-sync.timer \
+                   timers.target.wants/systemd-sysupdate.timer \
+                   multi-user.target.wants/NetworkManager.service \
+                   multi-user.target.wants/iwd.service; do
+            [ -e "mnt-pull/etc/systemd/system/$w" ] || {
+              echo "FAIL: /etc/systemd/system/$w missing — the unit ships DISABLED"; fail=1; }
+          done
           sudo umount mnt-pull
           sudo losetup -d "$LOOP"
           [ "$fail" -eq 0 ] || exit 1

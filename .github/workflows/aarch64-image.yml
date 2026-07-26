@@ -197,12 +197,16 @@ jobs:
                    usr/share/icons/hicolor/128x128/apps/zen-browser.png \
                    usr/lib/systemd/system/lisa-apps-sync.timer \
                    etc/systemd/system/timers.target.wants/lisa-apps-sync.timer \
+                   usr/lib/lisa/bin/lisa \
                    usr/bin/gnome-control-center \
                    usr/share/icons/hicolor/scalable/apps/lisa-intelligence-symbolic.svg; do
             if sudo test -e "/mnt/lisaroot/$f"; then echo "ok   $f"; else echo "MISSING $f"; rc=1; fi
           done
           # Guards against an accidentally cross-built or foreign binary.
-          for b in usr/bin/llama-server usr/bin/lisa opt/zen/zen; do
+          # NOTE: /usr/bin/lisa is the resolver *shell script* (issue #52),
+          # so the real CLI to arch-check is the baked binary it falls back
+          # to. Checking /usr/bin/lisa here kept this job red from 872d942.
+          for b in usr/bin/llama-server usr/lib/lisa/bin/lisa opt/zen/zen; do
             sudo file "/mnt/lisaroot/$b" | grep -q "ARM aarch64" \
               || { echo "not an aarch64 binary: $b"; rc=1; }
           done

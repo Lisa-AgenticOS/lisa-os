@@ -29,3 +29,9 @@ enable systemd-resolved.service
 enable bluetooth.service
 enable sshd.service
 enable systemd-sysupdate.timer
+# Out-of-image app payloads (ADR-0023 phase 1). This is the safety net for
+# a device that was offline when its slot was updated: without it, "no
+# network at first boot" means "no browser, and no way to know why". The
+# postinst enables it too, but the postinst is exactly what stock presets
+# were silently overriding — so it belongs here, where it wins.
+enable lisa-apps-sync.timer
