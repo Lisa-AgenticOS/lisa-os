@@ -343,11 +343,15 @@ jobs:
           echo "--- assertions"
           # Two failed tries (bad entry reboots), then the good entry
           # powers off — in that order.
-          RESTARTS=$(grep -c "reboot: Restarting system" console.log)
+          # Count the KERNEL-timestamped line only. Plymouth (now genuinely
+          # in the initrd, ADR-0028) echoes a second, untimestamped copy of
+          # each reboot line to the console, which doubled this count and
+          # failed an otherwise-passing rollback.
+          RESTARTS=$(grep -cE '\] reboot: Restarting system' console.log)
           [ "$RESTARTS" -eq 2 ]
           grep -q "reboot: Power down" console.log
-          LAST_RESTART=$(grep -n "reboot: Restarting system" console.log | tail -1 | cut -d: -f1)
-          POWEROFF=$(grep -n "reboot: Power down" console.log | tail -1 | cut -d: -f1)
+          LAST_RESTART=$(grep -nE '\] reboot: Restarting system' console.log | tail -1 | cut -d: -f1)
+          POWEROFF=$(grep -nE '\] reboot: Power down' console.log | tail -1 | cut -d: -f1)
           [ "$LAST_RESTART" -lt "$POWEROFF" ]
           grep -q "Welcome to" console.log
           # The smoking gun: systemd-boot renamed the bad entry's try

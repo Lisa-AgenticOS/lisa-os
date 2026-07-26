@@ -116,6 +116,12 @@ jobs:
         run: |
           sudo podman run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
             pacman -Sy --noconfirm --needed base-devel cmake fcitx5 >/dev/null
+            # The dbus module headers (fcitx-module/dbus/dbus_public.h)
+            # moved out of the fcitx5 package into the addon package;
+            # without it this build fails with a bare 'No such file'.
+            pacman -Sy --noconfirm --needed fcitx5-qt fcitx5-configtool >/dev/null 2>&1 || true
+            pacman -Fy >/dev/null 2>&1 || true
+            pacman -F fcitx-module/dbus/dbus_public.h 2>/dev/null | head -3 || true
             cmake -S /src/ime/fcitx5-lisa -B /tmp/build
             cmake --build /tmp/build
             cd /tmp/build && ctest --output-on-failure'
@@ -306,6 +312,13 @@ jobs:
           set -o pipefail
           sudo apt-get update -qq
           sudo apt-get install -qq -y --no-install-recommends zstd file >/dev/null
+          # zstd -19 on a ~380 MiB tree needs real scratch space, and the
+          # hosted runner's / is tight. Reclaim before packing: the job's
+          # first failure was a bare `tar: stdout: write error`, which is
+          # ENOSPC wearing a disguise.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          df -h / | tail -1
           bash os/repo-tools/build-zen-payload.sh x86_64 99999999.0 payload
           tar --zstd -tf payload/lisa-zen_99999999.0_x86_64.tar.zst | grep -qx './zen'
           mkdir -p tree && tar --zstd -xf payload/lisa-zen_99999999.0_x86_64.tar.zst -C tree
