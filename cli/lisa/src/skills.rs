@@ -104,13 +104,20 @@ mod tests {
                 PathBuf::from("/a"),
                 PathBuf::from("/b"),
                 PathBuf::from("/home/u/.local/share/lisa/skills"),
+                // The runtime channel sits between the user's own skills
+                // and the packaged floor (issue #52): a skill can be
+                // taught without an OS release, but never shadows an
+                // override the user placed deliberately.
+                PathBuf::from(CHANNEL_SKILLS_DIR),
                 PathBuf::from(SYSTEM_SKILLS_DIR),
             ]
         );
-        // No override: the user's own skills still shadow the packaged set.
+        // No override: the user's own skills still come first, and the
+        // packaged set is always last so it can never shadow anything.
         let dirs = skills_dirs_from(None, std::path::Path::new("/home/u/.local/share"));
-        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs.len(), 3);
         assert!(dirs[0].ends_with("lisa/skills"));
+        assert_eq!(dirs[dirs.len() - 1], PathBuf::from(SYSTEM_SKILLS_DIR));
     }
 
     #[test]
