@@ -282,12 +282,31 @@ jobs:
           # image update. Packed from the SAME commit as the image.
           tar --zstd -cf "lisa-apps_${VER}.tar.zst" -C shell \
             --exclude='*/tests' --exclude='testing' .
+          # The runtime channel (issue #52): the CLI and its skills, so a
+          # CLI fix reaches devices without an OS release or a reboot.
+          # Per-arch, because this one is a compiled binary — the payload
+          # must match the machine. The binary was built in the container
+          # step above and extracted from the lisa-cli package, which is
+          # the SAME binary the image bakes: one build, two delivery
+          # paths, never a skew between them.
+          rt="runtime-payload"
+          rm -rf "$rt" && mkdir -p "$rt/bin" "$rt/skills"
+          tar -xOf repo-out/lisa-cli-*.pkg.tar.* usr/lib/lisa/bin/lisa \
+            > "$rt/bin/lisa" 2>/dev/null || \
+            tar --use-compress-program=unzstd -xOf repo-out/lisa-cli-*.pkg.tar.zst \
+              usr/lib/lisa/bin/lisa > "$rt/bin/lisa"
+          chmod 0755 "$rt/bin/lisa"
+          file "$rt/bin/lisa" | grep -q 'x86-64' || {
+            echo "runtime payload is not an x86_64 binary"; exit 1; }
+          cp -r skills/. "$rt/skills/"
+          tar --zstd -cf "lisa-runtime_${VER}_x86_64.tar.zst" -C "$rt" .
           # The per-arch Zen payloads were built in the first step; they go
           # into the SAME manifest, because `lisa apps` verifies every
           # payload against it before unpacking anything (ADR-0023: pins are
           # load-bearing for everything on /var).
           sha256sum "lisa_${VER}.root.xz" "lisa_${VER}.efi" "lisa-usb-${VER}.raw.zst" \
             "lisa-apps_${VER}.tar.zst" \
+            "lisa-runtime_${VER}_x86_64.tar.zst" \
             "lisa-zen_${VER}_x86_64.tar.zst" "lisa-zen_${VER}_aarch64.tar.zst" > SHA256SUMS
           cat SHA256SUMS; ls -lh lisa_* lisa-usb-* lisa-zen_*
       # The A/B gate, on the artifact devices actually receive (issue #47).
@@ -362,6 +381,7 @@ jobs:
             "lisa_${VER}.root.xz" \
             "lisa_${VER}.efi" \
             "lisa-apps_${VER}.tar.zst" \
+            "lisa-runtime_${VER}_x86_64.tar.zst" \
             "lisa-zen_${VER}_x86_64.tar.zst" \
             "lisa-zen_${VER}_aarch64.tar.zst" \
             SHA256SUMS

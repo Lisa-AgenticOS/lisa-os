@@ -6,14 +6,22 @@
 //! tool will call when phase 4 lands — same files, same resolution order.
 //!
 //! Resolution (first directory that defines a name wins):
-//! `$LISA_SKILLS_DIR` → `$XDG_DATA_HOME/lisa/skills` → `/usr/share/lisa/skills`.
+//! `$LISA_SKILLS_DIR` → `$XDG_DATA_HOME/lisa/skills` → the runtime channel
+//! (`/var/lib/lisa/apps/payloads/runtime/current/skills`, issue #52) →
+//! `/usr/share/lisa/skills`. The channel sits ahead of the packaged set so a
+//! skill can be taught without an OS release; the packaged set is the floor.
 
 use anyhow::bail;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// The packaged skill set (installed by the lisa-cli package).
+/// The packaged skill set (installed by the lisa-cli package) — the floor
+/// that exists on every system whether or not the channel has been synced.
 const SYSTEM_SKILLS_DIR: &str = "/usr/share/lisa/skills";
+
+/// Skills delivered by the runtime channel (issue #52): updated with
+/// `lisa apps update runtime`, no reboot, no OS release.
+const CHANNEL_SKILLS_DIR: &str = "/var/lib/lisa/apps/payloads/runtime/current/skills";
 
 /// Search path for skills; `over` is the `$LISA_SKILLS_DIR` value, which
 /// may hold several `:`-separated directories (a dev checkout plus the
@@ -23,6 +31,7 @@ pub fn skills_dirs_from(over: Option<OsString>, data_home: &std::path::Path) -> 
         .map(|v| std::env::split_paths(&v).collect())
         .unwrap_or_default();
     dirs.push(data_home.join("lisa/skills"));
+    dirs.push(PathBuf::from(CHANNEL_SKILLS_DIR));
     dirs.push(PathBuf::from(SYSTEM_SKILLS_DIR));
     dirs
 }

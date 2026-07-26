@@ -1,0 +1,46 @@
+#!/bin/sh
+# /usr/bin/lisa — pick the CLI to run (issue #52).
+#
+# Resolution: $LISA_CLI → the runtime channel → the baked binary. The
+# channel copy is updated by `lisa apps update runtime`, so a CLI fix
+# reaches a device without an OS release or a reboot; the baked copy at
+# /usr/lib/lisa/bin/lisa is installed by the image and is the floor.
+#
+# THIS SCRIPT IS ALSO THE RECOVERY PATH. `lisa update` is how a broken
+# device gets fixed, so the rules here are deliberately paranoid:
+#
+#   * the candidate must be a regular, executable file, or it is skipped;
+#   * LISA_NO_CHANNEL=1 forces the baked binary, no questions asked —
+#     the escape hatch when a channel build turns out bad;
+#   * LISA_RESOLVED guards against a channel payload that is itself a
+#     wrapper (it would otherwise re-exec this script forever);
+#   * the baked binary is tried last and unconditionally, so the CLI
+#     keeps working even with /var empty, corrupt, or unmounted.
+#
+# Shell script as a launcher hook only (CLAUDE.md rule 4) — every verb is
+# implemented in Rust.
+set -eu
+
+BAKED=/usr/lib/lisa/bin/lisa
+CHANNEL=/var/lib/lisa/apps/payloads/runtime/current/bin/lisa
+
+if [ "${LISA_RESOLVED:-}" = "1" ]; then
+    # We already resolved once; a second pass means the payload re-entered
+    # this script. Run the baked binary and stop the cycle.
+    exec "$BAKED" "$@"
+fi
+export LISA_RESOLVED=1
+
+if [ "${LISA_NO_CHANNEL:-}" != "1" ]; then
+    for candidate in "${LISA_CLI:-}" "$CHANNEL"; do
+        [ -n "$candidate" ] || continue
+        [ -f "$candidate" ] && [ -x "$candidate" ] || continue
+        exec "$candidate" "$@"
+    done
+fi
+
+[ -x "$BAKED" ] || {
+    echo "lisa: no CLI found — expected $BAKED (image) or $CHANNEL (channel)" >&2
+    exit 127
+}
+exec "$BAKED" "$@"

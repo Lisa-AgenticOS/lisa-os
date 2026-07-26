@@ -87,6 +87,20 @@ const CHANNELS: &[Channel] = &[
         legacy_baked: None,
     },
     Channel {
+        name: "runtime",
+        what: "the lisa CLI and its skills — updated without a reboot (issue #52)",
+        prefix: "lisa-runtime_",
+        // A compiled binary: the payload must match the machine.
+        per_arch: true,
+        subdir: "payloads/runtime",
+        keep: 2,
+        // The image always bakes the CLI at /usr/lib/lisa/bin/lisa and the
+        // resolver falls back to it, so this is a permanent floor, not a
+        // migration — nothing to auto-pull on a fresh install.
+        auto_sync: false,
+        legacy_baked: None,
+    },
+    Channel {
         name: "zen",
         what: "Zen browser — the tree that used to be baked as /opt/zen",
         prefix: "lisa-zen_",
