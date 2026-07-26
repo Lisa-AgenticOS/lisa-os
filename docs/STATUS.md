@@ -18,6 +18,54 @@ claim below is enforced by CI on `main`, not aspirational.
   nightly's 3-version regression test
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
 
+**2026-07-26 — v20260726.34 shipped.** Four attempts, three distinct real
+failures, none of them flakes:
+
+1. **Arch moved to linux 7.1.5** and `lisa-audio-cs8409` refused to build
+   against a kernel it was not pinned to. Guard 1 working exactly as
+   designed — a mismatched codec module loads as *nothing*, so kernel
+   drift has to be a red build rather than quiet dead speakers. Re-pinned
+   (digest taken from kernel.org's `sha256sums.asc`, cross-checked against
+   the 7.1.4 line that matches the existing pin).
+2. **`patch_cs8409.h.diff` no longer applies** to 7.1.5 — 2 of 4 hunks
+   fail in the header, `.c` still applies with offsets. Guard 3 (`-F0`)
+   working. **v31 ships without CS8409** (authorized); not a regression,
+   since it has never worked on hardware because it has never shipped.
+   Both call sites are commented with the reason and must be re-enabled
+   together; #44 reopened with the hunk numbers and a checklist.
+3. **`repo-out/lisa-cli-*` did not exist on the host.** The runtime
+   payload step reads the CLI package from the host, but packages are
+   built into `/build/repo-out` inside a `--rm` container — a path that
+   never existed outside it. That step arrived with the runtime channel
+   (#52) *after* v30, so v31 was its first execution and the bug was
+   latent from the day it was written. Same shape as the five silent
+   no-ops from earlier this week, except this one failed loudly.
+
+Released artifacts verified: USB 2.0 GB, root.xz 1.6 GB, UKI 152 MB, Zen
+x86_64/aarch64 100/87 MB, **runtime payload 4.3 MB** (first release to
+carry one), apps 76 KB, SHA256SUMS covering all seven.
+
+**Not yet on the device.** The field iMac went off the network when the
+office was left; Wake-on-LAN did not raise it. The image masks suspend
+deliberately (`sleep.target` → `/dev/null`, `IdleAction=ignore`, GNOME
+power schema `'nothing'`) because that machine's amdgpu cannot resume, so
+either it was powered off by hand (benign) or suspend fired despite the
+masking (a bug). `systemctl is-enabled sleep.target` and the journal will
+say which. **Still unverified on hardware: the boot splash and the
+speakers** — both need a human in the room.
+
+Pre-update diagnostics that did run, all clean: `systemd-pull` and
+`systemd-sysupdate` present, `libcurl.so.4` present **with all its own
+dependencies resolving** (the actual dlopen failure mode behind #45), CA
+bundle present, both transfers carrying `ProtectVersion=`, zero failed
+units, and `/etc/NetworkManager/system-connections` symlinked onto `/var`
+with autoconnect on — so Wi-Fi will survive the slot swap.
+
+CI caching (pacman + pinned kernel tarball) landed but is **unproven**:
+the first run populates rather than restores, and it measured 25 min
+against a 22 min baseline. The next release is the real test; if it does
+not pay off the honest next step is `sccache`, not paid runners.
+
 **2026-07-26:**
 - **The vision got a spine** (ADR-0030, ADR-0031, ADR-0032; `docs/VISION.md`).
   A day of guardrail work and a long design conversation produced three
