@@ -70,8 +70,26 @@ Run `just lint && just test` before every commit; CI enforces both.
    catalogue in `cli/lisa/src/guard.rs` and a corpus entry in
    `libs/lisa-guard/tests/corpus.rs` — a rule with no corpus entry is one
    nobody will notice regressing.
+6b. **Identity comes from the transport** (ADR-0033). Never trust an
+   `actor`, `app_id`, scope list or provenance chain because the message
+   says so. Ownership = `lisa_peer::PeerId`/`Owner` (the broker-assigned
+   unique name); program identity = peer credentials and
+   `/proc/<pid>/exe`, never `comm`. Anything a *later* call can act on —
+   a parked confirmation, a session, a namespace — stores its `Owner` and
+   checks it. A refusal must not reveal what exists.
 7. **One command center.** User-facing CLI verbs live under `lisa <verb>`
    — no scattered `lisa-*` helper scripts (Appendix E, rule 4).
+7a. **The install, update and recovery paths may not depend on
+   infrastructure we do not control** (ADR-0034). Everything else may.
+   Issue #45 is why: `lisa update` was one upstream reshuffle away from
+   being unable to download, because libcurl arrived only as an
+   accidental transitive dependency.
+7b. **`/var` is the system's, `$HOME` is the user's** (ADR-0034).
+   System-scope payloads — models, the app channel, the runtime channel —
+   live on `/var`. Per-user tooling lives in the user's home, which is a
+   real partition (ADR-0019) and therefore already survives A/B updates.
+   Nothing user-facing should need `sudo`; `escalate.privilege` is an
+   unoverridable `Deny` in our own guard.
 8. **No invented external references.** Model sources, URLs, and hashes
    are pinned to verified artifacts or left explicitly unset — never
    guessed (see `models/catalog/catalog.toml`).
