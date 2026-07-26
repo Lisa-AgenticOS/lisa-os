@@ -1,7 +1,47 @@
 # tests/acl-fuzz — context ACL fuzzing
 
-Spec: docs/PLAN.md §5.3. Milestone: M3 gate.
+Spec: `docs/PLAN.md` §5.3, §5.10. Milestone: **M3 gate**.
 
-10k adversarial queries against scoped retrieval; merge-blocking gate: 0 cross-scope leaks (a documents-scope app never receives a mail chunk).
+Adversarial queries against scoped retrieval. Merge-blocking property:
+**0 cross-scope leaks** — an app granted `documents.read` never receives
+a `mail` chunk, whatever it asks for or how the scope is spelled.
 
-Status: **not started** — scaffold placeholder. Read the spec section (and CLAUDE.md rules) before writing code here.
+Status: **implemented** (2026-07-26). 15,618 cases, run by `just test`
+because the crate is a workspace member.
+
+## What it actually checks
+
+| test | property |
+|---|---|
+| `the_suite_meets_the_acceptance_size` | §5.3 names 10k queries, so the count is itself gated — a suite that quietly shrank would otherwise still print "ok" |
+| `zero_cross_scope_leaks` | every hit's provenance is one the granted scopes permit, across all cases |
+| `provenance_unique_terms_never_cross_over` | a term present in exactly one provenance never returns under any other scope |
+| `unknown_and_empty_scopes_grant_nothing` | deny by default: `[]`, `""`, `*`, `all`, `admin`, wrong case, padded |
+| `junk_alongside_a_valid_scope_changes_nothing` | junk neither widens a valid scope nor voids it |
+
+## Two design rules, both learned the hard way
+
+**The corpus overlaps on purpose.** Every document is about the same
+subject — budget, revenue, forecast, margin, a Thursday board review. If
+each provenance held distinct vocabulary, a scoped query would return its
+own chunks for boring reasons and prove nothing about the filter.
+
+**The suite proves it is not vacuous.** "Zero leaks" is trivially
+satisfied by returning nothing, and a green corpus that tests nothing is
+exactly what ADR-0029's review rounds found in the guard corpus. So the
+gate also asserts a floor on hits actually retrieved and that every
+provenance was reachable at least once.
+
+That second rule earned its keep immediately: the first run failed on
+`1400`, a term listed as unique to `calendar`. The calendar entry reads
+`14:00`, which FTS5 tokenizes as `14` and `00` — so `1400` matched
+nothing anywhere, and the "never crosses over" assertion for it would
+have passed **vacuously**. Every negative in a suite like this needs a
+positive control, or it is decoration.
+
+## Adding cases
+
+Extend `COLLIDING_TERMS`, `PROVENANCE_UNIQUE_TERMS` or `HOSTILE_QUERIES`
+in `src/lib.rs`. A new entry in `PROVENANCE_UNIQUE_TERMS` must be
+genuinely present in exactly one corpus document — the gate checks that
+for you and fails if it is not findable under its own scope.

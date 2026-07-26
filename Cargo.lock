@@ -1277,6 +1277,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lisa-acl-fuzz"
+version = "0.1.0"
+dependencies = [
+ "lisa-contextd",
+ "tempfile",
+]
+
+[[package]]
 name = "lisa-agentd"
 version = "0.1.0"
 dependencies = [

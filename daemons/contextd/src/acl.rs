@@ -180,8 +180,10 @@ mod tests {
     fn acl_fuzz_zero_cross_scope_leaks() {
         let (_dir, store) = mixed_store();
         // Every scope only ever yields its own provenance, across many
-        // query shapes (the §5.3 "0 cross-scope leaks" acceptance, in
-        // miniature — the full 10k-query suite runs in tests/acl-fuzz).
+        // query shapes — the §5.3 "0 cross-scope leaks" acceptance in
+        // miniature, kept here so a change to this file fails fast. The
+        // full suite (15,618 cases, hostile FTS/SQL query shapes, scope
+        // spelling variants, and a non-vacuity floor) is tests/acl-fuzz.
         let queries = [
             "budget",
             "revenue",
