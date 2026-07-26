@@ -1293,6 +1293,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "lisa-ledger",
+ "lisa-peer",
  "mcp-bus",
  "rusqlite",
  "serde",
@@ -1366,6 +1367,7 @@ version = "0.1.0"
 dependencies = [
  "lisa-agentd",
  "lisa-ledger",
+ "lisa-peer",
  "serde_json",
  "tempfile",
 ]
@@ -1404,6 +1406,15 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "lisa-peer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror",
+ "zbus",
 ]
 
 [[package]]

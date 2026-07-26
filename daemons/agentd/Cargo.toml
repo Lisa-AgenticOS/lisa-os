@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 blake3 = "1.8.5"
+lisa-peer = { version = "0.1.0", path = "../../libs/lisa-peer" }
 lisa-ledger = { version = "0.1.0", path = "../../libs/lisa-ledger" }
 mcp-bus = { version = "0.1.0", path = "../../libs/mcp-bus" }
 rusqlite = { version = "0.40.1", features = ["bundled"] }

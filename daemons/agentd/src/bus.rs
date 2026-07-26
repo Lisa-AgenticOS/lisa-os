@@ -22,6 +22,7 @@ use crate::manifest::{ToolDecl, validate_args};
 use crate::registry::Registry;
 use crate::tier::{Confirmation, Provenance, Resolution, resolve};
 use lisa_ledger::{Event, Ledger, LedgerError, preview_of};
+use lisa_peer::{Owner, PeerId};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -41,6 +42,11 @@ pub enum BusError {
     Journal(#[from] JournalError),
     #[error("no pending call {0} (already answered, or expired and collected)")]
     UnknownCall(u64),
+    /// Someone other than the peer that parked the call tried to answer
+    /// it (#93). Deliberately indistinguishable from `UnknownCall` to a
+    /// caller, so a sweep cannot use the error to map which ids exist.
+    #[error("no pending call {0} (already answered, or expired and collected)")]
+    NotYours(u64),
 }
 
 /// A tool invocation as requested by a client of the bus.
@@ -57,6 +63,10 @@ pub struct CallRequest {
     /// every context chunk that steered this call). Empty = unknown =
     /// untrusted (fail closed).
     pub chain: Vec<Provenance>,
+    /// Who is calling, as the *transport* reports it — not as the
+    /// message claims (ADR-0033, issue #93). `actor` above is asserted
+    /// and therefore only a label; this is identity.
+    pub caller: PeerId,
 }
 
 /// What happened to a request (or a confirmation).
@@ -175,6 +185,11 @@ impl Dispatcher for RecordingDispatcher {
 }
 
 struct Pending {
+    /// Only the peer that parked this may answer it (#93). Before this,
+    /// `Confirm(id, true)` took no identity at all and ids were
+    /// sequential from 1, so any peer could sweep the range and release
+    /// somebody else's privileged call — including ahead of the human.
+    owner: Owner,
     req: CallRequest,
     decl: ToolDecl,
     resolution: Resolution,
@@ -281,6 +296,7 @@ impl AgentBus {
                 self.pending.lock().expect("pending lock").insert(
                     call_id,
                     Pending {
+                        owner: Owner::of(req.caller.clone()),
                         req,
                         decl,
                         resolution,
@@ -301,13 +317,26 @@ impl AgentBus {
     /// Answer a parked confirmation. Approval is itself ledgered
     /// (`tool.confirm`) before dispatch; denial and expiry append
     /// `tool.deny`.
-    pub fn confirm(&self, call_id: u64, approve: bool) -> Result<Outcome, BusError> {
-        let pending = self
-            .pending
-            .lock()
-            .expect("pending lock")
-            .remove(&call_id)
-            .ok_or(BusError::UnknownCall(call_id))?;
+    pub fn confirm(
+        &self,
+        call_id: u64,
+        approve: bool,
+        caller: &PeerId,
+    ) -> Result<Outcome, BusError> {
+        // Ownership is checked while still holding the lock, and the
+        // entry is only removed once it is the right peer — otherwise a
+        // foreign caller could evict somebody else's parked call and
+        // turn a confirmation into a denial-of-service (#93).
+        let pending = {
+            let mut pending = self.pending.lock().expect("pending lock");
+            match pending.get(&call_id) {
+                None => return Err(BusError::UnknownCall(call_id)),
+                Some(p) if p.owner.require(caller).is_err() => {
+                    return Err(BusError::NotYours(call_id));
+                }
+                Some(_) => pending.remove(&call_id).expect("just checked"),
+            }
+        };
 
         if pending.created.elapsed() > CONFIRMATION_TTL {
             let reason = "confirmation expired".to_string();
@@ -560,6 +589,7 @@ mod tests {
             tool: tool.into(),
             args,
             chain,
+            caller: lisa_peer::PeerId::Direct,
         }
     }
 
@@ -625,6 +655,68 @@ mod tests {
         assert_eq!(f.bus.pending_count(), 1);
     }
 
+    /// Issue #93 (critical): `Confirm(id, approve)` carried no caller
+    /// identity and ids were sequential from 1, so any session-bus peer
+    /// could sweep the range and release somebody else's parked
+    /// privileged call — including racing ahead of the human on a
+    /// modal-tier call whose trigger chain was untrusted. That is the M5
+    /// acceptance criterion ("0 unconfirmed privileged calls") stated
+    /// verbatim, so this test is the acceptance block in miniature.
+    #[test]
+    fn a_foreign_peer_cannot_answer_someone_elses_confirmation() {
+        let f = fixture();
+        let alice = lisa_peer::PeerId::Bus(":1.10".into());
+        let mallory = lisa_peer::PeerId::Bus(":1.11".into());
+
+        let mut req = call(
+            "org.gnome.Calendar",
+            "add_event",
+            json!({"title": "dentist", "start": "2026-07-24T10:00:00Z"}),
+            user(),
+        );
+        req.caller = alice.clone();
+        let Outcome::AwaitingConfirmation { call_id, .. } = f.bus.request(req).unwrap() else {
+            panic!("a destructive tool with an empty chain must park");
+        };
+
+        // Mallory sweeps. Every id, not just the right one.
+        for id in 1..=call_id + 3 {
+            assert!(
+                f.bus.confirm(id, true, &mallory).is_err(),
+                "peer {mallory} answered call {id}"
+            );
+        }
+        assert_eq!(
+            f.dispatcher.dispatched(),
+            0,
+            "a foreign peer's approval dispatched a privileged call"
+        );
+
+        // The rightful owner is unaffected by the failed sweep — the
+        // parked call must still be there, not evicted.
+        let outcome = f.bus.confirm(call_id, true, &alice).unwrap();
+        assert!(
+            matches!(outcome, Outcome::Executed { .. }),
+            "the owner could no longer answer their own call: {outcome:?}"
+        );
+        assert_eq!(f.dispatcher.dispatched(), 1);
+    }
+
+    /// The refusal must not double as an oracle. A wrong-owner answer
+    /// renders identically to a nonexistent id, so sweeping cannot map
+    /// which call ids are live — otherwise the fix for #93 would hand an
+    /// attacker the reconnaissance it needs for the next attempt.
+    #[test]
+    fn a_rejected_confirmation_does_not_reveal_which_ids_exist() {
+        for id in [1u64, 7, 4242] {
+            assert_eq!(
+                BusError::NotYours(id).to_string(),
+                BusError::UnknownCall(id).to_string(),
+                "the two refusals are distinguishable for id {id}"
+            );
+        }
+    }
+
     #[test]
     fn confirm_executes_journals_compensation_and_closes_the_trace() {
         let f = fixture();
@@ -640,7 +732,10 @@ mod tests {
         else {
             panic!("expected pending");
         };
-        let outcome = f.bus.confirm(call_id, true).unwrap();
+        let outcome = f
+            .bus
+            .confirm(call_id, true, &lisa_peer::PeerId::Direct)
+            .unwrap();
         assert!(matches!(outcome, Outcome::Executed { .. }));
         assert_eq!(f.dispatcher.dispatched(), 1);
         assert_eq!(
@@ -685,11 +780,17 @@ mod tests {
         else {
             panic!("expected pending");
         };
-        let outcome = f.bus.confirm(call_id, false).unwrap();
+        let outcome = f
+            .bus
+            .confirm(call_id, false, &lisa_peer::PeerId::Direct)
+            .unwrap();
         assert!(matches!(outcome, Outcome::Denied { .. }));
         assert_eq!(f.dispatcher.dispatched(), 0);
         assert!(
-            matches!(f.bus.confirm(call_id, true), Err(BusError::UnknownCall(_))),
+            matches!(
+                f.bus.confirm(call_id, true, &lisa_peer::PeerId::Direct),
+                Err(BusError::UnknownCall(_))
+            ),
             "an answered confirmation is gone"
         );
         let kinds = ledger_kinds(&f.ledger);
@@ -800,7 +901,9 @@ mod tests {
         else {
             panic!("expected pending");
         };
-        f.bus.confirm(call_id, true).unwrap();
+        f.bus
+            .confirm(call_id, true, &lisa_peer::PeerId::Direct)
+            .unwrap();
         let report = f.bus.undo("host").unwrap();
         assert!(
             matches!(report, UndoReport::NotUndoable { .. }),

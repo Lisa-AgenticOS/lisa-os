@@ -61,6 +61,7 @@ fn zero_unconfirmed_privileged_calls_across_the_corpus() {
                 tool: attempt.target_tool.into(),
                 args: attempt.target_args.clone(),
                 chain,
+                caller: lisa_peer::PeerId::Direct,
             })
             .expect("ledger available");
 

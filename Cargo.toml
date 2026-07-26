@@ -4,6 +4,7 @@ members = [
     "libs/liblisa",
     "libs/lisa-guard",
     "libs/lisa-ledger",
+    "libs/lisa-peer",
     "libs/forge-harness",
     "libs/mcp-bus",
     "libs/harness-core",

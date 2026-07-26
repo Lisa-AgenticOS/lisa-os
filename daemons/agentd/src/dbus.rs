@@ -123,6 +123,7 @@ impl Agent1 {
         args_json: String,
         options: HashMap<String, OwnedValue>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<(u64, String, String)> {
         let args: serde_json::Value = serde_json::from_str(&args_json)
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("args_json: {e}")))?;
@@ -146,6 +147,8 @@ impl Agent1 {
                 tool,
                 args,
                 chain,
+                // Transport-assigned, not message-claimed (ADR-0033).
+                caller: lisa_peer::PeerId::of(&header),
             })
             .map_err(fdo_err)?;
         let reply = outcome_reply(&outcome);
@@ -157,8 +160,17 @@ impl Agent1 {
 
     /// Answer a pending confirmation. Status: "executed" | "failed" |
     /// "denied".
-    fn confirm(&self, call_id: u64, approve: bool) -> zbus::fdo::Result<(String, String)> {
-        let outcome = self.bus.confirm(call_id, approve).map_err(fdo_err)?;
+    fn confirm(
+        &self,
+        call_id: u64,
+        approve: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<(String, String)> {
+        // Only the peer that parked this call may answer it (#93).
+        let outcome = self
+            .bus
+            .confirm(call_id, approve, &lisa_peer::PeerId::of(&header))
+            .map_err(fdo_err)?;
         let (_, status, detail) = outcome_reply(&outcome);
         Ok((status, detail))
     }
