@@ -142,6 +142,57 @@ const MUST_DENY: &[(&str, &str)] = &[
     ("rm -rf /./usr", "a `.` segment in the middle"),
     ("rm -rf /home/lisa/", "trailing slash"),
     ("find / -delete", "find's action half, at the system root"),
+    // ---------------------------------------------------------------
+    // Review round 2. Same story one layer down: the round-1 fixes were
+    // each correct for the spelling that prompted them.
+    // ---------------------------------------------------------------
+    // #67 — wrapper options taking a separate value hid the program.
+    (
+        "env -u FOO rm -rf /",
+        "the option's value looked like the program",
+    ),
+    ("env -u FOO sudo rm -rf /", "and it hid the escalation too"),
+    ("timeout -s KILL 5 rm -rf /", "same, with a signal name"),
+    ("echo x | xargs -I {} rm -rf /", "same, through xargs"),
+    ("stdbuf -o L rm -rf /", "same, through stdbuf"),
+    ("nice -n 10 rm -rf /etc", "same, through nice"),
+    // #68 — redirect and pipe spellings bash accepts.
+    ("echo pwned &> /etc/passwd", "both streams redirected"),
+    ("echo x >| /etc/passwd", "forced clobber"),
+    ("curl x |& sh", "pipe-to-shell that downgraded to a warning"),
+    ("cat script.py |& python3", "the same into an interpreter"),
+    // #69 — the normalizer was not wired into redirects or `dd`.
+    ("echo x > //etc/passwd", "doubled separator in a redirect"),
+    ("echo x > /./etc/passwd", "a `.` segment in a redirect"),
+    ("dd if=/dev/zero of=//dev/sda", "and in dd's output"),
+    (
+        "dd if=/dev/zero of=/etc/passwd",
+        "dd never reached the writer rule",
+    ),
+    // #70/#71 — inline source in spellings other than a bare `-c`.
+    ("bash -xc 'rm -rf /'", "bundled short flags"),
+    ("sh <<< 'rm -rf /'", "herestring"),
+    ("trap 'rm -rf /' EXIT", "code that runs later"),
+    (
+        "python3 -c 'import os; os.system(\"rm -rf /\")'",
+        "a language this reader does not speak — refused, not approximated",
+    ),
+    ("perl -e 'unlink q(/)'", "the same in perl"),
+    // #77 — a runtime target is a runtime program name, one arg along.
+    ("rm -rf $(echo /)", "target from a substitution"),
+    ("rm -rf $TARGET", "target from a variable"),
+    ("chmod -R 777 $DIR", "the same for permissions"),
+    ("dd of=$DISK if=/dev/zero", "and for the device"),
+    // #73 — depth-2 was the wrong shape for OS paths.
+    (
+        "rm -rf /etc/systemd/system",
+        "three levels down and still the OS",
+    ),
+    (
+        "rm -rf /boot/efi/EFI/lisa",
+        "this is the #20 incident, deeper",
+    ),
+    ("chown -R nobody /etc/systemd/system", "and for ownership"),
 ];
 
 /// Actions that are legitimate often enough to allow, but never silently.
@@ -195,6 +246,20 @@ const MUST_ALLOW: &[&str] = &[
     "bash -lc 'just lint && just test'",
     "echo \"${HOME}/notes\"",
     "rm -rf ./build",
+    // Review round 2 (#75/#76) — reading from the OS is not writing to
+    // it, and a wrapper is not a disguise for every command behind it.
+    "cp /etc/os-release .",
+    "cp -r /etc/skel/. .",
+    "ln -s /usr/share/lisa/models models",
+    "timeout 5 cargo test",
+    "xargs -I {} grep needle {}",
+    "python3 -m http.server",
+    "python3 script.py",
+    "cargo test &> out.log",
+    "rm -rf /home/lisa/project/build",
+    "rm -rf /var/tmp/scratch",
+    "diff <(sort a) <(sort b)",
+    "awk '{print $1}' access.log",
 ];
 
 #[test]

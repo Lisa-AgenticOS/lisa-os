@@ -65,6 +65,29 @@ const SHELLS: &[&str] = &[
     "node", "php",
 ];
 
+/// Programs whose first argument is code to run later (`trap 'rm -rf /'
+/// EXIT`).
+const DEFERRED_CODE: &[&str] = &["trap", "watch"];
+
+/// Programs whose operands are the thing destroyed. If one of *these*
+/// has a target computed at runtime, the guard cannot see what it hits
+/// (round 2, #77) — a runtime program name was already refused, and a
+/// runtime target is the same problem one argument along.
+const TARGET_SENSITIVE: &[&str] = &[
+    "rm",
+    "rmdir",
+    "shred",
+    "chmod",
+    "chown",
+    "chgrp",
+    "dd",
+    "wipefs",
+    "blkdiscard",
+    "tee",
+    "truncate",
+    "mkfs",
+];
+
 /// Prefix words that stand in front of the real program. `busybox` is
 /// here because `busybox rm -rf /` is `rm -rf /`.
 const WRAPPERS: &[&str] = &[
@@ -81,9 +104,6 @@ const KEYWORDS: &[&str] = &[
     "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac",
     "select", "function", "in", "{", "}", "(", ")", "!", "coproc",
 ];
-
-/// Flags that hand a shell (or an interpreter) a script to run inline.
-const INLINE_SCRIPT_FLAGS: &[&str] = &["-c", "-lc", "-ic", "-cl", "--command"];
 
 /// How deep nested substitution and `eval` may go before the reader gives
 /// up and refuses. Real command lines never approach this.
@@ -125,64 +145,128 @@ fn check_shell_line_inner(raw: &str, depth: usize) -> Verdict {
     }
 
     for segment in segments(&line) {
-        let Some(inv) = segment.invocation() else {
-            continue;
-        };
-
-        // The program name is still computed at runtime (`${CMD} -rf /`).
-        // We cannot know what runs, so we do not pretend to.
-        if inv.program.contains('$') || inv.program.contains('`') {
-            return Verdict::deny(
-                "shell.unreadable",
-                "the program name is computed at runtime, so what would actually run cannot be determined",
-            );
-        }
-
-        // `eval "rm -rf /"` — judge the string it would execute.
-        if inv.program == "eval" {
-            verdict = verdict.worst(check_shell_line_inner(&inv.args.join(" "), depth + 1));
-            if verdict.is_denied() {
-                return verdict;
-            }
-            continue;
-        }
-
-        // `sh -c '<script>'` is the same thing wearing a program name.
-        if SHELLS.contains(&inv.program.as_str())
-            && let Some(at) = inv
-                .args
-                .iter()
-                .position(|a| INLINE_SCRIPT_FLAGS.contains(&a.as_str()))
-            && let Some(script) = inv.args.get(at + 1)
-        {
-            verdict = verdict.worst(check_shell_line_inner(script, depth + 1));
-            if verdict.is_denied() {
-                return verdict;
-            }
-        }
-
-        if segment.piped_into && SHELLS.contains(&inv.program.as_str()) {
-            return Verdict::deny(
-                "pipe.to.shell",
-                format!(
-                    "pipes output into `{}`, which executes whatever arrives",
-                    inv.program
-                ),
-            );
-        }
-        verdict = verdict.worst(rules::scan(&inv));
-        if verdict.is_denied() {
-            return verdict;
-        }
-
+        // Redirects are judged whether or not the segment has a program:
+        // `echo x &> /etc/passwd` leaves a word-less segment behind, and
+        // skipping it skipped the redirect too (round 2, #68).
         for target in &segment.redirects {
             verdict = verdict.worst(redirect_verdict(target));
             if verdict.is_denied() {
                 return verdict;
             }
         }
+
+        for inv in segment.invocations() {
+            verdict = verdict.worst(judge(&inv, &segment, depth));
+            if verdict.is_denied() {
+                return verdict;
+            }
+        }
     }
     verdict
+}
+
+/// Judge one resolved invocation.
+fn judge(inv: &Invocation, segment: &Segment, depth: usize) -> Verdict {
+    // The program name is still computed at runtime (`${CMD} -rf /`).
+    // We cannot know what runs, so we do not pretend to.
+    if is_unresolved(&inv.program) {
+        return Verdict::deny(
+            "shell.unreadable",
+            "the program name is computed at runtime, so what would actually run cannot be determined",
+        );
+    }
+
+    // …and neither can we when the *target* is computed (#77).
+    if (TARGET_SENSITIVE.contains(&inv.program.as_str()) || inv.program.starts_with("mkfs."))
+        && inv.args.iter().any(|a| is_unresolved(a))
+    {
+        return Verdict::deny(
+            "shell.unreadable",
+            format!(
+                "`{}` acts on a target computed at runtime, so what it would destroy cannot be determined",
+                inv.program
+            ),
+        );
+    }
+
+    let mut verdict = Verdict::Allow;
+
+    // `eval "rm -rf /"` and `trap 'rm -rf /' EXIT` — judge the code.
+    if inv.program == "eval" {
+        return check_shell_line_inner(&inv.args.join(" "), depth + 1);
+    }
+    if DEFERRED_CODE.contains(&inv.program.as_str())
+        && let Some(code) = inv.args.first()
+    {
+        verdict = verdict.worst(check_shell_line_inner(code, depth + 1));
+    }
+
+    let is_shell = SHELLS.contains(&inv.program.as_str());
+    if is_shell {
+        // Every literal argument of a shell or interpreter is source, and
+        // enumerating which flag introduces it is a losing game — `-c`,
+        // `-xc`, `-ec`, `-e`, `-r`, `<<<` all do. Read them all.
+        for arg in inv.args.iter().filter(|a| !a.starts_with('-')) {
+            verdict = verdict.worst(check_shell_line_inner(arg, depth + 1));
+            if verdict.is_denied() {
+                return verdict;
+            }
+        }
+        // A non-shell interpreter's source is not shell syntax, and
+        // reading it as if it were is the guessing this crate keeps
+        // having to stop doing: `python3 -c 'os.system("rm -rf /")'`
+        // tokenizes into nothing a rule recognises (round 2, #71). So
+        // inline source in a language this reader does not speak is
+        // refused rather than approximated.
+        if inline_source_flag(&inv.program, &inv.args) {
+            return Verdict::deny(
+                "interpreter.inline_source",
+                format!(
+                    "runs an inline `{}` program, which this guard cannot read — write it to a \
+                     file you can review, or ask for the shell command you want",
+                    inv.program
+                ),
+            );
+        }
+    }
+
+    if segment.piped_into && is_shell {
+        return Verdict::deny(
+            "pipe.to.shell",
+            format!(
+                "pipes output into `{}`, which executes whatever arrives",
+                inv.program
+            ),
+        );
+    }
+    verdict.worst(rules::scan(inv))
+}
+
+/// Whether a word still contains an expansion the reader could not
+/// resolve, so its value is unknown until the shell runs it.
+fn is_unresolved(word: &str) -> bool {
+    word.contains('$') || word.contains('`')
+}
+
+/// Whether these arguments hand the interpreter a program on the command
+/// line. Deliberately narrow — `python3 -m http.server` is ordinary and
+/// must keep working; only the flags that mean "here is source" count.
+fn inline_source_flag(program: &str, args: &[String]) -> bool {
+    let letters: &[char] = match program {
+        "python" | "python3" => &['c'],
+        "perl" => &['e', 'E'],
+        "ruby" => &['e'],
+        "node" => &['e', 'p'],
+        "php" => &['r'],
+        _ => return false,
+    };
+    args.iter().any(|a| {
+        a == "--eval"
+            || a == "--print"
+            || (a.starts_with('-')
+                && !a.starts_with("--")
+                && a.chars().skip(1).any(|c| letters.contains(&c)))
+    })
 }
 
 fn fork_bomb(line: &str) -> Option<Verdict> {
@@ -271,7 +355,11 @@ fn decode_escape(rest: &[char]) -> (String, usize) {
     }
 }
 
-fn redirect_verdict(target: &str) -> Verdict {
+fn redirect_verdict(raw_target: &str) -> Verdict {
+    // Round 2 (#69): the normalizer built for `rm` targets was never
+    // wired in here, so `> //etc/passwd` and `> /./etc/passwd` sailed
+    // past a set of `starts_with` checks.
+    let target = &rules::normalize_target(raw_target);
     if target.starts_with("/dev/sd")
         || target.starts_with("/dev/nvme")
         || target.starts_with("/dev/vd")
@@ -286,7 +374,7 @@ fn redirect_verdict(target: &str) -> Verdict {
     const IMAGE_ROOTS: &[&str] = &[
         "/etc/", "/usr/", "/boot/", "/efi/", "/bin/", "/sbin/", "/lib/",
     ];
-    if IMAGE_ROOTS.iter().any(|r| target.starts_with(r)) {
+    if IMAGE_ROOTS.iter().any(|r| target.starts_with(r)) || target == "/etc" {
         return Verdict::deny(
             "fs.system_write",
             format!("redirects output into `{target}`, which belongs to the OS image"),
@@ -309,6 +397,51 @@ struct Segment {
 }
 
 impl Segment {
+    /// Every program this segment could actually run.
+    ///
+    /// The first is the one wrapper-peeling resolved. When a wrapper or
+    /// escalator stood in front of it, **every later word is offered as a
+    /// candidate too** — because wrapper options that take a separate
+    /// value (`env -u FOO rm -rf /`, `timeout -s KILL 5 rm …`,
+    /// `xargs -I {} rm …`) leave the option's value looking like the
+    /// program while the real one sits in argv (round 2, #67).
+    ///
+    /// Learning each wrapper's option grammar is the losing game this
+    /// crate keeps having to stop playing. Judging every candidate is
+    /// cheap, and errs toward seeing more commands rather than fewer.
+    fn invocations(&self) -> Vec<Invocation> {
+        let Some(primary) = self.invocation() else {
+            return Vec::new();
+        };
+        let wrapped = self.words.iter().any(|w| {
+            let name = basename(w);
+            WRAPPERS.contains(&name.as_str()) || ESCALATORS.contains(&name.as_str())
+        });
+        let mut out = vec![primary];
+        if !wrapped {
+            return out;
+        }
+        let escalated = self
+            .words
+            .iter()
+            .any(|w| ESCALATORS.contains(&basename(w).as_str()));
+        for (i, word) in self.words.iter().enumerate() {
+            if word.starts_with('-') || is_env_assignment(word) {
+                continue;
+            }
+            let program = basename(word);
+            if out.iter().any(|inv| inv.program == program) {
+                continue;
+            }
+            out.push(Invocation {
+                escalated,
+                program,
+                args: self.words[i + 1..].to_vec(),
+            });
+        }
+        out
+    }
+
     /// Peel wrappers and leading `VAR=value` assignments off the front to
     /// find the program that actually runs, then reduce it to a basename
     /// so `/bin/rm`, `./rm` and `rm` are one program.
@@ -447,12 +580,27 @@ fn segments(line: &str) -> Vec<Segment> {
                 flush(&mut cur, &mut out, &mut piped_next, false);
                 i += 1;
             }
+            // `&>` / `&>>` redirect both streams — a redirect, not a
+            // separator, and missing that left the target unjudged (#68).
+            '&' if i + 1 < chars.len() && chars[i + 1] == '>' => {
+                push_word(&mut word, &mut has_word, &mut cur, &mut redirect_pending);
+                redirect_pending = true;
+                i += 1;
+                while i < chars.len() && matches!(chars[i], '>' | '|') {
+                    i += 1;
+                }
+            }
             '|' | '&' | ';' | '\n' => {
                 push_word(&mut word, &mut has_word, &mut cur, &mut redirect_pending);
                 let is_pipe = c == '|' && !(i + 1 < chars.len() && chars[i + 1] == '|');
                 flush(&mut cur, &mut out, &mut piped_next, is_pipe);
-                // Consume the second character of `&&` / `||`.
-                if (c == '&' || c == '|') && i + 1 < chars.len() && chars[i + 1] == c {
+                // Consume the second character of `&&`, `||` and `|&` —
+                // without the last, `curl x |& sh` flushed a second time
+                // and cleared the pipe flag (#68).
+                if (c == '&' || c == '|')
+                    && i + 1 < chars.len()
+                    && (chars[i + 1] == c || (c == '|' && chars[i + 1] == '&'))
+                {
                     i += 1;
                 }
                 i += 1;
@@ -460,7 +608,8 @@ fn segments(line: &str) -> Vec<Segment> {
             '>' | '<' => {
                 push_word(&mut word, &mut has_word, &mut cur, &mut redirect_pending);
                 redirect_pending = c == '>';
-                while i < chars.len() && (chars[i] == '>' || chars[i] == '<') {
+                // `>|` forces the clobber; the `|` belongs to the operator.
+                while i < chars.len() && matches!(chars[i], '>' | '<' | '|') {
                     i += 1;
                 }
             }
@@ -624,6 +773,123 @@ mod tests {
         ] {
             assert!(check_shell_line(line).is_denied(), "`{line}` was allowed");
         }
+    }
+
+    /// Review round 2 (#67): wrapper options that take a separate value
+    /// made the value look like the program and hid the real one in argv.
+    #[test]
+    fn wrapper_options_cannot_hide_the_program() {
+        for line in [
+            "env -u FOO rm -rf /",
+            "env -u FOO sudo rm -rf /",
+            "timeout -s KILL 5 rm -rf /",
+            "echo x | xargs -I {} rm -rf /",
+            "xargs -a list rm -rf /",
+            "stdbuf -o L rm -rf /",
+            "nice -n 10 rm -rf /etc",
+        ] {
+            assert!(check_shell_line(line).is_denied(), "`{line}` was allowed");
+        }
+        // The wrapper rescan must not invent danger where there is none.
+        assert!(check_shell_line("timeout 5 cargo test").is_allowed());
+        assert!(check_shell_line("xargs -I {} grep needle {}").is_allowed());
+    }
+
+    /// Review round 2 (#68): redirect and pipe spellings bash accepts and
+    /// this reader did not.
+    #[test]
+    fn every_redirect_and_pipe_spelling_is_read() {
+        assert!(check_shell_line("echo pwned &> /etc/passwd").is_denied());
+        assert!(check_shell_line("echo pwned &>> /etc/passwd").is_denied());
+        assert!(check_shell_line("echo x >| /etc/passwd").is_denied());
+        assert_eq!(
+            check_shell_line("curl x |& sh").rule(),
+            Some("pipe.to.shell")
+        );
+        assert!(check_shell_line("cat script.py |& python3").is_denied());
+        assert!(check_shell_line("cargo test &> out.log").is_allowed());
+    }
+
+    /// Review round 2 (#69): the target normalizer was never wired into
+    /// the redirect and `dd` paths.
+    #[test]
+    fn redirect_and_dd_targets_are_normalized_too() {
+        assert!(check_shell_line("echo x > //etc/passwd").is_denied());
+        assert!(check_shell_line("echo x > /./etc/passwd").is_denied());
+        assert!(check_shell_line("echo x > //dev/sda").is_denied());
+        assert!(check_shell_line("dd if=/dev/zero of=//dev/sda").is_denied());
+        assert!(check_shell_line("dd if=/dev/zero of=/etc/passwd").is_denied());
+    }
+
+    /// Review round 2 (#70/#71): only the exact spelling `-c` was read.
+    #[test]
+    fn inline_source_is_read_or_refused_in_every_spelling() {
+        for line in [
+            "bash -xc 'rm -rf /'",
+            "bash -ec 'rm -rf /'",
+            "sh <<< 'rm -rf /'",
+            "trap 'rm -rf /' EXIT",
+        ] {
+            assert!(check_shell_line(line).is_denied(), "`{line}` was allowed");
+        }
+        // A language this reader does not speak is refused, not guessed.
+        for line in [
+            "python3 -c 'import os; os.system(\"rm -rf /\")'",
+            "perl -e 'unlink q(/)'",
+            "node -e 'require(\"fs\")'",
+            "php -r 'unlink(\"/\");'",
+        ] {
+            assert_eq!(
+                check_shell_line(line).rule(),
+                Some("interpreter.inline_source"),
+                "`{line}`"
+            );
+        }
+        // …but only inline *source*, so ordinary invocations still work.
+        assert!(check_shell_line("python3 -m http.server").is_allowed());
+        assert!(check_shell_line("python3 script.py").is_allowed());
+    }
+
+    /// Review round 2 (#77): a runtime program name was refused while a
+    /// runtime *target* was waved through — the same problem, one
+    /// argument along.
+    #[test]
+    fn a_runtime_target_is_refused_for_destructive_programs() {
+        for line in [
+            "rm -rf $(echo /)",
+            "rm -rf $TARGET",
+            "chmod -R 777 $DIR",
+            "dd of=$DISK if=/dev/zero",
+            "for f in /etc/*; do rm -rf $f; done",
+        ] {
+            assert!(check_shell_line(line).is_denied(), "`{line}` was allowed");
+        }
+        // A variable in a harmless program's arguments stays ordinary.
+        assert!(check_shell_line("echo $HOME").is_allowed());
+        assert!(check_shell_line("cargo test --manifest-path $PWD/Cargo.toml").is_allowed());
+    }
+
+    /// Review round 2 (#73): depth-2 was the wrong shape for image roots.
+    #[test]
+    fn deep_paths_under_the_os_are_still_the_os() {
+        assert!(check_shell_line("rm -rf /etc/systemd/system").is_denied());
+        assert!(check_shell_line("rm -rf /boot/efi/EFI/lisa").is_denied());
+        assert!(check_shell_line("chown -R nobody /etc/systemd/system").is_denied());
+        assert!(check_shell_line("chmod -R 777 /usr/lib/x86_64-linux-gnu").is_denied());
+        // /var and /home are the user's, and deep paths there are work.
+        assert!(check_shell_line("rm -rf /home/lisa/project/build").is_allowed());
+        assert!(check_shell_line("rm -rf /var/tmp/scratch").is_allowed());
+    }
+
+    /// Review round 2 (#75): source operands were read as destinations.
+    #[test]
+    fn reading_from_the_os_is_not_writing_to_it() {
+        assert!(check_shell_line("cp /etc/os-release .").is_allowed());
+        assert!(check_shell_line("cp -r /etc/skel/. .").is_allowed());
+        assert!(check_shell_line("ln -s /usr/share/lisa/models models").is_allowed());
+        // The destination still counts.
+        assert!(check_shell_line("cp payload .. /etc/x").is_denied());
+        assert!(check_shell_line("mv notes.txt /etc/notes").is_denied());
     }
 
     #[test]

@@ -103,6 +103,14 @@ fn recursive_delete(inv: &Invocation) -> Verdict {
                 format!("recursively deletes `{target}`, which is a system or home root"),
             );
         }
+        // Depth-independent (review round 2, #73): `/etc/systemd/system`
+        // is three levels down and still the OS.
+        if is_under_system_root(target) {
+            return Verdict::deny(
+                "rm.system_path",
+                format!("recursively deletes `{target}`, which belongs to the OS image"),
+            );
+        }
     }
 
     // Targets arriving over a pipe (`find … | xargs rm -rf`) are unknown
@@ -145,15 +153,13 @@ fn find_actions(inv: &Invocation) -> Verdict {
 
 fn device_write(inv: &Invocation) -> Verdict {
     if inv.program == "dd" {
-        for arg in &inv.args {
-            if let Some(target) = arg.strip_prefix("of=")
-                && target.starts_with("/dev/")
-            {
-                return Verdict::deny(
-                    "disk.raw_write",
-                    format!("writes raw bytes to the block device `{target}`"),
-                );
-            }
+        if let Some(target) = dd_output(inv)
+            && normalize_target(&target).starts_with("/dev/")
+        {
+            return Verdict::deny(
+                "disk.raw_write",
+                format!("writes raw bytes to the block device `{target}`"),
+            );
         }
         return Verdict::Allow;
     }
@@ -182,7 +188,7 @@ fn recursive_permissions(inv: &Invocation) -> Verdict {
         return Verdict::Allow;
     }
     for target in inv.operands() {
-        if is_system_target(target) {
+        if is_system_target(target) || is_under_system_root(target) {
             return Verdict::deny(
                 "perm.system_path",
                 format!(
@@ -199,16 +205,34 @@ fn recursive_permissions(inv: &Invocation) -> Verdict {
 /// filesystem is one half of an A/B pair and is replaced wholesale by
 /// `lisa update`, so an edit here is both dangerous and futile.
 fn system_path_write(inv: &Invocation) -> Verdict {
-    const WRITERS: &[&str] = &["tee", "cp", "mv", "install", "ln", "truncate", "sed"];
-    if !WRITERS.contains(&inv.program.as_str()) {
+    /// Programs whose *last* operand is the destination — the earlier
+    /// ones are sources, and reading `/etc/os-release` is ordinary work
+    /// (review round 2, #75).
+    const DESTINATION_IS_LAST: &[&str] = &["cp", "mv", "install", "ln"];
+    /// Programs where every operand is written.
+    const ALL_OPERANDS_WRITTEN: &[&str] = &["tee", "truncate", "sed"];
+
+    let targets: Vec<String> = if DESTINATION_IS_LAST.contains(&inv.program.as_str()) {
+        inv.operands()
+            .last()
+            .map(str::to_string)
+            .into_iter()
+            .collect()
+    } else if ALL_OPERANDS_WRITTEN.contains(&inv.program.as_str()) {
+        // `sed` only writes with -i; without it this is a read.
+        if inv.program == "sed" && !inv.has_any_short_flag(&['i']) && !inv.has_flag("--in-place") {
+            return Verdict::Allow;
+        }
+        inv.operands().map(str::to_string).collect()
+    } else if inv.program == "dd" {
+        // `dd of=/etc/passwd` never reaches the device rule (#69).
+        dd_output(inv).into_iter().collect()
+    } else {
         return Verdict::Allow;
-    }
-    // `sed` only writes with -i; without it this is a read.
-    if inv.program == "sed" && !inv.has_any_short_flag(&['i']) && !inv.has_flag("--in-place") {
-        return Verdict::Allow;
-    }
-    for target in inv.operands() {
-        if is_under_system_root(target) {
+    };
+
+    for target in targets {
+        if is_under_system_root(&target) {
             return Verdict::deny(
                 "fs.system_write",
                 format!("writes into `{target}`, which belongs to the OS image"),
@@ -216,6 +240,13 @@ fn system_path_write(inv: &Invocation) -> Verdict {
         }
     }
     Verdict::Allow
+}
+
+/// `dd`'s output file, from its `of=` operand.
+fn dd_output(inv: &Invocation) -> Option<String> {
+    inv.args
+        .iter()
+        .find_map(|a| a.strip_prefix("of=").map(str::to_string))
 }
 
 /// Erasing the record of what happened. Lisa's Ledger is append-only by
@@ -358,7 +389,7 @@ fn is_under_system_root(target: &str) -> bool {
 /// may not exist and the rule holds either way. Review round 1 (#62)
 /// found the previous suffix-stripping version blind to `.`, `..` and
 /// doubled separators.
-fn normalize_target(target: &str) -> String {
+pub(crate) fn normalize_target(target: &str) -> String {
     let trimmed = target.trim().trim_matches(['"', '\'']);
     if trimmed == "~" || trimmed == "$HOME" || trimmed == "${HOME}" {
         return trimmed.to_string();

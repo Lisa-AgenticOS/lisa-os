@@ -199,6 +199,58 @@ filed alongside the escapes deliberately. A guard that blocks
 `grep /etc/passwd src` is a guard people route around, and a routed-around
 guard protects nothing.
 
+## Review round 2 (2026-07-26)
+
+The round-1 fixes were reviewed the same way and **eleven more findings**
+came back (#67–#77). Every one of them is the round-1 fix being correct
+for exactly the spelling that prompted it:
+
+| # | what got through | the round-1 fix it sat next to |
+|---|---|---|
+| 67 | `env -u FOO rm -rf /`, `timeout -s KILL 5 rm …` | wrappers were unwrapped, but their *options taking a separate value* made the value look like the program |
+| 68 | `&>`, `&>>`, `>\|`, `\|&` | redirects were judged, but not in these spellings; a word-less segment skipped its redirect entirely |
+| 69 | `> //etc/passwd`, `dd of=//dev/sda` | `normalize_target` was written for #62 and never wired into the redirect or `dd` paths |
+| 70 | `bash -xc`, `sh <<<`, `trap '…' EXIT` | `sh -c` was read — only in that exact spelling |
+| 71 | `python3 -c 'os.system("rm -rf /")'` | read *as shell*, which it is not, so it parsed to nothing a rule matched |
+| 72 | `grep -e foo /etc/passwd` | the #64/#65 position-awareness left the pattern slot open, so the path was eaten as the pattern |
+| 73 | `rm -rf /etc/systemd/system` | `is_system_target` capped at depth 2; the depth-independent check existed and was used only by the writer rules |
+| 74 | `dart pub global activate` | subcommand allowlists stopped at the first level |
+| 75 | `cp /etc/os-release .` refused | source operands read as destinations |
+| 76 | `cargo +nightly fmt` refused | `+toolchain` and separate flag values read as the subcommand |
+| 77 | `rm -rf $TARGET` | a runtime *program name* was refused; a runtime *target* was not |
+
+The recurring shape is now explicit, and it is the reason three of these
+fixes changed strategy rather than adding a case:
+
+> **Enumerating the dangerous spellings of a shell is a losing game.**
+
+So where the reader kept leaking, it stopped enumerating:
+
+- **Wrappers** no longer have their option grammars modelled. If a
+  wrapper is present, *every* subsequent word is judged as a candidate
+  program. Cheap, and it errs toward seeing more commands than fewer.
+- **Inline source** is no longer matched flag by flag. Every literal
+  argument of a shell is read as a command line, and a language this
+  reader does not speak (`python -c`, `perl -e`, `node -e`, `php -r`) is
+  **refused outright** rather than approximated — #71 is precisely what
+  approximation buys.
+- **Unresolved words** are refused in target position as well as program
+  position. `rm -rf $TARGET` is the same unknown as `${CMD} -rf /`.
+
+Corpus: 75 → 105 denied entries, 17 → 29 must-allow. The must-allow half
+grew deliberately: rounds 1 and 2 each produced a false positive
+(#65, #75/#76), and those are as load-bearing as the escapes.
+
+**Two rounds, nineteen findings, in code whose entire claim is that it
+cannot be talked past.** That is the honest character of this surface,
+and it is why the corpus is described as a floor everywhere it appears.
+`check_shell_line` guards a *suggestion* — the blast radius of a miss is
+one command a human still has to press Enter on — while `check_command`
+guards autonomous execution and is a far smaller, argv-shaped problem.
+If the shell reader needs a third strategy change, the right answer is
+probably to stop reading shell at all and have `lisa suggest` emit
+structured argv the guard can judge exactly.
+
 ## What was rejected
 
 - **Prompt-level rules only** ("never run destructive commands" in the

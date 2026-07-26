@@ -47,6 +47,18 @@ struct ProgramPolicy {
     /// Whether this program's first non-flag operand is a pattern
     /// (`grep needle .`) rather than a path.
     first_operand_is_pattern: bool,
+    /// Flags that supply the pattern themselves, so the first operand is
+    /// a *path* after all — `grep -e foo /etc/passwd` (round 2, #72).
+    /// `-f FILE` belongs here too: it names a file, which must be checked.
+    pattern_supplied_by: &'static [&'static str],
+    /// Operand sequences refused outright — a subcommand's subcommand.
+    /// `dart pub global activate` installs third-party code into `$HOME`
+    /// and runs it, which is nothing to do with building this project
+    /// (review round 2, #74).
+    denied_operands: &'static [&'static [&'static str]],
+    /// Global flags that take a *separate* value, so the value is not
+    /// mistaken for the subcommand (`cargo --color always test`).
+    value_flags: &'static [&'static str],
 }
 
 const DEFAULT_POLICY: ProgramPolicy = ProgramPolicy {
@@ -54,6 +66,9 @@ const DEFAULT_POLICY: ProgramPolicy = ProgramPolicy {
     subcommands: &[],
     pattern_flags: &[],
     first_operand_is_pattern: false,
+    pattern_supplied_by: &[],
+    denied_operands: &[],
+    value_flags: &[],
 };
 
 fn policy_for(program: &str) -> ProgramPolicy {
@@ -110,6 +125,14 @@ fn policy_for(program: &str) -> ProgramPolicy {
                 "generate-lockfile",
                 "fix",
             ],
+            value_flags: &[
+                "--color",
+                "-Z",
+                "--target",
+                "-j",
+                "--jobs",
+                "--message-format",
+            ],
             ..DEFAULT_POLICY
         },
         "dart" => ProgramPolicy {
@@ -117,6 +140,7 @@ fn policy_for(program: &str) -> ProgramPolicy {
                 "analyze", "format", "test", "pub", "compile", "fix", "doc", "run", "info",
                 "create",
             ],
+            denied_operands: &[&["pub", "global"]],
             ..DEFAULT_POLICY
         },
         "flutter" => ProgramPolicy {
@@ -124,11 +148,13 @@ fn policy_for(program: &str) -> ProgramPolicy {
                 "analyze", "test", "build", "pub", "create", "doctor", "config", "clean",
                 "gen-l10n", "format", "run", "devices", "precache",
             ],
+            denied_operands: &[&["pub", "global"]],
             ..DEFAULT_POLICY
         },
         "grep" => ProgramPolicy {
             pattern_flags: &["-e", "--regexp", "--include", "--exclude"],
             first_operand_is_pattern: true,
+            pattern_supplied_by: &["-e", "--regexp", "-f", "--file"],
             ..DEFAULT_POLICY
         },
         _ => DEFAULT_POLICY,
@@ -158,7 +184,15 @@ pub fn check_command(program: &str, args: &[&str]) -> Verdict {
 
     let policy = policy_for(program);
 
-    for arg in args {
+    // Everything after `--` is the inner program's argv, not this one's
+    // (review round 2, #76: `cargo test -- --config x` is not `cargo
+    // --config`). Policy applies to the arguments before it.
+    let own_args: &[&str] = match args.iter().position(|a| *a == "--") {
+        Some(at) => &args[..at],
+        None => args,
+    };
+
+    for arg in own_args {
         // Match the flag itself and its `--flag=value` spelling.
         let head = arg.split('=').next().unwrap_or(arg);
         if policy.denied_flags.contains(arg) || policy.denied_flags.contains(&head) {
@@ -171,8 +205,22 @@ pub fn check_command(program: &str, args: &[&str]) -> Verdict {
         }
     }
 
+    let operands = subcommand_operands(&policy, own_args);
+
+    for denied in policy.denied_operands {
+        if operands.len() >= denied.len() && operands[..denied.len()] == **denied {
+            return Verdict::deny(
+                "command.denied_subcommand",
+                format!(
+                    "`{program} {}` installs and runs third-party code outside the project",
+                    denied.join(" ")
+                ),
+            );
+        }
+    }
+
     if !policy.subcommands.is_empty()
-        && let Some(sub) = args.iter().find(|a| !a.starts_with('-'))
+        && let Some(sub) = operands.first()
         && !policy.subcommands.contains(sub)
     {
         return Verdict::deny(
@@ -198,6 +246,30 @@ pub fn check_command(program: &str, args: &[&str]) -> Verdict {
     })
 }
 
+/// The operands that name subcommands, with the noise that sits among
+/// them removed: `+toolchain` selectors and the values of global flags
+/// that take one separately (review round 2, #76 — `cargo --color always
+/// test` was reading `always` as the subcommand).
+fn subcommand_operands<'a>(policy: &ProgramPolicy, args: &[&'a str]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut skip_value = false;
+    for arg in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if policy.value_flags.contains(arg) {
+            skip_value = true;
+            continue;
+        }
+        if arg.starts_with('-') || arg.starts_with('+') {
+            continue;
+        }
+        out.push(*arg);
+    }
+    out
+}
+
 /// The first argument that names a path outside the working directory.
 ///
 /// Position-aware, because the previous flat scan was simultaneously too
@@ -205,12 +277,26 @@ pub fn check_command(program: &str, args: &[&str]) -> Verdict {
 /// attached to short options (`-o/tmp/x`, `-f/etc/passwd`) and it
 /// rejected search patterns that merely look like paths (`grep /etc/passwd .`).
 fn escaping_argument(policy: &ProgramPolicy, args: &[&str]) -> Option<String> {
+    // If the pattern arrived via a flag, the first bare operand is a path
+    // like every other one (round 2, #72).
+    let expects_pattern_operand = policy.first_operand_is_pattern
+        && !args.iter().any(|a| {
+            policy.pattern_supplied_by.contains(a)
+                || policy
+                    .pattern_supplied_by
+                    .iter()
+                    .any(|f| a.len() > f.len() && a.starts_with(f))
+        });
     let mut seen_operand = false;
     let mut value_is_pattern = false;
 
     for arg in args {
         if value_is_pattern {
             value_is_pattern = false;
+            // The pattern slot is now filled, so the next bare word is a
+            // path again. Without this, `grep -e foo /etc/passwd` ate the
+            // path as "the first operand" and re-opened #64 (round 2, #72).
+            seen_operand = true;
             continue;
         }
         // `-e PATTERN` / `--regexp PATTERN`, and their attached
@@ -228,7 +314,7 @@ fn escaping_argument(policy: &ProgramPolicy, args: &[&str]) -> Option<String> {
         }
         if !arg.starts_with('-') && !seen_operand {
             seen_operand = true;
-            if policy.first_operand_is_pattern {
+            if expects_pattern_operand {
                 continue;
             }
         }
@@ -360,6 +446,53 @@ mod tests {
 
     /// Review round 1 (#65): the same scan rejected search patterns that
     /// merely looked like paths, which is how a guard gets disabled.
+    /// Review round 2 (#72): a pattern supplied by flag left the pattern
+    /// slot open, so the real path operand was eaten as "the pattern".
+    #[test]
+    fn a_flag_supplied_pattern_leaves_the_operand_a_path() {
+        assert_eq!(
+            check_command("grep", &["-e", "foo", "/etc/passwd"]).rule(),
+            Some("command.path_escape")
+        );
+        assert_eq!(
+            check_command("grep", &["-f", "/etc/passwd", "."]).rule(),
+            Some("command.path_escape")
+        );
+        assert!(check_command("grep", &["--regexp=foo", "../outside"]).is_denied());
+    }
+
+    /// Review round 2 (#74): verified end-to-end — `pub global activate`
+    /// fetched packages and ran an executable that wrote outside the root.
+    #[test]
+    fn pub_global_is_refused() {
+        for program in ["dart", "flutter"] {
+            let v = check_command(program, &["pub", "global", "activate", "dart_style"]);
+            assert_eq!(v.rule(), Some("command.denied_subcommand"), "{program}");
+            assert!(check_command(program, &["pub", "global", "run", "x"]).is_denied());
+            // Ordinary pub work is untouched.
+            assert!(check_command(program, &["pub", "get"]).is_allowed());
+        }
+    }
+
+    /// Review round 2 (#76): these were all refused as unknown
+    /// subcommands or stray denied flags. A guard people route around
+    /// protects nothing.
+    #[test]
+    fn cargo_selectors_and_global_flags_are_not_subcommands() {
+        for args in [
+            &["+nightly", "fmt"][..],
+            &["--color", "always", "test"][..],
+            &["-Z", "unstable-options", "build"][..],
+            &["--message-format", "json", "check"][..],
+            // Everything after `--` belongs to the test binary.
+            &["test", "--", "--config", "x"][..],
+            &["test", "--", "--nocapture"][..],
+        ] {
+            let v = check_command("cargo", args);
+            assert!(v.is_allowed(), "`cargo {args:?}` returned {v}");
+        }
+    }
+
     #[test]
     fn search_patterns_are_not_mistaken_for_paths() {
         assert!(check_command("grep", &["-rn", "/etc/passwd", "src"]).is_allowed());
