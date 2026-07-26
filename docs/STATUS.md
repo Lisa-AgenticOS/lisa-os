@@ -19,6 +19,26 @@ claim below is enforced by CI on `main`, not aspirational.
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
 
 **2026-07-26:**
+- **Hard guardrails for agent actions** (ADR-0029, new crate
+  `libs/lisa-guard`, issues #53–#58). An audit of the two agent execution
+  surfaces found the Agent Bus genuinely guarded — tiers, provenance
+  escalation, ledger-before-dispatch, undo journal — and the **forge
+  harness, where autonomous execution actually happens, guarded by a doc
+  comment**. Two working escapes, not hypotheticals: `run_command`
+  pivoted to a full shell via `find . -exec sh -c '<anything>' \;` (every
+  token is a plain relative name, so the absolute/`..` check waved it
+  through), and the path jail was blind to symlinks (`resolve` never
+  canonicalized, `fs::write` follows links, so a link inside the project
+  wrote outside it). Chained, those two are a complete escape using only
+  allowlisted tools. Policy now lives in one deterministic crate outside
+  the model — no prompt text, no heuristics — with a `Deny` class no
+  confirmation or `--yes` can override. `lisa suggest` is screened
+  *before* printing, since stdout is what the Ctrl+G hook types into the
+  user's shell buffer. Merge gate: 49 destructive attempts, none allowed;
+  17 everyday commands unobstructed. **Stated limit:** none of this
+  confines a subprocess — `run_tests` runs `cargo test` over
+  model-written source, which executes `build.rs` as the user. Landlock
+  closes that (#53).
 - **Zen browser moved to the apps channel** (ADR-0023 phase 1, issue #51).
   `zen-browser` is now a split build: `zen-browser-launcher` (the
   `.desktop`, hicolor icons and a `/usr/bin/zen-browser` resolver) stays in
