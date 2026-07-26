@@ -9,7 +9,7 @@
 # Never `depmod -a`: that resolves `uname -r`, which inside the image
 # build chroot is the BUILD HOST's kernel, not the image's.
 
-_modrel=7.1.4-arch1-1
+_modrel=7.1.5-arch1-1
 
 _lisa_depmod() {
   if [ -d "/usr/lib/modules/${_modrel}" ]; then

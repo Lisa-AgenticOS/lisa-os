@@ -52,15 +52,15 @@ install=$pkgname.install
 # ---------------------------------------------------------------------
 # davidjo/snd_hda_macbookpro master @ 2026-05-04 ("fix(dkms): prevent
 # uname -r from overriding target kernel flag"). Verified: both diffs
-# apply cleanly to linux-7.1.4's sound/hda tree.
+# apply cleanly to linux-7.1.5's sound/hda tree.
 _commit=cb27cc483f4fe98be03a4f4bef466c00aa7d244b
 # Mainline tarball the codec sources come from — upstream's build needs
 # the real sound/hda/*.c, which linux-headers does not ship.
-_kernver=7.1.4
+_kernver=7.1.5
 # `pacman -Q linux` output for that kernel.
-_archkernver=7.1.4.arch1-1
+_archkernver=7.1.5.arch1-1
 # /usr/lib/modules/<this> — i.e. `uname -r` on the booted image.
-_modrel=7.1.4-arch1-1
+_modrel=7.1.5-arch1-1
 
 depends=("linux=${_archkernver}")
 makedepends=("linux-headers=${_archkernver}" bc git kmod xz zstd)
@@ -74,7 +74,7 @@ source=(
 # one we computed ourselves. Cross-checked against
 # https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc.
 sha256sums=('SKIP'
-            '1c63922a119675d38e3ae0f8f6ee07f15c41a786ab9ed66563749bb8c9a08e2e')
+            '22a0196b3cbcdf34dc27b77561f4d040585fd3447edc9ab3531a1ac79e3041e7')
 # The tarball is ~150 MB and expands to ~1.5 GB; the release runner has
 # ~14 GB total. prepare() unpacks only sound/hda (a few hundred KB).
 noextract=("linux-${_kernver}.tar.xz")
