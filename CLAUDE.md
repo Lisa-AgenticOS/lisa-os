@@ -95,6 +95,15 @@ Run `just lint && just test` before every commit; CI enforces both.
    guessed (see `models/catalog/catalog.toml`).
 9. **Commits:** imperative mood, reference the PLAN section or ADR when
    relevant. No AI co-author/attribution lines.
+10. **Everything we build is documented, and only what exists.** Every
+   component directory carries a `README.md` answering four questions:
+   *what it does*, *how it works* (with the smallest real usage example),
+   *how to extend it*, and *its limits* — including known-broken things
+   with issue numbers. A decision gets an ADR; a shipped feature gets
+   user-facing docs. **Never write a user guide for something unbuilt** —
+   `tests/acl-fuzz` was a README describing a suite that did not exist,
+   and `acl.rs` told readers it ran. Documenting intent as if it were
+   behaviour is the single most repeated defect in this repo's history.
 
 ## Repo mechanics
 
