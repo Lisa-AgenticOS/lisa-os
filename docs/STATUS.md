@@ -3,7 +3,7 @@
 Living snapshot of where the build actually is, so any machine (or a
 fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
-"where are we on it" companion. **Last updated: 2026-07-25.**
+"where are we on it" companion. **Last updated: 2026-07-26.**
 
 ## TL;DR
 
@@ -17,6 +17,27 @@ claim below is enforced by CI on `main`, not aspirational.
   carry `ProtectVersion=%A` (the issue-#20 booted-slot guard), gated by the
   nightly's 3-version regression test
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
+
+**2026-07-26:**
+- **Zen browser moved to the apps channel** (ADR-0023 phase 1, issue #51).
+  `zen-browser` is now a split build: `zen-browser-launcher` (the
+  `.desktop`, hicolor icons and a `/usr/bin/zen-browser` resolver) stays in
+  the image forever, while the `/opt/zen` payload ships as
+  `lisa-zen_<ver>_<arch>.tar.zst` for **both** architectures and installs
+  under `/var/lib/lisa/apps/payloads/zen`. `lisa apps` grew channels
+  (`update`/`rollback [channel]`, new `sync`), per-arch asset selection,
+  streamed downloads and version pruning; `lisa update` pre-fetches
+  payloads before staging a slot and `lisa-apps-sync.timer` retries until
+  they land. **This release still bakes `/opt/zen`** — one deliberate
+  overlap so no device can boot a slot whose browser its old `lisa update`
+  never fetched; the next release deletes the one `Packages=` line.
+- **The ADR-0023 size premise was wrong and is corrected.** Measured from
+  the pinned upstream tarballs: `/opt/zen` is **363 MiB** (x86_64) /
+  328 MiB (aarch64), not ~1.5 GiB — 726 MiB across the A/B pair, ~90 MiB
+  off every release download. So the populated root goes ~8.3 → ~7.9 GiB
+  and **phase 3's 7 GiB slot target does not fit**; release.yml now records
+  the real populated root in every release's job summary so that call is
+  made on a measurement.
 
 **2026-07-25 early-morning (autonomous loop, continued):**
 - **Local M4 test rig**: the CI-built aarch64 image boots on the dev Mac

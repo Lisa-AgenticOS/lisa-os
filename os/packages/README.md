@@ -46,3 +46,11 @@ each PKGBUILD's header: llama.cpp needs no ARM cmake flags but takes an
 armv8-a baseline, and `zen-browser` pins a separate verified digest per
 architecture. Anything that genuinely cannot ship on an architecture is
 excluded there explicitly — never faked (CLAUDE.md rule 8).
+
+**Payloads that leave the image.** `zen-browser` is a split build
+(ADR-0023 phase 1, issue #51): `zen-browser-launcher` is image contract
+and stays; `zen-browser` is 363 MiB of `/opt/zen` that moves to the
+ADR-0020 apps channel. `os/repo-tools/build-zen-payload.sh` packs the
+channel artifact from the *same* pinned digest this PKGBUILD uses, per
+architecture, so image and channel can never ship different browsers —
+re-pinning a Zen version is still a one-file change here.

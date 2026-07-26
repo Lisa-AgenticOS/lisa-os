@@ -170,6 +170,14 @@ package_lisa-cli() {
     # App launcher indirection (ADR-0020): prefers the updated apps tree on
     # /var over the baked /usr/share/lisa/shell.
     install -Dm755 os/packages/lisa/lisa-app "$pkgdir/usr/bin/lisa-app"
+    # Payload sync (ADR-0023 phase 1): pulls what the image stopped
+    # carrying — the Zen browser — onto /var once the machine is online.
+    # Enabled in the image by mkosi.postinst.chroot; on Track L the admin
+    # enables the timer (`systemctl enable --now lisa-apps-sync.timer`).
+    install -Dm644 os/packages/lisa/lisa-apps-sync.service \
+        "$pkgdir/usr/lib/systemd/system/lisa-apps-sync.service"
+    install -Dm644 os/packages/lisa/lisa-apps-sync.timer \
+        "$pkgdir/usr/lib/systemd/system/lisa-apps-sync.timer"
     # Terminal integration (PLAN §5.8): opt-in shell hooks for
     # `lisa explain` / `lisa suggest` (Ctrl+G review gate). All logic is
     # in the CLI; these only wire keys and prompts (CLAUDE.md rule 4).

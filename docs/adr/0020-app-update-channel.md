@@ -54,3 +54,40 @@ tree when present:
   (fail-soft D-Bus calls everywhere).
 - Superseded by the Flatpak lane (M6) when it matures; the `lisa apps`
   interface is deliberately small so the migration is a backend swap.
+
+## Amendment, 2026-07-26 (ADR-0023 phase 1, issue #51)
+
+This channel now carries **binary, per-architecture payloads**, not only
+interpreted trees. `lisa apps` gained a channel concept:
+
+- `shell` — the GJS tree, exactly as decided above. State stays at
+  `/var/lib/lisa/apps` so trees installed by earlier releases keep
+  resolving; asset `lisa-apps_<ver>.tar.zst`.
+- `zen` — the Zen browser tree that used to be baked as `/opt/zen`. State
+  at `/var/lib/lisa/apps/payloads/zen`; assets
+  `lisa-zen_<ver>_<arch>.tar.zst`, published for x86_64 **and** aarch64
+  from the same release (a repackage of an upstream binary tarball needs
+  no native runner, so one release yields a complete channel).
+
+Three rules follow from a payload being ~360 MiB instead of ~2 MiB:
+
+- **Versions are pruned.** Each channel keeps a bounded number of trees
+  (`zen`: 2, `shell`: 3), never deleting the one `current` points at.
+  Unbounded history was harmless for the shell tree and is not for a
+  partition that also holds the model store.
+- **Downloads stream.** The payload is hashed straight to disk instead of
+  being read into memory first.
+- **Some channels auto-sync.** `lisa apps sync` installs only channels
+  with **no baked fallback in the image** and no tree yet — today just
+  `zen`. The shell tree is excluded: the image still carries it, so
+  auto-pulling would skew the tree ahead of the image for nothing. Sync
+  never changes the version of a payload that is already installed;
+  moving versions stays a deliberate `lisa apps update`.
+
+`lisa apps update` and `rollback` take an optional channel name and
+default to all channels. Verbs, layout, atomic flip, and the SHA256SUMS
+trust level are unchanged. One consequence of the ADR-0020 recovery floor
+does change: for `zen` there is no baked tree to fall back to after the
+overlap release, so `rollback` past the oldest installed version leaves
+the payload absent and says so, and the launcher's message — not the
+image — is the floor.

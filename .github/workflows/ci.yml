@@ -60,6 +60,9 @@ jobs:
               - '.github/workflows/ci.yml'
             zen:
               - 'os/packages/zen-browser/**'
+              # The apps-channel payload reads its pin from that PKGBUILD
+              # and must keep producing the tree the resolver expects.
+              - 'os/repo-tools/build-zen-payload.sh'
               - '.github/workflows/ci.yml'
 
   lint:
@@ -257,14 +260,75 @@ jobs:
             cp -r /src/os/packages/zen-browser /home/builder/pkg
             chown -R builder:builder /home/builder/pkg
             su builder -c "cd ~/pkg && makepkg -d --nocheck --noconfirm"
-            pkg=$(ls /home/builder/pkg/zen-browser-*.pkg.tar.* | head -1)
-            echo "built: $pkg"
+            ls -1 /home/builder/pkg/*.pkg.tar.*
+            # Split package since #51 — name each half exactly rather than
+            # taking whatever a prefix glob sorts first.
+            pkg=$(ls /home/builder/pkg/zen-browser-[0-9]*.pkg.tar.* | head -1)
+            launcher=$(ls /home/builder/pkg/zen-browser-launcher-*.pkg.tar.* | head -1)
+            echo "built: $pkg + $launcher"
             pacman -Qlp "$pkg" | grep -q opt/zen/zen \
               && echo "OK: zen binary present" \
               || { echo "FAIL: zen binary missing from package"; exit 1; }
             bsdtar -xOf "$pkg" opt/zen/zen | file - | grep -q "ARM aarch64" \
               && echo "OK: zen is an aarch64 binary" \
-              || { echo "FAIL: zen is not aarch64"; exit 1; }'
+              || { echo "FAIL: zen is not aarch64"; exit 1; }
+            # The launcher is the half that stays in the image forever; if
+            # it lost the .desktop, the icon or the resolver, the app grid
+            # entry would vanish the moment the payload moves to /var.
+            for f in usr/bin/zen-browser usr/share/applications/zen-browser.desktop \
+                     usr/share/icons/hicolor/128x128/apps/zen-browser.png; do
+              pacman -Qlp "$launcher" | grep -q "$f" \
+                && echo "OK: $f" \
+                || { echo "FAIL: $f missing from zen-browser-launcher"; exit 1; }
+            done
+            # The resolver must reach the apps-channel tree, not just /opt.
+            bsdtar -xOf "$launcher" usr/bin/zen-browser \
+              | grep -q /var/lib/lisa/apps/payloads/zen/current \
+              && echo "OK: resolver knows the apps-channel path" \
+              || { echo "FAIL: resolver does not resolve the /var payload"; exit 1; }'
+
+  # The apps-channel side of the Zen migration (ADR-0023 phase 1, #51). The
+  # contract under test is small and load-bearing: build-zen-payload.sh must
+  # emit a tarball whose ROOT is what /opt/zen used to be, because
+  # /usr/bin/zen-browser resolves "<tree>/zen" with no path translation. If
+  # those two ever disagree, every device that took the channel payload
+  # loses its browser — so it is checked on the real artifact, and the
+  # resolver's fallback order is checked directly.
+  zen-payload:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.zen == 'true'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the x86_64 payload and check its shape
+        run: |
+          set -o pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends zstd file >/dev/null
+          bash os/repo-tools/build-zen-payload.sh x86_64 99999999.0 payload
+          tar --zstd -tf payload/lisa-zen_99999999.0_x86_64.tar.zst | grep -qx './zen'
+          mkdir -p tree && tar --zstd -xf payload/lisa-zen_99999999.0_x86_64.tar.zst -C tree
+          test -x tree/zen
+          file tree/zen | grep -q 'x86-64'
+      - name: Resolver prefers the apps tree, then /opt, then explains itself
+        run: |
+          set -o pipefail
+          # A stub stands in for the browser: this asserts resolution order,
+          # not that Zen runs headless on a CI runner.
+          mkdir -p fake-var fake-opt
+          printf '#!/bin/sh\necho FROM-VAR "$@"\n' > fake-var/zen
+          printf '#!/bin/sh\necho FROM-OPT "$@"\n' > fake-opt/zen
+          chmod +x fake-var/zen fake-opt/zen
+          LISA_ZEN_DIR=fake-var sh os/packages/zen-browser/zen-browser.sh --x | grep -q '^FROM-VAR --x$'
+          LISA_ZEN_DIR=fake-opt sh os/packages/zen-browser/zen-browser.sh | grep -q '^FROM-OPT$'
+          # Nothing anywhere: actionable message on stderr, exit 127 — never
+          # a silent failure, and never a zero exit that looks like success.
+          rc=0
+          out=$(LISA_ZEN_DIR=/nonexistent sh os/packages/zen-browser/zen-browser.sh 2>&1) || rc=$?
+          [ "$rc" = 127 ] || { echo "expected exit 127, got $rc"; exit 1; }
+          echo "$out" | grep -q 'lisa apps sync' \
+            || { echo "resolver's failure message does not say what to run:"; echo "$out"; exit 1; }
 
   # PLAN §5.1 acceptance forerunner: unmodified OpenAI Python client
   # against the OpenAI-compat endpoint.

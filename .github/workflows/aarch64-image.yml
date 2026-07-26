@@ -95,6 +95,10 @@ jobs:
               # upstream ever drops the asset the digest check fails the
               # build rather than shipping something unverified. -d: binary
               # repackage, runtime deps are resolved at image-install time.
+              # Split since #51: zen-browser-launcher (.desktop + icons +
+              # the /usr/bin/zen-browser resolver, permanent) and
+              # zen-browser (the /opt/zen payload, leaving the image for the
+              # apps channel). The glob takes both.
               sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg -d --nocheck --noconfirm"
               cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
               # Our forked gnome-control-center: stock 50.3 + the native
@@ -117,8 +121,13 @@ jobs:
               # NB: globbing on "$p"-* not "$p"-[0-9]* — llama.cpp'\''s pkgver
               # is a build tag (b10093), not a digit. -debug- splits are
               # filtered so they cannot stand in for the real package.
+              # The prefix glob cannot tell zen-browser from
+              # zen-browser-launcher (#51 split them), so the payload'\''s real
+              # proof is the opt/zen/zen check in the image-content step
+              # below; this loop only catches a wholesale build failure.
               for p in lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-agentd \
-                       lisa-notes lisa-remoted lisa-contextd llama.cpp zen-browser \
+                       lisa-notes lisa-remoted lisa-contextd llama.cpp \
+                       zen-browser zen-browser-launcher \
                        gnome-control-center; do
                 ls /build/pkgs/"$p"-*.pkg.tar.* 2>/dev/null | grep -qv -- "-debug-" \
                   || { echo "aarch64 package missing: $p" >&2; exit 1; }
@@ -147,6 +156,13 @@ jobs:
                    lisa-remoted
                    lisa-contextd
                    llama.cpp
+                   # Permanent: the .desktop, icons and the
+                   # /usr/bin/zen-browser resolver (ADR-0023 phase 1).
+                   zen-browser-launcher
+                   # OVERLAP RELEASE ONLY — drop this line together with
+                   # release.yml'\''s, once devices have taken the release
+                   # that carries the resolver + lisa-apps-sync.timer. See
+                   # the long note in release.yml'\''s Packages= block.
                    zen-browser
           ExtraTrees=/build/extra
           Autologin=yes
@@ -176,6 +192,11 @@ jobs:
           # check does not depend on an upstream meson variable.
           for f in usr/bin/lisa usr/bin/lisa-inferenced usr/bin/llama-server \
                    usr/share/lisa/shell/assistant opt/zen/zen \
+                   usr/bin/zen-browser \
+                   usr/share/applications/zen-browser.desktop \
+                   usr/share/icons/hicolor/128x128/apps/zen-browser.png \
+                   usr/lib/systemd/system/lisa-apps-sync.timer \
+                   etc/systemd/system/timers.target.wants/lisa-apps-sync.timer \
                    usr/bin/gnome-control-center \
                    usr/share/icons/hicolor/scalable/apps/lisa-intelligence-symbolic.svg; do
             if sudo test -e "/mnt/lisaroot/$f"; then echo "ok   $f"; else echo "MISSING $f"; rc=1; fi

@@ -1,8 +1,9 @@
 # ADR-0023: Slim core, /var grows — apps and heavy payloads leave the image
 
-- Status: accepted (design; phase 1 = Zen migration, phase 2 = installer
-  pre-pull, phase 3 = slot shrink)
-- Date: 2026-07-25
+- Status: accepted (design; phase 1 = Zen migration **implemented**
+  2026-07-26, issue #51; phase 2 = installer pre-pull, phase 3 = slot
+  shrink — **premise corrected, see "Phase 1, measured"**)
+- Date: 2026-07-25 (measurements added 2026-07-26)
 - Relates: ADR-0020 (app update channel), ADR-0001/0003 (Track I image),
   issue #37 (Flutter SDK to /var), issue #46 (the 23 GiB flash pain that
   prompted this), M7 (installer/OOBE)
@@ -41,9 +42,10 @@ the user grows.**
 
 **Leaves the image (payloads — pulled to /var, verified, own rollback):**
 
-- GUI applications, starting with **Zen browser** (~1.5 GiB of root
-  payload → ~3 GiB across both slots): moves to the ADR-0020 apps
-  channel as phase 1
+- GUI applications, starting with **Zen browser** (measured 363 MiB of
+  root payload → 726 MiB across both slots; this ADR's original "~1.5 GiB"
+  was an estimate and was wrong — see "Phase 1, measured"): moves to the
+  ADR-0020 apps channel as phase 1
 - models, Flutter SDK (already out)
 - future app-suite members (§5.8) and forge-built apps — these were
   always going to live on the apps channel
@@ -69,6 +71,65 @@ as the app suite stays off-image. Slot size changes only apply to fresh
 installs (an existing A/B disk cannot shrink its slots in place — same
 constraint as the 8→10 GiB bump, which forced re-flashes).
 
+## Phase 1, measured (2026-07-26, issue #51)
+
+Both upstream Zen 1.21.8b tarballs were downloaded, verified against the
+digests pinned in `os/packages/zen-browser/PKGBUILD`, and unpacked:
+
+| | x86_64 | aarch64 |
+|---|---|---|
+| `/opt/zen` tree (apparent bytes) | 380,572,815 (363 MiB) | 343,547,566 (328 MiB) |
+| across both A/B slots | 726 MiB | 655 MiB |
+| channel payload, `.tar.zst -19` | 95.4 MiB | 83.1 MiB |
+
+**This ADR's premise was off by roughly 4×.** Zen is 363 MiB of root
+payload, not ~1.5 GiB, and it is not "the single biggest reason the image
+is 23 GiB" — the 23 GiB is fixed geometry (1 GiB ESP + 2 × 10 GiB root +
+2 GiB var seed), independent of how full the root actually is. What Zen
+actually costs is 726 MiB of the populated root and ~90 MiB of every
+release download.
+
+The consequence for **phase 3 is real and unwelcome**: if the populated
+root was ~8.3 GiB when the slots went 8 → 10 GiB, removing Zen leaves
+~7.9 GiB. **7 GiB slots do not fit.** Phase 3 as written is not reachable
+by removing Zen alone; either the target becomes 8.5 GiB slots (image
+~1+8.5+8.5+2 = 20 GiB, still a 3 GiB win and still a 32 GB stick), or
+more payload has to leave the image first — GNOME, llama.cpp and
+`linux-firmware` are the next candidates by size and each needs the same
+"measure it, do not estimate it" treatment this correction came from.
+release.yml now records the populated-root total and the `/opt/zen` share
+in every release's job summary, so the phase-3 decision reads a
+measurement rather than a memory.
+
+**Never lose the browser (the migration's actual hard part).** The image
+and the channel are decoupled, but a device that already has Zen baked in
+does not get to choose when its root is replaced. The path implemented:
+
+1. `zen-browser` splits into `zen-browser-launcher` (~10 KiB: the
+   `.desktop`, the hicolor icons, and `/usr/bin/zen-browser` as a
+   resolver) and `zen-browser` (the `/opt/zen` payload). **The launcher
+   stays in the image permanently**, so the app-grid entry and the
+   command exist on every Lisa system regardless of where — or whether —
+   the payload is present. The `.desktop` gained `Icon=zen-browser` from
+   hicolor in place of an absolute path into `/opt`, which would have
+   broken the moment the payload moved.
+2. The resolver tries `$LISA_ZEN_DIR` →
+   `/var/lib/lisa/apps/payloads/zen/current` → `/opt/zen`, and if nothing
+   resolves, says what to run — on stderr and as a desktop notification,
+   because a `.desktop` launch has no terminal.
+3. `lisa update` pre-fetches missing payloads onto the persistent `/var`
+   **before** it stages a slot, and `lisa-apps-sync.timer` retries until
+   they are there. Both use `lisa apps sync`, which only *acquires* what
+   is absent — it never moves an installed payload to another version.
+4. **One overlap release** still bakes `/opt/zen` while also publishing
+   the channel payload. This is not caution, it is necessity: the
+   pre-fetch in (3) has to already be on a device before the update that
+   removes the baked copy, and a device running an older image has a
+   `lisa update` that stages slots without pulling anything. The overlap
+   release is what installs the resolver, the timer and the pre-fetch,
+   with the baked copy underneath as the floor. The release after it
+   drops `zen-browser` from `Packages=` and takes the 363 MiB.
+
 ## What was rejected
 
 - **Everything-in-image** (status quo): pays every app twice in disk,
@@ -84,8 +145,9 @@ constraint as the 8→10 GiB bump, which forced re-flashes).
 
 ## Consequences
 
-- Image and stick flashes shrink by ~6 GiB in phase 3; OS updates
-  download less for every device forever.
+- Image and stick flashes shrink in phase 3 — by ~3 GiB on the measured
+  numbers, not the ~6 GiB this ADR first assumed (see "Phase 1,
+  measured"); OS updates download ~90 MiB less for every device forever.
 - App updates continue to ship same-day via the apps channel without an
   OS release.
 - The installer gains a small app-selection step (M7), and the apps

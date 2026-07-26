@@ -77,7 +77,8 @@ repo (like the lisa packages).
 |---|---|---|---|
 | `llama.cpp` | local inference engine (llama-server) for inferenced | from source (b10093, MIT) — AUR-only | `os/packages/llama.cpp` → release repo |
 | `dart` | the Forge harness's `dart analyze` loop | Arch `extra` | `mkosi.conf` Packages |
-| `zen-browser` | a real browser out of the box | repackaged release tarball (1.21.8b) | `os/packages/zen-browser` → release repo |
+| `zen-browser-launcher` | keeps the browser launchable wherever the payload lives | same PKGBUILD (the `.desktop`, hicolor icons, `/usr/bin/zen-browser` resolver) | `os/packages/zen-browser` → image, permanently |
+| `zen-browser` | a real browser out of the box | repackaged release tarball (1.21.8b) | `os/packages/zen-browser` → **leaving the image** for the apps channel (ADR-0023 phase 1) |
 | **Flutter** | building runnable apps on-device | **on-demand, NOT bundled** | one-time install (decision B, 2026-07-23) |
 
 **Flutter is deliberately not in the image** (it's ~1.5 GiB, and every A/B
@@ -85,6 +86,16 @@ update would carry it). Dart alone keeps the harness's generate→analyze
 loop working; full `flutter build linux` is a one-time on-demand install
 when you actually want to compile an app. (A `lisa`-driven installer is the
 follow-up.)
+
+**Zen is following it out** (ADR-0023 phase 1, issue #51). The browser is
+363 MiB of root payload — 726 MiB across the A/B pair — so it now also
+ships as a per-arch apps-channel artifact
+(`lisa-zen_<ver>_<arch>.tar.zst`, built by
+`os/repo-tools/build-zen-payload.sh` from the same pinned digest the
+PKGBUILD uses) and installs under `/var/lib/lisa/apps/payloads/zen` via
+`lisa apps sync`. A "bundled" app is now three things that can move
+independently: the launcher entry (image), the payload (channel), and the
+pin (one PKGBUILD, shared by both).
 
 ## SDK / libraries (pointers)
 

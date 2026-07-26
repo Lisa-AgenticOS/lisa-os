@@ -1,0 +1,20 @@
+# Retry lisa-apps-sync until the device has the payloads its image no
+# longer carries (ADR-0023 phase 1). Once every auto-synced payload is
+# installed the service is a no-op that exits immediately, so the recurring
+# schedule costs nothing on a settled system — it exists so that a machine
+# which was offline at first boot heals itself when it next sees a network.
+[Unit]
+Description=Retry fetching out-of-image Lisa app payloads
+
+[Timer]
+# Late enough that NetworkManager/iwd has had a chance at the link, early
+# enough that a first-boot user is unlikely to reach for the browser first.
+OnBootSec=2min
+# Hourly, not daily: the window this closes is "booted a browserless image
+# with no network yet", and an hour is about the longest a user should have
+# to wonder. Persistent= is deliberately absent — it only applies to
+# OnCalendar= timers, and OnBootSec already gives the catch-up run.
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target

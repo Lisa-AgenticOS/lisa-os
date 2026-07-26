@@ -181,8 +181,9 @@ enum Command {
         #[arg(long)]
         reboot: bool,
     },
-    /// Update the shell apps independently of the OS image (ADR-0020):
-    /// fetch, verify, and activate the newest apps tree — no reboot.
+    /// Update out-of-image payloads independently of the OS image
+    /// (ADR-0020, ADR-0023): fetch, verify, and activate the newest shell
+    /// tree and app payloads (Zen browser) — no reboot.
     Apps {
         #[command(subcommand)]
         cmd: AppsCmd,
@@ -311,12 +312,23 @@ enum AmbientCmd {
 
 #[derive(Subcommand)]
 enum AppsCmd {
-    /// Fetch, verify (SHA256SUMS), install, and activate the newest apps tree.
-    Update,
-    /// Show the current and installed apps-tree versions.
+    /// Fetch, verify (SHA256SUMS), install, and activate the newest payload
+    /// for every channel, or just the named one (`shell`, `zen`).
+    Update {
+        /// Only this channel.
+        channel: Option<String>,
+    },
+    /// Show the current and installed versions of every payload channel.
     Status,
     /// Flip back to the previously installed tree (or the baked image tree).
-    Rollback,
+    Rollback {
+        /// Only this channel.
+        channel: Option<String>,
+    },
+    /// Install payloads the image no longer carries and this system does not
+    /// have yet (Zen browser), leaving installed versions untouched. Run by
+    /// lisa-apps-sync.timer and by `lisa update` before it stages a slot.
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -489,9 +501,10 @@ fn run() -> anyhow::Result<()> {
         Command::Install { target, from, yes } => install_cmd(&target, from, yes),
         Command::Update { reboot } => update_cmd(reboot),
         Command::Apps { cmd } => match cmd {
-            AppsCmd::Update => apps::update(),
+            AppsCmd::Update { channel } => apps::update(channel.as_deref()),
             AppsCmd::Status => apps::status(),
-            AppsCmd::Rollback => apps::rollback(),
+            AppsCmd::Rollback { channel } => apps::rollback(channel.as_deref()),
+            AppsCmd::Sync => apps::sync(),
         },
         Command::Remote { cmd } => remote_cmd(cmd),
         Command::Transcribe { audio, model } => {
@@ -2062,6 +2075,22 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
         );
     }
     assert_transfers_protect_booted()?;
+    // ADR-0023 phase 1: the slot we are about to stage may not carry
+    // payloads this one does — the Zen browser left the image and now
+    // arrives through the apps channel. Pull what is missing onto the
+    // PERSISTENT /var first, while the current slot's baked copy is still
+    // there to fall back on, so the reboot never lands on a system whose
+    // browser is gone. Best-effort on purpose: an unreachable app channel
+    // must not block an OS security update, but it must be loud, because
+    // the silent version of this failure is a user who reboots into a
+    // desktop with no browser.
+    if let Err(e) = apps::sync() {
+        eprintln!(
+            "!! could not pre-fetch app payloads: {e:#}\n\
+             !! the new slot may boot without them — run `sudo lisa apps sync` \
+             once online, before or after rebooting"
+        );
+    }
     // Preferred: the polkit-mediated D-Bus path (works unprivileged). Its
     // work runs inside systemd-sysupdated.service, so it already survives a
     // dropped session.

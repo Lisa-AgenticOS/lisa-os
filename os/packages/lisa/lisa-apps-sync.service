@@ -1,0 +1,29 @@
+# Fetch the out-of-image app payloads this system does not have yet
+# (ADR-0023 phase 1, issue #51). Today that means the Zen browser, which
+# moved from a baked /opt/zen to the ADR-0020 apps channel.
+#
+# This is the safety net for exactly one failure: an image that no longer
+# carries the browser boots on a device whose /var never received it — an
+# offline install, or an update staged by a `lisa update` too old to
+# pre-fetch. It ACQUIRES missing payloads only; a payload already installed
+# is never moved to another version behind the user's back (that is what
+# `lisa apps update` is for, and it stays a deliberate act).
+#
+# Disable with:  sudo touch /etc/lisa/apps-sync.disabled
+[Unit]
+Description=Fetch out-of-image Lisa app payloads
+Documentation=https://github.com/Lisa-AgenticOS/lisa-os/blob/main/docs/adr/0023-slim-core-var-grows.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=!/etc/lisa/apps-sync.disabled
+# Nothing to do without the persistent partition; /var is where payloads go.
+RequiresMountsFor=/var/lib/lisa
+
+[Service]
+Type=oneshot
+# `-`: a device that is simply offline right now must not sit in a degraded
+# systemd state over it. The timer retries; the journal has the reason; and
+# the launcher tells the user what to run if they get there first.
+ExecStart=-/usr/bin/lisa apps sync
+# The payload is ~100 MiB compressed over whatever link the device has.
+TimeoutStartSec=60min
