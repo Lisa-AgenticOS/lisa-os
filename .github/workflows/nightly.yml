@@ -245,10 +245,18 @@ jobs:
           # this job builds the MINIMAL image (no NetworkManager, no gdm),
           # where those units are legitimately absent. Asserting presence
           # outright made this step fail on an image that was fine.
+          # "Enabled" means a .wants symlink exists in EITHER tree: presets
+          # and `systemctl enable` write to /etc, while some packages ship
+          # their own under /usr/lib. Checking only /etc reports a working
+          # image as broken.
           check_enabled() { # <unit> <target>
             [ -e "mnt-pull/usr/lib/systemd/system/$1" ] || return 0  # not in this flavor
-            [ -e "mnt-pull/etc/systemd/system/$2.wants/$1" ] || {
-              echo "FAIL: $1 is installed but NOT enabled (no $2.wants symlink)"; fail=1; }
+            [ -e "mnt-pull/etc/systemd/system/$2.wants/$1" ] && return 0
+            [ -e "mnt-pull/usr/lib/systemd/system/$2.wants/$1" ] && return 0
+            echo "FAIL: $1 is installed but NOT enabled (no $2.wants symlink in /etc or /usr/lib)"
+            echo "      /etc/systemd/system/$2.wants:"
+            ls "mnt-pull/etc/systemd/system/$2.wants" 2>/dev/null | sed 's/^/        /' || echo "        (absent)"
+            fail=1
           }
           check_enabled lisa-apps-sync.timer timers.target
           check_enabled systemd-sysupdate.timer timers.target
