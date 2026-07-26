@@ -364,6 +364,15 @@ fn the_forge_tool_surface_cannot_reach_a_shell() {
         // #64 — a value attached to a short option.
         ("grep", &["needle", "-f/etc/passwd"]),
         ("cat", &["-A/etc/shadow"]),
+        // Review round 3 (#85): the round-2 `--` fix *created* this one.
+        // `cargo -- evil-plugin` runs `cargo-evil-plugin` from PATH —
+        // arbitrary execution on the surface with no human in the loop.
+        ("cargo", &["--", "evil-plugin"]),
+        ("cargo", &["--", "--config", "x=1"]),
+        ("cargo", &["+nightly", "--", "evil-plugin"]),
+        // #86 — after `--` nothing is a flag, so the path is a path.
+        ("grep", &["--", "-e", "/etc/passwd"]),
+        ("cat", &["--", "/etc/shadow"]),
     ];
     let mut leaked = Vec::new();
     for (program, args) in attempts {

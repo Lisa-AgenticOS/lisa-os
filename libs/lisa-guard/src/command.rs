@@ -186,10 +186,22 @@ pub fn check_command(program: &str, args: &[&str]) -> Verdict {
 
     // Everything after `--` is the inner program's argv, not this one's
     // (review round 2, #76: `cargo test -- --config x` is not `cargo
-    // --config`). Policy applies to the arguments before it.
+    // --config`) — but ONLY once a subcommand has actually been named.
+    //
+    // `cargo -- evil-plugin` has no inner program to delimit; cargo reads
+    // it as the subcommand and runs `cargo-evil-plugin` from PATH. The
+    // round-2 fix skipped straight past it, which turned a false-positive
+    // fix into arbitrary program execution on the surface that runs
+    // without a human (review round 3, #85). Everything before a
+    // subcommand belongs to this program, `--` included.
+    let names_subcommand = |slice: &[&str]| {
+        slice
+            .iter()
+            .any(|a| !a.starts_with('-') && !a.starts_with('+'))
+    };
     let own_args: &[&str] = match args.iter().position(|a| *a == "--") {
-        Some(at) => &args[..at],
-        None => args,
+        Some(at) if names_subcommand(&args[..at]) => &args[..at],
+        _ => args,
     };
 
     for arg in own_args {
@@ -289,8 +301,29 @@ fn escaping_argument(policy: &ProgramPolicy, args: &[&str]) -> Option<String> {
         });
     let mut seen_operand = false;
     let mut value_is_pattern = false;
+    // After `--` nothing is a flag any more, so `grep -- -e /etc/passwd`
+    // means the literal pattern `-e` and the *path* `/etc/passwd`
+    // (review round 3, #86).
+    let mut past_double_dash = false;
 
     for arg in args {
+        if *arg == "--" && !past_double_dash {
+            past_double_dash = true;
+            value_is_pattern = false;
+            continue;
+        }
+        if past_double_dash {
+            if !seen_operand {
+                seen_operand = true;
+                if expects_pattern_operand {
+                    continue;
+                }
+            }
+            if let Some(escaping) = path_candidates(arg).into_iter().find(|c| escapes(c)) {
+                return Some(escaping.to_string());
+            }
+            continue;
+        }
         if value_is_pattern {
             value_is_pattern = false;
             // The pattern slot is now filled, so the next bare word is a
@@ -491,6 +524,35 @@ mod tests {
             let v = check_command("cargo", args);
             assert!(v.is_allowed(), "`cargo {args:?}` returned {v}");
         }
+    }
+
+    /// Review round 3 (#85). The round-2 `--` fix turned a false positive
+    /// into arbitrary program execution: `cargo -- evil-plugin` has no
+    /// inner program to delimit, so cargo reads it as the subcommand and
+    /// runs `cargo-evil-plugin` from PATH. Verified end-to-end.
+    #[test]
+    fn a_double_dash_before_any_subcommand_hides_nothing() {
+        assert_eq!(
+            check_command("cargo", &["--", "evil-plugin"]).rule(),
+            Some("command.unknown_subcommand")
+        );
+        assert!(check_command("cargo", &["--", "--config", "x=1"]).is_denied());
+        assert!(check_command("cargo", &["+nightly", "--", "evil-plugin"]).is_denied());
+        // The legitimate form still works: a subcommand, then the inner argv.
+        assert!(check_command("cargo", &["test", "--", "--nocapture"]).is_allowed());
+        assert!(check_command("cargo", &["test", "--", "--config", "x"]).is_allowed());
+    }
+
+    /// Review round 3 (#86): after `--` nothing is a flag, so `-e` is a
+    /// literal pattern and the path behind it is a path.
+    #[test]
+    fn operands_after_a_double_dash_are_still_paths() {
+        assert_eq!(
+            check_command("grep", &["--", "-e", "/etc/passwd"]).rule(),
+            Some("command.path_escape")
+        );
+        assert!(check_command("cat", &["--", "/etc/shadow"]).is_denied());
+        assert!(check_command("grep", &["--", "needle", "src"]).is_allowed());
     }
 
     #[test]
