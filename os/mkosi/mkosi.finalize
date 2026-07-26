@@ -1,0 +1,84 @@
+#!/bin/bash
+# mkosi.finalize — pack os/mkosi/initrd-overlay/ into the default initrd.
+#
+# WHY A SCRIPT AND NOT A CONFIG LINE (issue #50). mkosi 26 — the version
+# `pacman -Syu mkosi` installs in the nightly's Arch container — builds
+# the default initrd as an internal sub-image named `default-initrd`
+# whose configuration comes ONLY from mkosi's own bundled resources
+# (`mkosi/resources/mkosi-initrd/`) plus the handful of settings the main
+# config is allowed to push down (`Initrd*=`, and the settings marked
+# `initrd_inherit` — Keymap/Timezone/Hostname/…). See
+# mkosi/config.py:finalize_default_initrd(): it chdirs into the bundled
+# resource directory and parses that, and nothing else. There is no
+# `mkosi.initrd/` convention in this version: the directory we used to
+# keep here (`os/mkosi/mkosi.initrd/`, with a mkosi.conf and a
+# mkosi.extra tree) was read by nothing at all. `mkosi summary` proves
+# it — the `default-initrd` image lists `Extra Trees:
+# …/resources/mkosi-initrd/mkosi.extra` and nothing of ours.
+#
+# The two documented ways to get our own files in are:
+#
+#   1. `Initrds=` — REJECTED. mkosi/config.py:want_default_initrd()
+#      returns False as soon as `Initrds=` is non-empty, so naming a cpio
+#      there REPLACES the systemd initrd instead of adding to it. On a
+#      boot-critical path that is a brick, not a fix.
+#
+#   2. `$ARTIFACTDIR/io.mkosi.initrd/` — what this script uses. mkosi.1:
+#      "All files in this directory are used as initrds and joined in
+#      lexicographical order", and mkosi/__init__.py:finalize_initrds()
+#      is literally `config.initrds + sorted(artifacts/io.mkosi.initrd/*)`
+#      — additive, the default initrd untouched. install_kernel() calls
+#      it, and run_finalize_scripts() runs immediately before that
+#      (mkosi/__init__.py, build_image()), with $ARTIFACTDIR bind-mounted
+#      read-write. So the archive we drop here is joined to the UKI's
+#      .initrd section in this same build.
+#
+# Ordering: our archive lands AFTER mkosi's initrd and BEFORE the
+# kernel-modules initrd. The kernel's initramfs unpacker walks the
+# concatenated archives in order and later entries win, so these files
+# override same-named files from the base initrd — the direction we want.
+#
+# Format: uncompressed newc. The unpacker decompresses each archive in
+# the sequence independently (this is exactly how the uncompressed
+# early-microcode cpio rides in front of a compressed initrd), so no
+# compression is needed for a payload this small, and one less moving
+# part on a path where a mistake costs a boot.
+#
+# The nightly asserts the result inside the built UKI ("Initrd must carry
+# the Lisa initrd overlay") — a silently ignored mechanism must never
+# again look like a working one.
+
+set -euo pipefail
+shopt -s globstar dotglob nullglob
+export LC_ALL=C
+
+src="$SRCDIR/initrd-overlay"
+dst="$ARTIFACTDIR/io.mkosi.initrd"
+out="$dst/50-lisa-overlay.cpio"
+
+if [ ! -d "$src" ]; then
+    echo "mkosi.finalize: $src does not exist — the initrd overlay would be silently empty" >&2
+    exit 1
+fi
+
+mkdir -p "$dst"
+cd "$src"
+
+# Bash sorts a glob expansion bytewise (LC_ALL=C above), and a directory
+# name always sorts before the paths beneath it, so parents are archived
+# before their children — which the unpacker requires. `find` is not used
+# because findutils is not part of mkosi's default tools tree; bash is.
+paths=(**/*)
+if [ "${#paths[@]}" -eq 0 ]; then
+    echo "mkosi.finalize: $src is empty — refusing to build an empty initrd overlay" >&2
+    exit 1
+fi
+
+# --owner=0:0 is not optional: CI checks the repo out as the runner user,
+# and without it every file would enter the initrd owned by that uid.
+printf '%s\0' "${paths[@]}" |
+    cpio --create --null --format=newc --quiet --reproducible \
+         --renumber-inodes --owner=0:0 >"$out"
+
+echo "mkosi.finalize: initrd overlay -> io.mkosi.initrd/$(basename "$out")" \
+     "(${#paths[@]} entries, $(wc -c <"$out") bytes)"

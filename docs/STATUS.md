@@ -213,6 +213,17 @@ Pantheon. Feeds the M4 shell ADR.
   kernel, so the iMac booted black from the Apple logo to GDM. Mechanism
   landed and asserted in the nightly; **appearance still unconfirmed on
   the device** — needs one graphical boot after the next release.
+- **Nothing we wrote ever reached the initrd (issue #50, ADR-0028):**
+  `os/mkosi/mkosi.initrd/` looked like a mkosi convention and is one in no
+  version of mkosi — the default initrd is an internal sub-image built only
+  from mkosi's own resources. Both halves of that directory were dead, so
+  ADR-0017's Plymouth (the *package*, not just its config) and ADR-0022
+  phase 2's rescue root resolver were never in the initrd. Files now ride a
+  cpio through `$ARTIFACTDIR/io.mkosi.initrd` (`os/mkosi/mkosi.finalize` +
+  `os/mkosi/initrd-overlay/`), packages through `InitrdProfiles=`, and the
+  nightly asserts the payload inside the built UKI. **Unconfirmed until the
+  next nightly:** this is the first build where Plymouth is genuinely in
+  the initrd.
 - **iMac as CI runner:** not yet registered (needs a fresh registration
   token minted at the machine); unlocks perf gates + the Flutter Linux
   spike half + real M4 desktop work.

@@ -131,6 +131,76 @@ jobs:
           print('initrd display stack (amdgpu + polaris11 firmware): OK')
           PY
           rm -f initrd-drm.img uki-drm.efi discard-drm.efi
+      - name: Initrd must carry the Lisa initrd overlay
+        run: |
+          # Issue #50 / ADR-0028. `os/mkosi/mkosi.initrd/` looked like a
+          # mkosi convention and was one in nobody's version of mkosi: the
+          # default initrd is an internal sub-image configured only from
+          # mkosi's bundled resources, so BOTH halves of that directory —
+          # its Packages= and its mkosi.extra/ tree — were read by nothing.
+          # ADR-0017's plymouthd.conf and ADR-0022's rescue root resolver
+          # therefore never shipped, silently, for weeks. The overlay now
+          # rides in as its own cpio through $ARTIFACTDIR/io.mkosi.initrd
+          # (os/mkosi/mkosi.finalize) and plymouth through
+          # InitrdProfiles=. Assert the payload inside the UKI so a
+          # mechanism that stops working can never look like one that
+          # works. Paths AND file bodies are checked: a cpio member name
+          # proves the entry landed, a distinctive string from the file
+          # proves its contents came with it. Extraction mirrors the
+          # storage/HID and display steps — every zstd frame, because the
+          # initrd is a concatenation of independently compressed
+          # archives, plus the raw bytes for our uncompressed one.
+          sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils zstd >/dev/null
+          RAW=""
+          for c in os/mkosi/lisa.raw lisa.raw; do [ -f "$c" ] && RAW="$c" && break; done
+          if [ -n "$RAW" ]; then
+            OFF=$(( $(sfdisk -J "$RAW" | jq -r '.partitiontable.partitions[0].start') * 512 ))
+            NAME=$(mdir -b -i "$RAW@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1 || true)
+            if [ -n "$NAME" ]; then
+              mcopy -i "$RAW@@$OFF" "::/EFI/Linux/$NAME" uki-ovl.efi
+              objcopy --dump-section .initrd=initrd-ovl.img uki-ovl.efi discard-ovl.efi || true
+            fi
+          fi
+          [ -f initrd-ovl.img ] || cp os/mkosi/lisa.initrd initrd-ovl.img
+          python3 - <<'PY'
+          import subprocess, sys
+          d = open('initrd-ovl.img','rb').read()
+          offs = [i for i in range(len(d)) if d[i:i+4] == b'\x28\xb5\x2f\xfd'] or [0]
+          blob = b''
+          for off in offs:
+              blob += subprocess.run(['zstd','-dc'], input=d[off:], capture_output=True).stdout
+          blob += d  # uncompressed cpio segments too — the overlay is one
+          checks = [
+              # ADR-0022 phase 2: the rescue root resolver and its unit.
+              (b'usr/lib/lisa/newest-good-root.sh', 'rescue resolver script'),
+              (b'lisa-rescue: no mountable root slot found', 'rescue resolver body'),
+              (b'usr/lib/systemd/system/lisa-newest-good-root.service', 'rescue resolver unit'),
+              (b'initrd-root-device.target.wants/lisa-newest-good-root.service',
+               'rescue resolver unit enablement'),
+              # ADR-0017: the splash is configured, themed and started.
+              (b'etc/plymouth/plymouthd.conf', 'plymouth daemon config'),
+              (b'usr/share/plymouth/themes/lisa/lisa.plymouth', 'lisa plymouth theme'),
+              (b'sysinit.target.wants/plymouth-start.service', 'plymouth-start enablement'),
+              # …and the daemon those three configure. InitrdProfiles= is
+              # the only thing putting it here; without it the overlay
+              # would be three configs for a program that is not present.
+              (b'plymouthd', 'plymouthd binary (InitrdProfiles=plymouth)'),
+              # Issue #16: deterministic by-partlabel on multi-disk machines,
+              # which root=PARTLABEL= depends on *in the initrd*.
+              (b'usr/lib/udev/lisa-loader-disk', 'boot-disk udev helper'),
+              (b'59-lisa-boot-disk.rules', 'boot-disk udev rule'),
+          ]
+          missing = [what for marker, what in checks if marker not in blob]
+          if missing:
+              print('FAIL: initrd overlay missing:', missing)
+              print('      os/mkosi/initrd-overlay/ is packed into the initrd by')
+              print('      os/mkosi/mkosi.finalize via $ARTIFACTDIR/io.mkosi.initrd.')
+              print('      If mkosi dropped that mechanism, find the new one — do not')
+              print('      delete this check (issue #50, ADR-0028).')
+              sys.exit(1)
+          print('initrd overlay (rescue resolver + plymouth + udev): OK')
+          PY
+          rm -f initrd-ovl.img uki-ovl.efi discard-ovl.efi
       - name: "Image must ship the whole sysupdate pull stack (issue #45)"
         run: |
           # `lisa update` is only as good as what the image can execute.
@@ -197,13 +267,11 @@ jobs:
       # hazard, and sd-boot's selection rules deserve a dedicated
       # experiment rather than another guess against a 20-minute gate.
       # make-rescue-uki.sh stays in the tree, unused, until that lands.
-      # NOTE: mkosi.initrd/mkosi.extra does NOT apply — a nightly with an
-      # assertion here proved the rescue resolver never reaches the initrd
-      # (mkosi.initrd/mkosi.conf's Packages= works, its mkosi.extra does
-      # not). Getting files into the default initrd needs a different
-      # mechanism (Initrds= / the io.mkosi.initrd artifact dir). Until that
-      # lands there is nothing to assert: ADR-0022 phase 2 is deferred and
-      # its entry is not installed. Tracked in issue #23.
+      # The RESOLVER half is fixed and asserted above ("Initrd must carry
+      # the Lisa initrd overlay", issue #50 / ADR-0028): it reaches the
+      # initrd now, where the old mkosi.initrd/mkosi.extra tree never did.
+      # The ENTRY is still not installed — that is issue #23's separate
+      # sd-boot default-selection problem, not a missing file.
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:

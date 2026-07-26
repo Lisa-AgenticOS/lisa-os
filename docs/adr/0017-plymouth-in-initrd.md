@@ -1,7 +1,8 @@
 # ADR-0017: Plymouth + the lisa theme move into the mkosi-initrd
 
 - **Status:** accepted; the `simpledrm`-only display clause is amended by
-  [ADR-0026](0026-native-drm-in-initrd.md)
+  [ADR-0026](0026-native-drm-in-initrd.md), and the *delivery mechanism*
+  by [ADR-0028](0028-initrd-overlay-mechanism.md)
 - **Date:** 2026-07-24
 
 ## Context
@@ -29,6 +30,17 @@ Carry Plymouth **and the lisa theme** in the mkosi-initrd, via mkosi's
   (`Theme=lisa`), the `default.plymouth` symlink, and a
   `sysinit.target.wants/plymouth-start.service` symlink so the splash comes up
   during the initrd phase — right after the Apple logo.
+
+  > **Amended by [ADR-0028](0028-initrd-overlay-mechanism.md)
+  > (2026-07-26).** There is no `mkosi.initrd/` overlay convention in
+  > mkosi 26 — the version CI installs. Both bullets above were read by
+  > nothing: the default initrd is an internal sub-image configured only
+  > from mkosi's bundled resources plus the `Initrd*=` settings the parent
+  > pushes down, so Plymouth was never installed in the initrd and none of
+  > those files were ever in it. The packages now come from
+  > `InitrdProfiles=plymouth` and the files from `os/mkosi/initrd-overlay/`
+  > via `mkosi.finalize` → `$ARTIFACTDIR/io.mkosi.initrd/`, and the nightly
+  > asserts both inside the built UKI (issue #50).
 - The parent `mkosi.conf` adds **`simpledrm`** to `KernelModulesInitrdInclude`:
   on EFI it binds the firmware GOP framebuffer immediately, with **no firmware
   blob**, so Plymouth has a surface to render on inside the initrd. `amdgpu`

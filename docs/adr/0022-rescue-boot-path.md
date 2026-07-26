@@ -4,6 +4,13 @@
 - Date: 2026-07-25
 - Relates: issue #23, issue #20 (the incident), ADR-0018 (PARTLABEL
   mounts), PLAN §3 (Track I), §6 (updates), M7 (installer/OOBE)
+- Amended by [ADR-0028](0028-initrd-overlay-mechanism.md): phase 2's root
+  resolver was placed in `os/mkosi/mkosi.initrd/mkosi.extra/`, which mkosi
+  reads from nowhere, so it never reached the initrd — that is why its CI
+  boot waited 90 s for a device nothing created and logged nothing. It now
+  ships in `os/mkosi/initrd-overlay/` and the nightly asserts it inside the
+  built UKI. The rescue *entry* is still not installed, for the unrelated
+  sd-boot default-selection reason in issue #23.
 
 ## Context
 

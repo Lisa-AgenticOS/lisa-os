@@ -136,15 +136,40 @@ and a subtle comet spinner (`throbber-*.png`). `lisa` is the default via
 `themes/default.plymouth` symlink — no `plymouth-set-default-theme` run,
 deterministic in an immutable image.
 
-**Initrd (ADR-0017).** The mkosi image builds its own systemd initrd
-(*mkosi-initrd*, not dracut). It now carries **Plymouth + the `lisa` theme**
-via the `mkosi.initrd/` overlay (`mkosi.initrd/mkosi.conf` adds `plymouth`;
-`mkosi.initrd/mkosi.extra/` ships the theme, `plymouthd.conf`, and a
-`sysinit.target.wants/plymouth-start.service` symlink), so the violet Lisa
-splash comes up **during the initrd phase — right after the Apple logo**, not
-only at `sysinit.target` in the rooted system. Because the theme ships
-alongside, this is never the theme-less
-non-Lisa flash — the reason it used to be kept out. Earlier this was a
+**Initrd (ADR-0017, mechanism fixed by ADR-0028).** The mkosi image builds
+its own systemd initrd (*mkosi-initrd*, not dracut). It carries **Plymouth +
+the `lisa` theme**, so the violet Lisa splash comes up **during the initrd
+phase — right after the Apple logo**, not only at `sysinit.target` in the
+rooted system. Because the theme ships alongside, this is never the theme-less
+non-Lisa flash — the reason it used to be kept out.
+
+> ADR-0017 said this happened through a `mkosi.initrd/` overlay directory.
+> **There is no such convention in mkosi 26** (the version CI installs), and
+> the directory this repo carried was read by nothing at all — neither its
+> `Packages=` nor its `mkosi.extra/` tree. The splash was never configured in
+> the initrd and Plymouth was never *in* it. See issue #50 / ADR-0028; below
+> is how it actually works now.
+
+The default initrd is an internal mkosi sub-image configured only from
+mkosi's own bundled `mkosi-initrd` resources plus the `Initrd*=` settings
+the parent may push down. So:
+
+- **Packages** come from **`InitrdProfiles=plymouth`** in `mkosi.conf` —
+  mkosi's own switch for a graphical initrd.
+- **Files** come from **`initrd-overlay/`**, which `mkosi.finalize` packs
+  into a cpio and drops in `$ARTIFACTDIR/io.mkosi.initrd/`; mkosi joins
+  everything there onto the initrd set (`mkosi.1`, `finalize_initrds()`).
+  That tree carries `plymouthd.conf`, the `lisa` theme, the
+  `sysinit.target.wants/plymouth-start.service` symlink, the ADR-0022
+  rescue root resolver + its unit, and the issue #16 boot-disk udev rule.
+- `Initrds=` is deliberately **not** used: it *replaces* the default initrd
+  rather than adding to it (`want_default_initrd()`), which on this path is
+  a brick.
+- The nightly asserts the whole payload inside the built UKI ("Initrd must
+  carry the Lisa initrd overlay"), because a mechanism that stops working
+  must not keep looking like one that works.
+
+Earlier this was a
 rooted-system-only splash with a black window between the Apple logo and
 `sysinit`; on the field iMac that window was long enough to read as "powered
 off" (the reason for this change). `etc/dracut.conf.d/50-lisa-plymouth.conf`
