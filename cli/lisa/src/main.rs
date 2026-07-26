@@ -1304,9 +1304,18 @@ fn forge_cmd(
         url: url.to_string(),
         model,
     };
+    // Issue #54: the forge loop edits your files unattended, so it is
+    // exactly the thing VISION.md's "every action it took is in the
+    // Ledger" has to be true of. Opening it here also means a machine
+    // with an unwritable Ledger refuses to forge rather than acting off
+    // the record.
+    let ledger = std::sync::Arc::new(lisa_ledger::Ledger::open(
+        lisa_ledger::Ledger::default_path(),
+    )?);
     let config = forge_harness::AgentConfig {
         max_turns: max_iters.saturating_mul(8).max(8),
         verifier,
+        ledger: Some(ledger),
         ..Default::default()
     };
     // Narrate the loop live — an agent you can watch, not a spinner.

@@ -41,6 +41,11 @@ pub enum ForgeError {
     Analyzer(String),
     #[error("did not converge after {0} iteration(s)")]
     NoConvergence(usize),
+    /// No ledger entry, no action (issue #54). The Ledger is the only
+    /// record of what an unattended loop did to your files; if it cannot
+    /// be written, the loop stops rather than acting unobserved.
+    #[error("ledger unavailable — refusing to act: {0}")]
+    Ledger(#[from] lisa_ledger::LedgerError),
 }
 
 /// One whole-file edit — the argument shape of the `write_file` tool.

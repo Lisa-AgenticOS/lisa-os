@@ -8,8 +8,10 @@
 use crate::jail::Jail;
 use crate::tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 use crate::{Backend, ForgeError, analyze};
+use lisa_ledger::{Event, Ledger, preview_of};
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -168,6 +170,16 @@ pub struct AgentConfig {
     /// Transcript size ceiling: beyond it, stale tool results are elided
     /// oldest-first (small local models drown in old file dumps).
     pub history_char_budget: usize,
+    /// Where this run is recorded (issue #54). `VISION.md` promises that
+    /// "every action it took is in the Ledger", and this loop — the one
+    /// thing that edits your files with nobody watching — recorded
+    /// nothing at all until now.
+    ///
+    /// When set, the agentd contract applies: **no ledger entry, no
+    /// action.** Every tool call is appended before it runs and a failed
+    /// append aborts the run. `None` runs unledgered, which exists for
+    /// tests and embedders; `lisa forge` always supplies one.
+    pub ledger: Option<Arc<Ledger>>,
 }
 
 impl Default for AgentConfig {
@@ -176,6 +188,7 @@ impl Default for AgentConfig {
             max_turns: 32,
             verifier: Verifier::Dart,
             history_char_budget: 48_000,
+            ledger: None,
         }
     }
 }
@@ -317,6 +330,65 @@ pub fn forge_agent_observed(
     forge_agent_with_tools(task, project, backend, config, &[&workspace], observe)
 }
 
+/// Record the intent of a tool call before it runs. Returns the entry id
+/// so the outcome can reference it, or `None` when unledgered.
+fn ledger_start(
+    ledger: Option<&Ledger>,
+    task: &str,
+    call: &ToolCall,
+) -> Result<Option<i64>, ForgeError> {
+    let Some(ledger) = ledger else {
+        return Ok(None);
+    };
+    let args = call.args.to_string();
+    Ok(Some(ledger.append(&Event {
+        kind: "forge.tool".into(),
+        app_id: "dev.lisaos.forge".into(),
+        input_hash: blake3::hash(args.as_bytes()).to_hex().to_string(),
+        preview: preview_of(&format!("{} {args}", call.name)),
+        status: "started".into(),
+        detail: serde_json::json!({ "tool": call.name, "task": task }).to_string(),
+        ..Default::default()
+    })?))
+}
+
+/// Record what the call actually did. A guard refusal is called out
+/// explicitly — a refused action is the most interesting line in the log,
+/// and burying it under a generic "error" would waste it (ADR-0029).
+fn ledger_finish(
+    ledger: Option<&Ledger>,
+    call_ref: Option<i64>,
+    call: &ToolCall,
+    outcome: &ToolOutcome,
+) -> Result<(), ForgeError> {
+    let Some(ledger) = ledger else {
+        return Ok(());
+    };
+    let refused = outcome.text.starts_with("error: refused")
+        || outcome.text.starts_with("error: needs confirmation");
+    let status = if refused {
+        "refused"
+    } else if outcome.text.starts_with("error") {
+        "failed"
+    } else {
+        "ok"
+    };
+    ledger.append(&Event {
+        kind: "forge.tool".into(),
+        app_id: "dev.lisaos.forge".into(),
+        preview: preview_of(&outcome.text),
+        status: status.into(),
+        detail: serde_json::json!({
+            "tool": call.name,
+            "mutated": outcome.mutated,
+        })
+        .to_string(),
+        ref_id: call_ref,
+        ..Default::default()
+    })?;
+    Ok(())
+}
+
 /// The loop itself, over any set of tool families (ADR-0025 phase 1).
 /// `project` remains the verifier's working directory; tools come from
 /// `providers`, so a caller with no workspace at all is legitimate.
@@ -378,6 +450,12 @@ pub fn forge_agent_with_tools(
                         .unwrap_or_default()
                         .to_string(),
                 });
+                // No ledger entry, no action (issue #54): the intent is
+                // recorded BEFORE the tool runs, so a crash mid-write
+                // still leaves evidence of what was attempted. A failed
+                // append aborts the run rather than acting unobserved.
+                let call_ref = ledger_start(config.ledger.as_deref(), task, &call)?;
+
                 let outcome = match dispatch(providers, &call.name) {
                     Some(p) => p.execute(&call),
                     None => ToolOutcome::err(format!(
@@ -386,6 +464,7 @@ pub fn forge_agent_with_tools(
                         specs.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
                     )),
                 };
+                ledger_finish(config.ledger.as_deref(), call_ref, &call, &outcome)?;
                 observe(AgentEvent::CallResult {
                     ok: !outcome.text.starts_with("error"),
                     chars: outcome.text.len(),
@@ -592,6 +671,131 @@ mod tests {
             out.text
         );
         assert!(dir.path().join("a.txt").exists(), "the jailed write ran");
+    }
+
+    /// Issue #54: the loop that edits your files unattended used to
+    /// record nothing, while VISION.md promised "every action it took
+    /// is in the Ledger". Every tool call now lands twice — intent
+    /// before, outcome after — and a guard refusal is called out as
+    /// its own status rather than buried under "failed".
+    #[test]
+    fn every_tool_call_lands_in_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let ledger =
+            std::sync::Arc::new(lisa_ledger::Ledger::open(dir.path().join("l.db")).unwrap());
+
+        // write_file succeeds; run_command is refused by lisa-guard.
+        let mut backend = ScriptedBackend::new(vec![
+            AgentAction::Call(ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                args: serde_json::json!({"path": "a.txt", "content": "hi"}),
+            }),
+            AgentAction::Call(ToolCall {
+                id: "2".into(),
+                name: "run_command".into(),
+                args: serde_json::json!({"program": "sh", "args": ["-c", "id"]}),
+            }),
+            AgentAction::Done("done".into()),
+        ]);
+        let config = AgentConfig {
+            verifier: Verifier::None,
+            ledger: Some(ledger.clone()),
+            ..Default::default()
+        };
+        forge_agent(
+            "write a file then try a shell",
+            &project,
+            &mut backend,
+            &config,
+        )
+        .unwrap();
+
+        let entries = ledger.tail(50).unwrap();
+        let forge: Vec<_> = entries.iter().filter(|e| e.kind == "forge.tool").collect();
+        assert_eq!(
+            forge.len(),
+            4,
+            "two calls => intent + outcome each: {forge:?}"
+        );
+
+        let statuses: Vec<&str> = forge.iter().map(|e| e.status.as_str()).collect();
+        assert_eq!(statuses.iter().filter(|s| **s == "started").count(), 2);
+        assert!(
+            statuses.contains(&"ok"),
+            "the write should be ok: {statuses:?}"
+        );
+        assert!(
+            statuses.contains(&"refused"),
+            "the guard refusal must be distinguishable from a plain failure: {statuses:?}"
+        );
+        // The outcome references the intent, so a reader can pair them.
+        assert!(
+            forge.iter().any(|e| e.ref_id.is_some()),
+            "outcomes must reference their intent entry"
+        );
+    }
+
+    /// No ledger entry, no action: if the Ledger cannot be written the
+    /// loop stops rather than editing files unobserved.
+    ///
+    /// Injecting that failure is fiddlier than it looks. Deleting the
+    /// database does nothing — SQLite keeps writing happily to the
+    /// unlinked inode, so the first version of this test passed for
+    /// entirely the wrong reason. Making the *containing directory*
+    /// read-only is what actually fails the write, because SQLite must
+    /// create its journal alongside the database.
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_ledger_stops_the_loop_before_it_acts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        let ldir = dir.path().join("ledger");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&ldir).unwrap();
+        let ledger = std::sync::Arc::new(lisa_ledger::Ledger::open(ldir.join("l.db")).unwrap());
+
+        std::fs::set_permissions(&ldir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Confirm the injection actually took, so a permissive
+        // filesystem (or running as root) fails the test loudly rather
+        // than making it vacuous.
+        let writable = ledger
+            .append(&lisa_ledger::Event {
+                kind: "probe".into(),
+                ..Default::default()
+            })
+            .is_ok();
+        if writable {
+            std::fs::set_permissions(&ldir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!("skipping: this filesystem still allows writes to a 0555 directory");
+            return;
+        }
+
+        let mut backend = ScriptedBackend::new(vec![AgentAction::Call(ToolCall {
+            id: "1".into(),
+            name: "write_file".into(),
+            args: serde_json::json!({"path": "a.txt", "content": "hi"}),
+        })]);
+        let config = AgentConfig {
+            verifier: Verifier::None,
+            ledger: Some(ledger),
+            ..Default::default()
+        };
+        let result = forge_agent("write", &project, &mut backend, &config);
+
+        std::fs::set_permissions(&ldir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            matches!(result, Err(ForgeError::Ledger(_))),
+            "an unwritable ledger must abort the run, got {result:?}"
+        );
+        assert!(
+            !project.join("a.txt").exists(),
+            "a file was written with no ledger entry"
+        );
     }
 
     #[test]
