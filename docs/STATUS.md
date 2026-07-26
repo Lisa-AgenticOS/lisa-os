@@ -39,6 +39,21 @@ claim below is enforced by CI on `main`, not aspirational.
   confines a subprocess — `run_tests` runs `cargo test` over
   model-written source, which executes `build.rs` as the user. Landlock
   closes that (#53).
+- **…and then an adversarial review broke it in eight places** (#59–#66,
+  all fixed in `26e8888` except the narrowed remainder of #66). The
+  corpus had been green because it listed every attack in its plainest
+  spelling: `/bin/rm -rf /`, `rm${IFS}-rf${IFS}/`, `$'\x72\x6d' -rf /`,
+  `( rm -rf / )`, `eval "rm -rf /"`, `/usr/../etc` and
+  `cargo --config '…runner=["/bin/sh",…]'` all returned `Allow`. The
+  worst two: `cargo --config` is `find -exec` wearing a build tool
+  (proven end-to-end — the injected shell ran and wrote outside the
+  project), and check-then-write lost a symlink race **18,599 times out
+  of 20,001**. Fixes: basename reduction, expansion normalization,
+  compound-command splitting, a fail-closed `shell.unreadable` verdict,
+  per-program policy with subcommand allowlists, position-aware path
+  checking, and `O_NOFOLLOW` writes. Corpus 49 → 75 denied entries.
+  ADR-0029 gained a review-round section — including that its §1 claimed
+  a mitigation the code never had.
 - **Zen browser moved to the apps channel** (ADR-0023 phase 1, issue #51).
   `zen-browser` is now a split build: `zen-browser-launcher` (the
   `.desktop`, hicolor icons and a `/usr/bin/zen-browser` resolver) stays in
