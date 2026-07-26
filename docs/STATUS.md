@@ -70,6 +70,25 @@ claim below is enforced by CI on `main`, not aspirational.
   must-allow half grew on purpose, since each round also produced a false
   positive. If it leaks a third time the answer is to stop parsing shell:
   have `lisa suggest` emit structured argv the guard can judge exactly.
+- **Round 3 found ten more** (#78–#87, all closed across `3821dc0` and
+  `3e1e913`) — and **one of them was a regression a round-2 fix
+  created**: `cargo -- evil-plugin` runs `cargo-evil-plugin` from PATH,
+  because the `--` split added for a *false positive* skipped everything
+  after `--`. Arbitrary program execution on the surface with no human,
+  no ledger and no confinement; landed on its own ahead of the rest.
+  Four more were classes nothing before them anticipated (the decoder
+  feeding the tokenizer, `<>`, globs in target position, comments).
+  Corpus 105 → 128 denied, 29 → 41 must-allow.
+  **8 → 11 → 10 findings: flat, not converging — so the strategy
+  changed** (issue #88). `check_command` guards argv and leaked 4 times
+  in 3 rounds; `check_shell_line` guards an arbitrary shell string and
+  leaked 15. The difference is the input, not the effort, so `lisa
+  suggest` moves to emitting **structured argv** that the exact,
+  bounded `check_command` logic can judge, with the shell string
+  rendered only for display. Every fix in that file has been correct and
+  every fix has left the next spelling open — which is what a guardrail
+  built by enumeration looks like from the inside, and why the corpus is
+  called a floor: it was green after every round.
 - **Zen browser moved to the apps channel** (ADR-0023 phase 1, issue #51).
   `zen-browser` is now a split build: `zen-browser-launcher` (the
   `.desktop`, hicolor icons and a `/usr/bin/zen-browser` resolver) stays in
