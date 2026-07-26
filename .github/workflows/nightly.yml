@@ -240,13 +240,21 @@ jobs:
           # safety net that fetches app payloads for a device that was
           # offline when its slot updated (ADR-0023 phase 1). Without it,
           # such a device loses its browser with no way to know why.
-          for w in timers.target.wants/lisa-apps-sync.timer \
-                   timers.target.wants/systemd-sysupdate.timer \
-                   multi-user.target.wants/NetworkManager.service \
-                   multi-user.target.wants/iwd.service; do
-            [ -e "mnt-pull/etc/systemd/system/$w" ] || {
-              echo "FAIL: /etc/systemd/system/$w missing — the unit ships DISABLED"; fail=1; }
-          done
+          #
+          # The invariant is "installed IMPLIES enabled", not "installed":
+          # this job builds the MINIMAL image (no NetworkManager, no gdm),
+          # where those units are legitimately absent. Asserting presence
+          # outright made this step fail on an image that was fine.
+          check_enabled() { # <unit> <target>
+            [ -e "mnt-pull/usr/lib/systemd/system/$1" ] || return 0  # not in this flavor
+            [ -e "mnt-pull/etc/systemd/system/$2.wants/$1" ] || {
+              echo "FAIL: $1 is installed but NOT enabled (no $2.wants symlink)"; fail=1; }
+          }
+          check_enabled lisa-apps-sync.timer timers.target
+          check_enabled systemd-sysupdate.timer timers.target
+          check_enabled NetworkManager.service multi-user.target
+          check_enabled iwd.service multi-user.target
+          check_enabled lisa-inferenced.service multi-user.target
           sudo umount mnt-pull
           sudo losetup -d "$LOOP"
           [ "$fail" -eq 0 ] || exit 1
