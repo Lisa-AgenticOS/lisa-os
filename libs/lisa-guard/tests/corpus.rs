@@ -193,6 +193,65 @@ const MUST_DENY: &[(&str, &str)] = &[
         "this is the #20 incident, deeper",
     ),
     ("chown -R nobody /etc/systemd/system", "and for ownership"),
+    // ---------------------------------------------------------------
+    // Review round 3. Four *new classes* nothing in rounds 1-2
+    // anticipated, which is what finally moved the reader from
+    // enumerating dangerous spellings to distrusting unknown ones.
+    // ---------------------------------------------------------------
+    // #78 — the round-1 decoder used as an injection point into the
+    // round-1 tokenizer: the decoded quote swallows the rest of the line.
+    (
+        r"echo $'\x27' ; rm -rf /",
+        "a decoded quote desyncs the reader",
+    ),
+    (
+        r"echo $'\x3b' rm -rf /",
+        "a decoded semicolon does the same",
+    ),
+    // #79 — inline source that starts with `-` was filtered out.
+    (
+        "bash -c -- '-x; rm -rf /'",
+        "the payload looked like a flag",
+    ),
+    // #80 — executing languages outside the list, and versioned names.
+    (
+        "awk 'BEGIN{system(\"rm -rf /\")}'",
+        "awk reaches out through system()",
+    ),
+    (
+        "python3.11 -c 'x'",
+        "#71 verbatim, one version suffix along",
+    ),
+    ("perl5.36 -e 'x'", "and in perl"),
+    // #81 — wrappers nobody listed. Enumerating names was the same
+    // losing game as enumerating their options.
+    ("flock /tmp/l rm -rf /etc", "an unlisted wrapper"),
+    (
+        "script -q -c 'rm -rf /etc' /dev/null",
+        "payload as a single quoted word",
+    ),
+    ("taskset -c 0 rm -rf /etc", "another unlisted wrapper"),
+    ("unshare -r rm -rf /etc", "and another"),
+    // #82 — `<>` opens for read AND write.
+    (
+        "echo pwned 1<> /etc/passwd",
+        "an operator the tokenizer read as a word",
+    ),
+    // #83 — a glob rooted at `/` names what the guard cannot see.
+    ("rm -rf /e*", "`/e*` is `/etc`"),
+    ("rm -rf /et?", "single-character wildcard"),
+    ("rm -rf /{etc,usr}", "brace expansion"),
+    ("rm -rf /[e]tc", "character class"),
+    ("chmod -R 777 /u*", "the same for permissions"),
+    ("echo x > /et?/passwd", "and in a redirect target"),
+    ("echo x > $CONF", "a redirect target from a variable"),
+    // #84 — an explicit destination directory.
+    (
+        "cp -t /etc payload",
+        "`-t` names the destination, the operand is the source",
+    ),
+    ("mv --target-directory=/etc x", "the long spelling"),
+    ("install -t /usr/bin evil", "and for install"),
 ];
 
 /// Actions that are legitimate often enough to allow, but never silently.
@@ -260,6 +319,21 @@ const MUST_ALLOW: &[&str] = &[
     "rm -rf /var/tmp/scratch",
     "diff <(sort a) <(sort b)",
     "awk '{print $1}' access.log",
+    // Review round 3 (#87, and the false positives the broader fixes
+    // could have introduced). An unknown program is treated with more
+    // suspicion, not less — but suspicion is not denial.
+    "ls # ; rm -rf /",
+    "env VAR=1 make install",
+    "timeout 30 ./run.sh rm-stale-files",
+    "xargs -n1 echo rm",
+    "nohup ./deploy.sh /etc/config &",
+    "time make -j8 all",
+    "make install",
+    "docker build -t img .",
+    "cp a b c dir/",
+    "cp -r assets/ build/",
+    "rm -rf *.tmp",
+    "rm -rf build/*",
 ];
 
 #[test]

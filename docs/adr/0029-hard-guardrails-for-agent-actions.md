@@ -251,6 +251,67 @@ If the shell reader needs a third strategy change, the right answer is
 probably to stop reading shell at all and have `lisa suggest` emit
 structured argv the guard can judge exactly.
 
+## Review round 3 (2026-07-26) — and the decision it forces
+
+Ten more (#78–#87). Findings per round: **8 → 11 → 10**. Flat, not
+converging, and the composition is worse than the count:
+
+- **#85 is a regression this ADR's own round-2 fix created.** `cargo --
+  evil-plugin` runs `cargo-evil-plugin` from `PATH`. The `--` split was
+  added to stop a false positive (#76) and skipped every argument after
+  `--` — but `--` only delimits an inner program's argv *once a
+  subcommand has been named*. A fix for over-refusal became arbitrary
+  program execution on the surface that runs with no human, no ledger and
+  no confinement. It was fixed and landed on its own, ahead of the rest.
+- **Four findings were new classes** nothing in rounds 1–2 anticipated:
+  the round-1 decoder feeding a quote to the round-1 tokenizer (#78), an
+  unmodelled operator (#82), an unmodelled metacharacter class — globs in
+  target position (#83), and an unmodelled comment (#87).
+- **Two of round 2's three "stop enumerating" changes were still closed
+  lists.** `WRAPPERS` and `SHELLS` are enumerations, and `flock` and
+  `python3.11` walked past them (#81, #80).
+
+So round 3 stopped enumerating one level further up: a program this crate
+**does not recognise at all** is now treated as possibly-a-wrapper, and
+its words are judged as candidate programs. And the shell/interpreter
+split was made explicit — only a real shell's arguments are read *as
+shell*, because reading Python that way produced #71 and reading awk that
+way denied `awk '{print $1}'`.
+
+Corpus: 105 → 128 denied, 29 → 41 must-allow.
+
+### Decision: `lisa suggest` moves to structured argv
+
+`check_shell_line` is not converging, and the two surfaces this crate
+guards have very different shapes:
+
+| | input | leaks |
+|---|---|---|
+| `check_command` | argv, small and bounded | 4 across 3 rounds, 1 self-inflicted |
+| `check_shell_line` | an arbitrary shell string | 15 across 3 rounds, still finding new classes |
+
+The difference is the input, not the effort. So the fallback named
+earlier in this ADR is now the plan (tracked as an issue): **have `lisa
+suggest` emit structured argv** — `{program, args, operators}` — judge it
+with `check_command`-shaped logic, and render a shell string only for
+display. That deletes #78, #79, #82, #83, #87 and every future member of
+those families outright, because there is nothing to tokenize. The cost
+is bounded and one-time: pipelines and redirects need an explicit
+representation, and some suggestions become several steps instead of one
+line. The current cost is one adversarial round per release, forever.
+
+`check_shell_line` stays as defence-in-depth for strings arriving from
+elsewhere, and should have its default flipped as part of that work:
+unknown operator, unbalanced quote after decoding, or an unresolved word
+in target position become `shell.unreadable` rather than `Allow`. That is
+round 1's conclusion — a conservative reader must fail closed — applied
+to the *parser* rather than only to the program name.
+
+**The through-line of all three rounds:** every fix was correct, and
+every fix left the next spelling open. That is what a guardrail built by
+enumeration looks like from the inside, and it is why the corpus is
+called a floor everywhere it appears — it was green after every round.
+
 ## What was rejected
 
 - **Prompt-level rules only** ("never run destructive commands" in the

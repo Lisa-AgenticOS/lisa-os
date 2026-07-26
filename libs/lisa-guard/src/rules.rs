@@ -213,11 +213,18 @@ fn system_path_write(inv: &Invocation) -> Verdict {
     const ALL_OPERANDS_WRITTEN: &[&str] = &["tee", "truncate", "sed"];
 
     let targets: Vec<String> = if DESTINATION_IS_LAST.contains(&inv.program.as_str()) {
-        inv.operands()
-            .last()
-            .map(str::to_string)
-            .into_iter()
-            .collect()
+        // …unless `-t DIR` / `--target-directory=DIR` names it
+        // explicitly. `operands()` filters the flag away, so the *source*
+        // was being read as the destination (round 3, #84).
+        match target_directory(inv) {
+            Some(dir) => vec![dir],
+            None => inv
+                .operands()
+                .last()
+                .map(str::to_string)
+                .into_iter()
+                .collect(),
+        }
     } else if ALL_OPERANDS_WRITTEN.contains(&inv.program.as_str()) {
         // `sed` only writes with -i; without it this is a read.
         if inv.program == "sed" && !inv.has_any_short_flag(&['i']) && !inv.has_flag("--in-place") {
@@ -240,6 +247,28 @@ fn system_path_write(inv: &Invocation) -> Verdict {
         }
     }
     Verdict::Allow
+}
+
+/// An explicit destination directory: `-t DIR`, `-tDIR`, or
+/// `--target-directory[=DIR]`.
+fn target_directory(inv: &Invocation) -> Option<String> {
+    let mut want_value = false;
+    for arg in &inv.args {
+        if want_value {
+            return Some(arg.clone());
+        }
+        if arg == "-t" || arg == "--target-directory" {
+            want_value = true;
+        } else if let Some(dir) = arg.strip_prefix("--target-directory=") {
+            return Some(dir.to_string());
+        } else if let Some(dir) = arg.strip_prefix("-t")
+            && !dir.starts_with('-')
+            && !dir.is_empty()
+        {
+            return Some(dir.to_string());
+        }
+    }
+    None
 }
 
 /// `dd`'s output file, from its `of=` operand.

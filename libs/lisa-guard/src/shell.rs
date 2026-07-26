@@ -60,9 +60,203 @@ impl Invocation {
 
 /// Programs that are a shell by another name. Reaching one of these
 /// through a pipe is how an allowlist becomes a suggestion.
-const SHELLS: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "python", "python3", "perl", "ruby",
-    "node", "php",
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"];
+
+/// Other languages that execute. They are a shell for the purpose of
+/// "do not pipe into this", but their source is *not* shell syntax — so
+/// it is never read as if it were. Reading Python as shell is what made
+/// `python3 -c 'os.system("rm -rf /")'` parse to nothing (round 2, #71),
+/// and doing it to awk denied `awk '{print $1}'` (round 3).
+const INTERPRETERS: &[&str] = &[
+    "python",
+    "perl",
+    "ruby",
+    "node",
+    "php",
+    "awk",
+    "gawk",
+    "mawk",
+    "nawk",
+    "lua",
+    "deno",
+    "bun",
+    "osascript",
+    "tclsh",
+    "expect",
+];
+
+/// Tools that stand in front of a real command. Round 3 (#81) found
+/// `flock`, `script`, `taskset` and `unshare` walking past this list, and
+/// the list will never be complete — so it is no longer the only defence:
+/// a program this crate does not recognise at all gets its words judged
+/// as candidate programs too. See [`Segment::invocations`].
+const WRAPPERS: &[&str] = &[
+    "env",
+    "nohup",
+    "command",
+    "builtin",
+    "exec",
+    "nice",
+    "ionice",
+    "stdbuf",
+    "time",
+    "timeout",
+    "xargs",
+    "setsid",
+    "chrt",
+    "busybox",
+    "toybox",
+    "flock",
+    "script",
+    "taskset",
+    "unshare",
+    "nsenter",
+    "systemd-run",
+    "proot",
+    "eatmydata",
+];
+
+/// Programs the rules know how to judge, plus everyday tools whose
+/// arguments are data rather than another command to run.
+///
+/// Anything *outside* this list may be a wrapper nobody has heard of, so
+/// its words are judged as candidate programs as well (round 3, #81).
+/// The list is a false-positive suppressor, not a security boundary: an
+/// unknown program is treated with more suspicion, never less.
+const KNOWN_LEAF_PROGRAMS: &[&str] = &[
+    // Everything a rule reasons about.
+    "rm",
+    "rmdir",
+    "shred",
+    "chmod",
+    "chown",
+    "chgrp",
+    "dd",
+    "mkfs",
+    "wipefs",
+    "blkdiscard",
+    "sgdisk",
+    "fdisk",
+    "parted",
+    "badblocks",
+    "cfdisk",
+    "tee",
+    "cp",
+    "mv",
+    "install",
+    "ln",
+    "truncate",
+    "sed",
+    "find",
+    "history",
+    "journalctl",
+    "reboot",
+    "poweroff",
+    "halt",
+    "shutdown",
+    "kexec",
+    "systemctl",
+    "pacman",
+    "apt",
+    "apt-get",
+    "dnf",
+    "yum",
+    "zypper",
+    "npm",
+    "pnpm",
+    "yarn",
+    "pip",
+    "pip3",
+    "cargo",
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "ssh",
+    "scp",
+    "rsync",
+    "ftp",
+    "git",
+    "trap",
+    "watch",
+    "eval",
+    // Everyday tools whose arguments are data.
+    "echo",
+    "printf",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "sort",
+    "uniq",
+    "diff",
+    "grep",
+    "less",
+    "more",
+    "man",
+    "which",
+    "file",
+    "stat",
+    "du",
+    "df",
+    "ps",
+    "kill",
+    "pkill",
+    "tar",
+    "zip",
+    "unzip",
+    "gzip",
+    "gunzip",
+    "xz",
+    "zstd",
+    "date",
+    "whoami",
+    "id",
+    "uname",
+    "hostname",
+    "mkdir",
+    "touch",
+    "pwd",
+    "cd",
+    "true",
+    "false",
+    "test",
+    "sleep",
+    "seq",
+    "tr",
+    "cut",
+    "paste",
+    "join",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "mktemp",
+    "make",
+    "just",
+    "cmake",
+    "ninja",
+    "meson",
+    "docker",
+    "podman",
+    "kubectl",
+    "dart",
+    "flutter",
+    "rustc",
+    "rustup",
+    "go",
+    "gcc",
+    "clang",
+    "ping",
+    "dig",
+    "host",
+    "ip",
+    "lsblk",
+    "blkid",
+    "mount",
+    "umount",
+    "systemd-analyze",
 ];
 
 /// Programs whose first argument is code to run later (`trap 'rm -rf /'
@@ -90,11 +284,6 @@ const TARGET_SENSITIVE: &[&str] = &[
 
 /// Prefix words that stand in front of the real program. `busybox` is
 /// here because `busybox rm -rf /` is `rm -rf /`.
-const WRAPPERS: &[&str] = &[
-    "env", "nohup", "command", "builtin", "exec", "nice", "ionice", "stdbuf", "time", "timeout",
-    "xargs", "setsid", "chrt", "busybox", "toybox",
-];
-
 const ESCALATORS: &[&str] = &["sudo", "doas", "pkexec", "su", "run0"];
 
 /// Shell grammar words that stand where a program name would be. Without
@@ -128,7 +317,17 @@ fn check_shell_line_inner(raw: &str, depth: usize) -> Verdict {
         return v;
     }
     // …and again after expansion, since `$'\x3a'` spells `:` too.
-    let line = normalize_expansions(raw);
+    let (line, injected_syntax) = normalize_expansions(raw);
+    if injected_syntax {
+        // `echo $'\x27' ; rm -rf /` — the decoder emits a bare quote that
+        // the tokenizer then honours, swallowing the rest of the line
+        // (round 3, #78). Decoding is a convenience for reading a program
+        // name, never a way to author syntax.
+        return Verdict::deny(
+            "shell.unreadable",
+            "an escape sequence decodes into shell syntax, so the command cannot be read as written",
+        );
+    }
     if let Some(v) = fork_bomb(&line) {
         return v;
     }
@@ -150,6 +349,13 @@ fn check_shell_line_inner(raw: &str, depth: usize) -> Verdict {
         // skipping it skipped the redirect too (round 2, #68).
         for target in &segment.redirects {
             verdict = verdict.worst(redirect_verdict(target));
+            if verdict.is_denied() {
+                return verdict;
+            }
+        }
+
+        for embedded in segment.embedded_command_lines() {
+            verdict = verdict.worst(check_shell_line_inner(&embedded, depth + 1));
             if verdict.is_denied() {
                 return verdict;
             }
@@ -201,36 +407,54 @@ fn judge(inv: &Invocation, segment: &Segment, depth: usize) -> Verdict {
         verdict = verdict.worst(check_shell_line_inner(code, depth + 1));
     }
 
-    let is_shell = SHELLS.contains(&inv.program.as_str());
-    if is_shell {
-        // Every literal argument of a shell or interpreter is source, and
-        // enumerating which flag introduces it is a losing game — `-c`,
-        // `-xc`, `-ec`, `-e`, `-r`, `<<<` all do. Read them all.
-        for arg in inv.args.iter().filter(|a| !a.starts_with('-')) {
+    if is_shell(&inv.program) {
+        // Every argument of a shell is potential source, and enumerating
+        // which flag introduces it is a losing game — `-c`, `-xc`, `-ec`,
+        // `<<<` all do. Read them all, including ones that start with
+        // `-`: `bash -c -- '-x; rm -rf /'` hid there (round 3, #79).
+        //
+        // This happens ONLY for shells, because only shell arguments are
+        // shell syntax. Reading another language this way is the guessing
+        // that produced #71 (python) and, when over-applied, denied
+        // `awk '{print $1}'`.
+        for arg in inv.args.iter() {
             verdict = verdict.worst(check_shell_line_inner(arg, depth + 1));
             if verdict.is_denied() {
                 return verdict;
             }
         }
-        // A non-shell interpreter's source is not shell syntax, and
-        // reading it as if it were is the guessing this crate keeps
-        // having to stop doing: `python3 -c 'os.system("rm -rf /")'`
-        // tokenizes into nothing a rule recognises (round 2, #71). So
-        // inline source in a language this reader does not speak is
-        // refused rather than approximated.
-        if inline_source_flag(&inv.program, &inv.args) {
-            return Verdict::deny(
-                "interpreter.inline_source",
-                format!(
-                    "runs an inline `{}` program, which this guard cannot read — write it to a \
-                     file you can review, or ask for the shell command you want",
-                    inv.program
-                ),
-            );
-        }
     }
 
-    if segment.piped_into && is_shell {
+    // awk takes its source as the first operand rather than behind a
+    // flag, and `awk '{print $1}' f` is ordinary work — so awk's source
+    // is checked for its own small external surface instead of being
+    // refused wholesale (round 3, #80).
+    if let Some(source) = awk_source(inv)
+        && let Some(primitive) = AWK_EXEC_PRIMITIVES.iter().find(|p| source.contains(*p))
+    {
+        return Verdict::deny(
+            "interpreter.inline_source",
+            format!(
+                "the `{}` program uses `{primitive}`, which runs external commands",
+                inv.program
+            ),
+        );
+    }
+
+    // Inline source in a language this reader does not speak is refused
+    // rather than approximated (round 2, #71).
+    if inline_source_flag(&inv.program, &inv.args) {
+        return Verdict::deny(
+            "interpreter.inline_source",
+            format!(
+                "runs an inline `{}` program, which this guard cannot read — write it to a \
+                 file you can review, or ask for the shell command you want",
+                inv.program
+            ),
+        );
+    }
+
+    if segment.piped_into && executes_code(&inv.program) {
         return Verdict::deny(
             "pipe.to.shell",
             format!(
@@ -242,18 +466,54 @@ fn judge(inv: &Invocation, segment: &Segment, depth: usize) -> Verdict {
     verdict.worst(rules::scan(inv))
 }
 
-/// Whether a word still contains an expansion the reader could not
-/// resolve, so its value is unknown until the shell runs it.
+/// Whether a word's value is unknown until the shell runs it — either an
+/// expansion the reader could not resolve, or a glob rooted at an
+/// absolute path, where `/e*` is `/etc` and `/{etc,usr}` is both
+/// (round 3, #83). A *relative* glob (`*.tmp`, `build/*`) stays ordinary:
+/// it can only match inside the working directory.
 fn is_unresolved(word: &str) -> bool {
-    word.contains('$') || word.contains('`')
+    if word.contains('$') || word.contains('`') {
+        return true;
+    }
+    let bare = word.trim_matches(['"', '\'']);
+    bare.starts_with('/') && bare.contains(['*', '?', '[', '{'])
+}
+
+/// Everything awk can use to reach outside itself. Unlike a general
+/// language, awk's external surface really is this small, so reading the
+/// source for these beats refusing every `awk '{print $1}'`.
+const AWK_EXEC_PRIMITIVES: &[&str] = &["system(", "|", "getline", "close(", "ENVIRON"];
+
+/// An awk-family program's source: the first operand, unless `-f` named
+/// a script file instead.
+fn awk_source(inv: &Invocation) -> Option<&String> {
+    if !matches!(
+        canonical_program(&inv.program),
+        "awk" | "gawk" | "mawk" | "nawk"
+    ) {
+        return None;
+    }
+    if inv
+        .args
+        .iter()
+        .any(|a| a == "-f" || a.starts_with("--file"))
+    {
+        return None;
+    }
+    inv.args.iter().find(|a| !a.starts_with('-'))
 }
 
 /// Whether these arguments hand the interpreter a program on the command
 /// line. Deliberately narrow — `python3 -m http.server` is ordinary and
 /// must keep working; only the flags that mean "here is source" count.
 fn inline_source_flag(program: &str, args: &[String]) -> bool {
-    let letters: &[char] = match program {
-        "python" | "python3" => &['c'],
+    // `python3.11 -c` is `python -c` (round 3, #80).
+    let letters: &[char] = match canonical_program(program) {
+        "python" => &['c'],
+        "awk" | "gawk" | "mawk" | "nawk" => &['e'],
+        "lua" => &['e'],
+        "deno" | "bun" => &['e'],
+        "osascript" => &['e'],
         "perl" => &['e', 'E'],
         "ruby" => &['e'],
         "node" => &['e', 'p'],
@@ -287,15 +547,22 @@ fn fork_bomb(line: &str) -> Option<Verdict> {
 /// separate words without typing one), and ANSI-C `$'…'` quoting is
 /// decoded. Anything else containing `$` is left alone — and if it lands
 /// in program position, the caller refuses rather than guesses.
-fn normalize_expansions(line: &str) -> String {
+/// Returns the normalized line, and whether decoding produced shell
+/// syntax — which means the line cannot be trusted to read as written.
+fn normalize_expansions(line: &str) -> (String, bool) {
     let spaced = line.replace("${IFS}", " ").replace("$IFS", " ");
     decode_ansi_c(&spaced)
 }
 
+/// Characters that steer the tokenizer. A decoded escape that produces
+/// one of these is authoring syntax, not spelling a word.
+const SYNTAX_CHARS: &[char] = &['\'', '"', '`', ';', '|', '&', '<', '>', '(', ')', '$', '#'];
+
 /// Decode `$'…'` strings: `$'\x72\x6d'` is `rm`.
-fn decode_ansi_c(line: &str) -> String {
+fn decode_ansi_c(line: &str) -> (String, bool) {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
+    let mut injected = false;
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '\'' {
@@ -303,6 +570,9 @@ fn decode_ansi_c(line: &str) -> String {
             while i < chars.len() && chars[i] != '\'' {
                 if chars[i] == '\\' && i + 1 < chars.len() {
                     let (decoded, consumed) = decode_escape(&chars[i + 1..]);
+                    if decoded.chars().any(|c| SYNTAX_CHARS.contains(&c)) {
+                        injected = true;
+                    }
                     out.push_str(&decoded);
                     i += 1 + consumed;
                 } else {
@@ -316,7 +586,7 @@ fn decode_ansi_c(line: &str) -> String {
             i += 1;
         }
     }
-    out
+    (out, injected)
 }
 
 /// One backslash escape inside `$'…'`, and how many chars it consumed.
@@ -356,6 +626,14 @@ fn decode_escape(rest: &[char]) -> (String, usize) {
 }
 
 fn redirect_verdict(raw_target: &str) -> Verdict {
+    // `> $CONF` and `> /et?/passwd` name a file the guard cannot see
+    // (round 3, #83) — the same refusal `tee $CONF` already got.
+    if is_unresolved(raw_target) {
+        return Verdict::deny(
+            "shell.unreadable",
+            format!("redirects into `{raw_target}`, whose target cannot be determined here"),
+        );
+    }
     // Round 2 (#69): the normalizer built for `rm` targets was never
     // wired in here, so `> //etc/passwd` and `> /./etc/passwd` sailed
     // past a set of `starts_with` checks.
@@ -409,16 +687,47 @@ impl Segment {
     /// Learning each wrapper's option grammar is the losing game this
     /// crate keeps having to stop playing. Judging every candidate is
     /// cheap, and errs toward seeing more commands rather than fewer.
+    /// Whether this segment might be running a command it has not named
+    /// in program position: a known wrapper or escalator is present, or
+    /// the resolved program is one this crate has never heard of and so
+    /// could be a wrapper nobody listed (`flock`, `script`, `unshare` —
+    /// round 3, #81).
+    fn is_opaque(&self) -> bool {
+        let named_wrapper = self.words.iter().any(|w| {
+            let name = basename(w);
+            WRAPPERS.contains(&name.as_str()) || ESCALATORS.contains(&name.as_str())
+        });
+        named_wrapper
+            || self.invocation().is_some_and(|inv| {
+                !KNOWN_LEAF_PROGRAMS.contains(&inv.program.as_str()) && !executes_code(&inv.program)
+            })
+    }
+
+    /// Words that look like a whole command line rather than one
+    /// argument — `script -c 'rm -rf /etc'` hands its payload over as a
+    /// single quoted word, so no candidate program ever spells `rm`.
+    fn embedded_command_lines(&self) -> Vec<String> {
+        if !self.is_opaque() {
+            return Vec::new();
+        }
+        self.words
+            .iter()
+            .filter(|w| w.trim().contains(char::is_whitespace))
+            .cloned()
+            .collect()
+    }
+
     fn invocations(&self) -> Vec<Invocation> {
         let Some(primary) = self.invocation() else {
             return Vec::new();
         };
-        let wrapped = self.words.iter().any(|w| {
-            let name = basename(w);
-            WRAPPERS.contains(&name.as_str()) || ESCALATORS.contains(&name.as_str())
-        });
+        // A named wrapper, an escalator — or a program this crate simply
+        // does not recognise, which is round 3's answer to `flock … rm
+        // -rf /etc` (#81). Enumerating wrapper names was the same losing
+        // game as enumerating their options; an unknown program is now
+        // treated as possibly-a-wrapper rather than assumed to be a leaf.
         let mut out = vec![primary];
-        if !wrapped {
+        if !self.is_opaque() {
             return out;
         }
         let escalated = self
@@ -426,7 +735,10 @@ impl Segment {
             .iter()
             .any(|w| ESCALATORS.contains(&basename(w).as_str()));
         for (i, word) in self.words.iter().enumerate() {
-            if word.starts_with('-') || is_env_assignment(word) {
+            // A candidate is a guess, so it never earns a Deny for merely
+            // being unreadable — that verdict belongs to the program the
+            // segment actually named.
+            if word.starts_with('-') || is_env_assignment(word) || is_unresolved(word) {
                 continue;
             }
             let program = basename(word);
@@ -478,6 +790,26 @@ impl Segment {
             args: self.words[i + 1..].to_vec(),
         })
     }
+}
+
+/// `python3.11` → `python`, `perl5.36` → `perl`. A version suffix does
+/// not make it a different program (round 3, #80).
+fn canonical_program(name: &str) -> &str {
+    let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    if trimmed.is_empty() { name } else { trimmed }
+}
+
+/// A shell proper — the only thing whose arguments this reader will read
+/// as shell syntax.
+fn is_shell(program: &str) -> bool {
+    SHELLS.contains(&program) || SHELLS.contains(&canonical_program(program))
+}
+
+/// Anything that executes: a shell, or another language's interpreter.
+fn executes_code(program: &str) -> bool {
+    is_shell(program)
+        || INTERPRETERS.contains(&program)
+        || INTERPRETERS.contains(&canonical_program(program))
 }
 
 /// `/usr/bin/rm` → `rm`. A program named by path is the same program.
@@ -607,9 +939,18 @@ fn segments(line: &str) -> Vec<Segment> {
             }
             '>' | '<' => {
                 push_word(&mut word, &mut has_word, &mut cur, &mut redirect_pending);
-                redirect_pending = c == '>';
+                // `<>` opens the target for read AND write — it truncates
+                // nothing but it does overwrite (round 3, #82).
+                redirect_pending = c == '>' || (i + 1 < chars.len() && chars[i + 1] == '>');
                 // `>|` forces the clobber; the `|` belongs to the operator.
                 while i < chars.len() && matches!(chars[i], '>' | '<' | '|') {
+                    i += 1;
+                }
+            }
+            // A comment ends the line. Judging its text as a command was
+            // an over-refusal (`ls # ; rm -rf /` → Deny, round 3, #87).
+            '#' if !has_word => {
+                while i < chars.len() && chars[i] != '\n' {
                     i += 1;
                 }
             }
@@ -833,11 +1174,16 @@ mod tests {
             assert!(check_shell_line(line).is_denied(), "`{line}` was allowed");
         }
         // A language this reader does not speak is refused, not guessed.
+        // (The python case now denies for the more specific reason that
+        // `rm -rf /` was spotted inside the source — either way it never
+        // reaches the prompt.)
+        assert!(check_shell_line("python3 -c 'import os; os.system(\"rm -rf /\")'").is_denied());
         for line in [
-            "python3 -c 'import os; os.system(\"rm -rf /\")'",
             "perl -e 'unlink q(/)'",
             "node -e 'require(\"fs\")'",
             "php -r 'unlink(\"/\");'",
+            "python3.11 -c 'anything'",
+            "perl5.36 -e 'anything'",
         ] {
             assert_eq!(
                 check_shell_line(line).rule(),
@@ -890,6 +1236,76 @@ mod tests {
         // The destination still counts.
         assert!(check_shell_line("cp payload .. /etc/x").is_denied());
         assert!(check_shell_line("mv notes.txt /etc/notes").is_denied());
+    }
+
+    /// Review round 3 (#78): the ANSI-C decoder emitted a bare quote that
+    /// the tokenizer then honoured, swallowing the rest of the line — the
+    /// round-1 fix used as an injection point into the reader.
+    #[test]
+    fn decoded_escapes_may_not_author_syntax() {
+        for line in [r"echo $'\x27' ; rm -rf /", r"echo $'\x3b' rm -rf /"] {
+            assert_eq!(
+                check_shell_line(line).rule(),
+                Some("shell.unreadable"),
+                "`{line}`"
+            );
+        }
+        // Decoding a plain word is still how `$'\x72\x6d'` is caught.
+        assert!(check_shell_line(r"$'\x72\x6d' -rf /").is_denied());
+    }
+
+    /// Review round 3 (#79/#80/#81): three closed lists, three ways past.
+    #[test]
+    fn unlisted_wrappers_and_interpreters_do_not_hide_a_command() {
+        for line in [
+            // #79 — inline source that starts with `-`.
+            "bash -c -- '-x; rm -rf /'",
+            // #80 — an interpreter outside the list, and versioned names.
+            "awk 'BEGIN{system(\"rm -rf /\")}'",
+            "python3.11 -c 'x'",
+            "perl5.36 -e 'x'",
+            // #81 — wrappers nobody listed.
+            "flock /tmp/l rm -rf /etc",
+            "script -q -c 'rm -rf /etc' /dev/null",
+            "taskset -c 0 rm -rf /etc",
+            "unshare -r rm -rf /etc",
+        ] {
+            assert!(check_shell_line(line).is_denied(), "`{line}` was allowed");
+        }
+        // An unknown program is treated with more suspicion, not less —
+        // but suspicion is not denial.
+        assert!(check_shell_line("nohup ./deploy.sh /etc/config &").is_allowed());
+        assert!(check_shell_line("timeout 30 ./run.sh rm-stale-files").is_allowed());
+        assert!(check_shell_line("awk '{print $1}' access.log").is_allowed());
+        assert!(check_shell_line("docker build -t img .").is_allowed());
+    }
+
+    /// Review round 3 (#82/#83/#84/#87).
+    #[test]
+    fn round_three_operators_globs_and_destinations() {
+        // `<>` opens for read AND write.
+        assert!(check_shell_line("echo pwned 1<> /etc/passwd").is_denied());
+        // A glob rooted at `/` is a target the guard cannot see.
+        for line in [
+            "rm -rf /e*",
+            "rm -rf /et?",
+            "rm -rf /{etc,usr}",
+            "rm -rf /[e]tc",
+            "chmod -R 777 /u*",
+            "echo x > /et?/passwd",
+            "echo x > $CONF",
+        ] {
+            assert!(check_shell_line(line).is_denied(), "`{line}` was allowed");
+        }
+        // A relative glob can only match inside the working directory.
+        assert!(check_shell_line("rm -rf *.tmp").is_allowed());
+        assert!(check_shell_line("rm -rf build/*").is_allowed());
+        // `-t DIR` names the destination; the operands are sources.
+        assert!(check_shell_line("cp -t /etc payload").is_denied());
+        assert!(check_shell_line("mv --target-directory=/etc x").is_denied());
+        assert!(check_shell_line("install -t /usr/bin evil").is_denied());
+        // #87 — a comment is not a command.
+        assert!(check_shell_line("ls # ; rm -rf /").is_allowed());
     }
 
     #[test]
