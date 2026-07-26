@@ -251,8 +251,13 @@ jobs:
           # image as broken.
           check_enabled() { # <unit> <target>
             [ -e "mnt-pull/usr/lib/systemd/system/$1" ] || return 0  # not in this flavor
-            [ -e "mnt-pull/etc/systemd/system/$2.wants/$1" ] && return 0
-            [ -e "mnt-pull/usr/lib/systemd/system/$2.wants/$1" ] && return 0
+            # -L, not -e: a wants symlink points at the ABSOLUTE path
+            # /usr/lib/systemd/system/<unit>, which resolves against the
+            # HOST root when the image is loop-mounted here. Every one of
+            # them is dangling from outside and perfectly valid inside, so
+            # `-e` reported a correctly-enabled image as broken.
+            [ -L "mnt-pull/etc/systemd/system/$2.wants/$1" ] && return 0
+            [ -L "mnt-pull/usr/lib/systemd/system/$2.wants/$1" ] && return 0
             echo "FAIL: $1 is installed but NOT enabled (no $2.wants symlink in /etc or /usr/lib)"
             echo "      /etc/systemd/system/$2.wants:"
             ls "mnt-pull/etc/systemd/system/$2.wants" 2>/dev/null | sed 's/^/        /' || echo "        (absent)"
