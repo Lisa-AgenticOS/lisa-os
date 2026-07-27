@@ -252,6 +252,39 @@ const MUST_DENY: &[(&str, &str)] = &[
     ),
     ("mv --target-directory=/etc x", "the long spelling"),
     ("install -t /usr/bin evil", "and for install"),
+    // --- Round 5: bypasses found by review, closed 2026-07-27 ---
+    //
+    // A move is not a copy. `mv` was treated as destination-is-last, so
+    // only the destination was checked and the source — which the move
+    // REMOVES — was never looked at (#122).
+    ("mv /etc /tmp/backup", "a move destroys its source"),
+    (
+        "mv /usr/lib/systemd /tmp/x",
+        "the same, deeper in the image",
+    ),
+    (
+        "mv /etc/passwd /etc/shadow /tmp/",
+        "several sources, all destroyed",
+    ),
+    // Setuid needs no -R and no system path: any writable directory will
+    // do, and the result is a root shell (#123).
+    ("chmod u+s /bin/sh", "setuid on a shell"),
+    (
+        "chmod 4755 /tmp/sh",
+        "the octal spelling, outside the image",
+    ),
+    ("chmod g+s /tmp/evil", "setgid counts too"),
+    ("chmod 6755 /home/me/sh", "both bits set"),
+    // A non-recursive permission change on the OS image is still a write
+    // to the OS image; requiring -R was an accident of the first rule.
+    ("chmod 777 /etc/shadow", "no -R, still the image"),
+    ("chown me /etc/passwd", "ownership, no -R"),
+    // sed writes through its script, not only through -i (#120).
+    (
+        "sed \"s/x/y/w /etc/passwd\" file",
+        "the w flag writes a file of its own choosing",
+    ),
+    ("sed \"1w /etc/cron.d/pwn\" file", "w after a line address"),
 ];
 
 /// Actions that are legitimate often enough to allow, but never silently.

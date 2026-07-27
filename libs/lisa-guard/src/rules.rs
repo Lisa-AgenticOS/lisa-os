@@ -184,7 +184,40 @@ fn recursive_permissions(inv: &Invocation) -> Verdict {
     if inv.program != "chmod" && inv.program != "chown" && inv.program != "chgrp" {
         return Verdict::Allow;
     }
+
+    // Setuid/setgid is a privilege grant, not a permission tweak, and it
+    // needs no `-R` and no system path to matter: `chmod u+s /bin/sh` in
+    // ANY writable directory manufactures a root shell (#123). The
+    // earlier rule only looked at recursive changes, so this walked past
+    // it untouched.
+    if inv.program == "chmod" {
+        for arg in inv.operands() {
+            if is_setuid_mode(arg) {
+                return Verdict::deny(
+                    "perm.setuid",
+                    format!(
+                        "`chmod {arg}` grants setuid/setgid — a privilege escalation primitive"
+                    ),
+                );
+            }
+        }
+    }
+
+    // A NON-recursive chmod/chown on a system path is still a write to
+    // the OS image. Requiring -R was an accident of how the rule was
+    // first written (#123).
     if !inv.has_any_short_flag(&['R']) && !inv.has_flag("--recursive") {
+        for target in inv.operands() {
+            if is_system_target(target) || is_under_system_root(target) {
+                return Verdict::deny(
+                    "perm.system_path",
+                    format!(
+                        "`{}` rewrites ownership or permissions on `{target}`, which belongs to the OS image",
+                        inv.program
+                    ),
+                );
+            }
+        }
         return Verdict::Allow;
     }
     for target in inv.operands() {
@@ -212,6 +245,24 @@ fn system_path_write(inv: &Invocation) -> Verdict {
     /// Programs where every operand is written.
     const ALL_OPERANDS_WRITTEN: &[&str] = &["tee", "truncate", "sed"];
 
+    // `mv` is the exception in DESTINATION_IS_LAST: a move DESTROYS its
+    // source, so `mv /etc /tmp/backup` removes /etc while writing only
+    // to /tmp — the destination check saw nothing wrong and the source
+    // was never looked at (#122). A copy leaves the original in place;
+    // a move does not, which is why it cannot share `cp`'s treatment.
+    if inv.program == "mv" {
+        let operands: Vec<&str> = inv.operands().collect();
+        // Everything but the last operand is a source being removed.
+        for source in operands.iter().rev().skip(1) {
+            if is_system_target(source) || is_under_system_root(source) {
+                return Verdict::deny(
+                    "fs.system_write",
+                    format!("`mv` REMOVES `{source}`, which belongs to the OS image"),
+                );
+            }
+        }
+    }
+
     let targets: Vec<String> = if DESTINATION_IS_LAST.contains(&inv.program.as_str()) {
         // …unless `-t DIR` / `--target-directory=DIR` names it
         // explicitly. `operands()` filters the flag away, so the *source*
@@ -226,9 +277,24 @@ fn system_path_write(inv: &Invocation) -> Verdict {
                 .collect(),
         }
     } else if ALL_OPERANDS_WRITTEN.contains(&inv.program.as_str()) {
-        // `sed` only writes with -i; without it this is a read.
-        if inv.program == "sed" && !inv.has_any_short_flag(&['i']) && !inv.has_flag("--in-place") {
-            return Verdict::Allow;
+        // `sed` only writes with -i — EXCEPT that the `w` flag inside a
+        // script writes a file of its own choosing:
+        //     sed "s/x/y/w /etc/passwd"
+        //     sed "1w /etc/cron.d/pwn"
+        // Only -i was modelled, so the script body was never read and
+        // this walked straight past (#120).
+        if inv.program == "sed" {
+            if let Some(written) = sed_script_writes(inv) {
+                if is_under_system_root(&written) {
+                    return Verdict::deny(
+                        "fs.system_write",
+                        format!("`sed`'s w flag writes `{written}`, which belongs to the OS image"),
+                    );
+                }
+            }
+            if !inv.has_any_short_flag(&['i']) && !inv.has_flag("--in-place") {
+                return Verdict::Allow;
+            }
         }
         inv.operands().map(str::to_string).collect()
     } else if inv.program == "dd" {
@@ -247,6 +313,39 @@ fn system_path_write(inv: &Invocation) -> Verdict {
         }
     }
     Verdict::Allow
+}
+
+/// The file a `sed` script writes via its `w` flag, if any.
+///
+/// `w` takes the rest of the line as a filename, so the target is
+/// everything after it — whitespace included, which is why this is not a
+/// whitespace split.
+fn sed_script_writes(inv: &Invocation) -> Option<String> {
+    for arg in &inv.args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        // `s/a/b/w PATH`, `s/a/b/gw PATH`, `1w PATH`, `$w PATH`.
+        //
+        // The `w` must be followed by WHITESPACE and then the path.
+        // Matching any `w` before a `/` would flag `s/x/w/` — an
+        // ordinary substitution replacing something with the letter w —
+        // as writing to `/`. The corpus caught exactly that.
+        let bytes = arg.as_bytes();
+        for (idx, _) in arg.match_indices('w') {
+            let Some(&next) = bytes.get(idx + 1) else {
+                continue;
+            };
+            if !next.is_ascii_whitespace() {
+                continue;
+            }
+            let target = arg[idx + 1..].trim();
+            if target.starts_with('/') {
+                return Some(target.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// An explicit destination directory: `-t DIR`, `-tDIR`, or
@@ -376,6 +475,25 @@ fn version_control(inv: &Invocation) -> Verdict {
 
 /// Whether a deletion target is the system, a whole home, or broad enough
 /// that one more component would not save it.
+/// Whether a chmod mode argument grants setuid or setgid.
+///
+/// Both spellings: symbolic (`u+s`, `g+s`, `a+s`) and octal with a
+/// four-digit leading bit (`4755`, `2755`, `6755`). A mode is not a
+/// path, so this never inspects operands that are targets.
+fn is_setuid_mode(arg: &str) -> bool {
+    // Symbolic: a `+s` anywhere in a who/op/perm clause.
+    if arg.contains("+s") {
+        return true;
+    }
+    // Octal: 4 digits where the leading one carries setuid(4)/setgid(2).
+    if arg.len() == 4 && arg.chars().all(|c| c.is_ascii_digit()) {
+        if let Some(lead) = arg.chars().next().and_then(|c| c.to_digit(8)) {
+            return lead & 0b110 != 0;
+        }
+    }
+    false
+}
+
 fn is_system_target(target: &str) -> bool {
     let t = normalize_target(target);
     if t == "/" {
