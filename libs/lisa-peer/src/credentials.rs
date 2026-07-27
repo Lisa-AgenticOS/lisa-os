@@ -12,20 +12,51 @@
 //! is no broker to ask, and also no ambiguity about who the peer is.
 
 use crate::{PeerError, PeerId};
+use std::sync::Arc;
 
 /// A caller, as the transport reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Peer {
     pub id: PeerId,
     /// The uid the kernel reports for the peer process. `None` on p2p.
     pub uid: Option<u32>,
-    /// The pid the kernel reports. `None` on p2p, and note that a pid is
-    /// only meaningful *while the peer is connected* — never store one
-    /// and re-resolve it later, because pids are reused.
+    /// The pid the kernel reports. `None` on p2p.
+    ///
+    /// **Not sufficient to attribute identity.** A pid is meaningful
+    /// only while the peer is connected, and "resolve it at the moment
+    /// of the call" does not close the window: the peer can exit between
+    /// the broker's credentials reply and our `readlink`, and a recycled
+    /// pid then points at somebody else's binary. Use [`process_fd`]
+    /// (via `exe_of_peer`) for anything that decides who someone is;
+    /// this field is for logging and diagnostics.
+    ///
+    /// [`process_fd`]: Peer::process_fd
     pub pid: Option<u32>,
+    /// The broker's pidfd for the peer process, when it supplied one.
+    ///
+    /// A pidfd pins its pid: the kernel will not recycle it while the
+    /// descriptor is open, and once the process exits the descriptor
+    /// stops resolving instead of following the pid to its next owner.
+    /// That is what makes it, and not `pid`, the basis of an identity
+    /// decision (#136).
+    #[cfg(unix)]
+    pub process_fd: Option<Arc<std::os::fd::OwnedFd>>,
 }
 
 impl Peer {
+    /// A peer with no pidfd — p2p, a broker that did not supply one, and
+    /// tests. Deliberately explicit: anything built this way cannot
+    /// answer "which program is this" (see [`Peer::process_fd`]).
+    pub fn without_process_fd(id: PeerId, uid: Option<u32>, pid: Option<u32>) -> Peer {
+        Peer {
+            id,
+            uid,
+            pid,
+            #[cfg(unix)]
+            process_fd: None,
+        }
+    }
+
     /// Whether this caller runs as the same user as this process.
     ///
     /// The session daemons serve exactly one user, so a caller from a
@@ -73,11 +104,7 @@ pub async fn resolve(
     //
     // So the check is on the CONNECTION: no broker, no question asked.
     if conn.unique_name().is_none() {
-        return Ok(Peer {
-            id: PeerId::Direct,
-            uid: None,
-            pid: None,
-        });
+        return Ok(Peer::without_process_fd(PeerId::Direct, None, None));
     }
 
     let id = PeerId::of(conn, header)?;
@@ -99,6 +126,15 @@ pub async fn resolve(
         id,
         uid: creds.unix_user_id(),
         pid: creds.process_id(),
+        // Kept, not discarded (#136). `resolve()` used to read the uid
+        // and pid and throw the pidfd away, leaving every downstream
+        // `/proc/<pid>/exe` lookup open to pid reuse — with the
+        // mitigation sitting unused in the same reply.
+        #[cfg(unix)]
+        process_fd: creds.process_fd().and_then(|fd| {
+            use std::os::fd::AsFd;
+            fd.as_fd().try_clone_to_owned().ok().map(Arc::new)
+        }),
     })
 }
 
@@ -108,11 +144,7 @@ mod tests {
 
     #[test]
     fn a_direct_peer_is_always_our_own_user() {
-        let peer = Peer {
-            id: PeerId::Direct,
-            uid: None,
-            pid: None,
-        };
+        let peer = Peer::without_process_fd(PeerId::Direct, None, None);
         assert!(peer.is_same_user_as_us());
     }
 
@@ -121,29 +153,21 @@ mod tests {
     /// bug.
     #[test]
     fn an_unknown_uid_on_the_bus_fails_closed() {
-        let peer = Peer {
-            id: PeerId::Bus(":1.7".into()),
-            uid: None,
-            pid: None,
-        };
+        let peer = Peer::without_process_fd(PeerId::Bus(":1.7".into()), None, None);
         assert!(!peer.is_same_user_as_us());
     }
 
     #[cfg(unix)]
     #[test]
     fn another_users_uid_is_rejected() {
-        let ours = Peer {
-            id: PeerId::Bus(":1.7".into()),
-            uid: Some(current_uid()),
-            pid: None,
-        };
+        let ours = Peer::without_process_fd(PeerId::Bus(":1.7".into()), Some(current_uid()), None);
         assert!(ours.is_same_user_as_us());
 
-        let theirs = Peer {
-            id: PeerId::Bus(":1.8".into()),
-            uid: Some(current_uid().wrapping_add(1)),
-            pid: None,
-        };
+        let theirs = Peer::without_process_fd(
+            PeerId::Bus(":1.8".into()),
+            Some(current_uid().wrapping_add(1)),
+            None,
+        );
         assert!(!theirs.is_same_user_as_us());
     }
 }

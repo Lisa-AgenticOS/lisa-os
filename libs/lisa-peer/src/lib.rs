@@ -34,6 +34,8 @@ mod credentials;
 mod identity;
 
 pub use credentials::{Peer, resolve};
+#[cfg(unix)]
+pub use identity::exe_of_peer;
 pub use identity::{IdentityError, exe_of_pid};
 
 use thiserror::Error;
@@ -142,7 +144,7 @@ impl std::fmt::Display for PeerId {
 /// before acting. That single discipline closes #93 (any peer approves
 /// any confirmation), #108 (any app cancels any session) and #101 (any
 /// peer wipes any namespace).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Owner(PeerId);
 
 impl Owner {

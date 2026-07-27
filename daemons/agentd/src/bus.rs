@@ -34,6 +34,19 @@ use thiserror::Error;
 /// How long a parked confirmation stays answerable.
 pub const CONFIRMATION_TTL: Duration = Duration::from_secs(120);
 
+/// How many confirmations may be parked at once, in total and per
+/// requesting peer (#137).
+///
+/// `RequestCall` is reachable by any session peer, and every parked
+/// call retains a full `CallRequest` — including caller-supplied `args`
+/// bounded only by the tool's own schema. Without a cap the map grows
+/// until the daemon is OOM-killed, taking every legitimately parked
+/// confirmation with it. Denying the Agent Bus denies the confirmation
+/// surface, so this is a soft bypass of "no unconfirmed privileged
+/// calls": it makes confirmation unavailable rather than defeating it.
+pub const MAX_PENDING: usize = 128;
+pub const MAX_PENDING_PER_OWNER: usize = 16;
+
 #[derive(Debug, Error)]
 pub enum BusError {
     #[error("ledger unavailable — refusing to act: {0}")]
@@ -268,6 +281,9 @@ pub struct AgentBus {
     dispatcher: Arc<dyn Dispatcher>,
     pending: Mutex<HashMap<u64, Pending>>,
     next_id: AtomicU64,
+    /// How long a parked confirmation stays answerable. Always
+    /// [`CONFIRMATION_TTL`] in production; tests shorten it.
+    ttl: Duration,
 }
 
 impl AgentBus {
@@ -284,7 +300,17 @@ impl AgentBus {
             dispatcher,
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            ttl: CONFIRMATION_TTL,
         }
+    }
+
+    /// Shorten the confirmation TTL. Tests only — expiry is otherwise
+    /// two minutes, and a test that sleeps for two minutes is a test
+    /// nobody runs.
+    #[cfg(test)]
+    fn with_ttl(mut self, ttl: Duration) -> AgentBus {
+        self.ttl = ttl;
+        self
     }
 
     /// Tool listing as a JSON value (`lisa tools list`, D-Bus ListTools).
@@ -303,11 +329,67 @@ impl AgentBus {
         self.pending.lock().expect("pending lock").len()
     }
 
+    /// Drop every parked call past its TTL, handing them back so each
+    /// can be ledgered (#137).
+    ///
+    /// Before this, `confirm()` was the only path that removed from the
+    /// map and it checked the TTL *after* removing — so an expired
+    /// entry survived until its own owner happened to answer it, and
+    /// one that nobody answered survived for the life of the process.
+    /// The refusal text has always read "already answered, or expired
+    /// and collected"; nothing collected. An abandoned privileged call
+    /// now leaves a record instead of just leaking.
+    fn collect_expired(&self) -> Vec<Pending> {
+        let mut pending = self.pending.lock().expect("pending lock");
+        let expired: Vec<u64> = pending
+            .iter()
+            .filter(|(_, p)| p.created.elapsed() > self.ttl)
+            .map(|(id, _)| *id)
+            .collect();
+        expired
+            .into_iter()
+            .filter_map(|id| pending.remove(&id))
+            .collect()
+    }
+
+    /// Evict the oldest parked call of whichever peer is holding the
+    /// most, so a flooder pays for its own flood rather than the next
+    /// person to ask.
+    ///
+    /// Refusing outright at the cap would let one peer make the human's
+    /// next confirmation impossible — the same denial-of-service in a
+    /// different shape.
+    fn evict_greediest(&self) -> Option<Pending> {
+        let mut pending = self.pending.lock().expect("pending lock");
+        let mut per_owner: HashMap<&Owner, usize> = HashMap::new();
+        for p in pending.values() {
+            *per_owner.entry(&p.owner).or_default() += 1;
+        }
+        let greediest = per_owner
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .map(|(o, _)| o.clone())?;
+        let victim = pending
+            .iter()
+            .filter(|(_, p)| p.owner == greediest)
+            .min_by_key(|(_, p)| p.created)
+            .map(|(id, _)| *id)?;
+        pending.remove(&victim)
+    }
+
     /// Entry point: resolve policy for `req` and either execute (silent
     /// tier) or park it for confirmation. Everything is ledgered,
     /// including refusals.
     pub fn request(&self, req: CallRequest) -> Result<Outcome, BusError> {
         let call_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+
+        // Collect anything that timed out while nobody was looking, so
+        // the map does not grow without bound and the refusal text
+        // ("expired and collected") is finally true (#137).
+        for stale in self.collect_expired() {
+            let reason = "confirmation expired".to_string();
+            self.ledger_deny(&stale.req, Some(stale.start_ref), "expired", &reason)?;
+        }
 
         let decl = self
             .registry
@@ -357,10 +439,35 @@ impl AgentBus {
                     "chain": req.chain.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     "undoable": decl.undo.is_some(),
                 });
+                // Caps, checked before the request is moved into the
+                // map (#137). A peer that parks calls it never answers
+                // must not be able to exhaust the daemon.
+                let owner = Owner::of(req.caller.clone());
+                let (total, mine) = {
+                    let pending = self.pending.lock().expect("pending lock");
+                    (
+                        pending.len(),
+                        pending.values().filter(|p| p.owner == owner).count(),
+                    )
+                };
+                if mine >= MAX_PENDING_PER_OWNER {
+                    let reason = format!(
+                        "{MAX_PENDING_PER_OWNER} confirmations from this caller are \
+                         already waiting — answer or withdraw one first"
+                    );
+                    self.ledger_deny(&req, Some(start_ref), "over-capacity", &reason)?;
+                    return Ok(Outcome::Denied { call_id, reason });
+                }
+                if total >= MAX_PENDING
+                    && let Some(evicted) = self.evict_greediest()
+                {
+                    let reason = "evicted: too many confirmations waiting".to_string();
+                    self.ledger_deny(&evicted.req, Some(evicted.start_ref), "evicted", &reason)?;
+                }
                 self.pending.lock().expect("pending lock").insert(
                     call_id,
                     Pending {
-                        owner: Owner::of(req.caller.clone()),
+                        owner,
                         req,
                         decl,
                         resolution,
@@ -454,7 +561,7 @@ impl AgentBus {
             }
         };
 
-        if pending.created.elapsed() > CONFIRMATION_TTL {
+        if pending.created.elapsed() > self.ttl {
             let reason = "confirmation expired".to_string();
             self.ledger_deny(&pending.req, Some(pending.start_ref), "expired", &reason)?;
             return Ok(Outcome::Denied { call_id, reason });
@@ -684,6 +791,10 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_with_ttl(CONFIRMATION_TTL)
+    }
+
+    fn fixture_with_ttl(ttl: Duration) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::open(dir.path().join("ledger.db")).unwrap());
         let dispatcher = Arc::new(RecordingDispatcher::returning(json!({"event_id": "evt-1"})));
@@ -696,7 +807,8 @@ mod tests {
             Arc::clone(&ledger),
             UndoJournal::open_in_memory().unwrap(),
             Arc::clone(&dispatcher) as Arc<dyn Dispatcher>,
-        );
+        )
+        .with_ttl(ttl);
         Fixture {
             _dir: dir,
             bus,
@@ -1106,6 +1218,142 @@ mod tests {
                 confirmed.preview
             );
         }
+    }
+
+    /// Issue #137. Nothing ever collected an expired confirmation:
+    /// `confirm()` was the only path that removed from the map, and it
+    /// checked the TTL *after* removing — so a call nobody answered was
+    /// retained for the life of the process, while the refusal text
+    /// claimed it had been "expired and collected".
+    #[test]
+    fn expired_confirmations_are_collected_and_ledgered() {
+        let f = fixture_with_ttl(Duration::from_millis(1));
+        f.bus
+            .request(call(
+                "org.gnome.Calendar",
+                "delete_event",
+                json!({"event_id": "evt-1"}),
+                user(),
+            ))
+            .unwrap();
+        assert_eq!(f.bus.pending_count(), 1);
+
+        std::thread::sleep(Duration::from_millis(20));
+        // Any subsequent request sweeps; the new call parks in its place.
+        f.bus
+            .request(call(
+                "org.gnome.Calendar",
+                "delete_event",
+                json!({"event_id": "evt-2"}),
+                user(),
+            ))
+            .unwrap();
+        assert_eq!(
+            f.bus.pending_count(),
+            1,
+            "the expired call was retained: {} parked",
+            f.bus.pending_count()
+        );
+
+        // An abandoned privileged call still leaves a record.
+        assert!(
+            ledger_kinds(&f.ledger)
+                .iter()
+                .any(|(kind, status)| kind == "tool.deny" && status == "expired"),
+            "expiry was silent: {:?}",
+            ledger_kinds(&f.ledger)
+        );
+    }
+
+    /// A peer that parks calls it never answers must not be able to
+    /// exhaust the daemon — `RequestCall` is reachable by any session
+    /// peer, and each parked call retains a full `CallRequest`.
+    #[test]
+    fn one_peer_cannot_park_without_bound() {
+        let f = fixture();
+        let flooder = lisa_peer::PeerId::Bus(":1.66".into());
+        let park = |caller: &lisa_peer::PeerId| {
+            f.bus.request(CallRequest {
+                caller: caller.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt"}),
+                    user(),
+                )
+            })
+        };
+
+        for i in 0..MAX_PENDING_PER_OWNER {
+            assert!(
+                matches!(
+                    park(&flooder).unwrap(),
+                    Outcome::AwaitingConfirmation { .. }
+                ),
+                "call {i} was refused below the cap"
+            );
+        }
+        let over = park(&flooder).unwrap();
+        assert!(
+            matches!(over, Outcome::Denied { .. }),
+            "the cap did not hold: {over:?}"
+        );
+        assert_eq!(f.bus.pending_count(), MAX_PENDING_PER_OWNER);
+
+        // And the flood must not deny anyone else their confirmation —
+        // making confirmation unavailable is a soft bypass of "no
+        // unconfirmed privileged calls".
+        let human = lisa_peer::PeerId::Bus(":1.2".into());
+        assert!(
+            matches!(park(&human).unwrap(), Outcome::AwaitingConfirmation { .. }),
+            "an unrelated peer was locked out by the flood"
+        );
+    }
+
+    /// At the global cap the greediest peer pays, not the next one to
+    /// ask — otherwise filling the map is itself the denial-of-service.
+    #[test]
+    fn the_global_cap_evicts_the_greediest_peer() {
+        let f = fixture();
+        let park = |caller: lisa_peer::PeerId| {
+            f.bus
+                .request(CallRequest {
+                    caller,
+                    ..call(
+                        "org.gnome.Calendar",
+                        "delete_event",
+                        json!({"event_id": "evt"}),
+                        user(),
+                    )
+                })
+                .unwrap()
+        };
+
+        // Fill the map from many connections — one process can open as
+        // many as it likes, which is why the per-owner cap alone is not
+        // enough.
+        let peers = MAX_PENDING / MAX_PENDING_PER_OWNER;
+        for peer in 0..peers {
+            for _ in 0..MAX_PENDING_PER_OWNER {
+                park(lisa_peer::PeerId::Bus(format!(":1.{peer}")));
+            }
+        }
+        assert_eq!(f.bus.pending_count(), MAX_PENDING);
+
+        let human = lisa_peer::PeerId::Bus(":1.999".into());
+        let outcome = park(human.clone());
+        assert!(
+            matches!(outcome, Outcome::AwaitingConfirmation { .. }),
+            "a full map locked the human out: {outcome:?}"
+        );
+        assert_eq!(f.bus.pending_count(), MAX_PENDING, "the cap was exceeded");
+
+        let mine = {
+            let pending = f.bus.pending.lock().unwrap();
+            let owner = Owner::of(human);
+            pending.values().filter(|p| p.owner == owner).count()
+        };
+        assert_eq!(mine, 1, "the newcomer's own call was the one evicted");
     }
 
     #[test]

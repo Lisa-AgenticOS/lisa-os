@@ -9,26 +9,54 @@ use lisa_agentd::bus::AgentBus;
 use lisa_agentd::dbus;
 use lisa_agentd::journal::UndoJournal;
 use lisa_agentd::registry::Registry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// The manifests the image ships. Always searched, always first.
+const SYSTEM_MANIFEST_DIR: &str = "/usr/share/lisa/manifests";
+
 /// Manifest directories, in precedence order — the FIRST definition of
-/// an app_id wins (issue #97), so a user-writable manifest can add a new
-/// app but never redefine a system one:
-/// system, then per-user; `LISA_MANIFEST_DIRS` (colon-separated)
-/// overrides both for testing.
+/// an app_id wins (issue #97), so a user-writable manifest can add a
+/// new app but never redefine a system one.
 fn manifest_dirs() -> Vec<PathBuf> {
-    if let Some(dirs) = std::env::var_os("LISA_MANIFEST_DIRS") {
-        return std::env::split_paths(&dirs).collect();
-    }
-    let mut dirs = vec![PathBuf::from("/usr/share/lisa/manifests")];
     let user_data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
-    if let Some(base) = user_data {
-        dirs.push(base.join("lisa/manifests"));
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .map(|base| base.join("lisa/manifests"));
+    search_path(
+        Path::new(SYSTEM_MANIFEST_DIR),
+        std::env::var_os("LISA_MANIFEST_DIRS").as_deref(),
+        user_data,
+    )
+}
+
+/// Assemble the search path. Split out so the precedence rule is
+/// testable without a process environment.
+///
+/// `LISA_MANIFEST_DIRS` used to *replace* the whole list, which handed
+/// the ordering — or the removal of the system directory outright — to
+/// anyone who could set the daemon's environment (#134). That is the
+/// same capability #97 already declares untrusted: a
+/// `~/.config/systemd/user/lisa-agentd.service.d/` drop-in, or
+/// `systemctl --user set-environment`, are ordinary same-user
+/// operations, and `NoNewPrivileges=yes` does not touch either. So the
+/// variable now only ever APPENDS; the system directory is prepended
+/// unconditionally and cannot be displaced.
+fn search_path(
+    system: &Path,
+    env: Option<&std::ffi::OsStr>,
+    user_data: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut dirs = vec![system.to_path_buf()];
+    if let Some(extra) = env {
+        dirs.extend(std::env::split_paths(extra));
     }
+    dirs.extend(user_data);
+    // A directory listed twice would load twice and report the second
+    // pass as a bogus "already defined" clash.
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
     dirs
 }
 
@@ -88,4 +116,58 @@ async fn main() -> anyhow::Result<()> {
     tokio::signal::ctrl_c().await?;
     info!("shutting down");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    /// Issue #134. #97 made precedence positional — system first, user
+    /// second, first definition wins — and `LISA_MANIFEST_DIRS`
+    /// replaced the entire list, so setting it removed the system
+    /// directory and a hostile manifest reusing a system `app_id` won
+    /// again. The variable may add, never displace or remove.
+    #[test]
+    fn the_environment_cannot_displace_the_system_manifest_dir() {
+        let system = Path::new("/usr/share/lisa/manifests");
+        for hostile in [
+            "/home/me/.local/share/evil",
+            // Trying to get in FRONT of the system directory.
+            "/home/me/evil:/usr/share/lisa/manifests",
+            // Or to crowd it out entirely.
+            "/tmp/a:/tmp/b:/tmp/c",
+        ] {
+            let dirs = search_path(system, Some(&OsString::from(hostile)), None);
+            assert_eq!(
+                dirs.first().map(PathBuf::as_path),
+                Some(system),
+                "`{hostile}` displaced the system manifest directory"
+            );
+            assert!(
+                dirs.iter().filter(|d| d.as_path() == system).count() == 1,
+                "the system directory is loaded twice for `{hostile}`"
+            );
+        }
+    }
+
+    #[test]
+    fn the_user_directory_comes_last_and_the_env_still_works() {
+        let system = Path::new("/sys");
+        let dirs = search_path(
+            system,
+            Some(&OsString::from("/extra")),
+            Some(PathBuf::from("/home/me/.local/share/lisa/manifests")),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/sys"),
+                PathBuf::from("/extra"),
+                PathBuf::from("/home/me/.local/share/lisa/manifests"),
+            ]
+        );
+        // No environment, no user dir: just the system directory.
+        assert_eq!(search_path(system, None, None), vec![PathBuf::from("/sys")]);
+    }
 }

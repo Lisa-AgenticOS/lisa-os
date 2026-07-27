@@ -12,13 +12,19 @@
 //! something else — at which point it *is* something else. That is the
 //! difference between asking the caller and asking the kernel.
 //!
-//! Two honest limits, both of which the caller must handle rather than
-//! wish away:
+//! Ask it about a **pidfd**, not a bare pid ([`exe_of_peer`]).
+//! "Resolve at the moment of the call" does not close the reuse window:
+//! the peer can exit between the broker's `GetConnectionCredentials`
+//! reply and our `readlink`, both of which happen inside one call, and a
+//! recycled pid then resolves to a different program's binary. Where the
+//! answer feeds grant or quota attribution, that is an impersonation
+//! (#136). A pidfd pins its pid — the kernel will not recycle it while
+//! the descriptor is open, and once the process exits the descriptor
+//! reports `Pid: -1` instead of following the pid to its next owner.
 //!
-//! * A pid is only meaningful while the peer is connected. Pids are
-//!   reused, so resolve at the moment of the call and never store one.
-//! * The executable may have been replaced or deleted since exec (Linux
-//!   appends `" (deleted)"`). That is reported, not silently accepted.
+//! One honest limit remains: the executable may have been replaced or
+//! deleted since exec (Linux appends `" (deleted)"`). That is reported,
+//! not silently accepted.
 
 use std::path::PathBuf;
 use thiserror::Error;
@@ -31,9 +37,58 @@ pub enum IdentityError {
     Gone,
     #[error("the executable was replaced or deleted after exec: {0}")]
     Replaced(String),
+    #[error(
+        "the broker supplied no process fd — a bare pid cannot attribute \
+         identity, and guessing is what this crate exists to remove"
+    )]
+    NoProcessFd,
+}
+
+/// The executable actually running as `peer`, resolved through the
+/// broker's pidfd.
+///
+/// This is the form to use for anything that *decides who someone is*.
+/// [`exe_of_pid`] cannot: between learning the pid and reading the
+/// symlink, the peer may have exited and its pid been recycled.
+///
+/// Refuses rather than falling back when no pidfd is available — a
+/// fallback to the bare pid would silently reintroduce exactly the
+/// window this function exists to close.
+#[cfg(unix)]
+pub fn exe_of_peer(peer: &crate::Peer) -> Result<PathBuf, IdentityError> {
+    // Checked before the platform gate: "we were given no pidfd" is true
+    // and actionable everywhere, and it is the property under test on a
+    // macOS dev host.
+    let Some(fd) = peer.process_fd.as_ref() else {
+        return Err(IdentityError::NoProcessFd);
+    };
+    if !cfg!(target_os = "linux") {
+        return Err(IdentityError::Unsupported);
+    }
+    use std::os::fd::AsRawFd;
+    exe_of_pid(pid_of_pidfd(fd.as_raw_fd())?)
+}
+
+/// The pid a pidfd refers to, from the kernel's own view of our fd
+/// table — `Pid: -1` once the process is gone.
+#[cfg(unix)]
+fn pid_of_pidfd(raw: std::os::fd::RawFd) -> Result<u32, IdentityError> {
+    let text = std::fs::read_to_string(format!("/proc/self/fdinfo/{raw}"))
+        .map_err(|_| IdentityError::Gone)?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("Pid:"))
+        // "-1" (dead) fails to parse as u32, which is the right answer:
+        // there is no process to name, and no recycled pid to mistake
+        // for one.
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .ok_or(IdentityError::Gone)
 }
 
 /// The executable actually running as `pid`.
+///
+/// **Diagnostics and logging only.** For an authentication decision use
+/// [`exe_of_peer`]: a bare pid can be recycled between the moment it is
+/// learned and the moment it is read (#136).
 ///
 /// Linux only, by construction: there is no portable equivalent, and a
 /// wrong answer here is worse than no answer, so other platforms get
@@ -72,6 +127,22 @@ mod tests {
     fn our_own_pid_resolves_to_the_test_binary() {
         let exe = exe_of_pid(std::process::id()).expect("own exe");
         assert_eq!(exe, std::env::current_exe().unwrap());
+    }
+
+    /// Issue #136. The point of the pidfd is that there is no fallback:
+    /// a `Peer` carrying only a pid must refuse to name a program, on
+    /// every platform, rather than resolve a pid that may already
+    /// belong to somebody else.
+    #[cfg(unix)]
+    #[test]
+    fn a_peer_without_a_pidfd_refuses_to_name_a_program() {
+        let peer = crate::Peer::without_process_fd(
+            crate::PeerId::Bus(":1.7".into()),
+            Some(0),
+            // A live, correct pid — and still not enough.
+            Some(std::process::id()),
+        );
+        assert_eq!(exe_of_peer(&peer), Err(IdentityError::NoProcessFd));
     }
 
     #[cfg(target_os = "linux")]
