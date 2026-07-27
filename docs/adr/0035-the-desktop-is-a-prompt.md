@@ -94,10 +94,26 @@ is a program name or a sentence.
 
 This is the cheap half, and it is worth being precise about why.
 
-The sketch keeps GNOME's panel layout exactly: something at the left
-edge, the workspace switcher centred, quick settings at the right. What
-it removes is the *bar* — the full-width opaque strip behind them. Three
-groups of elements float directly on the wallpaper instead.
+The sketch keeps GNOME's panel *structure* — three groups, left, centre,
+right — and changes two things: what is in them, and the strip behind
+them.
+
+The contents move. Today the workspace switcher sits at the left edge
+and the clock in the centre; the sketch puts the `LISA` wordmark at the
+left, the workspace switcher in the centre the clock vacates, and the
+clock on the right beside the quick settings, so that corner reads
+wifi, bluetooth, time.
+
+GNOME builds each box from role lists on `Main.sessionMode.panel`, so
+that reorder is a change to those lists plus a rebuild — not a
+reparenting of actors behind the Shell's back. One wrinkle worth
+recording: a session-mode change (lock, unlock, switch user) re-syncs
+those lists from the mode definition, so a reorder that is not
+re-applied on `updated` is correct only until the first time the screen
+locks.
+
+The *bar* — the full-width opaque strip — is what the sketch removes,
+leaving the three groups floating directly on the wallpaper.
 
 So this is a restyle of the existing panel, not a re-hosting of its
 contents. Quick settings stay GNOME's: Wi-Fi, Bluetooth, volume, the

@@ -13,6 +13,9 @@ wireframe:
 2. **The hot corner moves to the bottom-right.** The top-left is where
    the `LISA` wordmark goes, and a hot corner underneath something you
    click is a trap.
+3. **The top bar is reordered** to the sketch: the `LISA` wordmark at the
+   left, the workspace switcher moved into the centre the clock vacates,
+   and the clock moved right to sit with the quick settings.
 
 The prompt half of ADR-0035's bar is **not** here yet. This extension
 owns the dock and the corner; the entry field is the next slice.
@@ -54,6 +57,27 @@ put the corner back at the top-left.
 **The user's setting still governs.** If they turned hot corners off in
 Settings, ours is off too: a guardrail belongs between the model and the
 machine, never between a person and their own desktop (ADR-0030).
+
+### The top bar is reordered through GNOME's own role lists
+
+GNOME builds each panel box from `Main.sessionMode.panel.{left,center,
+right}`, so `_reorderPanel()` rewrites those lists and calls
+`Main.panel._updatePanel()`. `_addToPanelBox` already reparents a
+container out of its old box, so `activities` migrating from left to
+centre needs nothing special, and `disable()` restores the *original*
+object rather than a guess at the defaults.
+
+The `LISA` wordmark is a `PanelMenu.Button` with no menu — a popup there
+would compete with the overview it opens — added at position 0 of the
+left box. It handles `vfunc_event` rather than `button-press-event` so
+it answers keyboard and touch too; it replaces Activities, which did.
+
+**A session-mode change re-syncs those lists.** Locking the screen,
+unlocking, or switching user rebuilds the panel from the mode
+definition and silently undoes the reorder, so the extension re-applies
+on `sessionMode`'s `updated` signal. Without that the panel is correct
+only until the first screen lock — which is exactly the kind of bug that
+gets reported as "it randomly resets".
 
 ### The geometry is a pure module
 
