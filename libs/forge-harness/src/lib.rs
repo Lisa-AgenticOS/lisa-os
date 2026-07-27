@@ -102,11 +102,15 @@ pub fn forge(
     project: &Path,
     backend: &mut dyn Backend,
     max_iterations: usize,
+    ledger: std::sync::Arc<lisa_ledger::Ledger>,
 ) -> Result<ForgeReport, ForgeError> {
+    // The Ledger is a parameter, not a default (issue #129). This
+    // function used to fill it in with `None`, so the one loop that
+    // edits your files with nobody watching recorded nothing at all.
     let config = AgentConfig {
         max_turns: max_iterations.saturating_mul(8).max(8),
         verifier: Verifier::Dart,
-        ..Default::default()
+        ..AgentConfig::new(ledger)
     };
     match forge_agent(task, project, backend, &config) {
         Ok(report) => Ok(ForgeReport {
@@ -120,6 +124,13 @@ pub fn forge(
 
 #[cfg(test)]
 mod tests {
+    /// A throwaway Ledger. Every caller needs one now (issue #129) —
+    /// that is the fix, not an inconvenience: the loop cannot run
+    /// unledgered even by accident.
+    fn scratch_ledger(dir: &std::path::Path) -> std::sync::Arc<lisa_ledger::Ledger> {
+        std::sync::Arc::new(lisa_ledger::Ledger::open(dir.join("t.db")).unwrap())
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -156,7 +167,14 @@ mod tests {
             write_main("void main() { undefined_symbol(); }\n"),
             write_main("void main() { print('forged'); }\n"),
         ]);
-        let report = forge("print forged", dir.path(), &mut backend, 3).unwrap();
+        let report = forge(
+            "print forged",
+            dir.path(),
+            &mut backend,
+            3,
+            scratch_ledger(dir.path()),
+        )
+        .unwrap();
         assert_eq!(report.iterations, 2, "broken first, fixed second");
     }
 
@@ -170,7 +188,13 @@ mod tests {
         dart_project(dir.path());
         let mut backend =
             ScriptedBackend::repeating(vec![write_main("void main() { broken(; }\n")]);
-        let err = forge("task", dir.path(), &mut backend, 1);
+        let err = forge(
+            "task",
+            dir.path(),
+            &mut backend,
+            1,
+            scratch_ledger(dir.path()),
+        );
         assert!(matches!(err, Err(ForgeError::NoConvergence(1))));
     }
 
@@ -188,7 +212,13 @@ mod tests {
         ]);
         // The done signal is rejected by the analyzer and the script runs
         // out — a Backend error, proving findings were not waved through.
-        let err = forge("task", dir.path(), &mut backend, 3);
+        let err = forge(
+            "task",
+            dir.path(),
+            &mut backend,
+            3,
+            scratch_ledger(dir.path()),
+        );
         assert!(matches!(err, Err(ForgeError::Backend(_))));
         let findings_shown = backend
             .last_history

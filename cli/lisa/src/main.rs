@@ -1315,8 +1315,7 @@ fn forge_cmd(
     let config = forge_harness::AgentConfig {
         max_turns: max_iters.saturating_mul(8).max(8),
         verifier,
-        ledger: Some(ledger),
-        ..Default::default()
+        ..forge_harness::AgentConfig::new(ledger)
     };
     // Narrate the loop live — an agent you can watch, not a spinner.
     let mut observe = |ev: forge_harness::AgentEvent| {

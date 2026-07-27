@@ -175,20 +175,27 @@ pub struct AgentConfig {
     /// thing that edits your files with nobody watching — recorded
     /// nothing at all until now.
     ///
-    /// When set, the agentd contract applies: **no ledger entry, no
-    /// action.** Every tool call is appended before it runs and a failed
-    /// append aborts the run. `None` runs unledgered, which exists for
-    /// tests and embedders; `lisa forge` always supplies one.
-    pub ledger: Option<Arc<Ledger>>,
+    /// The agentd contract, and NOT optional (issue #129). Every tool
+    /// call is appended before it runs, and a failed append aborts the
+    /// run.
+    ///
+    /// This was an `Option` defaulting to `None`, which made "no ledger
+    /// entry, no action" something a caller opted into — so `forge()`
+    /// and `AgentConfig::default()` edited files with nobody watching
+    /// and recorded nothing. An invariant a caller can forget is not an
+    /// invariant. There is no `Default` for this struct for the same
+    /// reason: constructing one requires deciding where the record goes.
+    pub ledger: Arc<Ledger>,
 }
 
-impl Default for AgentConfig {
-    fn default() -> Self {
+impl AgentConfig {
+    /// Defaults, with the one decision that cannot be defaulted.
+    pub fn new(ledger: Arc<Ledger>) -> Self {
         Self {
             max_turns: 32,
             verifier: Verifier::Dart,
             history_char_budget: 48_000,
-            ledger: None,
+            ledger,
         }
     }
 }
@@ -330,16 +337,10 @@ pub fn forge_agent_observed(
     forge_agent_with_tools(task, project, backend, config, &[&workspace], observe)
 }
 
-/// Record the intent of a tool call before it runs. Returns the entry id
-/// so the outcome can reference it, or `None` when unledgered.
-fn ledger_start(
-    ledger: Option<&Ledger>,
-    task: &str,
-    call: &ToolCall,
-) -> Result<Option<i64>, ForgeError> {
-    let Some(ledger) = ledger else {
-        return Ok(None);
-    };
+/// Record the intent of a tool call before it runs, returning the entry
+/// id so the outcome can reference it. A failed append is an error: no
+/// ledger entry, no action.
+fn ledger_start(ledger: &Ledger, task: &str, call: &ToolCall) -> Result<Option<i64>, ForgeError> {
     let args = call.args.to_string();
     Ok(Some(ledger.append(&Event {
         kind: "forge.tool".into(),
@@ -356,14 +357,11 @@ fn ledger_start(
 /// explicitly — a refused action is the most interesting line in the log,
 /// and burying it under a generic "error" would waste it (ADR-0029).
 fn ledger_finish(
-    ledger: Option<&Ledger>,
+    ledger: &Ledger,
     call_ref: Option<i64>,
     call: &ToolCall,
     outcome: &ToolOutcome,
 ) -> Result<(), ForgeError> {
-    let Some(ledger) = ledger else {
-        return Ok(());
-    };
     let refused = outcome.text.starts_with("error: refused")
         || outcome.text.starts_with("error: needs confirmation");
     let status = if refused {
@@ -454,7 +452,7 @@ pub fn forge_agent_with_tools(
                 // recorded BEFORE the tool runs, so a crash mid-write
                 // still leaves evidence of what was attempted. A failed
                 // append aborts the run rather than acting unobserved.
-                let call_ref = ledger_start(config.ledger.as_deref(), task, &call)?;
+                let call_ref = ledger_start(&config.ledger, task, &call)?;
 
                 let outcome = match dispatch(providers, &call.name) {
                     Some(p) => p.execute(&call),
@@ -464,7 +462,7 @@ pub fn forge_agent_with_tools(
                         specs.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
                     )),
                 };
-                ledger_finish(config.ledger.as_deref(), call_ref, &call, &outcome)?;
+                ledger_finish(&config.ledger, call_ref, &call, &outcome)?;
                 observe(AgentEvent::CallResult {
                     ok: !outcome.text.starts_with("error"),
                     chars: outcome.text.len(),
@@ -640,7 +638,7 @@ mod tests {
         let config = AgentConfig {
             max_turns: 4,
             verifier: Verifier::None,
-            ..Default::default()
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         let report = forge_agent_with_tools(
             "note it",
@@ -673,6 +671,15 @@ mod tests {
         assert!(dir.path().join("a.txt").exists(), "the jailed write ran");
     }
 
+    /// A throwaway Ledger for tests.
+    ///
+    /// Every test now needs one, which is the point of #129: the loop
+    /// cannot run unledgered even by accident, so the tests exercise the
+    /// same path production does.
+    fn scratch_ledger(dir: &std::path::Path) -> std::sync::Arc<lisa_ledger::Ledger> {
+        std::sync::Arc::new(lisa_ledger::Ledger::open(dir.join("test-ledger.db")).unwrap())
+    }
+
     /// Issue #54: the loop that edits your files unattended used to
     /// record nothing, while VISION.md promised "every action it took
     /// is in the Ledger". Every tool call now lands twice — intent
@@ -702,8 +709,8 @@ mod tests {
         ]);
         let config = AgentConfig {
             verifier: Verifier::None,
-            ledger: Some(ledger.clone()),
-            ..Default::default()
+            ledger: ledger.clone(),
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         forge_agent(
             "write a file then try a shell",
@@ -782,8 +789,8 @@ mod tests {
         })]);
         let config = AgentConfig {
             verifier: Verifier::None,
-            ledger: Some(ledger),
-            ..Default::default()
+            ledger,
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         let result = forge_agent("write", &project, &mut backend, &config);
 
@@ -857,7 +864,7 @@ mod tests {
         let config = AgentConfig {
             max_turns: 2,
             verifier: Verifier::Dart,
-            ..Default::default()
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         let err = forge_agent("build", dir.path(), &mut backend, &config).unwrap_err();
         assert!(matches!(err, ForgeError::NoConvergence(2)));
@@ -873,7 +880,7 @@ mod tests {
         let config = AgentConfig {
             max_turns: 8,
             verifier: Verifier::None,
-            ..Default::default()
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         let report = forge_agent("build", dir.path(), &mut backend, &config).unwrap();
         assert_eq!(report.turns, 2);
@@ -896,7 +903,7 @@ mod tests {
                 program: "true".into(),
                 args: vec![],
             },
-            ..Default::default()
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         let report = forge_agent("build", dir.path(), &mut backend, &config).unwrap();
         assert_eq!(report.turns, 1, "clean verifier converges immediately");
@@ -917,7 +924,7 @@ mod tests {
                 program: "false".into(),
                 args: vec![],
             },
-            ..Default::default()
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         let err = forge_agent("build", dir.path(), &mut backend, &config);
         assert!(matches!(err, Err(ForgeError::NoConvergence(3))));
@@ -953,7 +960,7 @@ mod tests {
                 program: "false".into(),
                 args: vec![],
             },
-            ..Default::default()
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         let err = forge_agent("build", dir.path(), &mut backend, &config);
         assert!(matches!(err, Err(ForgeError::Backend(_))));
@@ -980,7 +987,7 @@ mod tests {
         let config = AgentConfig {
             max_turns: 4,
             verifier: Verifier::None,
-            ..Default::default()
+            ..AgentConfig::new(scratch_ledger(dir.path()))
         };
         forge_agent("inspect", dir.path(), &mut backend, &config).unwrap();
         let tool_msg = backend
