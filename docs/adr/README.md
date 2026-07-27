@@ -65,3 +65,4 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0033](0033-identity-comes-from-the-transport.md) — Identity comes from the transport, not the message (`libs/lisa-peer`)
 - [ADR-0034](0034-lisa-dev-user-scope-tooling.md) — `lisa dev`: developer tooling in the user's home, rootless (proposed)
 - [ADR-0035](0035-the-desktop-is-a-prompt.md) — The desktop is a prompt: a floating dock-prompt, no top bar (proposed)
+- [ADR-0036](0036-an-assistant-that-acts-on-its-own.md) — An assistant that acts on its own: triggers, trust, and what happens when nobody is watching (proposed)
