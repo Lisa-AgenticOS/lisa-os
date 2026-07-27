@@ -82,13 +82,39 @@ jobs:
           key: dl-v2-${{ runner.os }}-${{ hashFiles('os/packages/**/PKGBUILD') }}
           restore-keys: |
             dl-v2-${{ runner.os }}-
+      # Built third-party packages, separate from the download cache
+      # because it expires on a different clock. llama.cpp (294s) and the
+      # gnome-control-center fork (183s) are pinned to fixed versions and
+      # change perhaps monthly, so rebuilding them every dispatch threw
+      # away ~8 of the ~20 minutes spent in makepkg.
+      #
+      # The WEEK is part of the key on purpose. Arch is rolling: a package
+      # built against last month’s libraries installs cleanly (depends
+      # are unversioned) and then fails at runtime on a missing soname.
+      # Weekly rotation bounds that, and the container additionally proves
+      # every restored package still links before trusting it — the key
+      # limits how stale, the ldd check catches stale anyway.
+      #
+      # NO restore-keys, deliberately. A prefix fallback would hand back
+      # last month’s entry the moment the week rolls over, which defeats
+      # the rotation entirely — and is precisely how the download cache
+      # kept serving a dead llama.cpp clone earlier today.
+      - name: Week stamp for the package cache
+        id: week
+        run: echo "w=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache built third-party packages
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/pkgs
+          key: pkgs-v1-${{ runner.os }}-${{ steps.week.outputs.w }}-${{ hashFiles('os/packages/llama.cpp/PKGBUILD', 'os/packages/gnome-control-center-lisa/PKGBUILD') }}
       - name: Build Lisa packages + versioned image (Arch container)
         run: |
           VER="${{ steps.ver.outputs.ver }}"
-          mkdir -p .ci-cache/pacman .ci-cache/srcdest
+          mkdir -p .ci-cache/pacman .ci-cache/srcdest .ci-cache/pkgs
           sudo podman run --rm --privileged -v "$PWD":/src -w /src -e VER="$VER" \
             -v "$PWD/.ci-cache/pacman":/var/cache/pacman/pkg \
             -v "$PWD/.ci-cache/srcdest":/srcdest \
+            -v "$PWD/.ci-cache/pkgs":/pkgcache \
             docker.io/library/archlinux:latest bash -ec '
               sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
               # Keep downloads across runs (the cache mount above): pacman
@@ -147,6 +173,56 @@ jobs:
                 fi
               done
 
+              # Reuse a PREBUILT third-party package when one is cached.
+              #
+              # llama.cpp and the gnome-control-center fork are pinned to
+              # fixed versions and change perhaps monthly, yet they were
+              # rebuilt on every dispatch: measured at 294s and 183s, i.e.
+              # ~8 of the ~20 minutes spent in makepkg, thrown away each
+              # time. Our own `lisa` package is NOT cached — it is the
+              # thing being released.
+              #
+              # Arch is rolling, so a package built days ago can reference
+              # a soname that no longer exists, install cleanly (depends
+              # are unversioned) and fail at RUNTIME. The cache key is
+              # rotated weekly, and every restored package is proved to
+              # still link before it is trusted. Anything unresolved and
+              # it is rebuilt.
+              use_cached() {
+                local name=$1 f probe bad bin
+                f=$(ls -1 /pkgcache/$name-[0-9]*.pkg.tar.* 2>/dev/null | head -1)
+                [ -n "$f" ] || return 1
+                probe=$(mktemp -d)
+                if ! bsdtar -xf "$f" -C "$probe" 2>/dev/null; then
+                  rm -rf "$probe"; return 1
+                fi
+                bad=0 seen=0
+                while IFS= read -r bin; do
+                  seen=$((seen + 1))
+                  if ldd "$bin" 2>/dev/null | grep -q "not found"; then bad=1; break; fi
+                done < <(find "$probe/usr/bin" "$probe/usr/lib" -type f 2>/dev/null)
+                rm -rf "$probe"
+                # A check that inspected NOTHING has not passed. An empty
+                # or truncated archive would otherwise sail through as
+                # "no unresolved sonames" and ship a package with no
+                # binaries in it.
+                if [ "$seen" -eq 0 ]; then
+                  echo ">> pkgcache: $name extracted no binaries to check — rebuilding"
+                  return 1
+                fi
+                if [ "$bad" -ne 0 ]; then
+                  echo ">> pkgcache: $name has an unresolved soname — rebuilding"
+                  return 1
+                fi
+                echo ">> pkgcache: $name checked $seen file(s), all link"
+                echo ">> pkgcache: reusing $(basename "$f")"
+                cp "$f" /build/repo-out/
+                return 0
+              }
+              cache_built() {  # <glob of freshly built packages>
+                cp $1 /pkgcache/ 2>/dev/null || true
+              }
+
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build
               useradd -m builder
@@ -166,8 +242,11 @@ jobs:
               sudo -u builder bash -c "cd /build && bash os/repo-tools/build-packages.sh /build/repo-out"
               # The local inference engine (llama-server) — AUR-only, built
               # from source into the same repo the lisa packages use.
-              sudo -u builder bash -c "cd /build/os/packages/llama.cpp && makepkg --nocheck --skippgpcheck --noconfirm"
-              cp /build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.* /build/repo-out/
+              if ! use_cached llama.cpp; then
+                sudo -u builder bash -c "cd /build/os/packages/llama.cpp && makepkg --nocheck --skippgpcheck --noconfirm"
+                cp /build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.* /build/repo-out/
+                cache_built "/build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.*"
+              fi
               # Zen browser — repackage the upstream release tarball. -d:
               # it is a binary repackage, so its runtime deps gtk3/nss/etc
               # need not be installed in the build container to package it;
@@ -182,8 +261,11 @@ jobs:
               # Intelligence panel (ADR-0012). -s installs its makedepends;
               # it takes the gnome-control-center name so the local repo
               # precedence installs it instead of the stock Arch package.
-              sudo -u builder bash -c "cd /build/os/packages/gnome-control-center-lisa && makepkg -s --nocheck --skippgpcheck --noconfirm"
-              cp $(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
+              if ! use_cached gnome-control-center; then
+                sudo -u builder bash -c "cd /build/os/packages/gnome-control-center-lisa && makepkg -s --nocheck --skippgpcheck --noconfirm"
+                cp $(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
+                cache_built "$(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-)"
+              fi
               # Apple CS8409/CS42L83 codec override — internal speakers on
               # the reference iMac18,2 (issue #44, ADR-0024). -d: its deps
               # are the kernel itself, pinned and checked inside the
