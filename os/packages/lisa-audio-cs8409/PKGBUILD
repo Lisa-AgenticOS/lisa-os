@@ -155,8 +155,49 @@ prepare() {
   # No fuzz: a hunk that only *almost* applies is a kernel-drift signal.
   ( cd "$hda" && patch -p1 -F0 -i "$dj/patch_cs8409.c.diff" ) \
     || _bail "patch_cs8409.c.diff no longer applies to linux-${_kernver}"
+  # patch_cs8409.h.diff predates two lines upstream added to cs8409.h,
+  # and both sit INSIDE its context rather than in the regions it edits:
+  #
+  #     #include "../side-codecs/hda_component.h"
+  #     unsigned int speaker_muted:1;
+  #
+  # so 2 of its 4 hunks miss and the whole package was skipped (#44).
+  # Nothing actually conflicts — the diff only inserts Apple blocks
+  # elsewhere — so the two lines are lifted out, the diff is applied
+  # with NO fuzz, and the lines are put back where they belong.
+  #
+  # Fuzz would be the wrong tool here. `-F2` would make this apply too,
+  # and would go on applying silently through drift that genuinely
+  # matters. Naming the two lines means any OTHER movement still fails
+  # loudly, which is the point of -F0.
+  local hdr="$hda/codecs/cirrus/cs8409.h"
+  local inc='#include "../side-codecs/hda_component.h"'
+  local spk='unsigned int speaker_muted:1;'
+  grep -qF "$inc" "$hdr" || _bail \
+    "cs8409.h no longer carries the hda_component.h include — the rebase in issue #44 is stale, re-derive it"
+  grep -qF "$spk" "$hdr" || _bail \
+    "cs8409.h no longer carries speaker_muted — the rebase in issue #44 is stale, re-derive it"
+  grep -vF "$inc" "$hdr" | grep -vF "$spk" > "$hdr.stripped"
+  mv "$hdr.stripped" "$hdr"
+
   ( cd "$hda" && patch -p1 -F0 -i "$dj/patch_cs8409.h.diff" ) \
-    || _bail "patch_cs8409.h.diff no longer applies to linux-${_kernver}"
+    || _bail "patch_cs8409.h.diff no longer applies to linux-${_kernver}, even with the two known context lines lifted out"
+
+  # Put them back, each after the line it followed.
+  awk -v inc="$inc" -v spk="$spk" '
+    {print}
+    /^#include "\.\.\/generic\.h"$/ && !i {print inc; i=1}
+    /unsigned int build_ctrl_done:1;/ && !s {print "\t" spk; s=1}
+  ' "$hdr" > "$hdr.restored"
+  mv "$hdr.restored" "$hdr"
+
+  # Exactly one of each: zero means the anchor moved and the line was
+  # dropped, two means it was never stripped. Both compile into a module
+  # that is subtly wrong rather than absent.
+  [ "$(grep -cF "$inc" "$hdr")" = 1 ] || _bail \
+    "restoring the hda_component.h include left $(grep -cF "$inc" "$hdr") copies"
+  [ "$(grep -cF "$spk" "$hdr")" = 1 ] || _bail \
+    "restoring speaker_muted left $(grep -cF "$spk" "$hdr") copies"
 
   # Upstream's driver Makefile expects ./build/hda beneath its own cwd.
   install -m644 "$dj/Makefile" "$srcdir/kbuild/Makefile"

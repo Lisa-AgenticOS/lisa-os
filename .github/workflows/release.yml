@@ -186,20 +186,14 @@ jobs:
               # red build, not a quiet regression. Fix: re-pin
               # os/packages/lisa-audio-cs8409 (README "Re-pinning") and
               # re-verify on hardware. Do NOT paper over it here.
-              # TEMPORARILY OUT OF THE RELEASE (issue #44, 2026-07-26).
-              # Arch moved to linux 7.1.5 and patch_cs8409.h.diff no longer
-              # applies: 2 of 4 hunks fail (cs8409.h lines 19 and 362).
-              # The .c patch still applies with offsets; only the header
-              # drifted. Forcing it is exactly what -F0 exists to prevent.
-              #
-              # This is a TRACKED DEFERRAL, not a paper-over: v31 ships
-              # without internal-speaker support (which has never worked on
-              # hardware, so it is not a regression), and the package comes
-              # straight back once the header diff is rebased. Re-enable
-              # BOTH this build and the Packages= entry below together.
-              #   sudo -u builder bash -c "cd /build/os/packages/lisa-audio-cs8409 && makepkg -d --nocheck --noconfirm"
-              #   cp /build/os/packages/lisa-audio-cs8409/lisa-audio-cs8409-*.pkg.tar.* /build/repo-out/
-              echo "NOTE: lisa-audio-cs8409 skipped — patch drift on 7.1.5, issue #44"
+              # Back in the release (issue #44). The 7.1.5 header drift
+              # is handled in the PKGBUILD's prepare(): upstream's
+              # patch_cs8409.h.diff predates two lines the kernel added
+              # inside its context, so those two are lifted out, the diff
+              # applies with -F0, and they go back. Any OTHER drift still
+              # fails the build loudly.
+              sudo -u builder bash -c "cd /build/os/packages/lisa-audio-cs8409 && makepkg -d --nocheck --noconfirm"
+              cp /build/os/packages/lisa-audio-cs8409/lisa-audio-cs8409-*.pkg.tar.* /build/repo-out/
               # Reclaim disk before the image build — the llama.cpp and
               # gnome-control-center build trees are multi-GB and the runner
               # has ~14 GB. The built .pkg.tar are already in repo-out.
@@ -270,11 +264,7 @@ jobs:
                    # image resolves a different kernel than the one this
                    # module was built for, pacman refuses here — a second,
                    # independent guard against shipping a dead module.
-                   #
-                   # TEMPORARILY OUT (2026-07-26): patch drift on linux
-                   # 7.1.5, see the skipped build step above. Re-enable
-                   # both together once the header diff is rebased.
-                   #   lisa-audio-cs8409
+                   lisa-audio-cs8409
           ExtraTrees=/build/extra
           Autologin=yes
           EOF

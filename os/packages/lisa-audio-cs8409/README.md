@@ -205,3 +205,32 @@ makepkg -d --nocheck --noconfirm     # linux-headers must already match
 
 Arch container only. In CI it is built and folded into the image by
 `.github/workflows/release.yml`.
+
+## The 7.1.5 header rebase (issue #44)
+
+Upstream's `patch_cs8409.h.diff` was written against a `cs8409.h` that
+predates two lines the kernel later added **inside the diff's context**,
+not in the regions it edits:
+
+```c
+#include "../side-codecs/hda_component.h"
+unsigned int speaker_muted:1;
+```
+
+Two of its four hunks therefore miss, and the package was dropped from
+the release for a week because of it. Nothing actually conflicts — the
+diff only inserts Apple blocks elsewhere — so `prepare()` lifts those
+two lines out, applies the diff with **no fuzz**, and puts them back
+after the lines they followed.
+
+**Why not just raise the fuzz.** `-F2` makes this apply too, and would
+go on applying through drift that genuinely matters, producing a module
+that loads and misbehaves rather than one that fails to build. Naming
+the two known lines keeps every *other* movement a red build. Each step
+is guarded: the two lines must be present before stripping, the patch
+must apply at `-F0`, and each must come back exactly once — zero means
+an anchor moved, two means the strip missed.
+
+When mainline grows a `0x106b` row in `cs8409-tables.c`, Guard 3 fails
+the build on purpose and this whole package should be reconsidered
+rather than re-pinned.
