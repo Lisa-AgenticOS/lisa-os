@@ -1964,32 +1964,13 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
         path,
         "org.freedesktop.sysupdate1.Target",
     )?;
-    println!(">> staging via systemd-sysupdated (target {name}) — polkit may prompt");
-    // Without AllowInteractiveAuth, polkit can only consult static policy
-    // — it never shows the auth prompt this whole path exists for (#32).
-    let interactive = zbus::proxy::MethodFlags::AllowInteractiveAuth.into();
-    // Update returns (s new_version, t job_id, o job_path) — issue #30.
-    let (version, _job_id, job): (String, u64, zbus::zvariant::OwnedObjectPath) =
-        match target.call_with_flags("Update", interactive, &("", 0u64)) {
-            Ok(Some(r)) => r,
-            Ok(None) => bail!("sysupdated returned no reply to Update"),
-            Err(zbus::Error::MethodError(ref err_name, ref msg, _))
-                if err_name.as_str().ends_with("NoCandidate") =>
-            {
-                println!(
-                    "already up to date{}",
-                    msg.as_deref()
-                        .map(|m| format!(" ({m})"))
-                        .unwrap_or_default()
-                );
-                return Ok(true);
-            }
-            Err(e) => bail!("sysupdated refused the update: {e}"),
-        };
-    println!(">> update to {version} started — waiting for the job to finish");
-    // JobRemoved(t id, o path, i status): status 0 = success. The wait is
-    // bounded, and a dead bus is an error, never success (#31) — with
-    // --reboot a false success would reboot on unfinished staging.
+    println!(">> staging via systemd-sysupdated (target {name})");
+
+    // JobRemoved(t id, o path, i status): status 0 = success. Subscribed
+    // before any job starts so completion cannot race us; one reader
+    // thread serves every job this run starts. The wait is bounded, and
+    // a dead bus is an error, never success (#31) — with --reboot a
+    // false success would reboot on unfinished staging.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for signal in removals.by_ref() {
@@ -2003,25 +1984,101 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
         }
         // Iterator exhausted: the connection died. Dropping tx reports it.
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60 * 60);
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        match rx.recv_timeout(remaining) {
-            Ok((_, done_path, _)) if done_path != job => continue,
-            Ok((_, _, 0)) => break,
-            Ok((_, _, status)) => {
-                bail!("sysupdated job for {version} failed (status {status})")
+
+    // Without AllowInteractiveAuth, polkit can only consult static policy
+    // — it never shows the auth prompt this whole path exists for (#32).
+    let interactive = zbus::proxy::MethodFlags::AllowInteractiveAuth.into();
+
+    let wait_for = |job: zbus::zvariant::OwnedObjectPath, what: &str| -> anyhow::Result<()> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60 * 60);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok((_, done_path, _)) if done_path != job => continue,
+                Ok((_, _, 0)) => return Ok(()),
+                Ok((_, _, status)) => {
+                    bail!("sysupdated {what} job failed (status {status})")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => bail!(
+                    "timed out waiting for the sysupdated {what} job (60 min) — \
+                     check `journalctl -u systemd-sysupdated`"
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!(
+                    "bus connection lost while waiting for the sysupdated {what} job — \
+                     staging state unknown; check `journalctl -u systemd-sysupdated`"
+                ),
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => bail!(
-                "timed out waiting for the sysupdated job (60 min) — \
-                 check `journalctl -u systemd-sysupdated`"
-            ),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!(
-                "bus connection lost while waiting for the sysupdated job — \
-                 staging state unknown; check `journalctl -u systemd-sysupdated`"
-            ),
         }
-    }
+    };
+
+    type JobReply = (String, u64, zbus::zvariant::OwnedObjectPath);
+    let call = |member: &str, version: &str| -> zbus::Result<Option<JobReply>> {
+        target.call_with_flags(member, interactive, &(version, 0u64))
+    };
+
+    // systemd 261 replaced the one-shot `Target.Update` with `Acquire`
+    // (fetch into the inactive slot) followed by `Install` (make it
+    // bootable). On such a system `Update` does not merely require
+    // privilege — it does not exist, and because the bus policy denies
+    // unknown members by default the call comes back as
+    //
+    //     org.freedesktop.DBus.Error.AccessDenied:
+    //     Sender is not authorized to send message
+    //
+    // which reads as a permission problem and is not one. That is why
+    // the Settings Update button appeared to do nothing (#19): polkit
+    // already grants `sysupdate1.update` to the active local session
+    // (allow_active=yes), so there was never a prompt to miss.
+    let acquired = match call("Acquire", "") {
+        Ok(Some(reply)) => Some(reply),
+        Ok(None) => bail!("sysupdated returned no reply to Acquire"),
+        Err(zbus::Error::MethodError(ref err_name, ref msg, _))
+            if err_name.as_str().ends_with("NoCandidate") =>
+        {
+            println!(
+                "already up to date{}",
+                msg.as_deref()
+                    .map(|m| format!(" ({m})"))
+                    .unwrap_or_default()
+            );
+            return Ok(true);
+        }
+        // Older sysupdated (systemd < 261). The CLI ships through the
+        // runtime channel independently of the image, so a new binary
+        // can land on an older system.
+        Err(zbus::Error::MethodError(ref err_name, _, _))
+            if err_name.as_str().ends_with("UnknownMethod") =>
+        {
+            None
+        }
+        Err(e) => bail!("sysupdated refused to acquire the update: {e}"),
+    };
+
+    let version = match acquired {
+        Some((version, _, job)) => {
+            println!(">> downloading {version} into the inactive slot…");
+            wait_for(job, "acquire")?;
+            let (_, _, job) = match call("Install", &version) {
+                Ok(Some(r)) => r,
+                Ok(None) => bail!("sysupdated returned no reply to Install"),
+                Err(e) => bail!("sysupdated refused to install {version}: {e}"),
+            };
+            println!(">> installing {version}…");
+            wait_for(job, "install")?;
+            version
+        }
+        None => {
+            let (version, _, job) = match call("Update", "") {
+                Ok(Some(r)) => r,
+                Ok(None) => bail!("sysupdated returned no reply to Update"),
+                Err(e) => bail!("sysupdated refused the update: {e}"),
+            };
+            println!(">> update to {version} started — waiting for the job to finish");
+            wait_for(job, "update")?;
+            version
+        }
+    };
+    let _ = &version;
     if reboot {
         let login1: Proxy = Proxy::new(
             &conn,
