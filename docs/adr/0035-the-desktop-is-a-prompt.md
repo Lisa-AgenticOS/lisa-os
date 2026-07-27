@@ -44,8 +44,9 @@ Read literally, in the order it reads on the page:
    fifth distinct glyph, then a wide rounded text field terminating in a
    right-pointing triangle.
 
-The whole of the shell's persistent chrome is the corner wordmark, four
-floating indicators, and that one bar.
+The whole of the shell's persistent chrome is the corner wordmark, the
+workspace switcher, four status indicators, and that one bar — and only
+the last of those is new.
 
 ## Decision
 
@@ -65,17 +66,17 @@ this, it is the shortcut to a door that is always visible.
 ### 2. The dock and the prompt are one object
 
 Not a dock with a search box bolted on. One bar: apps on the left, the
-prompt filling the rest.
+prompt filling the rest. This is the load-bearing claim of the sketch,
+and it is a claim about what a desktop is for — launching a program and
+asking for an outcome are the same gesture, so they get the same
+surface.
 
-The app half is **pinned plus running, merged** — the pinned set is
-always shown in its chosen order, and a window running from something
-unpinned is appended, with a dot marking what is live. It is the most
-familiar arrangement and the most behaviour to specify: overflow,
-grouping per application, and what a click does when an app is both
-pinned and running all need answers before this is built. This is the load-bearing claim of the
-sketch, and it is a claim about what a desktop is for — launching a
-program and asking for an outcome are the same gesture, so they get the
-same surface.
+The app half is **pinned plus running, merged**: the pinned set always
+shown in its chosen order, a window from something unpinned appended,
+and a dot marking what is live. The most familiar arrangement, and the
+most behaviour to specify — overflow, grouping per application, and what
+a click does on an app that is both pinned and already running all need
+answers before this is built.
 
 Concretely: typing a program name launches it, typing a sentence routes
 through intent (ADR-0013) to a tool call or the model. **The launcher and
