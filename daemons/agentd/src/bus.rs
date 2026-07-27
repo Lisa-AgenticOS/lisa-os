@@ -47,6 +47,70 @@ pub enum BusError {
     /// caller, so a sweep cannot use the error to map which ids exist.
     #[error("no pending call {0} (already answered, or expired and collected)")]
     NotYours(u64),
+    /// The requester tried to approve its OWN destructive call while a
+    /// desktop consent surface was running (#135). Unlike `NotYours`
+    /// this is safe to distinguish: the caller already knows the call
+    /// exists — it parked it — so the message is no oracle, and a
+    /// silent refusal here would look like a bug rather than a policy.
+    #[error(
+        "call {0} is destructive-tier: only the desktop consent surface \
+         may approve it — the peer that asked for it may only withdraw it"
+    )]
+    NeedsConsentSurface(u64),
+}
+
+/// What the *broker* says about the caller's relationship to the
+/// desktop consent surface (`dev.lisaos.Overlay1`).
+///
+/// Never claimed by the caller. agentd asks the message bus who owns
+/// the consent surface's well-known name and compares it to the
+/// transport-assigned sender (ADR-0033) — the same authority `PeerId`
+/// already rests on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsentRole {
+    /// This caller owns the consent surface's name: it is the human's
+    /// dialog, and it may approve.
+    Surface,
+    /// A consent surface is running, and this is not it.
+    Other,
+    /// No consent surface exists — a headless host, the p2p transport
+    /// the daemon's own tests use, or a session where the overlay is not
+    /// running. There is nobody else to ask, so the requester answers
+    /// its own call and the Ledger records that it did.
+    Absent,
+}
+
+/// Who is answering a parked call, and in what capacity.
+#[derive(Debug, Clone)]
+pub struct Answerer {
+    pub peer: PeerId,
+    pub consent: ConsentRole,
+}
+
+impl Answerer {
+    /// A peer answering with no consent surface in the session.
+    pub fn alone(peer: PeerId) -> Answerer {
+        Answerer {
+            peer,
+            consent: ConsentRole::Absent,
+        }
+    }
+
+    /// The desktop consent surface — the human's dialog.
+    pub fn surface(peer: PeerId) -> Answerer {
+        Answerer {
+            peer,
+            consent: ConsentRole::Surface,
+        }
+    }
+
+    /// A peer that is not the consent surface, in a session that has one.
+    pub fn ordinary(peer: PeerId) -> Answerer {
+        Answerer {
+            peer,
+            consent: ConsentRole::Other,
+        }
+    }
 }
 
 /// A tool invocation as requested by a client of the bus.
@@ -317,24 +381,76 @@ impl AgentBus {
     /// Answer a parked confirmation. Approval is itself ledgered
     /// (`tool.confirm`) before dispatch; denial and expiry append
     /// `tool.deny`.
+    /// Who may answer a parked call, and for what.
+    ///
+    /// #93 asked for "somebody else cannot release *my* call". The first
+    /// implementation answered "only the requester may release its own
+    /// call" — a different and weaker property, and one that inverted
+    /// ADR-0030 §1: guardrails sit between the model and the machine,
+    /// never between a person and their own machine. It fenced the
+    /// human's dialog out (its bus name is not the requester's) and left
+    /// the requesting peer — for an agent-driven call, the model's own
+    /// connection — as the only peer that could approve.
+    ///
+    /// So authority is split by what the answer *does*:
+    ///
+    /// - **Withdrawal** (`approve == false`) never causes an action, so
+    ///   the requester may always take its own call back, and the
+    ///   consent surface may refuse anything.
+    /// - **Approval** of a `Modal` (destructive) call belongs to the
+    ///   human's dialog whenever one is running. The requester cannot
+    ///   approve its own.
+    /// - **Approval** of a `Chip` (write) call may also come from the
+    ///   requester: the chip is the app's own inline affordance, and
+    ///   routing every write through a modal would train people to click
+    ///   through it, which is how a confirmation stops being one.
+    ///
+    /// Returns the error *constructor* so the id is applied at the call
+    /// site, where the lock is held.
+    fn may_answer(
+        p: &Pending,
+        approve: bool,
+        answerer: &Answerer,
+    ) -> Result<(), fn(u64) -> BusError> {
+        let is_requester = p.owner.allows(&answerer.peer);
+        let is_surface = answerer.consent == ConsentRole::Surface;
+        if !is_requester && !is_surface {
+            return Err(BusError::NotYours);
+        }
+        let self_approving_a_destructive_call =
+            approve && p.resolution.confirmation == Confirmation::Modal && !is_surface;
+        if self_approving_a_destructive_call && answerer.consent == ConsentRole::Other {
+            // A consent surface IS running; it, not the requester,
+            // answers this one.
+            return Err(BusError::NeedsConsentSurface);
+        }
+        // `Absent`: nobody else can answer, so refusing here would make
+        // every destructive call unanswerable on a headless host — the
+        // exact availability failure this issue reported. The Ledger
+        // records that no consent surface was involved.
+        Ok(())
+    }
+
     pub fn confirm(
         &self,
         call_id: u64,
         approve: bool,
-        caller: &PeerId,
+        answerer: &Answerer,
     ) -> Result<Outcome, BusError> {
-        // Ownership is checked while still holding the lock, and the
-        // entry is only removed once it is the right peer — otherwise a
-        // foreign caller could evict somebody else's parked call and
-        // turn a confirmation into a denial-of-service (#93).
+        // Authority is checked while still holding the lock, and the
+        // entry is only removed once the caller is allowed to answer —
+        // otherwise a foreign caller could evict somebody else's parked
+        // call and turn a confirmation into a denial-of-service (#93).
         let pending = {
             let mut pending = self.pending.lock().expect("pending lock");
-            match pending.get(&call_id) {
-                None => return Err(BusError::UnknownCall(call_id)),
-                Some(p) if p.owner.require(caller).is_err() => {
-                    return Err(BusError::NotYours(call_id));
-                }
-                Some(_) => pending.remove(&call_id).expect("just checked"),
+            let Some(p) = pending.get(&call_id) else {
+                return Err(BusError::UnknownCall(call_id));
+            };
+            match Self::may_answer(p, approve, answerer) {
+                // Refuse WITHOUT removing: a call the caller may not
+                // approve is still the requester's to withdraw.
+                Err(e) => return Err(e(call_id)),
+                Ok(()) => pending.remove(&call_id).expect("just checked"),
             }
         };
 
@@ -352,10 +468,17 @@ impl AgentBus {
             kind: "tool.confirm".into(),
             app_id: pending.req.actor.clone(),
             preview: preview_of(&format!(
-                "{} approved {}/{}",
+                "{} approved {}/{} by {}",
                 pending.resolution.confirmation.as_str(),
                 pending.req.app_id,
-                pending.req.tool
+                pending.req.tool,
+                // WHO approved is the point of the entry: a reader must
+                // be able to tell the human's dialog from a requester
+                // that answered its own call (#135).
+                match answerer.consent {
+                    ConsentRole::Surface => "the consent surface".to_string(),
+                    _ => format!("{} (no consent surface)", answerer.peer),
+                }
             )),
             status: "ok".into(),
             detail: detail_json(&pending.req, &pending.resolution).to_string(),
@@ -728,7 +851,9 @@ mod tests {
         // Mallory sweeps. Every id, not just the right one.
         for id in 1..=call_id + 3 {
             assert!(
-                f.bus.confirm(id, true, &mallory).is_err(),
+                f.bus
+                    .confirm(id, true, &Answerer::alone(mallory.clone()))
+                    .is_err(),
                 "peer {mallory} answered call {id}"
             );
         }
@@ -740,7 +865,10 @@ mod tests {
 
         // The rightful owner is unaffected by the failed sweep — the
         // parked call must still be there, not evicted.
-        let outcome = f.bus.confirm(call_id, true, &alice).unwrap();
+        let outcome = f
+            .bus
+            .confirm(call_id, true, &Answerer::alone(alice.clone()))
+            .unwrap();
         assert!(
             matches!(outcome, Outcome::Executed { .. }),
             "the owner could no longer answer their own call: {outcome:?}"
@@ -752,6 +880,234 @@ mod tests {
     /// renders identically to a nonexistent id, so sweeping cannot map
     /// which call ids are live — otherwise the fix for #93 would hand an
     /// attacker the reconnaissance it needs for the next attempt.
+    /// Issue #135, the availability half. Parking a privileged call
+    /// exists so that *a different actor* — the human, through the
+    /// desktop dialog — answers it. The first #93 fix bound the call to
+    /// the requester, so the overlay's `Confirm` came back `NotYours`
+    /// and the call was unanswerable by anyone until the TTL. `lisa
+    /// call` on a destructive tool tells the user "use the overlay"; the
+    /// overlay was the one peer that provably could not comply.
+    #[test]
+    fn the_consent_surface_answers_a_call_it_did_not_request() {
+        let f = fixture();
+        let requester = lisa_peer::PeerId::Bus(":1.10".into());
+        let overlay = lisa_peer::PeerId::Bus(":1.11".into());
+
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: requester.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt-1"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a destructive call must park");
+        };
+
+        let outcome = f
+            .bus
+            .confirm(call_id, true, &Answerer::surface(overlay))
+            .expect("the human's dialog could not answer a parked call");
+        assert!(matches!(outcome, Outcome::Executed { .. }), "{outcome:?}");
+        assert_eq!(f.dispatcher.dispatched(), 1);
+    }
+
+    /// Issue #135, the security half — and the one that matters. With a
+    /// consent surface running, the requester must not approve its own
+    /// destructive call: for an agent-driven call the requester IS the
+    /// model's connection, and ADR-0030 §1 puts guardrails between the
+    /// model and the machine, never between a person and their machine.
+    ///
+    /// #93 asked for "somebody else cannot release *my* call". The first
+    /// implementation delivered "only the caller may release its own
+    /// call" — weaker, and inverted.
+    #[test]
+    fn a_requester_cannot_approve_its_own_destructive_call() {
+        let f = fixture();
+        let requester = lisa_peer::PeerId::Bus(":1.10".into());
+
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: requester.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt-1"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a destructive call must park");
+        };
+
+        let err = f
+            .bus
+            .confirm(call_id, true, &Answerer::ordinary(requester.clone()))
+            .expect_err("the requester self-approved a destructive call");
+        assert!(matches!(err, BusError::NeedsConsentSurface(id) if id == call_id));
+        assert_eq!(f.dispatcher.dispatched(), 0);
+
+        // Refused, not consumed: the call is still there for the human.
+        let outcome = f
+            .bus
+            .confirm(
+                call_id,
+                true,
+                &Answerer::surface(lisa_peer::PeerId::Bus(":1.11".into())),
+            )
+            .expect("the refusal ate the pending call");
+        assert!(matches!(outcome, Outcome::Executed { .. }), "{outcome:?}");
+    }
+
+    /// Withdrawal is not approval. A requester that changes its mind
+    /// must always be able to take its own call back — refusing here
+    /// would leave a destructive call parked and live until the TTL with
+    /// nobody able to kill it.
+    #[test]
+    fn a_requester_may_always_withdraw_its_own_call() {
+        let f = fixture();
+        let requester = lisa_peer::PeerId::Bus(":1.10".into());
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: requester.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt-1"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a destructive call must park");
+        };
+        let outcome = f
+            .bus
+            .confirm(call_id, false, &Answerer::ordinary(requester))
+            .expect("a requester could not withdraw its own call");
+        assert!(matches!(outcome, Outcome::Denied { .. }), "{outcome:?}");
+        assert_eq!(f.dispatcher.dispatched(), 0);
+    }
+
+    /// The write tier keeps its inline chip: routing every write through
+    /// the modal dialog is how people learn to click through it.
+    #[test]
+    fn a_requester_may_approve_its_own_write_call_via_the_chip() {
+        let f = fixture();
+        let requester = lisa_peer::PeerId::Bus(":1.10".into());
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: requester.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "add_event",
+                    json!({"title": "dentist", "start": "2026-07-24T10:00:00Z"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a write call must park for a chip");
+        };
+        let outcome = f
+            .bus
+            .confirm(call_id, true, &Answerer::ordinary(requester))
+            .expect("the app's own inline chip was refused");
+        assert!(matches!(outcome, Outcome::Executed { .. }), "{outcome:?}");
+    }
+
+    /// A third peer is neither the requester nor the surface, so it may
+    /// do nothing at all — not approve, and not deny either, since a
+    /// forced denial is a denial-of-service on somebody else's call.
+    #[test]
+    fn an_unrelated_peer_can_neither_approve_nor_deny() {
+        for approve in [true, false] {
+            let f = fixture();
+            let Outcome::AwaitingConfirmation { call_id, .. } = f
+                .bus
+                .request(CallRequest {
+                    caller: lisa_peer::PeerId::Bus(":1.10".into()),
+                    ..call(
+                        "org.gnome.Calendar",
+                        "delete_event",
+                        json!({"event_id": "evt-1"}),
+                        user(),
+                    )
+                })
+                .unwrap()
+            else {
+                panic!("a destructive call must park");
+            };
+            let err = f
+                .bus
+                .confirm(
+                    call_id,
+                    approve,
+                    &Answerer::ordinary(lisa_peer::PeerId::Bus(":1.99".into())),
+                )
+                .expect_err("an unrelated peer answered (approve={approve})");
+            assert!(matches!(err, BusError::NotYours(_)), "{err:?}");
+            assert_eq!(f.dispatcher.dispatched(), 0);
+        }
+    }
+
+    /// The Ledger must say WHO approved. "A destructive action ran" and
+    /// "a destructive action ran because the requester answered its own
+    /// prompt on a headless box" are different facts, and the Ledger is
+    /// the only place a person can tell them apart (VISION, §5.10).
+    #[test]
+    fn the_ledger_records_whether_a_human_surface_approved() {
+        for (answerer, expected) in [
+            (
+                Answerer::surface(lisa_peer::PeerId::Bus(":1.11".into())),
+                "the consent surface",
+            ),
+            (
+                Answerer::alone(lisa_peer::PeerId::Bus(":1.10".into())),
+                "no consent surface",
+            ),
+        ] {
+            let f = fixture();
+            let Outcome::AwaitingConfirmation { call_id, .. } = f
+                .bus
+                .request(CallRequest {
+                    caller: lisa_peer::PeerId::Bus(":1.10".into()),
+                    ..call(
+                        "org.gnome.Calendar",
+                        "delete_event",
+                        json!({"event_id": "evt-1"}),
+                        user(),
+                    )
+                })
+                .unwrap()
+            else {
+                panic!("a destructive call must park");
+            };
+            f.bus.confirm(call_id, true, &answerer).unwrap();
+            let confirmed = f
+                .ledger
+                .tail(100)
+                .unwrap()
+                .into_iter()
+                .find(|e| e.kind == "tool.confirm")
+                .expect("no tool.confirm entry");
+            assert!(
+                confirmed.preview.contains(expected),
+                "the Ledger does not say who approved: {:?}",
+                confirmed.preview
+            );
+        }
+    }
+
     #[test]
     fn a_rejected_confirmation_does_not_reveal_which_ids_exist() {
         for id in [1u64, 7, 4242] {
@@ -780,7 +1136,7 @@ mod tests {
         };
         let outcome = f
             .bus
-            .confirm(call_id, true, &lisa_peer::PeerId::Direct)
+            .confirm(call_id, true, &Answerer::alone(lisa_peer::PeerId::Direct))
             .unwrap();
         assert!(matches!(outcome, Outcome::Executed { .. }));
         assert_eq!(f.dispatcher.dispatched(), 1);
@@ -828,13 +1184,14 @@ mod tests {
         };
         let outcome = f
             .bus
-            .confirm(call_id, false, &lisa_peer::PeerId::Direct)
+            .confirm(call_id, false, &Answerer::alone(lisa_peer::PeerId::Direct))
             .unwrap();
         assert!(matches!(outcome, Outcome::Denied { .. }));
         assert_eq!(f.dispatcher.dispatched(), 0);
         assert!(
             matches!(
-                f.bus.confirm(call_id, true, &lisa_peer::PeerId::Direct),
+                f.bus
+                    .confirm(call_id, true, &Answerer::alone(lisa_peer::PeerId::Direct)),
                 Err(BusError::UnknownCall(_))
             ),
             "an answered confirmation is gone"
@@ -948,7 +1305,7 @@ mod tests {
             panic!("expected pending");
         };
         f.bus
-            .confirm(call_id, true, &lisa_peer::PeerId::Direct)
+            .confirm(call_id, true, &Answerer::alone(lisa_peer::PeerId::Direct))
             .unwrap();
         let report = f.bus.undo("host").unwrap();
         assert!(

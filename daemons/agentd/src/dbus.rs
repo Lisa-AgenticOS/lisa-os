@@ -24,7 +24,7 @@
 //! Tested over zbus p2p (no bus daemon needed → runs on macOS dev
 //! hosts); session-bus registration is used on real systems.
 
-use crate::bus::{AgentBus, BusError, CallRequest, Outcome};
+use crate::bus::{AgentBus, Answerer, BusError, CallRequest, ConsentRole, Outcome};
 use crate::tier::{Confirmation, Provenance};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,10 +41,56 @@ impl Agent1 {
     }
 }
 
+/// The well-known name of the desktop consent surface — the human's
+/// confirmation dialog (`shell/overlay-extension`, PLAN §5.7.1).
+///
+/// Identity comes from the BROKER's answer to "who owns this name",
+/// never from anything a caller asserts (ADR-0033). Program identity via
+/// `/proc/<pid>/exe` would not help here: the backend runs under
+/// `/usr/bin/gjs`, so an executable allowlist would authorise *any* GJS
+/// program in the session rather than the consent surface.
+const CONSENT_SURFACE: &str = "dev.lisaos.Overlay1";
+
 fn fdo_err(e: BusError) -> zbus::fdo::Error {
     match e {
-        BusError::UnknownCall(_) => zbus::fdo::Error::InvalidArgs(e.to_string()),
+        // #131: `NotYours` renders identically to `UnknownCall` on
+        // purpose (bus.rs), but mapping them to DIFFERENT fdo error
+        // NAMES handed the distinction straight back — a sweep read the
+        // error name instead of the message and mapped which call ids
+        // were live. The pair must be indistinguishable in both.
+        BusError::UnknownCall(_) | BusError::NotYours(_) => {
+            zbus::fdo::Error::InvalidArgs(e.to_string())
+        }
+        // Not an oracle: the caller parked this call, so it already
+        // knows the id exists (#135).
+        BusError::NeedsConsentSurface(_) => zbus::fdo::Error::AccessDenied(e.to_string()),
         other => zbus::fdo::Error::Failed(other.to_string()),
+    }
+}
+
+/// Is this caller the human's dialog? Asked of the message bus.
+///
+/// Fails *closed towards `Absent`*, which is deliberate: `Absent` means
+/// "no separate surface exists, so the requester answers its own call".
+/// The alternative — treating an unreachable broker as `Other` — would
+/// make every destructive call unanswerable by anyone, which is the
+/// availability failure #135 reported.
+async fn consent_role(conn: &zbus::Connection, caller: &lisa_peer::PeerId) -> ConsentRole {
+    // p2p has no broker to ask and no desktop session to ask about.
+    let lisa_peer::PeerId::Bus(caller_name) = caller else {
+        return ConsentRole::Absent;
+    };
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
+        return ConsentRole::Absent;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(CONSENT_SURFACE) else {
+        return ConsentRole::Absent;
+    };
+    match dbus.get_name_owner(name).await {
+        Ok(owner) if owner.as_str() == caller_name => ConsentRole::Surface,
+        Ok(_) => ConsentRole::Other,
+        // NameHasNoOwner: the overlay is not running.
+        Err(_) => ConsentRole::Absent,
     }
 }
 
@@ -167,20 +213,25 @@ impl Agent1 {
 
     /// Answer a pending confirmation. Status: "executed" | "failed" |
     /// "denied".
-    fn confirm(
+    async fn confirm(
         &self,
         call_id: u64,
         approve: bool,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<(String, String)> {
-        // Only the peer that parked this call may answer it (#93), and
-        // the caller's identity comes from the connection (#132).
+        // The caller's identity comes from the connection (#132), and
+        // its AUTHORITY over this call from what the broker says about
+        // the consent surface (#135) — never from the message.
         let caller = lisa_peer::PeerId::of(conn, &header)
             .map_err(|e| zbus::fdo::Error::AccessDenied(e.to_string()))?;
+        let answerer = Answerer {
+            consent: consent_role(conn, &caller).await,
+            peer: caller,
+        };
         let outcome = self
             .bus
-            .confirm(call_id, approve, &caller)
+            .confirm(call_id, approve, &answerer)
             .map_err(fdo_err)?;
         let (_, status, detail) = outcome_reply(&outcome);
         Ok((status, detail))
@@ -210,4 +261,45 @@ pub async fn serve(bus: Arc<AgentBus>) -> zbus::Result<zbus::Connection> {
         .serve_at("/dev/lisaos/Agent1", Agent1::new(bus))?
         .build()
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #131. bus.rs makes `NotYours` and `UnknownCall` render as
+    /// the same *string* so a sweep cannot map which call ids are live —
+    /// and then this function handed the distinction straight back by
+    /// mapping them to different D-Bus error NAMES. A client reads
+    /// `org.freedesktop.DBus.Error.InvalidArgs` vs `.Failed` without
+    /// ever looking at the message, so the oracle was still open.
+    ///
+    /// Both halves have to match: name and message.
+    #[test]
+    fn the_two_refusals_are_indistinguishable_over_the_wire() {
+        for id in [1u64, 7, 4242] {
+            let unknown = fdo_err(BusError::UnknownCall(id));
+            let not_yours = fdo_err(BusError::NotYours(id));
+            assert_eq!(
+                std::mem::discriminant(&unknown),
+                std::mem::discriminant(&not_yours),
+                "different fdo error names for id {id}: {unknown:?} vs {not_yours:?}"
+            );
+            assert_eq!(unknown.to_string(), not_yours.to_string());
+        }
+    }
+
+    /// The consent-surface refusal is deliberately NOT disguised: the
+    /// caller parked the call, so telling it "the human answers this
+    /// one" reveals nothing it did not already know, and a silent
+    /// refusal there reads as a bug (#135).
+    #[test]
+    fn the_consent_surface_refusal_is_its_own_error() {
+        let refusal = fdo_err(BusError::NeedsConsentSurface(7));
+        assert!(matches!(refusal, zbus::fdo::Error::AccessDenied(_)));
+        assert!(
+            refusal.to_string().contains("consent surface"),
+            "the refusal must say where to go: {refusal}"
+        );
+    }
 }
