@@ -1,0 +1,37 @@
+# Re-show the splash after switch-root (issue #45).
+#
+# plymouth-start.service runs ONCE, in the initrd, and systemd carries
+# unit state across the pivot — so in the rooted system the unit is
+# already active and is never re-run. Its ExecStartPost `plymouth
+# show-splash` therefore never fires again after the root filesystem
+# changes underneath the daemon.
+#
+# Observed on the reference iMac18,2 (20260727.44): plymouthd survives
+# the pivot as the same PID, holds /run/plymouth/pid, and lives until GDM
+# — but the screen is black from switch-root (7.5s) to GDM (14.2s). It is
+# alive for ~7 seconds displaying nothing.
+#
+# This asks it to show the splash again once the new root is in place.
+# If it is already drawing, the call is a no-op; `-` on ExecStart and the
+# condition below mean a machine without plymouth is unaffected. It never
+# blocks boot.
+#
+# NOTE: this is a hypothesis under test, not a confirmed fix. If the next
+# boot still blacks out at switch-root, the cause is inside plymouthd and
+# needs its debug log (which lives in the initrd), not another unit.
+
+[Unit]
+Description=Re-show the Lisa boot splash after switch-root
+DefaultDependencies=no
+After=plymouth-read-write.service
+Before=display-manager.service gdm.service
+# Only when a plymouth daemon is actually running.
+ConditionPathExists=/run/plymouth/pid
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/bin/plymouth show-splash
+
+[Install]
+WantedBy=sysinit.target

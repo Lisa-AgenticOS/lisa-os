@@ -285,6 +285,11 @@ jobs:
           # REMOTE HOST IDENTIFICATION HAS CHANGED — training the user to
           # click through the one warning that must never be routine.
           check_enabled lisa-identity-persist.service multi-user.target
+          # Issue #45: plymouth-start runs only in the initrd and systemd
+          # carries its state across the pivot, so show-splash is never
+          # re-issued against the new root. Without this unit the screen
+          # is black from switch-root to GDM — ~7s on the reference iMac.
+          check_enabled lisa-splash-resume.service sysinit.target
           # …and the script it runs, since an enabled unit pointing at a
           # missing ExecStart fails at boot instead of at build time.
           [ -x mnt-pull/usr/lib/lisa/persist-identity.sh ] || {
