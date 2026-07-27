@@ -311,6 +311,24 @@ const MUST_DENY: &[(&str, &str)] = &[
         "the interval takes a value of its own",
     ),
     ("watch \"rm -rf /etc\"", "no interval flag"),
+    // A payload welded to its own flag parses as one word whose first
+    // token is `-Srm`, so the rescan found no program at all (#118).
+    ("env -S'rm -rf /etc'", "attached to the short flag"),
+    (
+        "env --split-string='rm -rf /etc'",
+        "and to the long spelling",
+    ),
+    // awk allows whitespace before a call's parenthesis, and print
+    // redirection writes a file with no listed primitive appearing at
+    // all (#119).
+    (
+        "awk 'BEGIN{system (\"rm -rf /etc\")}'",
+        "a space hid the call",
+    ),
+    (
+        "awk 'BEGIN{print \"x\" > \"/etc/passwd\"}'",
+        "redirection writes a file of its own choosing",
+    ),
 ];
 
 /// Actions that are legitimate often enough to allow, but never silently.

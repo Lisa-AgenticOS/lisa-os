@@ -440,7 +440,7 @@ fn judge(inv: &Invocation, segment: &Segment, depth: usize) -> Verdict {
     // is checked for its own small external surface instead of being
     // refused wholesale (round 3, #80).
     if let Some(source) = awk_source(inv)
-        && let Some(primitive) = AWK_EXEC_PRIMITIVES.iter().find(|p| source.contains(*p))
+        && let Some(primitive) = awk_primitive(source.as_str())
     {
         return Verdict::deny(
             "interpreter.inline_source",
@@ -493,6 +493,57 @@ fn is_unresolved(word: &str) -> bool {
 /// language, awk's external surface really is this small, so reading the
 /// source for these beats refusing every `awk '{print $1}'`.
 const AWK_EXEC_PRIMITIVES: &[&str] = &["system(", "|", "getline", "close(", "ENVIRON"];
+
+/// The primitive an awk program uses to reach outside itself, if any.
+///
+/// A plain `source.contains(p)` missed two things (#119). awk allows
+/// whitespace between a function name and its parenthesis, so
+/// `system ("rm -rf /etc")` did not match `system(`. And print
+/// redirection — `print "x" > "/etc/passwd"` — writes a file of the
+/// program's choosing without any of the listed primitives appearing at
+/// all.
+fn awk_primitive(source: &str) -> Option<&'static str> {
+    // Collapse `name (` to `name(` so a space cannot hide a call. Done
+    // on a copy; the original is what gets reported.
+    let mut squeezed = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            // Drop whitespace that sits directly before an opening paren.
+            let mut lookahead = chars.clone();
+            let mut saw_only_space = true;
+            while let Some(&n) = lookahead.peek() {
+                if n == '(' {
+                    break;
+                }
+                if !n.is_whitespace() {
+                    saw_only_space = false;
+                    break;
+                }
+                lookahead.next();
+            }
+            if saw_only_space && lookahead.peek() == Some(&'(') {
+                continue;
+            }
+        }
+        squeezed.push(c);
+    }
+    if let Some(p) = AWK_EXEC_PRIMITIVES.iter().find(|p| squeezed.contains(*p)) {
+        return Some(p);
+    }
+    // `print ... > "file"` / `>> "file"`. Redirection into a quoted name
+    // is a file write; `>` between numbers is a comparison, so the quote
+    // is what distinguishes them.
+    let bytes = squeezed.as_bytes();
+    for (i, _) in squeezed.match_indices('>') {
+        let rest = squeezed[i + 1..].trim_start();
+        let _ = bytes;
+        if rest.starts_with('"') {
+            return Some("> \"file\" redirection");
+        }
+    }
+    None
+}
 
 /// An awk-family program's source: the first operand, unless `-f` named
 /// a script file instead.
@@ -720,11 +771,27 @@ impl Segment {
         if !self.is_opaque() {
             return Vec::new();
         }
-        self.words
-            .iter()
-            .filter(|w| w.trim().contains(char::is_whitespace))
-            .cloned()
-            .collect()
+        let mut out: Vec<String> = Vec::new();
+        for word in &self.words {
+            let trimmed = word.trim();
+            if !trimmed.contains(char::is_whitespace) {
+                continue;
+            }
+            out.push(word.clone());
+            // A payload welded to its own flag: `env -S"rm -rf /etc"`
+            // parses to the single word `-Srm -rf /etc`, whose first
+            // token is `-Srm` — not a program, so the rescan found
+            // nothing (#118). Peel the flag off and read what follows.
+            if let Some(rest) = trimmed.strip_prefix("--") {
+                if let Some((_, payload)) = rest.split_once('=') {
+                    out.push(payload.to_string());
+                }
+            } else if trimmed.starts_with('-') && trimmed.len() > 2 {
+                // Short flag with an attached value: skip `-X`.
+                out.push(trimmed[2..].to_string());
+            }
+        }
+        out
     }
 
     fn invocations(&self) -> Vec<Invocation> {
