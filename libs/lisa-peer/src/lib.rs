@@ -51,6 +51,14 @@ pub enum PeerError {
 /// The identity of a connection, as assigned by the transport rather
 /// than claimed by the peer.
 ///
+/// **`Direct` is one peer, not "any peer".** A daemon that serves
+/// several untrusted clients over separate p2p sockets would give them
+/// all the same `PeerId`, and ownership would not distinguish them. Lisa
+/// serves the session bus in production and uses p2p only in tests, so
+/// this is sound here — but it is a real constraint, not an oversight,
+/// and anything that starts accepting multiple p2p clients needs a
+/// per-connection identity instead.
+///
 /// This is the whole point: a unique bus name is handed out by the
 /// message broker, is never chosen by the sender, is unique for the
 /// life of the connection, and is **never reused** after the connection
@@ -67,15 +75,49 @@ pub enum PeerId {
 }
 
 impl PeerId {
-    /// The sender of a message, or [`PeerId::Direct`] on a p2p link.
+    /// Who sent this message, decided by the TRANSPORT.
     ///
-    /// Never fails: an absent sender on a brokered connection would be
-    /// indistinguishable from p2p, so callers that need certainty use
-    /// [`resolve`] and get credentials or an error.
-    pub fn of(header: &zbus::message::Header<'_>) -> PeerId {
-        match header.sender() {
-            Some(name) => PeerId::Bus(name.to_string()),
-            None => PeerId::Direct,
+    /// The first version of this read `header.sender()` alone, and that
+    /// was the very bug this crate exists to fix (issue #132). A
+    /// message's SENDER field is filled in *by the message bus*; on a
+    /// point-to-point link nothing rewrites it and zbus's
+    /// `Builder::sender()` is public, so a client can put whatever it
+    /// likes there. A reviewer had one p2p client present as `:1.10`,
+    /// `:1.11` and `:1.10` again on a single socket and self-approve its
+    /// own destructive call.
+    ///
+    /// So the connection decides, not the message.
+    /// `Connection::unique_name()` is `Some` only when a broker assigned
+    /// us one — which is exactly the condition "there is a bus here that
+    /// fills SENDER in". On p2p the header is ignored entirely.
+    ///
+    /// Fails closed: a brokered connection whose message has no sender
+    /// is anomalous (the spec says the bus always sets it), and
+    /// answering `Direct` there would let it match a p2p-owned object.
+    pub fn of(
+        conn: &zbus::Connection,
+        header: &zbus::message::Header<'_>,
+    ) -> Result<PeerId, PeerError> {
+        // `unique_name()` is Some only when a broker assigned us one.
+        Self::decide(
+            conn.unique_name().is_some(),
+            header.sender().map(|s| s.as_str()),
+        )
+    }
+
+    /// The decision itself, separated so it can be tested.
+    ///
+    /// `PeerId::of` needs a live `Connection`, which a unit test cannot
+    /// cheaply build — so before this split the only part an attacker
+    /// touches had no test at all. That is how #132 shipped.
+    pub(crate) fn decide(brokered: bool, sender: Option<&str>) -> Result<PeerId, PeerError> {
+        if !brokered {
+            // p2p: one peer, and nothing it writes about itself counts.
+            return Ok(PeerId::Direct);
+        }
+        match sender {
+            Some(name) => Ok(PeerId::Bus(name.to_string())),
+            None => Err(PeerError::Unidentified),
         }
     }
 
@@ -131,6 +173,57 @@ impl Owner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #132. A p2p client can set the SENDER field to anything —
+    /// `Builder::sender()` is public and nothing rewrites it without a
+    /// broker. A reviewer used exactly this to present as `:1.10`,
+    /// `:1.11` and `:1.10` again on ONE socket and self-approve a
+    /// destructive call. The forged value must be ignored entirely.
+    #[test]
+    fn a_forged_sender_is_ignored_without_a_broker() {
+        for forged in [
+            ":1.10",
+            ":1.11",
+            "dev.lisaos.Shell",
+            "org.freedesktop.DBus",
+            "",
+        ] {
+            assert_eq!(
+                PeerId::decide(false, Some(forged)).unwrap(),
+                PeerId::Direct,
+                "p2p honoured a forged sender `{forged}`"
+            );
+        }
+        assert_eq!(PeerId::decide(false, None).unwrap(), PeerId::Direct);
+    }
+
+    /// On a broker the sender is filled in by the bus, so it is the
+    /// identity — and its absence is anomalous enough to refuse rather
+    /// than answer `Direct`, which would match a p2p-owned object.
+    #[test]
+    fn a_brokered_message_without_a_sender_fails_closed() {
+        assert_eq!(
+            PeerId::decide(true, Some(":1.42")).unwrap(),
+            PeerId::Bus(":1.42".into())
+        );
+        assert!(matches!(
+            PeerId::decide(true, None),
+            Err(PeerError::Unidentified)
+        ));
+    }
+
+    /// The two transports must never produce an identity that satisfies
+    /// the other's owner — otherwise a forged bus name on p2p (or the
+    /// reverse) would cross the boundary.
+    #[test]
+    fn a_p2p_caller_can_never_satisfy_a_bus_owner() {
+        let bus_owner = Owner::of(PeerId::Bus(":1.10".into()));
+        let p2p_caller = PeerId::decide(false, Some(":1.10")).unwrap();
+        assert!(
+            !bus_owner.allows(&p2p_caller),
+            "a forged p2p sender satisfied a bus owner"
+        );
+    }
 
     #[test]
     fn a_bus_peer_owns_only_its_own_objects() {

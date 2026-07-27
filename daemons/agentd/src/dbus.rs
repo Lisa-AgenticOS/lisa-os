@@ -116,6 +116,9 @@ impl Agent1 {
     /// execute immediately; everything else parks and emits
     /// ConfirmationRequested (answer via Confirm). Every path is
     /// ledgered before anything happens.
+    // Six of these are the RequestCall wire signature (Appendix B) and
+    // two are zbus injections; the arity is the interface's, not ours.
+    #[allow(clippy::too_many_arguments)]
     async fn request_call(
         &self,
         app_id: String,
@@ -124,6 +127,7 @@ impl Agent1 {
         options: HashMap<String, OwnedValue>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<(u64, String, String)> {
         let args: serde_json::Value = serde_json::from_str(&args_json)
             .map_err(|e| zbus::fdo::Error::InvalidArgs(format!("args_json: {e}")))?;
@@ -148,7 +152,10 @@ impl Agent1 {
                 args,
                 chain,
                 // Transport-assigned, not message-claimed (ADR-0033).
-                caller: lisa_peer::PeerId::of(&header),
+                // The CONNECTION decides whether the header's sender is
+                // trustworthy — on p2p it is not (#132).
+                caller: lisa_peer::PeerId::of(conn, &header)
+                    .map_err(|e| zbus::fdo::Error::AccessDenied(e.to_string()))?,
             })
             .map_err(fdo_err)?;
         let reply = outcome_reply(&outcome);
@@ -165,11 +172,15 @@ impl Agent1 {
         call_id: u64,
         approve: bool,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<(String, String)> {
-        // Only the peer that parked this call may answer it (#93).
+        // Only the peer that parked this call may answer it (#93), and
+        // the caller's identity comes from the connection (#132).
+        let caller = lisa_peer::PeerId::of(conn, &header)
+            .map_err(|e| zbus::fdo::Error::AccessDenied(e.to_string()))?;
         let outcome = self
             .bus
-            .confirm(call_id, approve, &lisa_peer::PeerId::of(&header))
+            .confirm(call_id, approve, &caller)
             .map_err(fdo_err)?;
         let (_, status, detail) = outcome_reply(&outcome);
         Ok((status, detail))

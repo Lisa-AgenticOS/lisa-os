@@ -62,13 +62,29 @@ pub async fn resolve(
     conn: &zbus::Connection,
     header: &zbus::message::Header<'_>,
 ) -> Result<Peer, PeerError> {
-    let id = PeerId::of(header);
-    let PeerId::Bus(ref name) = id else {
+    // The BROKER answers this, never the peer. Issue #133: the first
+    // version keyed off the header's sender, so a p2p client that forged
+    // a bus-looking sender skipped the early return below — and
+    // `GetConnectionCredentials` then went down the SAME p2p socket to
+    // the attacker, who answered `uid=0, pid=1` for a process whose real
+    // uid was 501. `is_same_user_as_us()` and `exe_of_pid()` were both
+    // satisfiable by self-attestation, which is precisely the class of
+    // bug this crate exists to remove.
+    //
+    // So the check is on the CONNECTION: no broker, no question asked.
+    if conn.unique_name().is_none() {
         return Ok(Peer {
-            id,
+            id: PeerId::Direct,
             uid: None,
             pid: None,
         });
+    }
+
+    let id = PeerId::of(conn, header)?;
+    let PeerId::Bus(ref name) = id else {
+        // Unreachable given the check above, but a future edit that
+        // reorders these must not silently start trusting a peer.
+        return Err(PeerError::Unidentified);
     };
 
     let dbus = zbus::fdo::DBusProxy::new(conn).await?;
