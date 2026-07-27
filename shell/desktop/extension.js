@@ -138,9 +138,13 @@ export default class LisaDesktopExtension extends Extension {
             this._reposition();
             this._installHotCorners();
         });
-        // The Dash re-lays-out when its icon size settles or favourites
-        // change; the panel around it has to follow or it drifts
-        // off-centre.
+        // The Dash populates itself asynchronously — at `enable()` time
+        // it has no icons yet, so its natural size is zero and a
+        // placement computed now puts a zero-width dock in the corner,
+        // invisible, forever. Follow the panel's own size instead of
+        // guessing when it has settled.
+        this._connect(this._dock, 'notify::width', () => this._reposition());
+        this._connect(this._dock, 'notify::height', () => this._reposition());
         this._connect(this._dock.dash, 'icon-size-changed', () => this._reposition());
 
         this._installHotCorners();
