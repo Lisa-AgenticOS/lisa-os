@@ -86,6 +86,12 @@ pub struct ToolDecl {
     pub input_schema: Value,
     #[serde(default)]
     pub undo: Option<UndoDecl>,
+    /// Set when the manifest floor raised this tool's declared tier
+    /// (issue #56) — the app said one thing, the tool's own name said
+    /// another. Not deserialized: an app cannot claim it was already
+    /// corrected.
+    #[serde(skip)]
+    pub tier_raised_from: Option<Tier>,
 }
 
 /// The app-provided inverse call: `tool` in the same manifest, args
@@ -108,9 +114,43 @@ pub struct ResourceDecl {
 impl Manifest {
     /// Parse and validate one manifest document.
     pub fn from_json(json: &str) -> Result<Manifest, ManifestError> {
-        let m: Manifest = serde_json::from_str(json)?;
+        let mut m: Manifest = serde_json::from_str(json)?;
+        m.apply_tier_floor();
         m.validate()?;
         Ok(m)
+    }
+
+    /// Raise any tool whose declared tier is below what its own name
+    /// implies (issue #56). Only ever raises — a manifest may always be
+    /// MORE cautious than the floor.
+    ///
+    /// Raising rather than rejecting is deliberate. A false positive
+    /// then costs one extra confirmation; rejecting would break a
+    /// legitimate app outright, and ADR-0029 already learned that a rule
+    /// people must route around protects nothing.
+    pub fn apply_tier_floor(&mut self) {
+        for tool in &mut self.tools {
+            let Some(floor) = Tier::implied_floor(&tool.name) else {
+                continue;
+            };
+            if tool.tier < floor {
+                tool.tier_raised_from = Some(tool.tier);
+                tool.tier = floor;
+            }
+        }
+    }
+
+    /// Tools whose tier the floor corrected, for reporting. A silent
+    /// correction would leave an app author wondering why their tool
+    /// prompts, and an admin unable to see that a manifest lied.
+    pub fn raised_tiers(&self) -> Vec<(&str, Tier, Tier)> {
+        self.tools
+            .iter()
+            .filter_map(|t| {
+                t.tier_raised_from
+                    .map(|from| (t.name.as_str(), from, t.tier))
+            })
+            .collect()
     }
 
     pub fn validate(&self) -> Result<(), ManifestError> {
@@ -295,6 +335,83 @@ pub(crate) fn fixture_calendar_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #56: a manifest declared its own tiers and nothing checked
+    /// them, so `delete_everything: read` executed SILENTLY — no
+    /// confirmation, and no undo journal entry either, because
+    /// journaling is gated on `is_privileged`.
+    #[test]
+    fn a_tool_cannot_declare_a_tier_below_what_its_name_implies() {
+        let json = fixture_calendar_json().replace("\"destructive\"", "\"read\"");
+        let m = Manifest::from_json(&json).unwrap();
+
+        let delete = m.tools.iter().find(|t| t.name == "delete_event").unwrap();
+        assert_eq!(
+            delete.tier,
+            Tier::Destructive,
+            "a tool named delete_* declaring `read` must be raised"
+        );
+        assert_eq!(delete.tier_raised_from, Some(Tier::Read));
+
+        // The correction is visible, not silent.
+        let raised = m.raised_tiers();
+        assert!(
+            raised.iter().any(|(n, _, _)| *n == "delete_event"),
+            "the correction must be reportable: {raised:?}"
+        );
+    }
+
+    /// Only ever raises. A cautious app that declares `destructive` for
+    /// a read-shaped tool keeps its own stricter choice.
+    #[test]
+    fn the_floor_never_lowers_a_declared_tier() {
+        for (name, declared) in [
+            ("list_events", Tier::Destructive),
+            ("get_note", Tier::Write),
+        ] {
+            assert!(
+                Tier::implied_floor(name).is_none_or(|f| f <= declared),
+                "floor would have lowered {name}"
+            );
+        }
+    }
+
+    /// The floor matches whole words. Substring matching would fire on
+    /// half the read tools in existence and teach app authors to work
+    /// around it — ADR-0029's lesson about rules people route around.
+    #[test]
+    fn the_floor_does_not_fire_on_innocent_names() {
+        for name in [
+            "get_settings", // contains "set"
+            "preset_list",  // contains "set"
+            "search_notes", // contains "arch"
+            "read_file",
+            "list_events",
+            "describe_event",
+            "format_check", // hmm: "format" IS destructive-listed
+        ] {
+            let floor = Tier::implied_floor(name);
+            if name == "format_check" {
+                // Documented false positive: `format` is destructive in
+                // the disk sense. Raising it costs a confirmation, which
+                // is the safe direction, and an app can rename.
+                assert_eq!(floor, Some(Tier::Destructive));
+            } else {
+                assert_eq!(floor, None, "`{name}` should imply nothing, got {floor:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn destructive_verbs_outrank_write_verbs() {
+        assert_eq!(Tier::implied_floor("create_note"), Some(Tier::Write));
+        assert_eq!(Tier::implied_floor("delete_note"), Some(Tier::Destructive));
+        // Both present: the worse one wins.
+        assert_eq!(
+            Tier::implied_floor("create_and_delete"),
+            Some(Tier::Destructive)
+        );
+    }
     use serde_json::json;
 
     fn calendar_json() -> String {

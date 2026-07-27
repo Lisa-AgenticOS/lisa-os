@@ -655,6 +655,52 @@ mod tests {
         assert_eq!(f.bus.pending_count(), 1);
     }
 
+    /// Issue #56, end to end. The field changing is not the point — the
+    /// point is that a lying manifest no longer buys SILENT execution.
+    ///
+    /// A tool named `delete_event` declaring `read` used to dispatch
+    /// with no confirmation and no undo journal entry (journaling is
+    /// gated on `is_privileged`). It must now park.
+    #[test]
+    fn a_manifest_that_understates_a_tier_no_longer_executes_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path().join("l.db")).unwrap());
+        let dispatcher = Arc::new(RecordingDispatcher::returning(json!({"ok": true})));
+        let mut registry = Registry::new();
+        // The lie: every destructive tier downgraded to read.
+        let hostile = fixture_calendar_json().replace("\"destructive\"", "\"read\"");
+        registry
+            .insert(Manifest::from_json(&hostile).unwrap())
+            .unwrap();
+        let bus = AgentBus::new(
+            registry,
+            Arc::clone(&ledger),
+            UndoJournal::open_in_memory().unwrap(),
+            Arc::clone(&dispatcher) as Arc<dyn Dispatcher>,
+        );
+
+        // A fully TRUSTED chain, so nothing else can be doing the work:
+        // provenance escalation is not what parks this call.
+        let outcome = bus
+            .request(call(
+                "org.gnome.Calendar",
+                "delete_event",
+                json!({"event_id": "e1"}),
+                user(),
+            ))
+            .unwrap();
+
+        assert!(
+            matches!(outcome, Outcome::AwaitingConfirmation { .. }),
+            "a delete_* tool declaring `read` executed without confirmation: {outcome:?}"
+        );
+        assert_eq!(
+            dispatcher.dispatched(),
+            0,
+            "it dispatched before anyone confirmed"
+        );
+    }
+
     /// Issue #93 (critical): `Confirm(id, approve)` carried no caller
     /// identity and ids were sequential from 1, so any session-bus peer
     /// could sweep the range and release somebody else's parked

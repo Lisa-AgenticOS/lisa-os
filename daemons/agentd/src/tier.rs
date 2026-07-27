@@ -40,6 +40,70 @@ impl Tier {
         }
     }
 
+    /// The lowest tier a tool with this name could honestly declare
+    /// (issue #56). `None` when the name implies nothing.
+    ///
+    /// A manifest states its own tiers and nothing checked them, so an
+    /// app could declare `delete_everything` as `read` and get SILENT
+    /// execution — no confirmation, no undo journal entry, because undo
+    /// is gated on `is_privileged`. The manifest is the ontology the
+    /// whole tier machinery reasons over (ADR-0030 §5); a lie in it is
+    /// not a mistake the rest of the system can recover from.
+    ///
+    /// Deliberately name-based and deliberately coarse. This cannot
+    /// detect a *dishonest* tool — `harmless_helper` that deletes your
+    /// mail is undetectable from a manifest — and it is not trying to.
+    /// It catches the case where the name says one thing and the tier
+    /// says another, which is the difference between a lie and a lie
+    /// that also bothered to hide.
+    pub fn implied_floor(tool_name: &str) -> Option<Tier> {
+        /// Verbs implying irreversible loss or a change to the world
+        /// that cannot simply be edited back.
+        const DESTRUCTIVE: &[&str] = &[
+            "delete",
+            "remove",
+            "purge",
+            "wipe",
+            "erase",
+            "destroy",
+            "drop",
+            "format",
+            "truncate",
+            "revoke",
+            "uninstall",
+            "kill",
+            "terminate",
+            "reset",
+            "clear",
+            "unpublish",
+            "shred",
+        ];
+        /// Verbs implying state changes that are ordinarily reversible.
+        const WRITE: &[&str] = &[
+            "create", "add", "insert", "write", "update", "modify", "edit", "set", "put", "patch",
+            "send", "post", "publish", "share", "move", "rename", "copy", "install", "enable",
+            "disable", "start", "stop", "restart", "upload", "schedule", "invite", "assign",
+            "archive", "import", "export", "sync",
+        ];
+
+        // Match on whole words, so `set` fires on `set_alarm` but not on
+        // `get_settings` or `preset_list` — substring matching here would
+        // make the floor fire on half the read tools in existence.
+        let words: Vec<String> = tool_name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .map(|w| w.to_ascii_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect();
+
+        if words.iter().any(|w| DESTRUCTIVE.contains(&w.as_str())) {
+            return Some(Tier::Destructive);
+        }
+        if words.iter().any(|w| WRITE.contains(&w.as_str())) {
+            return Some(Tier::Write);
+        }
+        None
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Tier::Read => "read",
@@ -115,6 +179,70 @@ impl Confirmation {
             Tier::Write => Confirmation::Chip,
             Tier::Destructive => Confirmation::Modal,
         }
+    }
+
+    /// The lowest tier a tool with this name could honestly declare
+    /// (issue #56). `None` when the name implies nothing.
+    ///
+    /// A manifest states its own tiers and nothing checked them, so an
+    /// app could declare `delete_everything` as `read` and get SILENT
+    /// execution — no confirmation, no undo journal entry, because undo
+    /// is gated on `is_privileged`. The manifest is the ontology the
+    /// whole tier machinery reasons over (ADR-0030 §5); a lie in it is
+    /// not a mistake the rest of the system can recover from.
+    ///
+    /// Deliberately name-based and deliberately coarse. This cannot
+    /// detect a *dishonest* tool — `harmless_helper` that deletes your
+    /// mail is undetectable from a manifest — and it is not trying to.
+    /// It catches the case where the name says one thing and the tier
+    /// says another, which is the difference between a lie and a lie
+    /// that also bothered to hide.
+    pub fn implied_floor(tool_name: &str) -> Option<Tier> {
+        /// Verbs implying irreversible loss or a change to the world
+        /// that cannot simply be edited back.
+        const DESTRUCTIVE: &[&str] = &[
+            "delete",
+            "remove",
+            "purge",
+            "wipe",
+            "erase",
+            "destroy",
+            "drop",
+            "format",
+            "truncate",
+            "revoke",
+            "uninstall",
+            "kill",
+            "terminate",
+            "reset",
+            "clear",
+            "unpublish",
+            "shred",
+        ];
+        /// Verbs implying state changes that are ordinarily reversible.
+        const WRITE: &[&str] = &[
+            "create", "add", "insert", "write", "update", "modify", "edit", "set", "put", "patch",
+            "send", "post", "publish", "share", "move", "rename", "copy", "install", "enable",
+            "disable", "start", "stop", "restart", "upload", "schedule", "invite", "assign",
+            "archive", "import", "export", "sync",
+        ];
+
+        // Match on whole words, so `set` fires on `set_alarm` but not on
+        // `get_settings` or `preset_list` — substring matching here would
+        // make the floor fire on half the read tools in existence.
+        let words: Vec<String> = tool_name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .map(|w| w.to_ascii_lowercase())
+            .filter(|w| !w.is_empty())
+            .collect();
+
+        if words.iter().any(|w| DESTRUCTIVE.contains(&w.as_str())) {
+            return Some(Tier::Destructive);
+        }
+        if words.iter().any(|w| WRITE.contains(&w.as_str())) {
+            return Some(Tier::Write);
+        }
+        None
     }
 
     pub fn as_str(self) -> &'static str {
