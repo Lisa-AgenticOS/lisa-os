@@ -130,12 +130,12 @@ jobs:
               echo ">> srcdest contains:"; ls -la /srcdest 2>&1 | head -20
               for d in /srcdest/*/; do
                 [ -d "$d" ] || continue
-                if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+                if ! git -c safe.directory="*" -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
                   echo ">> srcdest: $(basename "$d") is not a git repo — left alone"
                   continue
                 fi
                 name=$(basename "$d")
-                have=$(git -C "$d" config --get remote.origin.url || true)
+                have=$(git -c safe.directory="*" -C "$d" config --get remote.origin.url || true)
                 # `|| true`: the container runs `bash -ec`, so a grep
                 # that matches nothing (a cached source no PKGBUILD
                 # claims any more) would abort the entire build.
@@ -150,6 +150,16 @@ jobs:
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build
               useradd -m builder
+              # The download cache restores as uid 1001 (the runner), so
+              # every git source in /srcdest is owned by a stranger. Git
+              # then refuses it for "dubious ownership" and
+              # `git config --get remote.origin.url` returns NOTHING —
+              # and makepkg reports that as "<dir> is not a clone of
+              # <url>", which reads as a stale-URL problem and is not
+              # one. Two runs were lost to that message before the
+              # `ls -la` above showed the ownership. Hand the tree to the
+              # user that will actually build with it.
+              chown -R builder /srcdest
               # -s builds (g-c-c) auto-install their makedepends via sudo.
               printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
               chown -R builder /build
