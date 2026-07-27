@@ -361,6 +361,16 @@ fn check_shell_line_inner(raw: &str, depth: usize) -> Verdict {
             }
         }
 
+        // Payloads handed to a KNOWN program that runs them (#117, #121).
+        for inv in segment.invocations() {
+            for code in executed_arguments(&inv) {
+                verdict = verdict.worst(check_shell_line_inner(&code, depth + 1));
+                if verdict.is_denied() {
+                    return verdict;
+                }
+            }
+        }
+
         for inv in segment.invocations() {
             verdict = verdict.worst(judge(&inv, &segment, depth));
             if verdict.is_denied() {
@@ -806,6 +816,92 @@ fn is_shell(program: &str) -> bool {
 }
 
 /// Anything that executes: a shell, or another language's interpreter.
+/// Arguments a program in `KNOWN_LEAF_PROGRAMS` will nevertheless run as
+/// shell code.
+///
+/// `git`, `trap` and `watch` are on that list because rules reason about
+/// them — `git.destructive`, the deferred-code check. Being on it made
+/// them non-opaque, so `embedded_command_lines()` never looked at their
+/// arguments and the payload was invisible (#117, #121):
+///
+/// ```text
+/// git rebase -x "rm -rf /etc"
+/// trap -- "rm -rf /etc" EXIT
+/// watch -n 1 "rm -rf /etc"
+/// ```
+///
+/// Making them opaque instead would rescan every quoted argument they
+/// take — `git commit -m "..."` included — which is the false-positive
+/// class of #124. So each program names the ONE argument it executes,
+/// and nothing else is reinterpreted as code.
+fn executed_arguments(inv: &Invocation) -> Vec<String> {
+    let args: Vec<&str> = inv.args.iter().map(String::as_str).collect();
+    match inv.program.as_str() {
+        // `trap CMD SIGNAL`; `--` ends option parsing and is not the
+        // command, which is exactly how #117 slipped past.
+        "trap" => args
+            .iter()
+            .find(|a| **a != "--" && !a.starts_with('-'))
+            .map(|s| (*s).to_string())
+            .into_iter()
+            .collect(),
+        // `watch [-n SECS] CMD` — the interval takes a value of its own,
+        // so the first bare operand after it is the command.
+        "watch" => {
+            let mut i = 0;
+            while i < args.len() {
+                let a = args[i];
+                if a == "-n" || a == "--interval" {
+                    i += 2;
+                    continue;
+                }
+                if a.starts_with('-') {
+                    i += 1;
+                    continue;
+                }
+                return vec![a.to_string()];
+            }
+            Vec::new()
+        }
+        // git runs whatever these hand it, once per commit in the
+        // rebase and filter-branch cases.
+        "git" => {
+            const RUNS_NEXT: &[&str] = &[
+                "-x",
+                "--exec",
+                "--tree-filter",
+                "--index-filter",
+                "--msg-filter",
+                "--commit-filter",
+                "--env-filter",
+                "--parent-filter",
+                "--subdirectory-filter",
+            ];
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < args.len() {
+                let a = args[i];
+                if RUNS_NEXT.contains(&a) {
+                    if let Some(cmd) = args.get(i + 1) {
+                        out.push((*cmd).to_string());
+                    }
+                    i += 2;
+                    continue;
+                }
+                if let Some(rest) = RUNS_NEXT
+                    .iter()
+                    .find_map(|f| a.strip_prefix(&format!("{f}=")))
+                {
+                    out.push(rest.to_string());
+                }
+                i += 1;
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn executes_code(program: &str) -> bool {
     is_shell(program)
         || INTERPRETERS.contains(&program)

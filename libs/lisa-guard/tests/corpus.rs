@@ -285,6 +285,32 @@ const MUST_DENY: &[(&str, &str)] = &[
         "the w flag writes a file of its own choosing",
     ),
     ("sed \"1w /etc/cron.d/pwn\" file", "w after a line address"),
+    // Programs on the leaf list that nevertheless RUN one of their
+    // arguments. They are on that list because rules reason about them,
+    // and being on it stopped their payload from ever being read
+    // (#117, #121).
+    (
+        "git rebase -x \"rm -rf /etc\" main",
+        "git runs -x once per commit",
+    ),
+    (
+        "git rebase --exec \"rm -rf /etc\" main",
+        "the long spelling",
+    ),
+    (
+        "git filter-branch --tree-filter \"rm -rf /etc\" HEAD",
+        "filter-branch runs its filter too",
+    ),
+    (
+        "trap -- \"rm -rf /etc\" EXIT",
+        "`--` ends options and is not the command",
+    ),
+    ("trap \"rm -rf /etc\" EXIT", "the bare spelling"),
+    (
+        "watch -n 1 \"rm -rf /etc\"",
+        "the interval takes a value of its own",
+    ),
+    ("watch \"rm -rf /etc\"", "no interval flag"),
 ];
 
 /// Actions that are legitimate often enough to allow, but never silently.
