@@ -205,36 +205,19 @@ function osRelease() {
 }
 
 /// The always-visible dock: GNOME's Dash in a floating rounded panel.
-///
-/// Two actors, not one, and the split is load-bearing.
-///
-/// `LayoutManager` OWNS the `visible` property of any chrome registered
-/// with `trackFullscreen`, and rewrites it on every relayout:
-///
-///     actor.visible = !(global.window_group.visible &&
-///                       monitor && monitor.inFullscreen)
-///
-/// In the overview `global.window_group.visible` is false, so that
-/// expression is `true` — entering the overview forcibly *re-showed*
-/// this dock on top of GNOME's own dash, which is the two-docks bug.
-///
-/// So the OUTER actor is unstyled and belongs to LayoutManager, which
-/// keeps GNOME's fullscreen handling for free; the INNER panel carries
-/// the styling and is ours to hide. LayoutManager never touches
-/// children.
 const LisaDock = GObject.registerClass(
-class LisaDock extends St.Widget {
+class LisaDock extends St.BoxLayout {
     _init() {
-        super._init({layout_manager: new Clutter.BinLayout()});
-        this.panel = new St.BoxLayout({
+        super._init({
             style_class: 'lisa-dock',
             reactive: true,
             track_hover: true,
         });
         this.dash = new Dash();
+        // The Dash hides itself when it believes it is off-duty; ours is
+        // never off-duty.
         this.dash.show();
-        this.panel.add_child(this.dash);
-        this.add_child(this.panel);
+        this.add_child(this.dash);
     }
 
     /// Size the Dash to the monitor, then place the whole panel.
@@ -266,13 +249,27 @@ export default class LisaDesktopExtension extends Extension {
         });
         this._reposition();
 
-        // In the overview GNOME shows its OWN dash. Two docks on screen
-        // at once is worse than either, so ours stands down for the
-        // duration rather than fighting it for z-order. Hiding the inner
-        // panel, not the tracked outer actor — see LisaDock.
-        this._connect(Main.overview, 'showing', () => this._dock.panel.hide());
+        // ONE dock, everywhere — GNOME's own goes away.
+        //
+        // The first attempt did the opposite: ours hid inside the
+        // overview so GNOME's could take over. That produced two docks a
+        // few pixels apart, because `LayoutManager` owns the `visible`
+        // property of chrome registered with `trackFullscreen` and
+        // rewrites it on every relayout as
+        // `!(window_group.visible && monitor.inFullscreen)`. In the
+        // overview `window_group.visible` is false, so that expression
+        // is `true` and the dock was forcibly re-shown. Hiding it harder
+        // was never going to work.
+        //
+        // Hiding GNOME's dash instead removes the conflict rather than
+        // fighting it, and it is what the design asked for anyway: on
+        // macOS the Dock does not vanish when you open Mission Control.
+        this._dash = Main.overview.dash;
+        this._dash.hide();
+        // The overview's controls re-show it on state changes, so once
+        // is not enough.
+        this._connect(Main.overview, 'showing', () => this._dash.hide());
         this._connect(Main.overview, 'hidden', () => {
-            this._dock.panel.show();
             // The button latches when clicked; nothing unlatches it when
             // the overview closes by other means (Escape, Super, a
             // click), leaving it stuck lit and dead to the next press.
@@ -287,6 +284,7 @@ export default class LisaDesktopExtension extends Extension {
             if (showApps.checked)
                 Main.overview.showApps();
         });
+
         this._connect(Main.layoutManager, 'monitors-changed', () => {
             this._reposition();
             this._installHotCorners();
@@ -314,6 +312,8 @@ export default class LisaDesktopExtension extends Extension {
             this._dock = null;
         }
         this._restoreHotCorners();
+        this._dash?.show();
+        this._dash = null;
     }
 
     _connect(object, signal, callback) {

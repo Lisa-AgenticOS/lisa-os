@@ -37,30 +37,35 @@ reordering and app context menus are exactly what ADR-0035 §2 asks for,
 and they already work. A hand-rolled dock would mean owning every one of
 those regressions in a widget we did not write.
 
-Inside the overview GNOME shows its *own* dash, so ours stands down for
-the duration rather than fighting it for z-order.
+**There is one dock, and it is ours.** GNOME's own dash is hidden
+(`Main.overview.dash.hide()`, re-shown on `disable()`), and ours stays
+visible in the overview too — on macOS the Dock does not vanish when you
+open Mission Control.
 
-**Which actor gets hidden matters, and this is the subtle part.** The
-dock is two actors: an unstyled outer widget registered as chrome, and
-the styled panel inside it. `LayoutManager` owns the `visible` property
-of any chrome registered with `trackFullscreen` and rewrites it on every
-relayout:
+The first attempt did the opposite: ours hid inside the overview so
+GNOME's could take over. That produced **two docks a few pixels apart**,
+because `LayoutManager` owns the `visible` property of chrome registered
+with `trackFullscreen` and rewrites it on every relayout:
 
 ```js
 actor.visible = !(global.window_group.visible && monitor && monitor.inFullscreen)
 ```
 
 In the overview `global.window_group.visible` is false, so that
-expression evaluates to `true` — entering the overview forcibly
-*re-showed* the dock on top of GNOME's dash. That was the two-docks bug,
-and calling `hide()` harder would never have fixed it. Hiding the inner
-panel works because LayoutManager never touches children, and the outer
-actor stays registered so GNOME's fullscreen handling still comes free.
+expression is `true` and the dock was forcibly re-shown. Calling
+`hide()` harder was never going to work; hiding GNOME's dash removes the
+conflict instead of fighting it.
+
+**The dock carries no styling of its own.** The Dash brings GNOME's
+`.dash-background` with it, so it looks exactly like the dash it
+replaces. An earlier version drew a second rounded panel around it,
+which read as two docks nested inside each other and would have drifted
+out of step with the theme the moment GNOME restyled the dash.
 
 **The show-apps button has to be wired by hand.** GNOME connects its
 dash's button from the overview's own controls, so a `Dash` used outside
 the overview has a button that does nothing when clicked. It is
-connected to `Main.overview.showApps()`, and unlatched when the overview
+connected to `Main.overview.showApps()` and unlatched when the overview
 closes — the button latches on click and nothing else unlatches it, so
 it would otherwise stick lit and dead to the next press.
 
