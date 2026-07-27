@@ -284,13 +284,13 @@ fn system_path_write(inv: &Invocation) -> Verdict {
         // Only -i was modelled, so the script body was never read and
         // this walked straight past (#120).
         if inv.program == "sed" {
-            if let Some(written) = sed_script_writes(inv) {
-                if is_under_system_root(&written) {
-                    return Verdict::deny(
-                        "fs.system_write",
-                        format!("`sed`'s w flag writes `{written}`, which belongs to the OS image"),
-                    );
-                }
+            if let Some(written) = sed_script_writes(inv)
+                && is_under_system_root(&written)
+            {
+                return Verdict::deny(
+                    "fs.system_write",
+                    format!("`sed`'s w flag writes `{written}`, which belongs to the OS image"),
+                );
             }
             if !inv.has_any_short_flag(&['i']) && !inv.has_flag("--in-place") {
                 return Verdict::Allow;
@@ -486,10 +486,11 @@ fn is_setuid_mode(arg: &str) -> bool {
         return true;
     }
     // Octal: 4 digits where the leading one carries setuid(4)/setgid(2).
-    if arg.len() == 4 && arg.chars().all(|c| c.is_ascii_digit()) {
-        if let Some(lead) = arg.chars().next().and_then(|c| c.to_digit(8)) {
-            return lead & 0b110 != 0;
-        }
+    if arg.len() == 4
+        && arg.chars().all(|c| c.is_ascii_digit())
+        && let Some(lead) = arg.chars().next().and_then(|c| c.to_digit(8))
+    {
+        return lead & 0b110 != 0;
     }
     false
 }
