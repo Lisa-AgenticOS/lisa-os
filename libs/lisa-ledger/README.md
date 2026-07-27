@@ -53,19 +53,23 @@ thing to write is "whatever the tool returned".
 
 ## Limits and open issues
 
-- **Secrets can be written into it, and it cannot be redacted** (#127).
-  The forge loop previews tool arguments and outputs, so `read_file .env`
-  copies credentials into an append-only store. Append-only is the whole
-  point, which is exactly why what goes in matters more here than
-  anywhere else.
-- **Control characters survive** into a reader's terminal (#128) — issue
-  #15's lesson was applied to model output reaching the shell, but not to
-  the Ledger.
+- **Secret redaction is a net, not a proof.** `preview_of` now replaces
+  `NAME=value` pairs whose name reads like a credential, and the long
+  prefixed tokens the major providers issue (`sk-`, `ghp_`, `AKIA`,
+  `AIza`, `xoxb-`, `glpat-`). It will miss a credential that looks like
+  prose. The real defence is not previewing secret material at all; this
+  is the backstop for when something does, and it matters because
+  append-only means nothing here can be taken back (#127, closed).
+- **Control characters are stripped** before a preview is stored (#128,
+  closed) — newlines and tabs become spaces, everything else becomes a
+  replacement mark, so a tool result cannot repaint a reader's terminal
+  and forge the record.
 - **`actor` is caller-asserted** (#55), so entries record reliably *that*
   something happened and unreliably *who* did it, until ADR-0033 lands
   everywhere.
-- `preview_of` caps at 160 **chars**, which is up to 640 bytes; its test
-  asserts `len() <= 160` and so passes only on ASCII.
+- `preview_of` caps at 160 **chars**, which is up to 640 bytes. The old
+  test asserted `len() <= 160` and therefore only held for ASCII; it now
+  counts characters.
 
 ## Readers
 

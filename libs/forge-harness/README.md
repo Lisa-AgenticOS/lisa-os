@@ -45,3 +45,16 @@ ADR-0025), not hardcoded prose.
 Status: **loop live** — plan→edit(jailed)→analyze→iterate converges
 against real models and the scripted-backend test; the Flutter lane
 scaffolds, verifies, builds and installs.
+
+## Limits and open issues
+
+- **The Ledger is mandatory** (#129, closed). `AgentConfig` has no
+  `Default`: constructing one requires deciding where the record goes,
+  so an unledgered run does not compile. "No ledger entry, no action" is
+  an invariant, not an option a caller can forget.
+- **A jail escape is ledgered as `escaped`**, not `failed` (#126,
+  closed) — a containment breach and a missing file must not look the
+  same in the record.
+- Tool arguments and outputs reach the Ledger through `preview_of`,
+  which redacts credential-shaped text and strips control characters.
+  That is a backstop, not a licence to preview secrets.
