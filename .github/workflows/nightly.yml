@@ -280,6 +280,18 @@ jobs:
           check_enabled NetworkManager.service multi-user.target
           check_enabled iwd.service multi-user.target
           check_enabled lisa-inferenced.service multi-user.target
+          # Issue #142: without this the machine mints a new SSH identity
+          # on every A/B update, and each first login afterwards warns
+          # REMOTE HOST IDENTIFICATION HAS CHANGED — training the user to
+          # click through the one warning that must never be routine.
+          check_enabled lisa-identity-persist.service multi-user.target
+          # …and the script it runs, since an enabled unit pointing at a
+          # missing ExecStart fails at boot instead of at build time.
+          [ -x mnt-pull/usr/lib/lisa/persist-identity.sh ] || {
+            echo "FAIL: lisa-identity-persist.service is enabled but"
+            echo "      /usr/lib/lisa/persist-identity.sh is missing or not executable"
+            fail=1
+          }
           sudo umount mnt-pull
           sudo losetup -d "$LOOP"
           [ "$fail" -eq 0 ] || exit 1

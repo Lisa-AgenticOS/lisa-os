@@ -13,6 +13,11 @@ enable lisa-model-store.service
 # Persist /home onto the durable var partition before login (settings, the
 # wallpaper, and the SSH key survive A/B updates). Boot-safe.
 enable lisa-home-persist.service
+# Machine identity (SSH host keys) belongs to the machine, not to the
+# slot the image happens to be in (issue #142). Without this, every
+# update warns REMOTE HOST IDENTIFICATION HAS CHANGED and trains the user
+# to click through the one warning that must never be routine.
+enable lisa-identity-persist.service
 enable lisa-boot-report.service
 enable gdm.service
 # Boot-splash lifecycle: keep the units that quit Plymouth and hand the

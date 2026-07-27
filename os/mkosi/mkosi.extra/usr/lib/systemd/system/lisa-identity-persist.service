@@ -1,0 +1,27 @@
+# Keep this machine's SSH host keys across A/B updates (issue #142).
+#
+# /etc is per-slot, so an update replaces the host keys and every first
+# login afterwards warns REMOTE HOST IDENTIFICATION HAS CHANGED. The keys
+# live on the durable var partition instead and are installed into the
+# slot before sshd starts. See /usr/lib/lisa/persist-identity.sh.
+#
+# Boot-safe: on any problem the slot's own keys are used (fully working
+# SSH, just a changed fingerprint) and the unit never blocks boot.
+# Companion to lisa-home-persist.service — same durable-var idiom.
+
+[Unit]
+Description=Persist SSH host identity across A/B updates
+# The store is on /var, so it must be mounted first.
+After=local-fs.target var.mount
+RequiresMountsFor=/var
+# sshd on Arch reads its keys at start, and sshdgenkeys generates any
+# that are missing — both must see OUR keys, so both come after.
+Before=sshd.service sshdgenkeys.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/lisa/persist-identity.sh
+
+[Install]
+WantedBy=multi-user.target

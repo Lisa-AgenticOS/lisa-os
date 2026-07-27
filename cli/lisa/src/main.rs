@@ -1919,6 +1919,82 @@ fn assert_transfers_protect_booted() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refuse to call an update "staged" when the boot loader will ignore it.
+///
+/// sd-boot honours an explicit `LoaderEntryDefault` over its own version
+/// sort. Pinning a known-good version after a successful boot is a
+/// reasonable thing to do once — and a permanent trap afterwards, because
+/// every later update then stages correctly, reports success, and is
+/// never booted. On the reference iMac that cost a full debugging session
+/// aimed at the wrong subsystem: the audio fix under test had never been
+/// installed, and nothing said so (issue #141).
+///
+/// Advisory by design: this reports, it does not silently repoint
+/// somebody's boot loader. A pin is a deliberate act and un-pinning is
+/// the owner's call, so the failure mode we remove is the SILENT one.
+fn warn_if_boot_default_is_pinned(installed: Option<&str>) {
+    let out = match std::process::Command::new("bootctl")
+        .arg("status")
+        .env("SYSTEMD_COLORS", "0")
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        // No bootctl, or not a sd-boot system (Track L): nothing to say.
+        _ => return,
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let pinned = text.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("Default Entry:")?;
+        Some(rest.trim().to_string())
+    });
+    let Some(pinned) = pinned.filter(|p| !p.is_empty()) else {
+        return; // No pin: sd-boot picks the newest, which is what we want.
+    };
+
+    // Which version SHOULD boot? When the caller knows what it installed,
+    // that. Otherwise ask the boot loader for the highest version it can
+    // see — the exec fallback path does not learn a version, and the
+    // question that matters is the same either way: will the newest thing
+    // on this machine actually boot?
+    let newest = match installed {
+        Some(v) => v.to_string(),
+        None => {
+            let listed = match std::process::Command::new("bootctl")
+                .arg("list")
+                .env("SYSTEMD_COLORS", "0")
+                .output()
+            {
+                Ok(o) if o.status.success() => o,
+                _ => return,
+            };
+            let text = String::from_utf8_lossy(&listed.stdout);
+            let mut versions: Vec<String> = text
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("version:"))
+                .map(|v| v.trim().to_string())
+                .collect();
+            // Version strings here are YYYYMMDD.run, so lexicographic
+            // ordering is chronological.
+            versions.sort();
+            match versions.pop() {
+                Some(v) => v,
+                None => return,
+            }
+        }
+    };
+    if pinned.contains(&newest) {
+        return; // Pinned to exactly the version that should boot. Fine.
+    }
+    let installed = newest.as_str();
+    eprintln!();
+    eprintln!("!! the boot loader is PINNED to `{pinned}`, not to {installed}");
+    eprintln!("!! rebooting will come back on the OLD version and this update");
+    eprintln!("!! will look like it did nothing. Clear the pin with:");
+    eprintln!("!!     sudo bootctl set-default \"\"");
+    eprintln!("!! (then sd-boot boots the newest entry), or pin the new one:");
+    eprintln!("!!     sudo bootctl set-default lisa_{installed}.efi");
+}
+
 /// Stage an update through systemd-sysupdated's D-Bus surface
 /// (`org.freedesktop.sysupdate1`, systemd ≥257). Unlike execing
 /// systemd-sysupdate — root-only, because the ESP and partition writes
@@ -2093,6 +2169,7 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
         println!(
             "update staged in the inactive slot — reboot to use it (rollback is automatic on boot failure)"
         );
+        warn_if_boot_default_is_pinned(Some(&version));
     }
     Ok(true)
 }
@@ -2229,6 +2306,7 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
         println!(
             "update staged in the inactive slot — reboot to use it (rollback is automatic on boot failure)"
         );
+        warn_if_boot_default_is_pinned(None);
     }
     Ok(())
 }
