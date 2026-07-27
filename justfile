@@ -11,6 +11,9 @@ test:
 lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
+    # A stray apostrophe in a workflow comment closes the container
+    # script and fails the build somewhere unrelated. Cheap to check.
+    python3 os/repo-tools/check-workflow-quoting.py
 
 fmt:
     cargo fmt --all

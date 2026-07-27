@@ -187,7 +187,7 @@ jobs:
               # os/packages/lisa-audio-cs8409 (README "Re-pinning") and
               # re-verify on hardware. Do NOT paper over it here.
               # Back in the release (issue #44). The 7.1.5 header drift
-              # is handled in the PKGBUILD's prepare(): upstream's
+              # is handled in prepare() in the PKGBUILD: the upstream
               # patch_cs8409.h.diff predates two lines the kernel added
               # inside its context, so those two are lifted out, the diff
               # applies with -F0, and they go back. Any OTHER drift still
