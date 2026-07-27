@@ -190,8 +190,132 @@ impl Ledger {
 
 /// Bounded, single-line preview for UI display.
 pub fn preview_of(text: &str) -> String {
-    let one_line = text.replace(['\n', '\r'], " ");
-    one_line.chars().take(160).collect()
+    let redacted = redact_secrets(text);
+    let printable = strip_control(&redacted);
+    // 160 CHARS, which is up to 640 bytes — the cap is on display width,
+    // not storage.
+    printable.chars().take(160).collect()
+}
+
+/// Replace anything that looks like a credential with a marker.
+///
+/// The Ledger is append-only, which is the whole point of it and exactly
+/// why this matters: a secret written here cannot be taken back
+/// (#127). The forge loop previews tool arguments and outputs, so
+/// `read_file .env` would otherwise copy live credentials into a store
+/// designed never to forget.
+///
+/// This is a net, not a proof. It catches the shapes that actually leak
+/// — `KEY=value` assignments with a secret-ish name, and the
+/// long high-entropy tokens the major providers issue — and it will miss
+/// a credential that looks like prose. The real defence is not previewing
+/// secret material in the first place; this is the backstop for when
+/// something does.
+pub fn redact_secrets(text: &str) -> String {
+    const SECRET_NAMES: &[&str] = &[
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+        "client_secret",
+        "auth",
+        "credential",
+        "bearer",
+    ];
+    let mut out = String::with_capacity(text.len());
+    // `PASSWORD: value` puts the secret in the NEXT word, so a purely
+    // per-word pass redacts the label and leaves the credential. The
+    // test caught exactly that.
+    let mut next_word_is_secret = false;
+
+    for part in text.split_inclusive(|c: char| c.is_whitespace()) {
+        let trimmed = part.trim_end();
+        let trailing = &part[trimmed.len()..];
+
+        if next_word_is_secret && !trimmed.is_empty() {
+            next_word_is_secret = false;
+            out.push_str("[redacted]");
+            out.push_str(trailing);
+            continue;
+        }
+
+        let lowered = trimmed.to_ascii_lowercase();
+        let key_is_secret = trimmed.contains(['=', ':'])
+            && SECRET_NAMES.iter().any(|n| {
+                lowered
+                    .split(['=', ':'])
+                    .next()
+                    .is_some_and(|key| key.contains(n))
+            });
+
+        if key_is_secret {
+            let split = trimmed.find(['=', ':']).unwrap_or(0);
+            let value = trimmed[split + 1..].trim();
+            out.push_str(&trimmed[..=split]);
+            if value.is_empty() {
+                // `PASSWORD:` with the value in the next word.
+                next_word_is_secret = true;
+            } else {
+                out.push_str("[redacted]");
+            }
+            out.push_str(trailing);
+            continue;
+        }
+
+        if looks_like_token(trimmed) {
+            out.push_str("[redacted]");
+            out.push_str(trailing);
+            continue;
+        }
+        out.push_str(part);
+    }
+    out
+}
+
+/// Provider-issued tokens, by prefix and length.
+fn looks_like_token(word: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "sk-",
+        "sk_live_",
+        "sk_test_",
+        "pk_live_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "AKIA",
+        "ASIA",
+        "AIza",
+        "hf_",
+        "glpat-",
+    ];
+    word.len() >= 20 && PREFIXES.iter().any(|p| word.starts_with(p))
+}
+
+/// Flatten to one printable line.
+///
+/// Control characters reaching a terminal is issue #15's lesson, and it
+/// was applied to model output reaching the shell but never to the
+/// Ledger (#128). `lisa ledger` prints these straight to a terminal, so
+/// an escape sequence in a tool result could repaint the screen — a
+/// forged audit trail in the one place that is supposed to be
+/// trustworthy.
+pub fn strip_control(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\n' | '\r' | '\t' => ' ',
+            // Keep printable and ordinary Unicode; drop C0/C1 and DEL.
+            c if c.is_control() => '\u{fffd}',
+            c => c,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -258,5 +382,86 @@ mod tests {
         let p = preview_of(&format!("line1\nline2 {}", "x".repeat(500)));
         assert!(p.len() <= 160);
         assert!(!p.contains('\n'));
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    /// Issue #127. The Ledger is append-only, so a secret written here
+    /// cannot be taken back — which is exactly why what goes in matters
+    /// more here than anywhere else. `read_file .env` previewed through
+    /// the forge loop is the path that motivated this.
+    #[test]
+    fn credentials_do_not_reach_an_append_only_store() {
+        for (input, leaked) in [
+            ("API_KEY=sk-abcdefghijklmnopqrstuvwx", "sk-abcdefghijklmnop"),
+            ("password=hunter2", "hunter2"),
+            ("DB_PASSWORD: s3cr3t-value", "s3cr3t-value"),
+            ("client_secret=abc123xyz", "abc123xyz"),
+            ("token=ghp_abcdefghijklmnopqrst", "ghp_abcdefghijklmnop"),
+            (
+                "here is my key ghp_abcdefghijklmnopqrstuv ok",
+                "ghp_abcdefghijklmnopqrstuv",
+            ),
+            ("AWS AKIAIOSFODNN7EXAMPLE1 rest", "AKIAIOSFODNN7EXAMPLE1"),
+        ] {
+            let out = preview_of(input);
+            assert!(
+                !out.contains(leaked),
+                "preview leaked a credential from {input:?}: {out:?}"
+            );
+            assert!(
+                out.contains("[redacted]"),
+                "credential dropped silently rather than being marked, from {input:?}: {out:?}"
+            );
+        }
+    }
+
+    /// Redaction that eats ordinary text is redaction nobody keeps. The
+    /// Ledger has to stay readable to be worth having.
+    #[test]
+    fn ordinary_previews_survive_intact() {
+        for plain in [
+            "added an event on Friday at 3pm",
+            "read 42 lines from src/main.rs",
+            "the build failed: expected `;`",
+            "user asked about the weather in Prishtina",
+            "/home/lisa/Projects/notes/plan.md",
+        ] {
+            assert_eq!(preview_of(plain), plain, "mangled ordinary text");
+        }
+    }
+
+    /// Issue #128. `lisa ledger` prints previews straight to a terminal,
+    /// so an escape sequence in a tool result could repaint the screen —
+    /// a forged audit trail in the one place meant to be trustworthy.
+    /// Issue #15 taught this for model output reaching the shell; it was
+    /// never applied to the Ledger.
+    #[test]
+    fn control_characters_never_reach_a_terminal() {
+        let hostile = "ok\u{1b}[2J\u{1b}[H FORGED ENTRY\u{7}\u{0}";
+        let out = preview_of(hostile);
+        assert!(!out.contains('\u{1b}'), "escape survived: {out:?}");
+        assert!(!out.contains('\u{7}'), "bell survived: {out:?}");
+        assert!(!out.contains('\u{0}'), "NUL survived: {out:?}");
+        assert!(
+            !out.chars().any(char::is_control),
+            "a control character survived: {out:?}"
+        );
+        // Newlines and tabs become spaces rather than replacement marks —
+        // they are ordinary in tool output and not an attack.
+        assert_eq!(preview_of("a\nb\tc"), "a b c");
+    }
+
+    /// The cap is on display width. 160 chars is up to 640 bytes, and the
+    /// old test asserted `len() <= 160`, so it passed only on ASCII.
+    #[test]
+    fn the_cap_counts_characters_not_bytes() {
+        let wide = "ü".repeat(300);
+        let out = preview_of(&wide);
+        assert_eq!(out.chars().count(), 160);
+        assert!(out.len() > 160, "the byte length should exceed the cap");
     }
 }
