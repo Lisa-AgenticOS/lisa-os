@@ -30,11 +30,15 @@ import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import St from 'gi://St';
+import Shell from 'gi://Shell';
+import GLib from 'gi://GLib';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.js';
 import {Dash} from 'resource:///org/gnome/shell/ui/dash.js';
 
 import {bottomRightBarriers, bottomRightOf, dockPlacement} from './lib/layout.js';
@@ -90,33 +94,108 @@ class BottomRightCorner extends Layout.HotCorner {
     }
 });
 
-/// The `LISA` wordmark, top-left — Activities' place and Activities' job.
+/// The `LISA` wordmark, top-left — and the menu behind it.
+///
+/// The Apple menu's job, in Lisa's terms: what this machine is, the
+/// things only Lisa has, and the session actions. It is deliberately
+/// short. A menu that lists everything is a menu nobody reads.
+///
+/// It also carries **Log Out**, which GNOME hides on a single-user
+/// machine with autologin (issue #139) — so on the reference hardware
+/// this is the only way to end a session short of a power cycle.
 const LisaWordmark = GObject.registerClass(
 class LisaWordmark extends PanelMenu.Button {
     _init() {
-        // dontCreateMenu: this is a button, not a menu. A popup here
-        // would be a second thing competing with the overview it opens.
-        super._init(0.0, 'Lisa', true);
-        this.add_child(new St.Label({
-            text: 'LISA',
+        super._init(0.0, 'Lisa');
+        // The real wordmark, not the letters L-I-S-A set in the UI font.
+        //
+        // A `St.Icon` would be wrong here: it renders a gicon into a
+        // SQUARE `icon_size`, and this mark is 24x7, so it would come out
+        // letterboxed and tiny. A plain widget with the SVG as its
+        // background honours the aspect ratio we give it.
+        this.add_child(new St.Widget({
             style_class: 'lisa-wordmark',
             y_align: Clutter.ActorAlign.CENTER,
+            accessible_name: 'Lisa',
         }));
+        this._buildMenu();
     }
 
-    // `vfunc_event` rather than a `button-press-event` handler, so the
-    // wordmark answers to keyboard activation and touch as well as to a
-    // mouse — it replaces Activities, which did.
-    vfunc_event(event) {
-        const type = event.type();
-        if (type === Clutter.EventType.BUTTON_PRESS ||
-            type === Clutter.EventType.TOUCH_END) {
-            Main.overview.toggle();
-            return Clutter.EVENT_STOP;
-        }
-        return Clutter.EVENT_PROPAGATE;
+    _buildMenu() {
+        const actions = SystemActions.getDefault();
+
+        // What this machine is. Informational, like "About This Mac" —
+        // it reports, it does not act, so it is insensitive rather than
+        // a dead click.
+        const about = new PopupMenu.PopupMenuItem(osRelease(), {reactive: false});
+        about.add_style_class_name('lisa-menu-about');
+        this.menu.addMenuItem(about);
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // The things only Lisa has.
+        this._app('Assistant', 'app.lisaos.Assistant.desktop');
+        this._app('Ledger', 'app.lisaos.LedgerApp.desktop');
+        this._app('Settings', 'app.lisaos.Settings.desktop');
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // The wordmark used to toggle the overview on click. The hot
+        // corner and the Super key still do, but taking the click away
+        // without leaving a route here would be a removal, not a move.
+        this._action('Activities Overview', () => Main.overview.toggle());
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // Session actions, in the order macOS puts them.
+        this._action('Lock Screen', () => actions.activateLockScreen());
+        this._action('Log Out…', () => actions.activateLogout());
+        this._action('Restart…', () => actions.activateRestart());
+        this._action('Power Off…', () => actions.activatePowerOff());
+    }
+
+    /// A menu entry that launches an installed app, shown only when the
+    /// app is actually installed — an entry that does nothing when
+    /// clicked is worse than an absent one.
+    _app(label, desktopId) {
+        const app = Shell.AppSystem.get_default().lookup_app(desktopId);
+        if (!app)
+            return;
+        this._action(label, () => app.activate());
+    }
+
+    _action(label, fn) {
+        const item = new PopupMenu.PopupMenuItem(label);
+        item.connect('activate', () => fn());
+        this.menu.addMenuItem(item);
     }
 });
+
+/// What this machine calls itself, straight from `/etc/os-release`.
+///
+/// Read, never guessed: a hard-coded product string is wrong the moment
+/// a build ships, and a wrong version in the About line is worse than no
+/// About line.
+///
+/// `PRETTY_NAME` alone is just "Lisa OS" — the number that matters is
+/// `IMAGE_VERSION`, because that is the one `lisa update` moves and the
+/// one an issue report needs.
+function osRelease() {
+    const field = (text, key) => {
+        const match = new RegExp(`^${key}="?([^"\\n]+)"?`, 'm').exec(text);
+        return match ? match[1] : null;
+    };
+    try {
+        const [ok, bytes] = GLib.file_get_contents('/etc/os-release');
+        if (ok) {
+            const text = new TextDecoder().decode(bytes);
+            const name = field(text, 'PRETTY_NAME') ?? field(text, 'NAME') ?? 'Lisa OS';
+            const version = field(text, 'IMAGE_VERSION');
+            return version ? `${name} ${version}` : name;
+        }
+    } catch {
+        // A missing or unreadable os-release is not worth an exception
+        // in a panel menu.
+    }
+    return 'Lisa OS';
+}
 
 /// The always-visible dock: GNOME's Dash in a floating rounded panel.
 const LisaDock = GObject.registerClass(

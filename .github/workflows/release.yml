@@ -74,9 +74,14 @@ jobs:
           path: |
             .ci-cache/pacman
             .ci-cache/srcdest
-          key: dl-${{ runner.os }}-${{ hashFiles('os/packages/**/PKGBUILD') }}
+          # v2: the v1 caches carry a llama.cpp clone of ggerganov/,
+          # which makepkg refuses now the PKGBUILD points at ggml-org/.
+          # `restore-keys` means a poisoned entry is handed back on every
+          # future run, so the prefix itself has to change — a key bump
+          # is the only thing that is certain to shake it off.
+          key: dl-v2-${{ runner.os }}-${{ hashFiles('os/packages/**/PKGBUILD') }}
           restore-keys: |
-            dl-${{ runner.os }}-
+            dl-v2-${{ runner.os }}-
       - name: Build Lisa packages + versioned image (Arch container)
         run: |
           VER="${{ steps.ver.outputs.ver }}"
@@ -120,9 +125,15 @@ jobs:
                 echo "$1" | sed -e "s|^git+||" -e "s|^[a-z]*://||" \
                   -e "s|^git@|/|" -e "s|:|/|g" -e "s|\.git$||" -e "s|//*|/|g"
               }
+              # Two runs were spent guessing why the loop below matched
+              # nothing. It costs one line to never guess again.
+              echo ">> srcdest contains:"; ls -la /srcdest 2>&1 | head -20
               for d in /srcdest/*/; do
                 [ -d "$d" ] || continue
-                git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || continue
+                if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+                  echo ">> srcdest: $(basename "$d") is not a git repo — left alone"
+                  continue
+                fi
                 name=$(basename "$d")
                 have=$(git -C "$d" config --get remote.origin.url || true)
                 # `|| true`: the container runs `bash -ec`, so a grep

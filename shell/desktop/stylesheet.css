@@ -19,9 +19,39 @@
     margin: 0;
 }
 
-/* The LISA wordmark, top-left — Activities' place and Activities' job. */
+/* The LISA wordmark, top-left — Activities' place and Activities' job.
+ *
+ * The SVG is 24x7, so the box keeps that ratio (48x14) rather than
+ * letting it letterbox inside a square. The reversed (white) cut is the
+ * one that belongs over a wallpaper. */
 .lisa-wordmark {
+    background-image: url("lisa-wordmark-white.svg");
+    background-size: contain;
+    width: 48px;
+    height: 14px;
+    margin: 0 6px;
+}
+
+/* ADR-0035 §3: the top bar loses its background, not its layout. The
+ * three groups float directly on the wallpaper. Extension stylesheets
+ * load after the shell theme, so this wins without !important. */
+#panel {
+    background-color: transparent;
+    border-image: none;
+    box-shadow: none;
+}
+
+/* The lock and login screens are not our redesign — a transparent panel
+ * over GDM's own background is somebody else's bug to inherit. */
+#panel.lock-screen,
+#panel.login-screen,
+#panel.unlock-screen {
+    background-color: rgba(0, 0, 0, 0.2);
+}
+
+/* The About line reports; it does not act. Dimmed so it does not read
+ * as a disabled action the user is being denied. */
+.lisa-menu-about {
     font-weight: 700;
-    letter-spacing: 0.12em;
-    padding: 0 4px;
+    opacity: 0.7;
 }
