@@ -104,6 +104,47 @@ it refused, and undo for anything reversible.
 This is the honest price of being alive: the more it does without asking,
 the better the account it owes afterwards.
 
+### 6. Typed tools for the obvious, one shell tool for the rest
+
+Two tool surfaces, deliberately:
+
+- **Typed tools** — calendar, mail, notes, files. Declared in manifests,
+  tier-resolved, discoverable through the Agent Bus, individually
+  undoable. These cover what people ask for most and are the surface a
+  confirmation dialog can describe in one sentence: *"add an event on
+  Friday"*.
+- **A shell tool** for everything else. The long tail is real and a typed
+  tool will never cover it; without a shell the model will simply advise
+  the user to paste the command themselves, which is the same action with
+  none of the checks and none of the Ledger.
+
+So the shell is not a hole in the design, it is the design admitting the
+long tail exists. It comes with conditions, and they are not negotiable
+by prompt:
+
+1. **It is jailed.** Confined to the working directory it was spawned in
+   (`libs/forge-harness/src/jail.rs`: `contain()` canonicalises per
+   component, `write_contained` opens with `O_NOFOLLOW`). This is the
+   original requirement that started the guardrail work.
+2. **It is guard-checked**, by `lisa-guard`, before it runs — a
+   deterministic policy the model cannot reach or argue with (ADR-0030).
+3. **It is never Silent.** Whatever a command *looks* like, it is treated
+   as at least `Write`, because a shell command's real tier is not
+   knowable from its text. `curl … | sh` is not a read.
+4. **It never runs unattended.** Under §1–§3 above this follows, but it
+   is worth stating on its own: shell plus an event trigger is the
+   injection endgame — untrusted content choosing arbitrary commands with
+   nobody watching. Event and schedule triggers get typed tools only.
+
+**This makes the open guard bypasses a gate, not a backlog.** `lisa-guard`
+today allows `mv /etc /tmp/backup` (#122), `chmod u+s /bin/sh` (#123),
+`sed 's/x/y/w /etc/passwd'` (#120) and `git rebase -x 'rm -rf /etc'`
+(#121). Those are tolerable while the only thing reaching the guard is
+`forge` running builds the user asked for. They are not tolerable when a
+conversational turn can propose the command — and the false positives
+(#124, #125) matter just as much, because a guard that refuses
+`rm -rf build/*` is a guard people will find a way to switch off.
+
 ## Consequences
 
 - **The consent surface split (#135) stops being optional.** With three
@@ -118,6 +159,9 @@ the better the account it owes afterwards.
 - **Provenance must survive the whole path** from event source to tool
   call. Today it is asserted per request; an event chain crosses
   daemons, and rule 6 is only as good as the weakest hop.
+- **The guard batch (#117-#125) blocks the shell tool.** Shipping shell
+  access over a guard with known bypasses would be shipping the bypasses
+  to a conversational surface.
 - **Schedules and event subscriptions are themselves privileged
   objects.** Creating one is a `Write`; creating one that can write is
   the grant in §4. An agent that can create its own schedules has a
