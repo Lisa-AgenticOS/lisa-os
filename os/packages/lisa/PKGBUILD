@@ -242,8 +242,8 @@ package_lisa-shell() {
     # activation file and the desktop entry already reference.
     local share="$pkgdir/usr/share/lisa/shell"
     install -d "$share"
-    cp -a shell/overlay-extension shell/launcher shell/ledger-app shell/settings \
-        shell/assistant "$share/"
+    cp -a shell/overlay-extension shell/launcher shell/desktop shell/ledger-app \
+        shell/settings shell/assistant "$share/"
     rm -rf "$share"/*/tests
     # Compile the overlay keybinding schema in place so the extension's
     # getSettings() resolves from its own schemas/ directory.
@@ -257,6 +257,8 @@ package_lisa-shell() {
         "$pkgdir/usr/share/gnome-shell/extensions/lisa-overlay@lisa-os.org"
     ln -s /usr/share/lisa/shell/launcher \
         "$pkgdir/usr/share/gnome-shell/extensions/lisa-launcher@lisa-os.org"
+    ln -s /usr/share/lisa/shell/desktop \
+        "$pkgdir/usr/share/gnome-shell/extensions/lisa-desktop@lisa-os.org"
 
     # D-Bus activation for the headless overlay backend (§5.7.1).
     install -Dm644 shell/overlay-extension/backend/dev.lisaos.Overlay1.service \

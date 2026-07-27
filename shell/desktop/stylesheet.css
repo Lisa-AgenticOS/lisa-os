@@ -1,0 +1,20 @@
+/* The floating dock (ADR-0035). Deliberately close to GNOME's own dash
+ * styling — this is the same widget, moved, not a different one. */
+.lisa-dock {
+    background-color: rgba(28, 25, 38, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 22px;
+    padding: 4px 8px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+
+/* The Dash draws its own background inside the overview; ours is the
+ * panel above, so the inner one has to go or it double-frames. */
+.lisa-dock #dash,
+.lisa-dock .dash-background {
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+}

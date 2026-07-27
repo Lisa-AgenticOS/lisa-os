@@ -2,8 +2,9 @@
 # system gschemas by glib2's pacman hook; unknown-schema stanzas are
 # ignored with a warning on non-GNOME hosts).
 #
-# - The M4 surfaces (PLAN §5.7) are live on first login: both Shell
-#   extensions default-enabled.
+# - The M4 surfaces (PLAN §5.7) are live on first login: all three Shell
+#   extensions default-enabled (overlay, launcher, and the ADR-0035
+#   desktop — always-visible dock + bottom-right hot corner).
 # - macOS-style summon keys: Super+Space is the Spotlight-style search
 #   (§5.7.2 — GNOME's default Super-only overview also keeps working);
 #   Super+Shift+Space is the assistant overlay (§5.7.1, as
@@ -12,7 +13,7 @@
 #   Ctrl+Super+Space, and the backward binding is cleared.
 
 [org.gnome.shell]
-enabled-extensions=['lisa-overlay@lisa-os.org', 'lisa-launcher@lisa-os.org']
+enabled-extensions=['lisa-overlay@lisa-os.org', 'lisa-launcher@lisa-os.org', 'lisa-desktop@lisa-os.org']
 
 [org.gnome.shell.keybindings]
 toggle-overview=['<Super>space']

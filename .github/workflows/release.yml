@@ -92,6 +92,35 @@ jobs:
               sed -i "s|^#*CleanMethod.*|CleanMethod = KeepCurrent|" /etc/pacman.conf
               echo "SRCDEST=/srcdest" >> /etc/makepkg.conf
               chmod 777 /srcdest
+              # A cached git source is keyed by DIRECTORY NAME, never
+              # by remote, and the cache step falls back to restore-keys
+              # — so when a project moves host (llama.cpp: ggerganov/ ->
+              # ggml-org/) the old clone comes back on every future run
+              # and makepkg refuses it: "is not a clone of ...". That is
+              # not a flake. Without this it never recovers, because the
+              # stale entry always matches the restore key.
+              #
+              # Compare the STORED remote (config --get, not get-url,
+              # which applies any insteadOf rewrite) against what the
+              # PKGBUILD asks for, normalised so scheme and .git suffix
+              # do not count as a mismatch. Drop only real mismatches;
+              # makepkg re-clones what it needs.
+              srcnorm() {
+                echo "$1" | sed -e "s|^git+||" -e "s|^[a-z]*://||" \
+                  -e "s|^git@|/|" -e "s|:|/|g" -e "s|\.git$||" -e "s|//*|/|g"
+              }
+              for d in /srcdest/*/; do
+                [ -d "$d" ] || continue
+                git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || continue
+                name=$(basename "$d")
+                have=$(git -C "$d" config --get remote.origin.url || true)
+                want=$(grep -rhoE "git\+https://[^\"#]+" /src/os/packages/*/PKGBUILD \
+                       | sed "s|^git+||" | grep -E "/${name}(\.git)?$" | head -1)
+                if [ -n "$want" ] && [ "$(srcnorm "$have")" != "$(srcnorm "$want")" ]; then
+                  echo ">> srcdest: $name has ${have:-no origin}, PKGBUILD wants $want — re-cloning"
+                  rm -rf "$d"
+                fi
+              done
               # glib2: lisa-shell makedepends (build-packages.sh runs
               # makepkg without -s, so makedepends must be preinstalled).
               # cmake: the llama.cpp engine build. devtools: arch-meson,

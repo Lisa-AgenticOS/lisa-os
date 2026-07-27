@@ -1,0 +1,7 @@
+{
+    "uuid": "lisa-desktop@lisa-os.org",
+    "name": "Lisa Desktop",
+    "description": "Always-visible dock and a bottom-right hot corner (Lisa OS, ADR-0035): the dock stops being an overview-only surface, and the top-left corner is freed for the Lisa wordmark.",
+    "shell-version": ["46", "47", "48", "49", "50"],
+    "url": "https://github.com/Lisa-AgenticOS/lisa-os"
+}
