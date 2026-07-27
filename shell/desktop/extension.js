@@ -132,10 +132,17 @@ class LisaWordmark extends PanelMenu.Button {
         this.menu.addMenuItem(about);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // The things only Lisa has.
+        // The things only Lisa has, then the system's own settings.
+        //
+        // NOT `app.lisaos.Settings.desktop`: that is the standalone Lisa
+        // settings app, which was merged into GNOME Settings as the
+        // Intelligence panel (ADR-0012). Its .desktop is still installed
+        // and still launches, so pointing here at the old app would open
+        // a second, stale settings window beside the real one.
         this._app('Assistant', 'app.lisaos.Assistant.desktop');
         this._app('Ledger', 'app.lisaos.LedgerApp.desktop');
-        this._app('Settings', 'app.lisaos.Settings.desktop');
+        this._app('Intelligence', 'gnome-lisa-panel.desktop');
+        this._app('Settings', 'org.gnome.Settings.desktop');
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // The wordmark used to toggle the overview on click. The hot
@@ -198,19 +205,36 @@ function osRelease() {
 }
 
 /// The always-visible dock: GNOME's Dash in a floating rounded panel.
+///
+/// Two actors, not one, and the split is load-bearing.
+///
+/// `LayoutManager` OWNS the `visible` property of any chrome registered
+/// with `trackFullscreen`, and rewrites it on every relayout:
+///
+///     actor.visible = !(global.window_group.visible &&
+///                       monitor && monitor.inFullscreen)
+///
+/// In the overview `global.window_group.visible` is false, so that
+/// expression is `true` — entering the overview forcibly *re-showed*
+/// this dock on top of GNOME's own dash, which is the two-docks bug.
+///
+/// So the OUTER actor is unstyled and belongs to LayoutManager, which
+/// keeps GNOME's fullscreen handling for free; the INNER panel carries
+/// the styling and is ours to hide. LayoutManager never touches
+/// children.
 const LisaDock = GObject.registerClass(
-class LisaDock extends St.BoxLayout {
+class LisaDock extends St.Widget {
     _init() {
-        super._init({
+        super._init({layout_manager: new Clutter.BinLayout()});
+        this.panel = new St.BoxLayout({
             style_class: 'lisa-dock',
             reactive: true,
             track_hover: true,
         });
         this.dash = new Dash();
-        // The Dash hides itself when it believes it is off-duty; ours is
-        // never off-duty.
         this.dash.show();
-        this.add_child(this.dash);
+        this.panel.add_child(this.dash);
+        this.add_child(this.panel);
     }
 
     /// Size the Dash to the monitor, then place the whole panel.
@@ -244,9 +268,25 @@ export default class LisaDesktopExtension extends Extension {
 
         // In the overview GNOME shows its OWN dash. Two docks on screen
         // at once is worse than either, so ours stands down for the
-        // duration rather than fighting it for z-order.
-        this._connect(Main.overview, 'showing', () => this._dock.hide());
-        this._connect(Main.overview, 'hidden', () => this._dock.show());
+        // duration rather than fighting it for z-order. Hiding the inner
+        // panel, not the tracked outer actor — see LisaDock.
+        this._connect(Main.overview, 'showing', () => this._dock.panel.hide());
+        this._connect(Main.overview, 'hidden', () => {
+            this._dock.panel.show();
+            // The button latches when clicked; nothing unlatches it when
+            // the overview closes by other means (Escape, Super, a
+            // click), leaving it stuck lit and dead to the next press.
+            this._dock.dash.showAppsButton.checked = false;
+        });
+
+        // GNOME wires its dash's show-apps button from the overview's
+        // own controls, so a Dash used outside the overview has a button
+        // that does nothing at all. Wire it to the same destination.
+        const showApps = this._dock.dash.showAppsButton;
+        this._connect(showApps, 'notify::checked', () => {
+            if (showApps.checked)
+                Main.overview.showApps();
+        });
         this._connect(Main.layoutManager, 'monitors-changed', () => {
             this._reposition();
             this._installHotCorners();

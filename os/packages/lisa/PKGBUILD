@@ -242,8 +242,14 @@ package_lisa-shell() {
     # activation file and the desktop entry already reference.
     local share="$pkgdir/usr/share/lisa/shell"
     install -d "$share"
+    # shell/settings is deliberately NOT shipped: the standalone Lisa
+    # Settings app was merged into GNOME Settings as the Intelligence
+    # panel (ADR-0012 v2). Its source stays in the tree — its lib/ is
+    # still unit-tested and is the reference for the panel's behaviour —
+    # but two settings surfaces on one machine is how the wrong one gets
+    # edited.
     cp -a shell/overlay-extension shell/launcher shell/desktop shell/ledger-app \
-        shell/settings shell/assistant "$share/"
+        shell/assistant "$share/"
     rm -rf "$share"/*/tests
     # Compile the overlay keybinding schema in place so the extension's
     # getSettings() resolves from its own schemas/ directory.
@@ -274,8 +280,6 @@ package_lisa-shell() {
     # AI settings launcher entry (§5.11). Also the target the native
     # gnome-control-center Intelligence panel opens for provider/key
     # management (ADR-0012) — it resolves this desktop id.
-    install -Dm644 shell/settings/app.lisaos.Settings.desktop \
-        "$pkgdir/usr/share/applications/app.lisaos.Settings.desktop"
     # Session defaults: extensions enabled; Super+Space is the
     # Spotlight-style search (§5.7.2), Super+Shift+Space the assistant
     # overlay (§5.7.1), the input-source switcher moves to

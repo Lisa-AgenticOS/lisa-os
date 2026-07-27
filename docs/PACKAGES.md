@@ -31,7 +31,7 @@ Material/Cupertino) + `libs/lisa_flutter` (SDK). Status is honest.
 | Recorder | `apps/recorder` | Flutter + lisa_ui | audio capture + on-device transcribe | seed (M6) |
 | Forge / LisaCode | `forge/app` | Flutter + forge-harness | writes + installs Flutter apps locally (§5.12.1) | seed; the loop works via `lisa forge` |
 | Ledger | `shell/ledger-app` | GJS/libadwaita | the append-only audit log viewer | live (packaged) |
-| Lisa Settings | `shell/settings` | GJS/libadwaita | AI settings: local models + providers | live (packaged) |
+| Lisa Settings | `shell/settings` | GJS/libadwaita | AI settings: local models + providers | **not shipped** — merged into GNOME Settings as the Intelligence panel (ADR-0012); source kept as reference + tests |
 
 ## Shell surfaces (GNOME, GJS)
 

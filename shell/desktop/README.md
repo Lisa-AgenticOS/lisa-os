@@ -16,6 +16,9 @@ wireframe:
 3. **The top bar is reordered** to the sketch: the `LISA` wordmark at the
    left, the workspace switcher moved into the centre the clock vacates,
    and the clock moved right to sit with the quick settings.
+4. **The wordmark opens a menu** — what this machine is, the Lisa apps,
+   and the session actions, including the **Log Out** GNOME hides on a
+   single-user autologin machine (#139).
 
 The prompt half of ADR-0035's bar is **not** here yet. This extension
 owns the dock and the corner; the entry field is the next slice.
@@ -34,13 +37,32 @@ reordering and app context menus are exactly what ADR-0035 §2 asks for,
 and they already work. A hand-rolled dock would mean owning every one of
 those regressions in a widget we did not write.
 
-Inside the overview GNOME shows its *own* dash, so ours hides for the
-duration rather than fighting it for z-order:
+Inside the overview GNOME shows its *own* dash, so ours stands down for
+the duration rather than fighting it for z-order.
+
+**Which actor gets hidden matters, and this is the subtle part.** The
+dock is two actors: an unstyled outer widget registered as chrome, and
+the styled panel inside it. `LayoutManager` owns the `visible` property
+of any chrome registered with `trackFullscreen` and rewrites it on every
+relayout:
 
 ```js
-Main.overview.connect('showing', () => this._dock.hide());
-Main.overview.connect('hidden',  () => this._dock.show());
+actor.visible = !(global.window_group.visible && monitor && monitor.inFullscreen)
 ```
+
+In the overview `global.window_group.visible` is false, so that
+expression evaluates to `true` — entering the overview forcibly
+*re-showed* the dock on top of GNOME's dash. That was the two-docks bug,
+and calling `hide()` harder would never have fixed it. Hiding the inner
+panel works because LayoutManager never touches children, and the outer
+actor stays registered so GNOME's fullscreen handling still comes free.
+
+**The show-apps button has to be wired by hand.** GNOME connects its
+dash's button from the overview's own controls, so a `Dash` used outside
+the overview has a button that does nothing when clicked. It is
+connected to `Main.overview.showApps()`, and unlatched when the overview
+closes — the button latches on click and nothing else unlatches it, so
+it would otherwise stick lit and dead to the next press.
 
 ### The hot corner is GNOME's own HotCorner, mirrored
 
