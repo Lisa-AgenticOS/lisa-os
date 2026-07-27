@@ -364,7 +364,17 @@ fn ledger_finish(
 ) -> Result<(), ForgeError> {
     let refused = outcome.text.starts_with("error: refused")
         || outcome.text.starts_with("error: needs confirmation");
-    let status = if refused {
+    // A containment breach is not a typo (#126). Both arrive as
+    // `error: …`, so both were ledgered as "failed" — indistinguishable
+    // from a missing file in the one record meant to tell you what your
+    // agent did. An attempt to write outside the jail is the single most
+    // interesting thing this loop can do, and it deserves a status a
+    // reader can search for.
+    let escaped = outcome.text.contains("escapes the project jail")
+        || outcome.text.contains("command.path_escape");
+    let status = if escaped {
+        "escaped"
+    } else if refused {
         "refused"
     } else if outcome.text.starts_with("error") {
         "failed"
@@ -678,6 +688,56 @@ mod tests {
     /// same path production does.
     fn scratch_ledger(dir: &std::path::Path) -> std::sync::Arc<lisa_ledger::Ledger> {
         std::sync::Arc::new(lisa_ledger::Ledger::open(dir.join("test-ledger.db")).unwrap())
+    }
+
+    /// Issue #126. A jail escape and a missing file both surface as
+    /// `error: …`, so both were recorded as "failed" — the containment
+    /// breach was indistinguishable from a typo in the one record that
+    /// is supposed to tell you what happened.
+    #[test]
+    fn a_jail_escape_is_not_ledgered_as_an_ordinary_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let ledger = scratch_ledger(dir.path());
+
+        let mut backend = ScriptedBackend::new(vec![
+            // Outside the jail…
+            AgentAction::Call(ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                args: serde_json::json!({"path": "../escape.txt", "content": "x"}),
+            }),
+            // …and an ordinary miss, so the two can be told apart.
+            AgentAction::Call(ToolCall {
+                id: "2".into(),
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "nope.txt"}),
+            }),
+            AgentAction::Done("done".into()),
+        ]);
+        let config = AgentConfig {
+            max_turns: 6,
+            verifier: Verifier::None,
+            ..AgentConfig::new(ledger.clone())
+        };
+        let _ = forge_agent("t", &project, &mut backend, &config);
+
+        let statuses: Vec<String> = ledger
+            .tail(50)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "forge.tool")
+            .map(|e| e.status)
+            .collect();
+        assert!(
+            statuses.iter().any(|s| s == "escaped"),
+            "a jail escape was not called out: {statuses:?}"
+        );
+        assert!(
+            statuses.iter().any(|s| s == "failed"),
+            "an ordinary error should still be `failed`: {statuses:?}"
+        );
     }
 
     /// Issue #54: the loop that edits your files unattended used to
