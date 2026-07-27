@@ -189,6 +189,18 @@ jobs:
               # which root=PARTLABEL= depends on *in the initrd*.
               (b'usr/lib/udev/lisa-loader-disk', 'boot-disk udev helper'),
               (b'59-lisa-boot-disk.rules', 'boot-disk udev rule'),
+              # Issue #138: the display driver must be LOADED in the
+              # initrd, not merely shipped in it. The check above asserts
+              # amdgpu.ko is present — it always was, and the splash was
+              # still lost, because nothing modprobed it before Plymouth
+              # picked a DRM device. These three are what make it load
+              # first; without any one of them the boot silently goes
+              # back to Plymouth on simpledrm.
+              (b'usr/lib/modules-load.d/lisa-drm.conf', 'early DRM modules-load config'),
+              (b'sysinit.target.wants/systemd-modules-load.service',
+               'modules-load enablement in the initrd'),
+              (b'plymouth-start.service.d/10-lisa-after-drm.conf',
+               'plymouth-after-DRM ordering drop-in'),
           ]
           missing = [what for marker, what in checks if marker not in blob]
           if missing:
