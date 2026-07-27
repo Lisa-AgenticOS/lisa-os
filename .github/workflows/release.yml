@@ -92,6 +92,17 @@ jobs:
               sed -i "s|^#*CleanMethod.*|CleanMethod = KeepCurrent|" /etc/pacman.conf
               echo "SRCDEST=/srcdest" >> /etc/makepkg.conf
               chmod 777 /srcdest
+              # glib2: lisa-shell makedepends (build-packages.sh runs
+              # makepkg without -s, so makedepends must be preinstalled).
+              # cmake: the llama.cpp engine build. devtools: arch-meson,
+              # used by the forked gnome-control-center PKGBUILD.
+              # linux-headers (+ bc, which base-devel lacks): the CS8409
+              # codec module build (ADR-0024). Preinstalled so its makepkg
+              # can run with -d, and so the PKGBUILD can compare the
+              # installed headers against its kernel pin.
+              pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake devtools \
+                linux-headers bc
+
               # A cached git source is keyed by DIRECTORY NAME, never
               # by remote, and the cache step falls back to restore-keys
               # — so when a project moves host (llama.cpp: ggerganov/ ->
@@ -114,23 +125,16 @@ jobs:
                 git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || continue
                 name=$(basename "$d")
                 have=$(git -C "$d" config --get remote.origin.url || true)
+                # `|| true`: the container runs `bash -ec`, so a grep
+                # that matches nothing (a cached source no PKGBUILD
+                # claims any more) would abort the entire build.
                 want=$(grep -rhoE "git\+https://[^\"#]+" /src/os/packages/*/PKGBUILD \
-                       | sed "s|^git+||" | grep -E "/${name}(\.git)?$" | head -1)
+                       | sed "s|^git+||" | grep -E "/${name}(\.git)?$" | head -1 || true)
                 if [ -n "$want" ] && [ "$(srcnorm "$have")" != "$(srcnorm "$want")" ]; then
                   echo ">> srcdest: $name has ${have:-no origin}, PKGBUILD wants $want — re-cloning"
                   rm -rf "$d"
                 fi
               done
-              # glib2: lisa-shell makedepends (build-packages.sh runs
-              # makepkg without -s, so makedepends must be preinstalled).
-              # cmake: the llama.cpp engine build. devtools: arch-meson,
-              # used by the forked gnome-control-center PKGBUILD.
-              # linux-headers (+ bc, which base-devel lacks): the CS8409
-              # codec module build (ADR-0024). Preinstalled so its makepkg
-              # can run with -d, and so the PKGBUILD can compare the
-              # installed headers against its kernel pin.
-              pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake devtools \
-                linux-headers bc
 
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build

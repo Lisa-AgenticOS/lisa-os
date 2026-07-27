@@ -14,6 +14,11 @@
 //    is where the `LISA` wordmark goes, and a hot corner underneath a
 //    thing you click is a trap.
 //
+// 3. **The top bar is reordered** to the sketch: the `LISA` wordmark at
+//    the left, the workspace switcher moved to the centre, and the clock
+//    moved out of the centre to sit with the quick settings on the
+//    right.
+//
 // The prompt half of ADR-0035's bar is NOT here yet: this extension owns
 // the dock and the corner, and the entry field is the next slice.
 //
@@ -29,6 +34,7 @@ import St from 'gi://St';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Layout from 'resource:///org/gnome/shell/ui/layout.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import {Dash} from 'resource:///org/gnome/shell/ui/dash.js';
 
 import {bottomRightBarriers, bottomRightOf, dockPlacement} from './lib/layout.js';
@@ -81,6 +87,34 @@ class BottomRightCorner extends Layout.HotCorner {
         });
         this._pressureBarrier.addBarrier(this._verticalBarrier);
         this._pressureBarrier.addBarrier(this._horizontalBarrier);
+    }
+});
+
+/// The `LISA` wordmark, top-left — Activities' place and Activities' job.
+const LisaWordmark = GObject.registerClass(
+class LisaWordmark extends PanelMenu.Button {
+    _init() {
+        // dontCreateMenu: this is a button, not a menu. A popup here
+        // would be a second thing competing with the overview it opens.
+        super._init(0.0, 'Lisa', true);
+        this.add_child(new St.Label({
+            text: 'LISA',
+            style_class: 'lisa-wordmark',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+    }
+
+    // `vfunc_event` rather than a `button-press-event` handler, so the
+    // wordmark answers to keyboard activation and touch as well as to a
+    // mouse — it replaces Activities, which did.
+    vfunc_event(event) {
+        const type = event.type();
+        if (type === Clutter.EventType.BUTTON_PRESS ||
+            type === Clutter.EventType.TOUCH_END) {
+            Main.overview.toggle();
+            return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
     }
 });
 
@@ -147,9 +181,11 @@ export default class LisaDesktopExtension extends Extension {
         this._connect(this._dock.dash, 'icon-size-changed', () => this._reposition());
 
         this._installHotCorners();
+        this._reorderPanel();
     }
 
     disable() {
+        this._restorePanel();
         this._signals?.forEach(([obj, id]) => obj.disconnect(id));
         this._signals = null;
 
@@ -167,6 +203,64 @@ export default class LisaDesktopExtension extends Extension {
 
     _reposition() {
         this._dock?.reposition(Main.layoutManager.primaryMonitor);
+    }
+
+    // ---- the top bar ---------------------------------------------------
+
+    /// Reorder the panel to the sketch.
+    ///
+    /// GNOME builds each box from role lists on `Main.sessionMode.panel`,
+    /// so the reorder is a change to those lists plus a rebuild — not a
+    /// reparenting of actors behind the Shell's back. `_addToPanelBox`
+    /// already moves a container out of its old box, so `activities`
+    /// migrating from left to centre needs nothing special.
+    _reorderPanel() {
+        const sessionMode = Main.sessionMode;
+        // Keep the ORIGINAL object, not a copy: restoring it is what
+        // makes `disable()` a real undo rather than an approximation of
+        // whatever the defaults happened to be.
+        this._originalPanel ??= sessionMode.panel;
+        const {left, center, right} = this._originalPanel;
+
+        sessionMode.panel = {
+            // The wordmark is added separately — it is ours, and only
+            // roles GNOME knows about belong in these lists.
+            left: left.filter(role => role !== 'activities'),
+            // The workspace switcher takes the centre the clock leaves.
+            center: center.filter(role => role !== 'dateMenu')
+                .concat(left.includes('activities') ? ['activities'] : []),
+            // The clock joins the quick settings, after them: the sketch
+            // reads wifi, bluetooth, then the time.
+            right: right.concat(center.includes('dateMenu') ? ['dateMenu'] : []),
+        };
+        Main.panel._updatePanel();
+
+        if (!this._wordmark) {
+            this._wordmark = new LisaWordmark();
+            Main.panel.addToStatusArea('lisa-wordmark', this._wordmark, 0, 'left');
+        }
+
+        // A session-mode change (lock, unlock, switch user) re-syncs
+        // these lists from the mode definition and would silently undo
+        // the reorder. Without this the panel is correct until the first
+        // time the screen locks.
+        this._sessionSignal ??= sessionMode.connect('updated', () => this._reorderPanel());
+    }
+
+    _restorePanel() {
+        if (this._sessionSignal) {
+            Main.sessionMode.disconnect(this._sessionSignal);
+            this._sessionSignal = null;
+        }
+        if (this._wordmark) {
+            this._wordmark.destroy();
+            this._wordmark = null;
+        }
+        if (this._originalPanel) {
+            Main.sessionMode.panel = this._originalPanel;
+            this._originalPanel = null;
+            Main.panel._updatePanel();
+        }
     }
 
     // ---- hot corners -------------------------------------------------
