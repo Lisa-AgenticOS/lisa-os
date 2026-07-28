@@ -14,7 +14,7 @@
 # depends/makedepends entry below resolves on ALARM (checked against
 # mirror.archlinuxarm.org's core/extra DBs, 2026-07-25), and the Lisa
 # delta (a C panel + two anchored sed edits + a blueprint removal) is
-# architecture-independent. pkgrel=2 still outranks ALARM's 50.3-1, so the
+# architecture-independent. pkgrel=3 still outranks ALARM's 50.3-1, so the
 # local repo wins there for the same reason it wins on Arch proper.
 
 pkgbase=gnome-control-center
@@ -27,7 +27,7 @@ pkgver=50.3
 # pick THIS package (with the Intelligence panel) over [extra]'s — not just
 # by local-repo order. Re-pin (pkgver + this) when GNOME moves.
 pkgrel=2
-pkgdesc="GNOME's main interface to configure various aspects of the desktop (Lisa build: + Intelligence panel)"
+pkgdesc="GNOME's main interface to configure various aspects of the desktop (Lisa build: + Intelligence panel, OS updates in System)"
 url="https://apps.gnome.org/Settings/"
 license=(GPL-2.0-or-later)
 arch=(x86_64 aarch64)
@@ -59,10 +59,14 @@ source=(
   "cc-lisa-panel-meson.build"
   "gnome-lisa-panel.desktop.in"
   "lisa-intelligence-symbolic.svg"
+  "cc-system-updates-lisa.h"
+  "cc-system-updates-lisa.c"
 )
 b2sums=('94d45dc219e1f1e533d66e2cc9ce5daadc8030ccc2466befc7ad3f79ea8fa8928648878c4caf8b0170ea345b8a1bf3d11e14237e37175fa15f97a7fc7d92dde7'
         'SKIP'
         'a67bd121284dd5546607f21a966ae7e73a05b5cd5e90d925fa0ba710e7c877f85a7c700dded0e050ce297884201f07177cd975c5501cc62fe35c27e5285bdfa3'
+        'SKIP'
+        'SKIP'
         'SKIP'
         'SKIP'
         'SKIP'
@@ -138,6 +142,79 @@ prepare() {
   ' "$about_blp" > "$about_blp.lisa" && mv "$about_blp.lisa" "$about_blp"
   ! grep -q 'Support GNOME' "$about_blp" \
     || { echo "donate group removal failed in $about_blp" >&2; return 1; }
+
+  # --- Lisa OS updates row in System (ADR-0018) -------------------------
+  # GNOME 50 reserves a "Software Updates" group on the System page but
+  # only shows it when gnome-software or gpk-update-viewer is installed,
+  # and its row spawns one of those two binaries. Lisa ships neither —
+  # OS updates are A/B image swaps through systemd-sysupdate. So the
+  # System page answered neither "what am I running" nor "is there
+  # anything newer". We claim the group instead of adding a second one.
+  local sys_c=panels/system/cc-system-panel.c
+  local sys_blp=panels/system/cc-system-panel.blp
+  local sys_meson=panels/system/meson.build
+  grep -q 'Adw.PreferencesGroup software_updates_group {' "$sys_blp" \
+    || { echo "software_updates_group anchor moved in $sys_blp — update the Lisa patch" >&2; return 1; }
+  grep -q '^show_software_updates_group (CcSystemPanel \*self)$' "$sys_c" \
+    || { echo "show_software_updates_group anchor moved in $sys_c — update the Lisa patch" >&2; return 1; }
+  grep -q 'gtk_widget_set_visible (GTK_WIDGET (self->software_updates_group), show_software_updates_group (self));' "$sys_c" \
+    || { echo "software_updates_group visibility anchor moved in $sys_c — update the Lisa patch" >&2; return 1; }
+  grep -q "^  'cc-system-panel.c',\$" "$sys_meson" \
+    || { echo "sources anchor moved in $sys_meson — update the Lisa patch" >&2; return 1; }
+
+  install -m644 "$srcdir"/cc-system-updates-lisa.c panels/system/cc-system-updates-lisa.c
+  install -m644 "$srcdir"/cc-system-updates-lisa.h panels/system/cc-system-updates-lisa.h
+  sed -i "s/^  'cc-system-panel.c',\$/  'cc-system-panel.c',\n  'cc-system-updates-lisa.c',/" \
+    "$sys_meson"
+
+  # Strip GNOME's gnome-software row, keeping the group and its id so the
+  # template child binding in cc-system-panel.c still resolves. Our row
+  # is added to it at runtime by lisa_system_updates_attach().
+  awk '
+    BEGIN { ingroup = 0; depth = 0 }
+    /Adw\.PreferencesGroup software_updates_group \{/ && !ingroup {
+      ingroup = 1
+      depth = gsub(/\{/, "{") - gsub(/\}/, "}")
+      print "        Adw.PreferencesGroup software_updates_group {"
+      print "          visible: false;"
+      print "        }"
+      next
+    }
+    ingroup {
+      depth += gsub(/\{/, "{") - gsub(/\}/, "}")
+      if (depth <= 0) ingroup = 0
+      next
+    }
+    { print }
+  ' "$sys_blp" > "$sys_blp.lisa" && mv "$sys_blp.lisa" "$sys_blp"
+  ! grep -q 'gnome-software\|adw-external-link-symbolic' "$sys_blp" \
+    || { echo "gnome-software row still present in $sys_blp" >&2; return 1; }
+  grep -q 'software_updates_group' "$sys_blp" \
+    || { echo "software_updates_group id lost in $sys_blp — template binding would fail" >&2; return 1; }
+
+  # The group is shown unconditionally: systemd-sysupdate is not optional
+  # on a Track I system, so there is no configuration in which this page
+  # should stay silent about the OS version.
+  awk '
+    /^show_software_updates_group \(CcSystemPanel \*self\)$/ { infn = 1; print; next }
+    infn && /^\{/ {
+      print
+      print "  /* Lisa: OS updates are systemd-sysupdate A/B swaps, always available. */"
+      print "  return TRUE;"
+      skip = 1
+      next
+    }
+    infn && skip && /^\}/ { infn = 0; skip = 0; print; next }
+    infn && skip { next }
+    { print }
+  ' "$sys_c" > "$sys_c.lisa" && mv "$sys_c.lisa" "$sys_c"
+  ! grep -q 'gpk_update_viewer_exists ()' "$sys_c" \
+    || { echo "show_software_updates_group body not replaced in $sys_c" >&2; return 1; }
+
+  sed -i '/^#include "cc-system-panel.h"/a #include "cc-system-updates-lisa.h"' "$sys_c"
+  sed -i '/gtk_widget_set_visible (GTK_WIDGET (self->software_updates_group), show_software_updates_group (self));/a\  lisa_system_updates_attach (ADW_PREFERENCES_GROUP (self->software_updates_group));' "$sys_c"
+  grep -q 'lisa_system_updates_attach' "$sys_c" \
+    || { echo "lisa_system_updates_attach call not inserted in $sys_c" >&2; return 1; }
 
   # Register it: build the panel lib, declare the GType, and list it.
   sed -i "s/^  'wellbeing',\$/  'wellbeing',\n  'lisa',/" panels/meson.build

@@ -187,8 +187,13 @@ enum Command {
     /// (systemd-sysupdate; Track I systems).
     Update {
         /// Reboot into the new version after a successful update.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "check")]
         reboot: bool,
+        /// Report what is running, staged and available — download
+        /// nothing, change nothing. This is what the Settings "Check for
+        /// Updates" button runs.
+        #[arg(long)]
+        check: bool,
     },
     /// Update out-of-image payloads independently of the OS image
     /// (ADR-0020, ADR-0023): fetch, verify, and activate the newest shell
@@ -523,7 +528,13 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Install { target, from, yes } => install_cmd(&target, from, yes),
-        Command::Update { reboot } => update_cmd(reboot),
+        Command::Update { reboot, check } => {
+            if check {
+                update_check_cmd()
+            } else {
+                update_cmd(reboot)
+            }
+        }
         Command::Apps { cmd } => match cmd {
             AppsCmd::Update { channel } => apps::update(channel.as_deref()),
             AppsCmd::Status => apps::status(),
@@ -2297,6 +2308,78 @@ fn staging_failure_help(unit: &str) -> String {
          a line of the form \"Shared library '…' is not available: …\" names the \
          real cause of a puller failure; nothing else does."
     )
+}
+
+/// `lisa update --check`: report state, touch nothing.
+///
+/// Three distinct facts, which today's UI kept conflating (#144):
+///
+/// - **running** — the booted slot's `IMAGE_VERSION`.
+/// - **staged** — the newest COMPLETE update set on disk. Different from
+///   `running` for the whole window between staging and the next reboot.
+/// - **available** — what the channel offers, from `Target.CheckNew`.
+///
+/// Output is `key: value` lines so the Settings row can parse it without
+/// a second D-Bus client in C, and a human can still read it. Absent
+/// facts are omitted rather than printed as "unknown": a caller must be
+/// able to tell "there is no staged update" from "I could not find out".
+///
+/// `CheckNew` needs polkit `sysupdate1.check`, which is `allow_active=yes`
+/// — free from a local Settings window, refused from SSH. That refusal is
+/// reported, never silently rendered as "no update available".
+fn update_check_cmd() -> anyhow::Result<()> {
+    use zbus::blocking::{Connection, Proxy};
+
+    let running = running_image_version();
+    if let Some(ref v) = running {
+        println!("running: {v}");
+    }
+
+    let mut checked = false;
+    if let Ok(conn) = Connection::system()
+        && let Ok(manager) = Proxy::new(
+            &conn,
+            "org.freedesktop.sysupdate1",
+            "/org/freedesktop/sysupdate1",
+            "org.freedesktop.sysupdate1.Manager",
+        )
+        && let Ok(targets) = manager
+            .call::<_, _, Vec<(String, String, zbus::zvariant::OwnedObjectPath)>>(
+                "ListTargets",
+                &(),
+            )
+        && let Some((_, _, path)) = targets.into_iter().find(|(class, _, _)| class == "host")
+        && let Ok(target) = Proxy::new(
+            &conn,
+            "org.freedesktop.sysupdate1",
+            path,
+            "org.freedesktop.sysupdate1.Target",
+        ) as zbus::Result<Proxy>
+    {
+        // GetVersion is the newest COMPLETE set — a slot whose root
+        // landed but whose UKI did not must not be announced as ready.
+        if let Ok(installed) = target.call::<_, _, String>("GetVersion", &())
+            && !installed.is_empty()
+            && running.as_deref().is_some_and(|r| installed.as_str() > r)
+        {
+            println!("staged: {installed}");
+        }
+        match target.call::<_, _, String>("CheckNew", &()) {
+            Ok(newest) if !newest.is_empty() => {
+                checked = true;
+                println!("available: {newest}");
+            }
+            Ok(_) => checked = true, // Checked; nothing newer offered.
+            Err(e) => println!("check-failed: {e}"),
+        }
+    }
+    if !checked {
+        println!(
+            "note: could not reach the update channel — \
+             `available:` above is absent, not empty"
+        );
+    }
+    Ok(())
 }
 
 fn update_cmd(reboot: bool) -> anyhow::Result<()> {
