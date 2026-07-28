@@ -1931,6 +1931,49 @@ fn assert_transfers_protect_booted() -> anyhow::Result<()> {
 /// Advisory by design: this reports, it does not silently repoint
 /// somebody's boot loader. A pin is a deliberate act and un-pinning is
 /// the owner's call, so the failure mode we remove is the SILENT one.
+/// `IMAGE_VERSION` of the *booted* slot — the version actually running,
+/// which is not the same question as "what is installed".
+///
+/// This is the value sysupdate keys slots on (`root_@v`) and the one
+/// release.yml bakes into the image, so it compares directly against a
+/// version reported over the sysupdate1 bus.
+///
+/// `/etc` is per-slot, so /etc/os-release always describes the running
+/// system; `/usr/lib/os-release` is the fallback for images that ship it
+/// only there.
+fn running_image_version() -> Option<String> {
+    for path in ["/etc/os-release", "/usr/lib/os-release"] {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if let Some(v) = os_release_value(&text, "IMAGE_VERSION") {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Pull one key out of os-release(5) text.
+///
+/// Values are shell-quoted there — `IMAGE_VERSION="20260728.49"` — and an
+/// unstripped quote turns every version comparison into a mismatch, which
+/// would make this report "staged" forever.
+fn os_release_value(text: &str, key: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|line| {
+            let rest = line.strip_prefix(key)?.strip_prefix('=')?;
+            let rest = rest.trim();
+            let unquoted = rest
+                .strip_prefix('"')
+                .and_then(|r| r.strip_suffix('"'))
+                .or_else(|| rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')))
+                .unwrap_or(rest);
+            (!unquoted.is_empty()).then(|| unquoted.to_string())
+        })
+}
+
 fn warn_if_boot_default_is_pinned(installed: Option<&str>) {
     let out = match std::process::Command::new("bootctl")
         .arg("status")
@@ -2110,12 +2153,36 @@ fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
         Err(zbus::Error::MethodError(ref err_name, ref msg, _))
             if err_name.as_str().ends_with("NoCandidate") =>
         {
-            println!(
-                "already up to date{}",
-                msg.as_deref()
-                    .map(|m| format!(" ({m})"))
-                    .unwrap_or_default()
-            );
+            // NoCandidate means "nothing NEWER to fetch" — NOT "you are
+            // running the newest thing on this machine". Those differ for
+            // the entire window between staging and the next boot, which
+            // is exactly when someone runs `lisa update` again to see
+            // where they stand. Answering "already up to date" there is a
+            // lie shaped like a no-op: the new version is on disk waiting
+            // for a reboot, and the message says there is nothing to wait
+            // for. Observed on the reference iMac (#144): .49 staged, .47
+            // booted, and the update looked like it had never run.
+            let detail = msg
+                .as_deref()
+                .map(|m| format!(" ({m})"))
+                .unwrap_or_default();
+            let running = running_image_version();
+            let installed: Option<String> = target.call("GetVersion", &()).ok();
+            match (running.as_deref(), installed.as_deref()) {
+                // Newest installed set is not the one we booted: staged.
+                // Version strings are YYYYMMDD.run, so `>` is chronological.
+                (Some(run), Some(have)) if have > run => {
+                    println!("{have} is staged — reboot to use it (running {run})");
+                    // The pin check belongs here for the same reason it
+                    // belongs after a fresh staging: a pinned loader makes
+                    // the reboot a no-op, and this path is the one a person
+                    // hits when they are *already* wondering why nothing
+                    // changed.
+                    warn_if_boot_default_is_pinned(Some(have));
+                }
+                (Some(run), _) => println!("already up to date (running {run}){detail}"),
+                (None, _) => println!("already up to date{detail}"),
+            }
             return Ok(true);
         }
         // Older sysupdated (systemd < 261). The CLI ships through the
@@ -2875,7 +2942,7 @@ mod forge_tests {
 
 #[cfg(test)]
 mod remote_tests {
-    use super::parse_remote_model;
+    use super::{os_release_value, parse_remote_model};
 
     #[test]
     fn parses_provider_and_model_including_colonful_tails() {
@@ -2896,5 +2963,74 @@ mod remote_tests {
         assert_eq!(parse_remote_model("qwen3-0.6b"), None);
         assert_eq!(parse_remote_model("remote:openai"), None);
         assert_eq!(parse_remote_model("remote:openai:"), None);
+    }
+
+    /// The real thing, verbatim from the reference iMac running .47.
+    const OS_RELEASE: &str = r#"NAME="Lisa OS"
+ID=lisa
+VERSION_ID=50
+IMAGE_VERSION="20260727.47"
+PRETTY_NAME="Lisa OS 20260727.47"
+"#;
+
+    #[test]
+    fn os_release_value_strips_the_shell_quotes() {
+        // Unstripped, this returns `"20260727.47"` with quotes, which
+        // never equals the bus's `20260727.47` — so `lisa update` would
+        // claim an update is staged on every single run.
+        assert_eq!(
+            os_release_value(OS_RELEASE, "IMAGE_VERSION").as_deref(),
+            Some("20260727.47")
+        );
+        assert_eq!(
+            os_release_value("IMAGE_VERSION='20260728.49'", "IMAGE_VERSION").as_deref(),
+            Some("20260728.49")
+        );
+        // Unquoted is legal in os-release(5) too.
+        assert_eq!(
+            os_release_value("IMAGE_VERSION=20260728.49", "IMAGE_VERSION").as_deref(),
+            Some("20260728.49")
+        );
+    }
+
+    #[test]
+    fn os_release_value_does_not_match_a_longer_key() {
+        // `VERSION` must not be answered by `VERSION_ID` or by
+        // `IMAGE_VERSION`: a suffix/prefix collision here would report
+        // GNOME's 50 as the image version and compare nonsense.
+        assert_eq!(os_release_value(OS_RELEASE, "VERSION"), None);
+        assert_eq!(
+            os_release_value(OS_RELEASE, "VERSION_ID").as_deref(),
+            Some("50")
+        );
+    }
+
+    #[test]
+    fn os_release_value_ignores_comments_and_absent_keys() {
+        assert_eq!(
+            os_release_value("# IMAGE_VERSION=nope\n", "IMAGE_VERSION"),
+            None
+        );
+        assert_eq!(os_release_value(OS_RELEASE, "BUILD_ID"), None);
+        // An empty value is absent, not an empty version string — an
+        // empty one would sort below every real version and read as
+        // "something newer is staged" forever.
+        assert_eq!(
+            os_release_value("IMAGE_VERSION=\"\"", "IMAGE_VERSION"),
+            None
+        );
+    }
+
+    /// The staged-vs-current comparison itself. Versions are YYYYMMDD.run,
+    /// so lexicographic ordering is chronological — this pins that, because
+    /// the whole fix rests on it.
+    #[test]
+    fn version_strings_order_chronologically() {
+        assert!("20260728.49" > "20260727.47");
+        assert!("20260727.47" > "20260727.44");
+        // Same day, later run.
+        assert!("20260727.47" > "20260727.46");
+        // Not newer than itself: this is the "truly up to date" case.
+        assert!(!("20260728.49" > "20260728.49"));
     }
 }
