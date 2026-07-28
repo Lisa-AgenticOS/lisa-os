@@ -1,46 +1,108 @@
-# Lisa OS boot splash (PLAN §3/§6). Full-screen brand violet with the white
-# "Lisa" wordmark centred and a subtle spinner beneath — no kernel/terminal
-# text between the Mac's Apple logo and GDM.
-#
-# ModuleName=two-step is the same C module Arch's stock `spinner` theme uses:
-# it renders a solid background colour, a static `watermark.png`, and an
-# animated `throbber-*.png` spinner. No SVG — Plymouth only reads PNG.
-# If the theme ever fails to load, Plymouth falls back to text (`details`),
-# so a broken splash can never block boot.
 [Plymouth Theme]
+Name[be]=Кругавы індыкатар
+Name[cs]=Točítko
+Name[da]=Snurre
+Name[de]=Spinner
+Name[eo]=Turnilo
+Name[es]=Spinner
+Name[eu]=Spinner
+Name[fr]=Spinner
+Name[fur]=Roulette
+Name[hi]=चक्र
+Name[hr]=Puls okretanja
+Name[hu]=Forgó
+Name[id]=Spinner
+Name[it]=Spinner
+Name[lt]=Suktukas
+Name[ka]=სპინერი
+Name[nl]=Spinner
+Name[pa]=ਸਪਿੱਨਰ
+Name[pl]=Spinner
+Name[pt_BR]=Spinner
+Name[pt]=Girar
+Name[ro]=Titirez
+Name[ru]=Числовое поле с кнопками
+Name[sk]=Točítko
+Name[sr]=Вртешка
+Name[sv]=Spinnare
+Name[tr]=Dönen
+Name[uk]=Крутний індикатор
+Name[zh_CN]=Spinner
+Name[zh_TW]=輪轉選單
+Name[ms]=Spinner
+Name[he]=שבשבת טעינה
+Name[fa]=چرخنده
+Name[fi]=Spinneri
+Name[ie]=Volante
+Name[gl]=Spinner
+Name[cy]=Troellydd
+Name[kab]=Asebrin
+Name[kk]=Батырмалары бар сандық өріс
+Name[sl]=Vrtavka
+Name[el]=Στροβιλιστής
+Name[ca]=Indicador giratori
+Name[ar]=دوّارة
+Name[et]=Ekraanivurr
+Name[ko]=스피너
+Name[bg]=Брояч
 Name=Lisa
-Description=Lisa OS — violet boot splash with the Lisa wordmark
+Description=A theme designed by jimmac that features a simple spinner.
 ModuleName=two-step
 
 [two-step]
+Font=Adwaita Sans 12
+TitleFont=Adwaita Sans Light 30
+MonospaceFont=Adwaita Mono 12
 ImageDir=/usr/share/plymouth/themes/lisa
-
-# Solid brand violet (#6D45C9 = RGB 109,69,201). Start == End: no gradient,
-# an even field the centred logo sits on. Matches os-release ANSI_COLOR.
-BackgroundStartColor=0x6D45C9
-BackgroundEndColor=0x6D45C9
-
-# The white Lisa wordmark, centred and slightly above the mid-line.
-WatermarkHorizontalAlignment=.5
-WatermarkVerticalAlignment=.45
-
-# The comet spinner (throbber-*.png), centred just below the wordmark.
-HorizontalAlignment=.5
-VerticalAlignment=.62
-
-# We own the whole screen — do not composite the firmware/BGRT logo.
-UseFirmwareBackground=false
-WatermarkAnimation=false
-
-# No boot text. Fonts only matter if a password/status line ever appears
-# (e.g. a future LUKS prompt); Rubik is the brand face, with a safe fallback.
-Font=Rubik 12
-TitleFont=Rubik 22
 DialogHorizontalAlignment=.5
-DialogVerticalAlignment=.75
-MessageHorizontalAlignment=.5
-MessageVerticalAlignment=.85
-
+DialogVerticalAlignment=.382
+TitleHorizontalAlignment=.5
+TitleVerticalAlignment=.382
+HorizontalAlignment=.5
+VerticalAlignment=.7
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=.96
 Transition=none
 TransitionDuration=0.0
-ProgressBarShowPercentComplete=false
+BackgroundStartColor=0x6D45C9
+BackgroundEndColor=0x6D45C9
+ProgressBarBackgroundColor=0x606060
+ProgressBarForegroundColor=0xffffff
+MessageBelowAnimation=true
+
+[boot-up]
+UseEndAnimation=false
+
+[shutdown]
+UseEndAnimation=false
+
+[reboot]
+UseEndAnimation=false
+
+[updates]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Installing Updates...
+SubTitle=Do not turn off your computer
+
+[system-upgrade]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Upgrading System...
+SubTitle=Do not turn off your computer
+
+[firmware-upgrade]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Upgrading Firmware...
+SubTitle=Do not turn off your computer
+
+[system-reset]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Resetting System...
+SubTitle=Do not turn off your computer

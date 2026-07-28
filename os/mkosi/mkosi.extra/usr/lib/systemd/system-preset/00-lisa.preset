@@ -25,10 +25,6 @@ enable gdm.service
 # handoff, leaving a black screen until Plymouth times out). plymouth-start
 # itself has no [Install]; it is wired into sysinit.target by a
 # mkosi.extra symlink instead.
-# Re-show the splash after switch-root: plymouth-start runs only in the
-# initrd and systemd carries its state across the pivot, so show-splash
-# is never re-issued against the new root (issue #45).
-enable lisa-splash-resume.service
 enable plymouth-quit.service
 enable plymouth-quit-wait.service
 enable plymouth-read-write.service

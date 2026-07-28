@@ -130,6 +130,27 @@ jobs:
               sys.exit(1)
           print('initrd display stack (amdgpu + polaris11 firmware): OK')
           PY
+          # Issue #45: without this flag Plymouth sees console=ttyS0,
+          # decides the machine is headless and builds NO renderer at all
+          # (`renderer type: 4294967295`). The splash is then absent on
+          # every real machine while CI, which reads that same serial
+          # console, stays perfectly green.
+          # A check that inspected nothing has not passed: if the UKI was
+          # never extracted above, say so rather than silently succeed.
+          [ -f uki-drm.efi ] || { echo "FAIL: no UKI to check the cmdline of"; exit 1; }
+          objcopy --dump-section .cmdline=cmdline.txt uki-drm.efi /dev/null 2>/dev/null
+          tr -d '\0' < cmdline.txt | grep -q 'plymouth.ignore-serial-consoles' || {
+            echo "FAIL: UKI cmdline lacks plymouth.ignore-serial-consoles"
+            echo "      Plymouth finds console=ttyS0, decides the machine is"
+            echo "      headless and builds NO renderer — no splash on any"
+            echo "      real machine, while CI stays green (issue #45)."
+            echo "      cmdline was: $(tr -d '\0' < cmdline.txt)"
+            exit 1
+          }
+          echo 'cmdline carries plymouth.ignore-serial-consoles: OK'
+          python3 - <<'PY'
+          import sys
+          PY
           rm -f initrd-drm.img uki-drm.efi discard-drm.efi
       - name: Initrd must carry the Lisa initrd overlay
         run: |
@@ -180,6 +201,13 @@ jobs:
               # ADR-0017: the splash is configured, themed and started.
               (b'etc/plymouth/plymouthd.conf', 'plymouth daemon config'),
               (b'usr/share/plymouth/themes/lisa/lisa.plymouth', 'lisa plymouth theme'),
+              # Issue #45: the theme must be COMPLETE, not merely present.
+              # A hand-made 26-file theme loaded, failed, and Plymouth
+              # fell back to Arch's `bgrt` — so the machine booted with
+              # someone else's logo and nothing said so. These are assets
+              # the two-step module needs that the old theme lacked.
+              (b'themes/lisa/animation-0001.png', 'lisa theme animation frames'),
+              (b'themes/lisa/progress-bar.png', 'lisa theme progress bar'),
               (b'sysinit.target.wants/plymouth-start.service', 'plymouth-start enablement'),
               # …and the daemon those three configure. InitrdProfiles= is
               # the only thing putting it here; without it the overlay
@@ -285,11 +313,6 @@ jobs:
           # REMOTE HOST IDENTIFICATION HAS CHANGED — training the user to
           # click through the one warning that must never be routine.
           check_enabled lisa-identity-persist.service multi-user.target
-          # Issue #45: plymouth-start runs only in the initrd and systemd
-          # carries its state across the pivot, so show-splash is never
-          # re-issued against the new root. Without this unit the screen
-          # is black from switch-root to GDM — ~7s on the reference iMac.
-          check_enabled lisa-splash-resume.service sysinit.target
           # …and the script it runs, since an enabled unit pointing at a
           # missing ExecStart fails at boot instead of at build time.
           [ -x mnt-pull/usr/lib/lisa/persist-identity.sh ] || {
