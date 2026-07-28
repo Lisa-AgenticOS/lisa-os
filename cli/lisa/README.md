@@ -37,6 +37,31 @@ decision about what to advertise, not the guardrail — agentd resolves the
 tier from the manifest, on the far side of a call the model cannot forge
 (ADR-0030).
 
+**The shell tool (ADR-0036 §6).** `lisa assist` also carries `run_shell`,
+for the long tail the typed tools will never cover — pipes, globs,
+redirection. Without it the model does what a person would: tell you to
+paste the command yourself, which is the same action with none of the
+checks and none of the Ledger.
+
+Four conditions, none of them written in a prompt:
+
+1. **Jailed** — it runs with the project directory as its cwd.
+2. **Guard-checked** — every line goes through `lisa-guard` first, and a
+   refusal never reaches you: being asked about something already refused
+   is how people learn to click through prompts.
+3. **Never Silent** — even an `Allow` verdict asks. A shell line's real
+   tier is not knowable from its text; `curl … | sh` is not a read.
+4. **Never unattended** — `ShellTool::new` takes a consent callback and
+   there is no other constructor, so a caller *cannot* build one that
+   runs without asking. An invariant a caller can forget is not an
+   invariant.
+
+The limit worth stating: the jail bounds where the shell *starts*, not
+what it can name. A command can still reach outside it. Containing that
+needs Landlock (ADR-0029 phase 3), and until then condition 3 is what
+stands between the model's idea and your filesystem — which is exactly
+why it is not skipped for "obviously safe" commands.
+
 **Skills (ADR-0025):** `lisa skills list` prints the catalog (one
 `name: description` line each — the part a prompt carries), `lisa skills
 show <name>` prints the workflow body. Resolution: `$LISA_SKILLS_DIR` →

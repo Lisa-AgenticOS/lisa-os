@@ -342,7 +342,7 @@ fn request_and_confirm(
     }
 }
 
-fn prompt_yes(prompt: &str) -> anyhow::Result<bool> {
+pub fn prompt_yes(prompt: &str) -> anyhow::Result<bool> {
     use std::io::Write as _;
     print!("{prompt}");
     std::io::stdout().flush()?;

@@ -285,8 +285,28 @@ pub fn assist_cmd(
             _ => {}
         }
     };
-    let providers: [&dyn ToolProvider; 1] = [&bus];
+    // The shell tool (ADR-0036 §6): the long tail the typed tools will
+    // never cover. Without it the model does what a person would — tell
+    // you to paste the command yourself — which is the same action with
+    // none of the checks and none of the Ledger.
+    //
+    // Its consent callback is a TERMINAL PROMPT, which is the honest
+    // thing here and also the limit: `lisa assist` is a surface with a
+    // human at a tty. A schedule or an event trigger has no tty, and
+    // must not get this tool at all (ADR-0036 §6.4) — that is why the
+    // callback is a constructor argument rather than a config flag.
     let project = std::env::current_dir()?;
+    let shell = forge_harness::ShellTool::new(&project, |req| {
+        eprintln!();
+        eprintln!("  the assistant wants to run a shell command:");
+        eprintln!("      {}", req.command);
+        eprintln!("  in: {}", req.cwd.display());
+        if let Some(reason) = req.verdict.reason() {
+            eprintln!("  ! {reason}");
+        }
+        crate::agent::prompt_yes("  run it? [y/N] ").unwrap_or(false)
+    })?;
+    let providers: [&dyn ToolProvider; 2] = [&bus, &shell];
     let report = forge_harness::forge_agent_with_tools(
         utterance,
         &project,

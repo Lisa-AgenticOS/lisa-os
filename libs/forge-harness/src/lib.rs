@@ -16,6 +16,7 @@
 pub mod agent;
 pub mod jail;
 pub mod openai;
+pub mod shell_tool;
 pub mod tools;
 
 pub use agent::{
@@ -24,6 +25,7 @@ pub use agent::{
     forge_agent_with_tools,
 };
 pub use openai::OpenAiBackend;
+pub use shell_tool::{ShellRequest, ShellTool};
 pub use tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 
 use serde::Deserialize;
