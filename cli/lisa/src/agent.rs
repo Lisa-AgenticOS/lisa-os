@@ -94,8 +94,8 @@ fn run_task(
 /// OpenAI tool names allow `[A-Za-z0-9_-]{1,64}`; bus ids are
 /// `app.lisaos.notes::create_note`. Flatten deterministically so the
 /// reply maps back to exactly one catalog entry.
-fn wire_name(t: &ToolInfo) -> String {
-    let flat = format!("{}__{}", t.app_id.replace(['.', '-'], "_"), t.tool);
+pub fn wire_name(app_id: &str, tool: &str) -> String {
+    let flat = format!("{}__{}", app_id.replace(['.', '-'], "_"), tool);
     flat.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {
@@ -128,7 +128,7 @@ fn route_via_tool_calling(
             serde_json::json!({
                 "type": "function",
                 "function": {
-                    "name": wire_name(t),
+                    "name": wire_name(&t.app_id, &t.tool),
                     "description": t.description,
                     "parameters": if t.input_schema.is_object() {
                         t.input_schema.clone()
@@ -169,7 +169,7 @@ fn route_via_tool_calling(
         .ok_or_else(|| anyhow!("tool_call without a function name"))?;
     let chosen = tools
         .iter()
-        .find(|t| wire_name(t) == name)
+        .find(|t| wire_name(&t.app_id, &t.tool) == name)
         .ok_or_else(|| anyhow!("model called `{name}`, which is not on the bus"))?;
     // Arguments arrive as a JSON *string* per the OpenAI wire format.
     let args: Value = match call["function"]["arguments"].as_str() {
@@ -363,7 +363,10 @@ mod tests {
                 {"app_id":"dev.lisaos.files-x","name":"read","description":"d"}]"#,
         )
         .unwrap();
-        let names: Vec<String> = tools.iter().map(wire_name).collect();
+        let names: Vec<String> = tools
+            .iter()
+            .map(|t| wire_name(&t.app_id, &t.tool))
+            .collect();
         for n in &names {
             assert!(
                 n.len() <= 64
@@ -377,7 +380,10 @@ mod tests {
         assert_eq!(unique.len(), names.len(), "wire names collided: {names:?}");
         // And each maps back to exactly the tool it came from.
         for (t, n) in tools.iter().zip(&names) {
-            let back = tools.iter().find(|c| &wire_name(c) == n).unwrap();
+            let back = tools
+                .iter()
+                .find(|c| &wire_name(&c.app_id, &c.tool) == n)
+                .unwrap();
             assert_eq!((&back.app_id, &back.tool), (&t.app_id, &t.tool));
         }
     }

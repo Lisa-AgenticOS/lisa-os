@@ -14,6 +14,29 @@ scaffolds a lisa_ui app and runs the loop against `flutter analyze`;
 the forge apps dir on /var and write the `.desktop` entry that puts it in
 the app grid.
 
+**Agent Bus verbs (PLAN §5.4, ADR-0013):** `lisa tools` lists what apps
+registered; `lisa call` invokes one directly; `lisa do "<plain words>"`
+routes one utterance to exactly one tool call; `lisa undo` reverses the
+last undoable one.
+
+**`lisa assist "<plain words>"` (ADR-0025, issue #59)** is the same tools
+under the *agent harness* rather than the single-shot router: it can
+search, read what came back, decide it needs something else, and search
+again, up to `--max-turns` (default 12). Every call is ledgered, and the
+run refuses to start if the Ledger cannot be opened (#129).
+
+It offers **read-tier tools only.** Write and destructive tools are
+withheld while issue #55 is open: the process hosting the model is also
+the process that raises the confirmation dialog, so for a call it
+originates itself, requester and approver are the same peer — a
+confirmation there is the model asking itself for permission. If a
+privileged call does reach the bus, `lisa-agentd` parks it and the loop
+reports back that a person has to act; **it never answers its own
+confirmation.** The read-tier filter in `bus_tools.rs` is a product
+decision about what to advertise, not the guardrail — agentd resolves the
+tier from the manifest, on the far side of a call the model cannot forge
+(ADR-0030).
+
 **Skills (ADR-0025):** `lisa skills list` prints the catalog (one
 `name: description` line each — the part a prompt carries), `lisa skills
 show <name>` prints the workflow body. Resolution: `$LISA_SKILLS_DIR` →

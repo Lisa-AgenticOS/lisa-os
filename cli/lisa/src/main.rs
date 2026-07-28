@@ -8,6 +8,7 @@
 
 mod agent;
 mod apps;
+mod bus_tools;
 mod guard;
 mod skills;
 mod terminal;
@@ -128,6 +129,25 @@ enum Command {
         /// Auto-approve chip-level confirmations (modal ones still refuse).
         #[arg(long)]
         yes: bool,
+    },
+    /// Multi-turn assistant on the agent harness: read-tier Agent Bus
+    /// tools in one loop (ADR-0025). Unlike `lisa do`, which routes one
+    /// utterance to one tool call, this can look, read the answer, and
+    /// look again.
+    Assist {
+        /// What you want, in plain words.
+        utterance: Vec<String>,
+        #[arg(
+            long,
+            default_value = "http://127.0.0.1:7777",
+            env = "LISA_INFERENCE_URL"
+        )]
+        url: String,
+        #[arg(long)]
+        model: Option<String>,
+        /// Turn budget: one tool call or done-signal each.
+        #[arg(long, default_value_t = 12)]
+        max_turns: usize,
     },
     /// List tools on the Agent Bus (PLAN §5.4).
     Tools,
@@ -513,6 +533,12 @@ fn run() -> anyhow::Result<()> {
             dry_run,
             yes,
         } => agent::do_cmd(&utterance.join(" "), &url, model.as_deref(), dry_run, yes),
+        Command::Assist {
+            utterance,
+            url,
+            model,
+            max_turns,
+        } => bus_tools::assist_cmd(&utterance.join(" "), &url, model, max_turns),
         Command::Tools => agent::tools_cmd(),
         Command::Call {
             app_id,
