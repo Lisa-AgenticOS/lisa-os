@@ -29,7 +29,16 @@ provenance escalation and an undo journal. The guardrail prompt
   privileged calls are journaled with their resolved compensation.
 - **`journal`** — the undo journal (`agent-journal.db`, beside the
   ledger): mutable working state (active → undone/skipped) so `lisa
-  undo` reverts the last agent action via the manifest-declared inverse
+  undo` reverts **the caller's own** last agent action via the
+  manifest-declared inverse. Each row records the transport-assigned
+  `owner`, and `last_active` is scoped to it (#94): undo dispatches a
+  compensation that is frequently destructive-tier, so an unscoped query
+  let any session peer revert any other peer's action. Ownership rather
+  than a fresh confirmation is deliberate — undo reverts an action this
+  peer *made*, and having made it is the authority; re-asking would make
+  undo unusable while adding nothing. Rows written before the `owner`
+  column existed have NULL and are undoable by nobody, which is the
+  fail-closed direction
   call.
 - **`dbus`** — the `dev.lisaos.Agent1` session-bus surface (below).
 

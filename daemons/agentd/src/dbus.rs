@@ -245,9 +245,22 @@ impl Agent1 {
         Ok((status, detail))
     }
 
-    /// Revert the last agent action via its journaled compensation.
-    fn undo(&self) -> zbus::fdo::Result<String> {
-        let report = self.bus.undo("host").map_err(fdo_err)?;
+    /// Revert the caller's last agent action via its journaled
+    /// compensation.
+    ///
+    /// The identity comes from the transport, never from the message
+    /// (ADR-0033). This method used to take no arguments at all and
+    /// hardcode the actor `"host"`, so any peer on the session bus could
+    /// revert any other peer's action and the Ledger would attribute it
+    /// to "host" (#94).
+    fn undo(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<String> {
+        let caller = lisa_peer::PeerId::of(conn, &header)
+            .map_err(|e| zbus::fdo::Error::AccessDenied(e.to_string()))?;
+        let report = self.bus.undo("host", &caller).map_err(fdo_err)?;
         serde_json::to_string(&report)
             .map_err(|e| zbus::fdo::Error::Failed(format!("serializing report: {e}")))
     }

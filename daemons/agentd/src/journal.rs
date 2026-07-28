@@ -35,7 +35,14 @@ pub struct JournalEntry {
     pub ts: i64,
     /// Ledger id of the `tool.call` entry this action belongs to.
     pub ledger_ref: i64,
+    /// Free-text label for the Ledger ("cli", "shell"). It is ASSERTED
+    /// by the caller and authorises nothing — see `owner`.
     pub actor: String,
+    /// The transport-assigned peer that made this action (ADR-0033).
+    /// This is what `undo` checks. `None` on rows written before the
+    /// column existed; those are undoable by nobody, which is the
+    /// fail-closed direction (#94).
+    pub owner: Option<String>,
     pub app_id: String,
     pub tool: String,
     pub args_json: String,
@@ -51,6 +58,8 @@ pub struct NewRecord<'a> {
     /// Ledger id of the `tool.call` entry this action belongs to.
     pub ledger_ref: i64,
     pub actor: &'a str,
+    /// Transport-assigned identity of the peer that made this call.
+    pub owner: &'a str,
     pub app_id: &'a str,
     pub tool: &'a str,
     pub args: &'a Value,
@@ -88,10 +97,15 @@ impl UndoJournal {
                 result_json    TEXT NOT NULL,
                 undo_tool      TEXT,
                 undo_args_json TEXT,
-                state          TEXT NOT NULL DEFAULT 'active'
+                state          TEXT NOT NULL DEFAULT 'active',
+                owner          TEXT
             );
             CREATE INDEX IF NOT EXISTS journal_state ON journal(state, id);",
         )?;
+        // Migration for databases created before `owner` existed (#94).
+        // A duplicate-column error means it is already there, which is
+        // the normal case on every boot after the first.
+        let _ = conn.execute("ALTER TABLE journal ADD COLUMN owner TEXT", []);
         Ok(UndoJournal {
             conn: Mutex::new(conn),
         })
@@ -116,8 +130,8 @@ impl UndoJournal {
         conn.execute(
             "INSERT INTO journal
                (ts, ledger_ref, actor, app_id, tool, args_json, result_json,
-                undo_tool, undo_args_json, state)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active')",
+                undo_tool, undo_args_json, state, owner)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10)",
             rusqlite::params![
                 ts,
                 rec.ledger_ref,
@@ -128,20 +142,36 @@ impl UndoJournal {
                 rec.result.to_string(),
                 undo_tool,
                 undo_args,
+                rec.owner,
             ],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
-    /// Newest still-active entry — the one `lisa undo` targets.
-    pub fn last_active(&self) -> Result<Option<JournalEntry>, JournalError> {
+    /// Newest still-active entry **belonging to `owner`** — the one
+    /// `lisa undo` targets.
+    ///
+    /// Scoping by owner is the fix for #94. Undo dispatches a
+    /// compensation that is frequently destructive-tier, and an unscoped
+    /// query meant any peer on the session bus could revert an action
+    /// some other peer had taken. Ownership is the right authority here
+    /// rather than a fresh confirmation: undo reverts an action this
+    /// peer *made*, and having made it is the permission. Asking again
+    /// would make undo unusable while adding nothing.
+    ///
+    /// Rows written before the `owner` column existed have NULL and
+    /// therefore match nobody. Losing the ability to undo pre-upgrade
+    /// actions is the fail-closed direction, and the alternative —
+    /// treating NULL as "anyone" — is the vulnerability itself.
+    pub fn last_active(&self, owner: &str) -> Result<Option<JournalEntry>, JournalError> {
         let conn = self.conn.lock().expect("journal lock");
         let mut stmt = conn.prepare(
             "SELECT id, ts, ledger_ref, actor, app_id, tool, args_json,
-                    result_json, undo_tool, undo_args_json, state
-             FROM journal WHERE state = 'active' ORDER BY id DESC LIMIT 1",
+                    result_json, undo_tool, undo_args_json, state, owner
+             FROM journal WHERE state = 'active' AND owner = ?1
+             ORDER BY id DESC LIMIT 1",
         )?;
-        let mut rows = stmt.query_map([], |r| {
+        let mut rows = stmt.query_map([owner], |r| {
             Ok(JournalEntry {
                 id: r.get(0)?,
                 ts: r.get(1)?,
@@ -154,6 +184,7 @@ impl UndoJournal {
                 undo_tool: r.get(8)?,
                 undo_args_json: r.get(9)?,
                 state: r.get(10)?,
+                owner: r.get(11)?,
             })
         })?;
         rows.next().transpose().map_err(Into::into)
@@ -210,6 +241,7 @@ mod tests {
         j.record(NewRecord {
             ledger_ref,
             actor: "host",
+            owner: "test-peer",
             app_id: "org.gnome.Calendar",
             tool: "add_event",
             args: &json!({"title": "dentist"}),
@@ -228,7 +260,7 @@ mod tests {
             Some(("delete_event".into(), json!({"event_id": "evt-1"}))),
         );
         let b = record_add(&j, 20, None);
-        let top = j.last_active().unwrap().unwrap();
+        let top = j.last_active("test-peer").unwrap().unwrap();
         assert_eq!(top.id, b);
         assert!(
             top.undo_tool.is_none(),
@@ -236,12 +268,12 @@ mod tests {
         );
 
         j.set_state(b, "skipped").unwrap();
-        let top = j.last_active().unwrap().unwrap();
+        let top = j.last_active("test-peer").unwrap().unwrap();
         assert_eq!(top.id, a);
         assert_eq!(top.undo_tool.as_deref(), Some("delete_event"));
 
         j.set_state(a, "undone").unwrap();
-        assert!(j.last_active().unwrap().is_none());
+        assert!(j.last_active("test-peer").unwrap().is_none());
     }
 
     #[test]

@@ -610,8 +610,22 @@ impl AgentBus {
     /// Revert the last agent action (`lisa undo`, PLAN §5.4). The
     /// compensation call is user-initiated, so it dispatches directly —
     /// ledgered as `tool.undo`.
-    pub fn undo(&self, actor: &str) -> Result<UndoReport, BusError> {
-        let Some(entry) = self.journal.last_active()? else {
+    /// Revert the newest action **this caller made**.
+    ///
+    /// `actor` is a Ledger label and authorises nothing; `caller` is the
+    /// transport-assigned identity and does (ADR-0033). Before #94 this
+    /// took only the label, dispatched the compensation straight to the
+    /// MCP transport, and `last_active()` was unscoped — so any peer on
+    /// the session bus could revert an action taken by any other, with
+    /// no tier resolution and no confirmation, using a compensation that
+    /// is frequently destructive-tier.
+    ///
+    /// Ownership rather than a fresh confirmation is deliberate: undo
+    /// reverts an action this peer made, and having made it is the
+    /// authority. Re-asking would make undo unusable while adding
+    /// nothing a person would act on differently.
+    pub fn undo(&self, actor: &str, caller: &PeerId) -> Result<UndoReport, BusError> {
+        let Some(entry) = self.journal.last_active(caller.as_str())? else {
             return Ok(UndoReport::Nothing);
         };
         let (Some(undo_tool), Some(undo_args_json)) = (&entry.undo_tool, &entry.undo_args_json)
@@ -712,6 +726,9 @@ impl AgentBus {
                     if let Err(e) = self.journal.record(journal::NewRecord {
                         ledger_ref: start_ref,
                         actor: &req.actor,
+                        // Transport-assigned, not the asserted `actor`
+                        // label: this is what undo checks (#94).
+                        owner: req.caller.as_str(),
                         app_id: &req.app_id,
                         tool: &req.tool,
                         args: &req.args,
@@ -1509,7 +1526,7 @@ mod tests {
             ]
         );
         // Undo now reverts it via the manifest-declared compensation.
-        let report = f.bus.undo("host").unwrap();
+        let report = f.bus.undo("host", &lisa_peer::PeerId::Direct).unwrap();
         let UndoReport::Undone {
             undo_tool, result, ..
         } = report
@@ -1646,10 +1663,71 @@ mod tests {
         assert_eq!(f.ledger.count().unwrap(), 2, "both refusals ledgered");
     }
 
+    /// Issue #94 — the hole every other undo test walked past, because
+    /// they all acted and undid as the same peer.
+    ///
+    /// `Undo()` dispatches a compensation that is frequently
+    /// destructive-tier (`add_event`'s inverse is `delete_event`), and it
+    /// goes straight to the MCP transport: no tier resolution, no
+    /// confirmation, no args validation. So an unscoped journal query
+    /// meant any peer on the session bus could revert an action taken by
+    /// any other. The D-Bus method made it worse by taking no arguments
+    /// at all and hardcoding the actor "host".
+    #[test]
+    fn a_peer_cannot_undo_an_action_another_peer_made() {
+        let f = fixture();
+        let author = lisa_peer::PeerId::Bus(":1.10".into());
+        let stranger = lisa_peer::PeerId::Bus(":1.99".into());
+
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: author.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "add_event",
+                    json!({"title": "dentist", "start": "2026-07-24T10:00:00Z"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("expected pending");
+        };
+        f.bus
+            .confirm(call_id, true, &Answerer::alone(author.clone()))
+            .unwrap();
+        assert_eq!(f.dispatcher.dispatched(), 1, "the action itself should run");
+
+        // The stranger sees an empty journal, not somebody else's action.
+        let report = f.bus.undo("host", &stranger).unwrap();
+        assert!(
+            matches!(report, UndoReport::Nothing),
+            "a stranger reverted another peer's action: {report:?}"
+        );
+        assert_eq!(
+            f.dispatcher.dispatched(),
+            1,
+            "the compensation was dispatched for a peer that did not own it"
+        );
+
+        // Positive control: the author still can. A fix that made undo
+        // stop working would pass the assertion above and be useless.
+        let report = f.bus.undo("host", &author).unwrap();
+        assert!(
+            matches!(report, UndoReport::Undone { .. }),
+            "the author could not undo their own action: {report:?}"
+        );
+        assert_eq!(f.dispatcher.dispatched(), 2);
+    }
+
     #[test]
     fn undo_skips_non_undoable_actions_and_reports_empty_journal() {
         let f = fixture();
-        assert!(matches!(f.bus.undo("host").unwrap(), UndoReport::Nothing));
+        assert!(matches!(
+            f.bus.undo("host", &lisa_peer::PeerId::Direct).unwrap(),
+            UndoReport::Nothing
+        ));
 
         // delete_event declares no undo → journaled as not-undoable.
         let Outcome::AwaitingConfirmation { call_id, .. } = f
@@ -1667,13 +1745,16 @@ mod tests {
         f.bus
             .confirm(call_id, true, &Answerer::alone(lisa_peer::PeerId::Direct))
             .unwrap();
-        let report = f.bus.undo("host").unwrap();
+        let report = f.bus.undo("host", &lisa_peer::PeerId::Direct).unwrap();
         assert!(
             matches!(report, UndoReport::NotUndoable { .. }),
             "{report:?}"
         );
         assert!(
-            matches!(f.bus.undo("host").unwrap(), UndoReport::Nothing),
+            matches!(
+                f.bus.undo("host", &lisa_peer::PeerId::Direct).unwrap(),
+                UndoReport::Nothing
+            ),
             "skipped entries leave the stack"
         );
     }
