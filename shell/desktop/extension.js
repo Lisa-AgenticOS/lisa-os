@@ -31,7 +31,7 @@ import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import St from 'gi://St';
 import Shell from 'gi://Shell';
-import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -124,12 +124,18 @@ class LisaWordmark extends PanelMenu.Button {
     _buildMenu() {
         const actions = SystemActions.getDefault();
 
-        // What this machine is. Informational, like "About This Mac" —
-        // it reports, it does not act, so it is insensitive rather than
-        // a dead click.
-        const about = new PopupMenu.PopupMenuItem(osRelease(), {reactive: false});
-        about.add_style_class_name('lisa-menu-about');
-        this.menu.addMenuItem(about);
+        // "About Lisa OS", like the Apple menu's "About This Mac": it
+        // opens the page that answers the question rather than answering
+        // it in the menu.
+        //
+        // This used to print `PRETTY_NAME` + `IMAGE_VERSION` inline and
+        // do nothing when clicked. Two reasons it moved: a version is a
+        // fact people want to *act* on — check for an update, copy it
+        // into a bug report — and a menu is the wrong place for either;
+        // and Settings → System now carries the version alongside a
+        // Check for Updates button, so the menu was the second, dumber
+        // copy of a live surface.
+        this._action('About Lisa OS', () => openSystemSettings());
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         // The things only Lisa has, then the system's own settings.
@@ -175,33 +181,24 @@ class LisaWordmark extends PanelMenu.Button {
     }
 });
 
-/// What this machine calls itself, straight from `/etc/os-release`.
+/// Open Settings on the System page — where the OS version and the
+/// Check for Updates button live (the Lisa row in our
+/// gnome-control-center build).
 ///
-/// Read, never guessed: a hard-coded product string is wrong the moment
-/// a build ships, and a wrong version in the About line is worse than no
-/// About line.
+/// Spawned as `gnome-control-center system` rather than activated
+/// through `Shell.AppSystem`: a .desktop activation opens Settings on
+/// whatever page it last showed, and the whole point of this entry is
+/// the page. GNOME's own panels navigate by the same argument.
 ///
-/// `PRETTY_NAME` alone is just "Lisa OS" — the number that matters is
-/// `IMAGE_VERSION`, because that is the one `lisa update` moves and the
-/// one an issue report needs.
-function osRelease() {
-    const field = (text, key) => {
-        const match = new RegExp(`^${key}="?([^"\\n]+)"?`, 'm').exec(text);
-        return match ? match[1] : null;
-    };
+/// A failure here is logged, not thrown: a panel menu that raises into
+/// the Shell's main loop takes more with it than the click that caused
+/// it.
+function openSystemSettings() {
     try {
-        const [ok, bytes] = GLib.file_get_contents('/etc/os-release');
-        if (ok) {
-            const text = new TextDecoder().decode(bytes);
-            const name = field(text, 'PRETTY_NAME') ?? field(text, 'NAME') ?? 'Lisa OS';
-            const version = field(text, 'IMAGE_VERSION');
-            return version ? `${name} ${version}` : name;
-        }
-    } catch {
-        // A missing or unreadable os-release is not worth an exception
-        // in a panel menu.
+        Gio.Subprocess.new(['gnome-control-center', 'system'], Gio.SubprocessFlags.NONE);
+    } catch (e) {
+        logError(e, 'lisa-desktop: could not open Settings on the System page');
     }
-    return 'Lisa OS';
 }
 
 /// The always-visible dock: GNOME's Dash in a floating rounded panel.

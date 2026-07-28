@@ -16,9 +16,17 @@ wireframe:
 3. **The top bar is reordered** to the sketch: the `LISA` wordmark at the
    left, the workspace switcher moved into the centre the clock vacates,
    and the clock moved right to sit with the quick settings.
-4. **The wordmark opens a menu** — what this machine is, the Lisa apps,
-   and the session actions, including the **Log Out** GNOME hides on a
+4. **The wordmark opens a menu** — **About Lisa OS**, the Lisa apps, and
+   the session actions, including the **Log Out** GNOME hides on a
    single-user autologin machine (#139).
+
+   *About Lisa OS* spawns `gnome-control-center system` rather than
+   activating the Settings `.desktop`, because a plain activation reopens
+   Settings on whatever page it last showed and the page is the entire
+   point of the entry. The menu used to print `PRETTY_NAME` +
+   `IMAGE_VERSION` inline and do nothing when clicked; Settings → System
+   now carries the version next to a Check for Updates button, so the
+   menu had become a second, dumber copy of a live surface.
 
 The prompt half of ADR-0035's bar is **not** here yet. This extension
 owns the dock and the corner; the entry field is the next slice.

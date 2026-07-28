@@ -42,10 +42,3 @@
 #panel.unlock-screen {
     background-color: rgba(0, 0, 0, 0.2);
 }
-
-/* The About line reports; it does not act. Dimmed so it does not read
- * as a disabled action the user is being denied. */
-.lisa-menu-about {
-    font-weight: 700;
-    opacity: 0.7;
-}
