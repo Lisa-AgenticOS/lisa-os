@@ -520,21 +520,33 @@ impl AgentBus {
         answerer: &Answerer,
     ) -> Result<(), fn(u64) -> BusError> {
         let is_requester = p.owner.allows(&answerer.peer);
-        let is_surface = answerer.consent == ConsentRole::Surface;
-        if !is_requester && !is_surface {
+        // Owning the consent name counts as oversight only when you are
+        // NOT the peer that asked (#145). The overlay backend both hosts
+        // the model and owns `dev.lisaos.Overlay1`, so for a call it
+        // originates it arrived here as `Surface` — and `Surface` was
+        // treated as proof that somebody else had looked. It was the same
+        // process wearing two hats, and the effect was that the model
+        // approved its own destructive calls.
+        //
+        // Independence is a property of the PAIR (requester, answerer),
+        // not of either alone, so it is computed as one.
+        let is_independent_surface = answerer.consent == ConsentRole::Surface && !is_requester;
+        if !is_requester && !is_independent_surface {
             return Err(BusError::NotYours);
         }
-        let self_approving_a_destructive_call =
-            approve && p.resolution.confirmation == Confirmation::Modal && !is_surface;
-        if self_approving_a_destructive_call && answerer.consent == ConsentRole::Other {
-            // A consent surface IS running; it, not the requester,
-            // answers this one.
+        if approve
+            && p.resolution.confirmation == Confirmation::Modal
+            && !is_independent_surface
+            // `Absent` means no consent surface exists anywhere, so
+            // refusing would make every destructive call unanswerable on
+            // a headless host — the availability failure #135 reported.
+            // `Surface`-but-self and `Other` both mean a dialog exists
+            // and this is not an independent one.
+            && answerer.consent != ConsentRole::Absent
+        {
             return Err(BusError::NeedsConsentSurface);
         }
-        // `Absent`: nobody else can answer, so refusing here would make
-        // every destructive call unanswerable on a headless host — the
-        // exact availability failure this issue reported. The Ledger
-        // records that no consent surface was involved.
+        // The Ledger records when no consent surface was involved.
         Ok(())
     }
 
@@ -1170,6 +1182,106 @@ mod tests {
             assert!(matches!(err, BusError::NotYours(_)), "{err:?}");
             assert_eq!(f.dispatcher.dispatched(), 0);
         }
+    }
+
+    /// Issue #145 — the hole every other authority test walked past.
+    ///
+    /// The overlay backend hosts the model AND owns `dev.lisaos.Overlay1`,
+    /// so a call it originates comes back to `Confirm` from a peer that is
+    /// both the requester and the consent surface. `Surface` used to be
+    /// taken as proof that somebody independent had looked at it, and the
+    /// result was the model approving its own destructive calls.
+    ///
+    /// Note this passes with `Answerer::surface` and the SAME peer id as
+    /// the requester — that identity is the whole point of the test.
+    #[test]
+    fn the_consent_surface_cannot_approve_a_call_it_made_itself() {
+        let f = fixture();
+        let overlay = lisa_peer::PeerId::Bus(":1.10".into());
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: overlay.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt-1"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a destructive call must park");
+        };
+        let err = f
+            .bus
+            .confirm(call_id, true, &Answerer::surface(overlay))
+            .expect_err("the model host approved its own destructive call");
+        assert!(matches!(err, BusError::NeedsConsentSurface(_)), "{err:?}");
+        assert_eq!(f.dispatcher.dispatched(), 0, "it must not have run");
+    }
+
+    /// Positive control for the test above: the fix must not break the
+    /// case it exists to protect. A consent surface that is a DIFFERENT
+    /// peer from the requester still approves normally — otherwise the
+    /// desktop's destructive flow is dead and the "fix" is an outage.
+    #[test]
+    fn an_independent_consent_surface_still_approves() {
+        let f = fixture();
+        let requester = lisa_peer::PeerId::Bus(":1.10".into());
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: requester,
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt-1"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a destructive call must park");
+        };
+        f.bus
+            .confirm(
+                call_id,
+                true,
+                // A different unique name: a real separate process.
+                &Answerer::surface(lisa_peer::PeerId::Bus(":1.11".into())),
+            )
+            .expect("an independent surface must be able to approve");
+        assert_eq!(f.dispatcher.dispatched(), 1);
+    }
+
+    /// The headless case must also survive: with NO consent surface
+    /// anywhere, the requester answering its own call is the only way a
+    /// destructive action can ever happen, and refusing it was the
+    /// availability failure #135 reported.
+    #[test]
+    fn a_headless_requester_can_still_answer_its_own_call() {
+        let f = fixture();
+        let cli = lisa_peer::PeerId::Bus(":1.10".into());
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: cli.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt-1"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a destructive call must park");
+        };
+        f.bus
+            .confirm(call_id, true, &Answerer::alone(cli))
+            .expect("a headless box must still be able to confirm");
+        assert_eq!(f.dispatcher.dispatched(), 1);
     }
 
     /// The Ledger must say WHO approved. "A destructive action ran" and
