@@ -126,15 +126,46 @@ The consequence to keep hold of: **a `click` steered by a page the model
 just read carries that page's provenance, and escalates.** The chain
 remembers where the instruction came from. That is the whole design.
 
-### 3. Zen stays
+### 3. Browser is the default and the only one installed
 
-WebKitGTK is not Chromium. Some Google properties misbehave, heavy web
-apps break, and there is no Widevine — no Netflix, no Spotify. This
-cannot be somebody's only browser and it is dishonest to ship it as one.
+Decision, Flakerim, 2026-07-29: `Browser` is **the** browser. Zen stops
+being installed by default. Anyone who wants Zen, Firefox or Chrome
+installs it.
 
-`Browser` is the agent-native one you reach for first. Zen is the
-compatibility escape hatch you fall out to when a site fights you. Both
-ship through the app channel; neither is in the image.
+The reasoning is that a default is a statement. Shipping a browser Lisa
+cannot see, in the app people use more than any other, would make
+"AI-native" a marketing line rather than a property of the system — and
+carrying two browsers doubles the surface while making neither the
+answer. elementary OS makes the same call with Epiphany, on the same
+engine.
+
+**What that costs, so nobody is surprised by it later:**
+
+- **No Widevine: no Netflix, Spotify, Disney+ or Prime Video.** This is
+  not a corner case. On a machine somebody uses as a desktop it is a
+  daily-use failure.
+- **No WebExtensions: no uBlock Origin**, the most-installed extension
+  there is, and no extension-based password managers.
+- **Google Meet, some banking sites and enterprise SSO** are historically
+  rough on WebKitGTK.
+
+These are accepted, not solved. The mitigation is that the escape hatch
+has to be *real*:
+
+1. **Zen stays in the app channel** and installing it is one command —
+   not a download page, not a search. If installing another browser is
+   any harder than that, this decision becomes a trap rather than a
+   position.
+2. **`Browser` says so itself when it is the problem.** A DRM-gated video
+   or a site that will not load should offer the route out rather than
+   failing blankly, because a browser that cannot render a page and
+   cannot say why is worse than one that never tried.
+
+The honest summary: this trades compatibility for the thing Lisa exists
+to do, on a machine where the assistant seeing the web is the point. It
+is defensible. It is not free, and pretending otherwise in six months
+when the first "why does Netflix not work" arrives would be worse than
+writing it down now.
 
 ### 4. Sandboxing stays on
 
@@ -160,8 +191,9 @@ what the engine is executing.
 
 ## What this ADR does not decide
 
-1. Whether `Browser` eventually replaces Zen as the default, or stays the
-   agent-first alternative beside it.
+1. Whether Zen stays *available* in the channel indefinitely, or is
+   eventually dropped once compatibility complaints settle. It stays for
+   now.
 2. The password/credential story. It is the hardest part of a browser and
    the easiest to get dangerously wrong, and no answer here is better
    than a rushed one.
