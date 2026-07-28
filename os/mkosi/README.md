@@ -127,12 +127,13 @@ violet — not scrolling kernel/unit text — between the Mac's Apple logo
 and GDM. All console/kernel/systemd text goes to the serial line, leaving
 tty0 (the framebuffer) clean for Plymouth.
 
-The theme lives in `mkosi.extra/usr/share/plymouth/themes/lisa/`
+The splash is Arch's stock `bgrt` theme with our watermark swapped in
+(`mkosi.extra/usr/share/plymouth/themes/spinner/watermark.png`).
 (`lisa.plymouth`, `ModuleName=two-step` — the same module Arch's stock
 `spinner` theme uses): a solid `#6D45C9` background, the white `Lisa`
 wordmark (`watermark.png`, recolored from `branding/lisa-wordmark.svg`),
 and a subtle comet spinner (`throbber-*.png`). `lisa` is the default via
-`etc/plymouth/plymouthd.conf` (`Theme=lisa`) **and** the
+the stock theme **and** the
 `themes/default.plymouth` symlink — no `plymouth-set-default-theme` run,
 deterministic in an immutable image.
 
@@ -159,7 +160,7 @@ the parent may push down. So:
 - **Files** come from **`initrd-overlay/`**, which `mkosi.finalize` packs
   into a cpio and drops in `$ARTIFACTDIR/io.mkosi.initrd/`; mkosi joins
   everything there onto the initrd set (`mkosi.1`, `finalize_initrds()`).
-  That tree carries `plymouthd.conf`, the `lisa` theme, the
+  That tree carries the Lisa watermark, the
   `sysinit.target.wants/plymouth-start.service` symlink, the ADR-0022
   rescue root resolver + its unit, and the issue #16 boot-disk udev rule.
 - `Initrds=` is deliberately **not** used: it *replaces* the default initrd

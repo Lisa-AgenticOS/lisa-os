@@ -198,16 +198,21 @@ jobs:
               (b'usr/lib/systemd/system/lisa-newest-good-root.service', 'rescue resolver unit'),
               (b'initrd-root-device.target.wants/lisa-newest-good-root.service',
                'rescue resolver unit enablement'),
-              # ADR-0017: the splash is configured, themed and started.
-              (b'etc/plymouth/plymouthd.conf', 'plymouth daemon config'),
-              (b'usr/share/plymouth/themes/lisa/lisa.plymouth', 'lisa plymouth theme'),
-              # Issue #45: the theme must be COMPLETE, not merely present.
-              # A hand-made 26-file theme loaded, failed, and Plymouth
-              # fell back to Arch's `bgrt` — so the machine booted with
-              # someone else's logo and nothing said so. These are assets
-              # the two-step module needs that the old theme lacked.
-              (b'themes/lisa/animation-0001.png', 'lisa theme animation frames'),
-              (b'themes/lisa/progress-bar.png', 'lisa theme progress bar'),
+              # ADR-0017 / issue #45: the splash is Arch's stock `bgrt`
+              # theme with OUR logo, not a bespoke theme.
+              #
+              # A hand-made theme was tried and is why this check changed:
+              # it had 26 files where stock `spinner` has 74, so it loaded,
+              # FAILED, and Plymouth silently fell back to bgrt — the
+              # machine booted with the Arch logo and nothing anywhere
+              # said so. The old assertion passed throughout, because the
+              # theme was present; present is not loadable.
+              #
+              # bgrt draws ImageDir=.../spinner, so replacing that one
+              # watermark rebrands the splash with no theme to maintain.
+              # The marker file is what proves our overlay landed —
+              # watermark.png itself is always there, from the package.
+              (b'themes/spinner/.lisa-branded', 'Lisa watermark overlay'),
               (b'sysinit.target.wants/plymouth-start.service', 'plymouth-start enablement'),
               # …and the daemon those three configure. InitrdProfiles= is
               # the only thing putting it here; without it the overlay
