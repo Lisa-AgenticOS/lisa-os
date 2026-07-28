@@ -38,16 +38,29 @@ chmod 0755 "$STORE" 2>/dev/null || true
 # --- 1. Seed the store, once ------------------------------------------
 if ! compgen -G "$STORE/ssh_host_*_key" >/dev/null; then
   if compgen -G "/etc/ssh/ssh_host_*_key" >/dev/null; then
-    # This slot already has keys (sshd generated them on an earlier
-    # boot). Adopt them, so the identity the user has already trusted is
-    # the one that persists rather than a brand-new one.
+    # TRACK L (pacman layer on an already-running Arch/Omarchy box).
+    # This machine has been keyed by sshd for however long, and the user
+    # has trusted that identity. Adopt it rather than minting a new one:
+    # installing a package must not invalidate anyone's known_hosts.
     cp -a /etc/ssh/ssh_host_*_key "$STORE/" 2>/dev/null || true
     cp -a /etc/ssh/ssh_host_*_key.pub "$STORE/" 2>/dev/null || true
   else
-    # Fresh image, sshd has not run yet. Generate here so the machine's
-    # first identity is already the durable one — otherwise sshd makes a
-    # per-slot pair that this script would adopt only on the next boot,
-    # and the update after that would change it again.
+    # TRACK I (immutable A/B image) reaches this branch, always. A slot's
+    # /etc comes from the image, and the image ships no host keys — it
+    # must not, or every Lisa machine would share one identity. So on the
+    # boot that first runs this script the slot is unkeyed, the store is
+    # empty, and there is nothing to adopt: the machine's previous
+    # identity lives in the OTHER slot's /etc, which is not mounted.
+    #
+    # That costs exactly ONE host-key change per machine, on the update
+    # that introduces this script, and none afterwards. Reaching into the
+    # inactive slot to avoid it would mean mounting an unverified
+    # filesystem in early boot to obtain a private key — a worse trade
+    # than one warning, once.
+    #
+    # Generating HERE (rather than letting sshd do it and adopting next
+    # boot) is what keeps it to one: sshd's keys would be per-slot, so
+    # the following update would change them a second time.
     ssh-keygen -q -t ed25519 -N "" -f "$STORE/ssh_host_ed25519_key" 2>/dev/null || true
     ssh-keygen -q -t rsa -b 4096 -N "" -f "$STORE/ssh_host_rsa_key" 2>/dev/null || true
     ssh-keygen -q -t ecdsa -b 521 -N "" -f "$STORE/ssh_host_ecdsa_key" 2>/dev/null || true
