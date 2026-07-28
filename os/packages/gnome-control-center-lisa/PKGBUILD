@@ -192,9 +192,6 @@ prepare() {
   grep -q 'software_updates_group' "$sys_blp" \
     || { echo "software_updates_group id lost in $sys_blp — template binding would fail" >&2; return 1; }
 
-  # The group is shown unconditionally: systemd-sysupdate is not optional
-  # on a Track I system, so there is no configuration in which this page
-  # should stay silent about the OS version.
   awk '
     /^show_software_updates_group \(CcSystemPanel \*self\)$/ { infn = 1; print; next }
     infn && /^\{/ {
@@ -210,6 +207,43 @@ prepare() {
   ' "$sys_c" > "$sys_c.lisa" && mv "$sys_c.lisa" "$sys_c"
   ! grep -q 'gpk_update_viewer_exists ()' "$sys_c" \
     || { echo "show_software_updates_group body not replaced in $sys_c" >&2; return 1; }
+
+  # The group is shown unconditionally: systemd-sysupdate is not optional
+  # on a Track I system, so there is no configuration in which this page
+  # should stay silent about the OS version.
+  #
+  # Deleting the two probes it used is part of the same edit, not tidying:
+  # replacing the body alone leaves `gnome_software_allows_updates` and
+  # `gpk_update_viewer_exists` defined-but-unused, and this tree builds
+  # loudly enough that two new warnings are two too many. Removing them
+  # also states the truth — Lisa does not probe for gnome-software at all.
+  # `gnome_software_exists` STAYS: cc_system_page_open_software_update
+  # still references it, and it is still bound as a template callback.
+  awk '
+    BEGIN { split("gnome_software_allows_updates gpk_update_viewer_exists", d, " ")
+            for (i in d) dead[d[i]] = 1 }
+    # The return type sits on the line before the name; hold it back so a
+    # deleted function does not leave a dangling `static gboolean`.
+    /^static gboolean$/ && !skip { held = $0; next }
+    {
+      name = $0; sub(/ .*/, "", name)
+      if (held != "" && ($1 in dead) && $0 ~ /\(void\)$/) {
+        held = ""; skip = 1; depth = 0; next
+      }
+      if (held != "") { print held; held = "" }
+    }
+    skip {
+      depth += gsub(/\{/, "{") - gsub(/\}/, "}")
+      if (depth <= 0 && $0 ~ /\}/) skip = 0
+      next
+    }
+    { print }
+    END { if (held != "") print held }
+  ' "$sys_c" > "$sys_c.lisa" && mv "$sys_c.lisa" "$sys_c"
+  ! grep -q 'gnome_software_allows_updates\|gpk_update_viewer_exists' "$sys_c" \
+    || { echo "unused gnome-software probes still present in $sys_c" >&2; return 1; }
+  grep -q 'gnome_software_exists' "$sys_c" \
+    || { echo "gnome_software_exists was removed but is still referenced" >&2; return 1; }
 
   sed -i '/^#include "cc-system-panel.h"/a #include "cc-system-updates-lisa.h"' "$sys_c"
   sed -i '/gtk_widget_set_visible (GTK_WIDGET (self->software_updates_group), show_software_updates_group (self));/a\  lisa_system_updates_attach (ADW_PREFERENCES_GROUP (self->software_updates_group));' "$sys_c"

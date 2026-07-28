@@ -39,7 +39,9 @@ pkgname=lisa-audio-cs8409
 # 0.1 tracks upstream's own PACKAGE_VERSION in dkms.conf; the date is the
 # pinned commit's date. Bump the date when re-pinning _commit.
 pkgver=0.1.20260504
-pkgrel=1
+# 2: re-pinned to linux 7.1.5.arch1-2 (same upstream commit, new kernel
+# build). depends= changed, so the version must change with it.
+pkgrel=2
 pkgdesc="Apple CS8409/CS42L83 HD-audio codec override — internal speakers on iMac18,x and MacBookPro13,1/14,x (out-of-tree, kernel-pinned)"
 arch=(x86_64)
 url="https://github.com/davidjo/snd_hda_macbookpro"
@@ -58,9 +60,9 @@ _commit=cb27cc483f4fe98be03a4f4bef466c00aa7d244b
 # the real sound/hda/*.c, which linux-headers does not ship.
 _kernver=7.1.5
 # `pacman -Q linux` output for that kernel.
-_archkernver=7.1.5.arch1-1
+_archkernver=7.1.5.arch1-2
 # /usr/lib/modules/<this> — i.e. `uname -r` on the booted image.
-_modrel=7.1.5-arch1-1
+_modrel=7.1.5-arch1-2
 
 depends=("linux=${_archkernver}")
 makedepends=("linux-headers=${_archkernver}" bc git kmod xz zstd)

@@ -89,11 +89,11 @@ modinfo -n snd_hda_codec_cs8409
 
 Must print a path under **`/updates/`**. If it prints
 `.../kernel/sound/hda/codecs/cirrus/...`, the override lost — run
-`sudo depmod 7.1.5-arch1-1`, reboot, and check again. Cross-check the
+`sudo depmod 7.1.5-arch1-2`, reboot, and check again. Cross-check the
 build matches the running kernel:
 
 ```sh
-uname -r                                        # 7.1.5-arch1-1
+uname -r                                        # 7.1.5-arch1-2
 modinfo -F vermagic snd_hda_codec_cs8409        # same release
 ```
 
