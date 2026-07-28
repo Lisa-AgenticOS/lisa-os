@@ -534,16 +534,62 @@ fn judge(inv: &Invocation, segment: &Segment, depth: usize) -> Verdict {
 }
 
 /// Whether a word's value is unknown until the shell runs it — either an
-/// expansion the reader could not resolve, or a glob rooted at an
-/// absolute path, where `/e*` is `/etc` and `/{etc,usr}` is both
-/// (round 3, #83). A *relative* glob (`*.tmp`, `build/*`) stays ordinary:
-/// it can only match inside the working directory.
+/// expansion the reader could not resolve, or a glob whose FIXED PREFIX
+/// is too shallow to say what it hits.
+///
+/// Round 3 (#83) refused any absolute path containing a metacharacter,
+/// because `/e*` is `/etc` and `/{etc,usr}` is both. Right at the root,
+/// wrong at every depth below it (#125): it also refused
+///
+/// ```text
+/// rm -rf /home/lisa/project/build/*
+/// chmod -R 755 /srv/www/*
+/// ```
+///
+/// with "acts on a target computed at runtime", which is not true —
+/// every expansion of `/home/lisa/project/build/*` is inside
+/// `/home/lisa/project/build`. Worse, the relative spelling of the same
+/// command was allowed, so the rule taught "cd first, then it works":
+/// a guard being routed around rather than obeyed.
+///
+/// So judge the prefix before the first metacharacter, and let the
+/// ordinary path rules decide whether THAT is somewhere dangerous. `/e*`
+/// has the prefix `/`, which is the root and still refused; the build
+/// directory has a prefix deep inside the user's own tree and is
+/// ordinary.
+///
+/// A *relative* glob (`*.tmp`, `build/*`) stays ordinary as before: it
+/// can only match inside the working directory.
 fn is_unresolved(word: &str) -> bool {
     if word.contains('$') || word.contains('`') {
         return true;
     }
     let bare = word.trim_matches(['"', '\'']);
-    bare.starts_with('/') && bare.contains(['*', '?', '[', '{'])
+    if !bare.starts_with('/') {
+        return false;
+    }
+    let Some(meta) = bare.find(['*', '?', '[', '{']) else {
+        return false;
+    };
+    // Everything up to the last separator before the metacharacter is
+    // fixed; `/home/x/build/*` is pinned to `/home/x/build`, while
+    // `/ho*/x` is pinned only to `/`.
+    let fixed = &bare[..meta];
+    let pinned = match fixed.rfind('/') {
+        Some(0) | None => "/",
+        Some(i) => &fixed[..i],
+    };
+    // Shallower than two components (`/`, `/etc`, `/home`) is not enough
+    // to know what the glob reaches: `/etc/*` is every system config
+    // file, and `/home/*` is every user. Rules elsewhere judge those
+    // paths on their own merits, but they judge a NAMED path — here the
+    // name is still partly unknown, so shallow stays unresolved.
+    pinned
+        .trim_matches('/')
+        .split('/')
+        .filter(|c| !c.is_empty())
+        .count()
+        < 2
 }
 
 /// Everything awk can use to reach outside itself. Unlike a general

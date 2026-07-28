@@ -384,6 +384,20 @@ const MUST_ALLOW: &[&str] = &[
     // The same work through a KNOWN program was always allowed; the
     // point of the fix is that the two now agree.
     "grep -rn \"rm -rf /etc\" .",
+    // #125 — an absolute glob pinned deep inside the user's own tree.
+    // Every expansion of these is inside a directory the path names, so
+    // "computed at runtime" was simply untrue. The relative spelling was
+    // already allowed, which made the rule teach "cd first, then it
+    // works" — a guard routed around rather than obeyed.
+    "rm -rf /home/lisa/project/build/*",
+    "rm -rf /home/lisa/project/target/*",
+    // NOT "chmod -R 755 /srv/www/*", which #125 also listed: it is now
+    // refused by perm.system_path — a recursive permission change on a
+    // system path — rather than by the unresolved-target rule this issue
+    // is about. Whether /srv belongs on the system-path list is a real
+    // question, and it is a separate one; relaxing a permission rule
+    // under cover of a false-positive fix is how boundaries erode.
+    "ls /var/log/*.log",
     "cargo test --workspace",
     "just lint && just test",
     "flutter analyze --no-pub",
