@@ -38,14 +38,32 @@ pub struct ToolCall {
 
 /// A Hermes-style tool declaration: name, description, and the JSON
 /// schema the backend is constrained to when calling it.
+///
+/// `name` and `description` are owned rather than `&'static str`. The
+/// built-in tools below are literals and would not care, but the
+/// Assistant's tools are *discovered at runtime* over the Agent Bus
+/// (ADR-0025): they arrive as JSON from a manifest an app registered, so
+/// there is no `'static` lifetime to borrow from. A borrowed spec cannot
+/// describe them at all — this type is the shared vocabulary between
+/// compiled-in tools and discovered ones, so it has to admit both.
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
     pub parameters: Value,
 }
 
 impl ToolSpec {
+    /// Take anything string-shaped, so a `&'static str` literal and a
+    /// `String` parsed out of a manifest read the same at the call site.
+    pub fn new(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
+    }
+
     /// The OpenAI-compat wire shape: `{"type": "function", "function": ...}`.
     pub fn wire(&self) -> Value {
         json!({
@@ -95,29 +113,29 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             format!("Project-relative {what} — e.g. `bin/main.dart`. Never absolute, never containing `..`.")})
     };
     vec![
-        ToolSpec {
-            name: "read_file",
-            description: "Read the complete contents of a project file.",
-            parameters: json!({
+        ToolSpec::new(
+            "read_file",
+            "Read the complete contents of a project file.",
+            json!({
                 "type": "object",
                 "properties": {"path": rel("file path")},
                 "required": ["path"],
             }),
-        },
-        ToolSpec {
-            name: "list_dir",
-            description: "List a project directory (`.` for the root); directories end with `/`.",
-            parameters: json!({
+        ),
+        ToolSpec::new(
+            "list_dir",
+            "List a project directory (`.` for the root); directories end with `/`.",
+            json!({
                 "type": "object",
                 "properties": {"path": rel("directory path")},
                 "required": ["path"],
             }),
-        },
-        ToolSpec {
-            name: "grep",
-            description: "Search file contents for a literal substring; returns `path:line: text` \
-                          matches. Hidden and build-output directories are skipped.",
-            parameters: json!({
+        ),
+        ToolSpec::new(
+            "grep",
+            "Search file contents for a literal substring; returns `path:line: text` \
+             matches. Hidden and build-output directories are skipped.",
+            json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Literal substring to search for."},
@@ -125,12 +143,12 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["pattern"],
             }),
-        },
-        ToolSpec {
-            name: "write_file",
-            description: "Write a COMPLETE file (new or full replacement). Prefer `edit_file` for \
-                          targeted changes to existing files.",
-            parameters: json!({
+        ),
+        ToolSpec::new(
+            "write_file",
+            "Write a COMPLETE file (new or full replacement). Prefer `edit_file` for \
+             targeted changes to existing files.",
+            json!({
                 "type": "object",
                 "properties": {
                     "path": rel("file path"),
@@ -138,13 +156,13 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["path", "content"],
             }),
-        },
-        ToolSpec {
-            name: "edit_file",
-            description: "Targeted find/replace in an existing file: `old_string` must match the \
-                          current content exactly (including indentation) and be unique unless \
-                          `replace_all` is set.",
-            parameters: json!({
+        ),
+        ToolSpec::new(
+            "edit_file",
+            "Targeted find/replace in an existing file: `old_string` must match the \
+             current content exactly (including indentation) and be unique unless \
+             `replace_all` is set.",
+            json!({
                 "type": "object",
                 "properties": {
                     "path": rel("file path"),
@@ -154,13 +172,13 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["path", "old_string", "new_string"],
             }),
-        },
-        ToolSpec {
-            name: "run_command",
-            description: "Run an allowlisted command in the project root (no shell). Use it for \
-                          toolchain commands like `dart analyze`; file operations should go through \
-                          the dedicated tools.",
-            parameters: json!({
+        ),
+        ToolSpec::new(
+            "run_command",
+            "Run an allowlisted command in the project root (no shell). Use it for \
+             toolchain commands like `dart analyze`; file operations should go through \
+             the dedicated tools.",
+            json!({
                 "type": "object",
                 "properties": {
                     "program": {"type": "string", "enum": ALLOWED_COMMANDS},
@@ -169,16 +187,16 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["program"],
             }),
-        },
-        ToolSpec {
-            name: "run_tests",
-            description: "Run the project's test suite (`dart test` for a pubspec project, \
-                          `cargo test` for a Cargo project).",
-            parameters: json!({
+        ),
+        ToolSpec::new(
+            "run_tests",
+            "Run the project's test suite (`dart test` for a pubspec project, \
+             `cargo test` for a Cargo project).",
+            json!({
                 "type": "object",
                 "properties": {},
             }),
-        },
+        ),
     ]
 }
 
@@ -232,7 +250,7 @@ pub fn execute_tool(jail: &Jail, call: &ToolCall) -> ToolOutcome {
             "unknown tool `{other}`; available: {}",
             tool_specs()
                 .iter()
-                .map(|t| t.name)
+                .map(|t| t.name.clone())
                 .collect::<Vec<_>>()
                 .join(", ")
         )),

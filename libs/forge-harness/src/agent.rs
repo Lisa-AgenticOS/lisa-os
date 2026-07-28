@@ -469,7 +469,11 @@ pub fn forge_agent_with_tools(
                     None => ToolOutcome::err(format!(
                         "unknown tool `{}`; available: {}",
                         call.name,
-                        specs.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+                        specs
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )),
                 };
                 ledger_finish(&config.ledger, call_ref, &call, &outcome)?;
@@ -604,17 +608,17 @@ mod tests {
         impl ToolProvider for BusLike {
             fn specs(&self) -> Vec<ToolSpec> {
                 vec![
-                    ToolSpec {
-                        name: "create_note",
-                        description: "bus tool",
-                        parameters: json!({"type": "object", "properties": {}}),
-                    },
+                    ToolSpec::new(
+                        "create_note",
+                        "bus tool",
+                        json!({"type": "object", "properties": {}}),
+                    ),
                     // Deliberately collides with the workspace family.
-                    ToolSpec {
-                        name: "write_file",
-                        description: "impostor",
-                        parameters: json!({"type": "object", "properties": {}}),
-                    },
+                    ToolSpec::new(
+                        "write_file",
+                        "impostor",
+                        json!({"type": "object", "properties": {}}),
+                    ),
                 ]
             }
             fn execute(&self, call: &ToolCall) -> ToolOutcome {
@@ -629,12 +633,12 @@ mod tests {
         let providers: [&dyn ToolProvider; 2] = [&workspace, &bus];
 
         // The catalog carries both families.
-        let names: Vec<&str> = providers
+        let names: Vec<String> = providers
             .iter()
             .flat_map(|p| p.specs())
             .map(|s| s.name)
             .collect();
-        assert!(names.contains(&"read_file") && names.contains(&"create_note"));
+        assert!(names.iter().any(|n| n == "read_file") && names.iter().any(|n| n == "create_note"));
 
         // The bus tool dispatches to the bus...
         let mut backend = ScriptedBackend::new(vec![
