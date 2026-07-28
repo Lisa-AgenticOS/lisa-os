@@ -29,7 +29,8 @@ shell-test:
     elif command -v node >/dev/null; then RUN=(node)
     elif [ -x "$JSC" ]; then RUN=("$JSC" -m)
     else echo "no JS runtime found (gjs, node, or macOS jsc)" >&2; exit 1; fi
-    for t in shell/*/tests/*.test.js; do
+    for t in shell/*/tests/*.test.js apps/*/tests/*.test.js; do
+        [ -e "$t" ] || continue
         echo "== $t"
         "${RUN[@]}" "$t"
     done
