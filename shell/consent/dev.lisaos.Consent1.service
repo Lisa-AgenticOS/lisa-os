@@ -1,0 +1,11 @@
+# D-Bus activation for the desktop consent surface (issue #145).
+#
+# Separate from dev.lisaos.Overlay1 on purpose: agentd trusts whoever
+# owns THIS name to answer for the human, and the overlay backend — which
+# hosts the model — must never be able to be that peer.
+#
+# Install to $XDG_DATA_DIRS/dbus-1/services/; the packaged path below
+# matches the Track L layer layout (/usr/share/lisa).
+[D-BUS Service]
+Name=dev.lisaos.Consent1
+Exec=/usr/bin/lisa-app consent/lisa-consentd.js

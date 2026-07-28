@@ -42,14 +42,22 @@ impl Agent1 {
 }
 
 /// The well-known name of the desktop consent surface — the human's
-/// confirmation dialog (`shell/overlay-extension`, PLAN §5.7.1).
+/// confirmation dialog (`shell/consent`, issue #145).
 ///
 /// Identity comes from the BROKER's answer to "who owns this name",
 /// never from anything a caller asserts (ADR-0033). Program identity via
-/// `/proc/<pid>/exe` would not help here: the backend runs under
+/// `/proc/<pid>/exe` would not help here: the surface runs under
 /// `/usr/bin/gjs`, so an executable allowlist would authorise *any* GJS
 /// program in the session rather than the consent surface.
-const CONSENT_SURFACE: &str = "dev.lisaos.Overlay1";
+///
+/// This was `dev.lisaos.Overlay1` — the overlay BACKEND, which also
+/// hosts the model. A call the overlay originated therefore came back to
+/// `Confirm` from a peer that was both requester and surface, and the
+/// model approved itself (#145). `bus.rs` now refuses that pairing
+/// whatever the name says; pointing at a name a separate process owns is
+/// the other half, so the dialog is a different program and not merely a
+/// different role.
+const CONSENT_SURFACE: &str = "dev.lisaos.Consent1";
 
 fn fdo_err(e: BusError) -> zbus::fdo::Error {
     match e {

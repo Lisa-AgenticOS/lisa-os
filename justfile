@@ -74,6 +74,62 @@ smoke:
     curl -sf 127.0.0.1:7777/health >/dev/null && echo "health: ok"
 
 # Build the immutable OS image (Track I). Linux only; normally CI's job.
+# --- Local x86_64 Linux, on a macOS dev host ---------------------------
+#
+# The image and every daemon are x86_64 Linux; the dev host is usually an
+# arm64 Mac. Until now the only way to compile or package-build anything
+# for the target was CI, which made a 30-minute round trip the shortest
+# path to "does this even build" — the worst possible feedback loop for
+# the components carrying the security-sensitive logic.
+#
+# These run a real x86_64 Linux userspace locally. Two notes learned the
+# hard way:
+#
+#   - podman on Apple Silicon uses qemu-user, and `rustc -vV` dies there
+#     with SIGSEGV. Apple's `container` (brew install container) uses
+#     Rosetta and works. The runtime is detected below; `container` wins
+#     when both are present.
+#   - pacman's seccomp sandbox does not survive translation
+#     ("error restricting syscalls via seccomp: 22"), so package recipes
+#     pass --disable-sandbox. That weakens pacman's own sandboxing inside
+#     a throwaway container, not on any real system.
+
+_runtime := if `command -v container 2>/dev/null || true` != "" { "container" } else { "podman" }
+
+# An x86_64 Linux shell with the repo mounted at /src.
+linux-shell image="docker.io/library/archlinux:latest":
+    {{_runtime}} run --rm -it --arch amd64 -v "$PWD:/src" {{image}} bash
+
+# Build one workspace crate for x86_64 Linux. Output lands in
+# target/x86_64-container/release/, deliberately not target/, so it never
+# collides with the host build.
+linux-build crate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/x86_64-container
+    {{_runtime}} run --rm --arch amd64 \
+      -v "$PWD:/src" -v "$PWD/target/x86_64-container:/out" \
+      docker.io/library/rust:latest \
+      bash -c "cd /src && cargo build --release -p {{crate}} --target-dir /out --locked"
+    file "target/x86_64-container/release/{{crate}}"
+
+# makepkg one of os/packages/* against live Arch, the way CI does.
+# Catches a moved kernel pin or a patch anchor in minutes, not in a
+# failed release.
+linux-pkg pkg:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{_runtime}} run --rm --arch amd64 -v "$PWD:/src:ro" \
+      docker.io/library/archlinux:latest bash -c '
+        set -e
+        pacman -Syu --disable-sandbox --noconfirm --needed base-devel git >/dev/null
+        useradd -m builder
+        cp -r /src/os/packages/{{pkg}} /home/builder/pkg
+        chown -R builder /home/builder/pkg
+        cd /home/builder/pkg
+        su builder -c "makepkg -s --nocheck --skippgpcheck --noconfirm"
+        ls -la *.pkg.tar.* '
+
 image:
     #!/usr/bin/env bash
     set -euo pipefail
