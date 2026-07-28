@@ -333,6 +333,19 @@ const MUST_DENY: &[(&str, &str)] = &[
 
 /// Actions that are legitimate often enough to allow, but never silently.
 const MUST_ASK: &[(&str, &str)] = &[
+    // #124 — a program this crate has never heard of, carrying a quoted
+    // sentence. The rescan is a GUESS about that program's calling
+    // convention, so it raises suspicion without refusing: the sentence
+    // might be a payload (`somewrapper 'rm -rf /etc'`) or a search
+    // pattern, and nothing in the line says which.
+    //
+    // This is the entry that covers the softening. The `rg`/`gh` lines in
+    // MUST_ALLOW do NOT: those are allowed because their programs are
+    // known leaves, so the rescan never runs on them at all.
+    (
+        "somecustomtool \"rm -rf /etc\" report.txt",
+        "an unknown program's quoted argument is a guess, not a payload",
+    ),
     ("git reset --hard HEAD~3", "throws away uncommitted work"),
     ("git push --force origin main", "rewrites shared history"),
     ("git clean -fdx", "deletes untracked files"),
@@ -357,6 +370,20 @@ const MUST_ASK: &[(&str, &str)] = &[
 /// Everyday work that must keep working. A guard that stops these is a
 /// guard people will find a way to turn off.
 const MUST_ALLOW: &[&str] = &[
+    // #124 — a quoted human sentence is not a command line. Every one of
+    // these is something somebody working on THIS repository types in a
+    // normal week; the `gh issue create` line is literally how the
+    // guard's own round-3 findings were filed. A guard that refuses them
+    // is one people switch off, and a switched-off guard protects
+    // nothing (ADR-0036 §6).
+    "rg \"rm -rf /etc\" docs/adr",
+    "ag \"chmod -R 777 /usr\" .",
+    "jj describe -m \"cp the unit file to /etc/systemd\"",
+    "hg commit -m \"fix rm -rf /var/log cleanup\"",
+    "gh issue create --title \"guard: rm -rf /etc gets through\"",
+    // The same work through a KNOWN program was always allowed; the
+    // point of the fix is that the two now agree.
+    "grep -rn \"rm -rf /etc\" .",
     "cargo test --workspace",
     "just lint && just test",
     "flutter analyze --no-pub",

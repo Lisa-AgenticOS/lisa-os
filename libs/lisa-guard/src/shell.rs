@@ -177,6 +177,22 @@ const KNOWN_LEAF_PROGRAMS: &[&str] = &[
     "rsync",
     "ftp",
     "git",
+    // Search tools and VCS front-ends (#124). Membership here means
+    // "arguments are data", and for these it genuinely does: none of
+    // them takes a subcommand that runs a shell command.
+    //
+    // `fd` is deliberately ABSENT despite belonging to the same family:
+    // `fd -x rm -rf {}` executes its arguments, so treating fd as a leaf
+    // would hide a real command. It stays opaque, where the candidate
+    // pass sees the `rm`.
+    "rg",
+    "ag",
+    "ack",
+    "jj",
+    "hg",
+    "svn",
+    "gh",
+    "glab",
     "trap",
     "watch",
     "eval",
@@ -332,6 +348,23 @@ fn check_shell_line_inner(raw: &str, depth: usize) -> Verdict {
         return v;
     }
 
+    /// Demote a `Deny` from a speculative pass to a `Confirm`, keeping
+    /// its rule and reason so the human still sees exactly what was
+    /// suspected. `Allow` and `Confirm` pass through untouched.
+    ///
+    /// Used where the finding rests on a GUESS about an unknown
+    /// program's calling convention rather than on something the command
+    /// definitely does (#124).
+    fn soften(v: Verdict) -> Verdict {
+        match v {
+            Verdict::Deny { rule, reason } => Verdict::Confirm {
+                rule,
+                reason: format!("{reason} (guessed from an unknown program's arguments)"),
+            },
+            other => other,
+        }
+    }
+
     let mut verdict = Verdict::Allow;
 
     // Command substitution runs too. Judge what is inside on its own
@@ -354,8 +387,32 @@ fn check_shell_line_inner(raw: &str, depth: usize) -> Verdict {
             }
         }
 
-        for embedded in segment.embedded_command_lines() {
-            verdict = verdict.worst(check_shell_line_inner(&embedded, depth + 1));
+        // A rescanned word is a GUESS about an unknown program's calling
+        // convention, so it may raise suspicion but never refuse outright
+        // (#124). `invocations()` already reasons this way about candidate
+        // programs — "a candidate is a guess, so it never earns a Deny for
+        // merely being unreadable" — and the rescan is the same kind of
+        // guess about the same kind of unknown.
+        //
+        // Without this, every quoted human sentence containing a scary
+        // string was refused, because the program in front of it is
+        // unknown precisely when it is a search tool or a VCS front-end:
+        //
+        //     rg "rm -rf /etc" docs/adr
+        //     gh issue create --title "guard: rm -rf /etc gets through"
+        //
+        // Both are commands somebody working on this repository types in a
+        // normal week — the second is how the guard's own findings were
+        // filed. A guard that refuses those is one people switch off, and
+        // a switched-off guard protects nothing (ADR-0036 §6).
+        //
+        // The real thing this pass exists to catch — `script -c 'rm -rf
+        // /etc'` — still surfaces, as a confirmation rather than silence.
+        // Where the program IS known to run its argument, `executed_
+        // arguments()` below judges it on its own terms and can still Deny.
+        for (embedded, names_code) in segment.embedded_command_lines() {
+            let found = check_shell_line_inner(&embedded, depth + 1);
+            verdict = verdict.worst(if names_code { found } else { soften(found) });
             if verdict.is_denied() {
                 return verdict;
             }
@@ -767,28 +824,62 @@ impl Segment {
     /// Words that look like a whole command line rather than one
     /// argument — `script -c 'rm -rf /etc'` hands its payload over as a
     /// single quoted word, so no candidate program ever spells `rm`.
-    fn embedded_command_lines(&self) -> Vec<String> {
+    ///
+    /// Each is returned with whether it sat immediately after a flag
+    /// that *names code* (`-c`, `--command`, `-e`, `-x`, `--exec`, `-S`).
+    /// That position is the difference between a payload and a sentence:
+    ///
+    /// ```text
+    /// script -c 'rm -rf /etc'        <- after -c: it IS a command
+    /// rg "rm -rf /etc" docs/adr      <- an operand: it is a pattern
+    /// gh issue create --title "…"    <- after --title: it is prose
+    /// ```
+    ///
+    /// Callers keep full strength for the first and soften the rest
+    /// (#124). Enumerating code-flags is the losing game this crate keeps
+    /// having to stop playing, so it is layered ON TOP of softening
+    /// rather than instead of it: a flag we failed to list costs a
+    /// confirmation, not a miss.
+    fn embedded_command_lines(&self) -> Vec<(String, bool)> {
+        /// Flags whose value is a command, near-universally.
+        const CODE_FLAGS: &[&str] = &[
+            "-c",
+            "--command",
+            "-e",
+            "--eval",
+            "-x",
+            "--exec",
+            "--execute",
+            "-S",
+            "--run",
+        ];
         if !self.is_opaque() {
             return Vec::new();
         }
-        let mut out: Vec<String> = Vec::new();
-        for word in &self.words {
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for (i, word) in self.words.iter().enumerate() {
             let trimmed = word.trim();
             if !trimmed.contains(char::is_whitespace) {
                 continue;
             }
-            out.push(word.clone());
+            let after_code_flag = i
+                .checked_sub(1)
+                .and_then(|j| self.words.get(j))
+                .is_some_and(|prev| CODE_FLAGS.contains(&prev.trim()));
+            out.push((word.clone(), after_code_flag));
             // A payload welded to its own flag: `env -S"rm -rf /etc"`
             // parses to the single word `-Srm -rf /etc`, whose first
             // token is `-Srm` — not a program, so the rescan found
             // nothing (#118). Peel the flag off and read what follows.
+            // A welded payload names code by construction: nobody
+            // writes `-S"a sentence"`. These keep full strength.
             if let Some(rest) = trimmed.strip_prefix("--") {
                 if let Some((_, payload)) = rest.split_once('=') {
-                    out.push(payload.to_string());
+                    out.push((payload.to_string(), true));
                 }
             } else if trimmed.starts_with('-') && trimmed.len() > 2 {
                 // Short flag with an attached value: skip `-X`.
-                out.push(trimmed[2..].to_string());
+                out.push((trimmed[2..].to_string(), true));
             }
         }
         out
