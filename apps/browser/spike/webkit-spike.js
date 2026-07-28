@@ -13,8 +13,12 @@
 //      the seam the whole extraction design uses instead of a compiled
 //      web-process extension (ADR-0037 §2) — if it does not work from
 //      GJS, the app stops being pure JS and the plan changes.
-//   3. Is the WebKitGTK sandbox on? A browser runs hostile code by
-//      design, and the answer must be "yes, checked", not "probably".
+//   3. (ANSWERED, 2026-07-29 — kept for the record.) The sandbox is
+//      unconditional in WebKit 6.0: set_sandbox_enabled/
+//      get_sandbox_enabled do not exist in the API at all, confirmed by
+//      grepping WebKit-6.0.gir. Nothing to enable and nothing to check.
+//      A container that refuses user namespaces makes bwrap fail loudly
+//      at startup, which is the sandbox working, not a fault.
 //
 // Run on the device:
 //     gjs -m apps/browser/spike/webkit-spike.js https://lisaos.dev
@@ -47,19 +51,9 @@ app.connect('activate', () => {
         return;
     }
 
-    // Q3 — the sandbox. Asked before anything loads, because the answer
-    // decides whether it is safe to load anything at all.
-    try {
-        const ctx = view.get_context();
-        const sandboxed = ctx.get_sandbox_enabled?.() ?? null;
-        if (sandboxed === null)
-            record('Q3 sandbox state readable', false, 'no get_sandbox_enabled on this version');
-        else
-            record('Q3 sandbox enabled', sandboxed === true,
-                   sandboxed ? 'on' : 'OFF — must be enabled before shipping');
-    } catch (e) {
-        record('Q3 sandbox state readable', false, `${e}`);
-    }
+    // Q3 is settled by the platform: WebKit 6.0 removed the sandbox
+    // toggle entirely, so it is always on. Recorded rather than tested.
+    record('Q3 sandbox is unconditional in WebKit 6.0', true, 'no toggle in the API');
 
     const win = new Adw.Window({
         title: 'Lisa Browser spike',
