@@ -10,6 +10,7 @@
 //! park for confirmation exactly as the tier table says.
 
 use anyhow::{Context, anyhow, bail};
+use bus_tools::wire_name;
 use liblisa::intent::{self, ToolInfo};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -89,25 +90,6 @@ fn run_task(
         .as_str()
         .ok_or_else(|| anyhow!("no content in inference reply"))?;
     serde_json::from_str(content).context("parsing guided-generation output")
-}
-
-/// OpenAI tool names allow `[A-Za-z0-9_-]{1,64}`; bus ids are
-/// `app.lisaos.notes::create_note`. Flatten deterministically so the
-/// reply maps back to exactly one catalog entry.
-pub fn wire_name(app_id: &str, tool: &str) -> String {
-    let flat = format!("{}__{}", app_id.replace(['.', '-'], "_"), tool);
-    flat.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .chars()
-        .take(64)
-        .collect()
 }
 
 /// Route by NATIVE TOOL CALLING — the path Claude/GPT are built for, and

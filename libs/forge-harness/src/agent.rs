@@ -186,6 +186,19 @@ pub struct AgentConfig {
     /// invariant. There is no `Default` for this struct for the same
     /// reason: constructing one requires deciding where the record goes.
     pub ledger: Arc<Ledger>,
+    /// What the model is told it IS.
+    ///
+    /// This used to be a constant, and the constant said "you are the
+    /// Lisa Forge, an autonomous coding agent working inside a jailed
+    /// project directory". Correct for `lisa forge`, and quietly wrong
+    /// for every other surface once the loop became a service (ADR-0025):
+    /// an Assistant asked about the open web page was being told it was
+    /// a coding agent in a project directory, which is a good way to get
+    /// an answer about files.
+    ///
+    /// `AgentConfig::new` keeps the forge prompt, so `forge` is unchanged
+    /// and the caller that needs something else has to say so.
+    pub system_prompt: String,
 }
 
 impl AgentConfig {
@@ -196,6 +209,7 @@ impl AgentConfig {
             verifier: Verifier::Dart,
             history_char_budget: 48_000,
             ledger,
+            system_prompt: FORGE_SYSTEM_PROMPT.to_string(),
         }
     }
 }
@@ -211,7 +225,7 @@ pub struct AgentReport {
     pub verified: bool,
 }
 
-const SYSTEM_PROMPT: &str = "\
+pub const FORGE_SYSTEM_PROMPT: &str = "\
 You are the Lisa Forge, an autonomous coding agent working inside a jailed project \
 directory. You inspect and modify the project by calling the provided tools.
 
@@ -410,7 +424,7 @@ pub fn forge_agent_with_tools(
 ) -> Result<AgentReport, ForgeError> {
     let specs: Vec<ToolSpec> = providers.iter().flat_map(|p| p.specs()).collect();
     let mut history = vec![
-        Message::system(SYSTEM_PROMPT),
+        Message::system(&config.system_prompt),
         Message::user(format!("Task: {task}")),
     ];
     let mut verifier_output = String::new();

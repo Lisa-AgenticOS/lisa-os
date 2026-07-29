@@ -279,6 +279,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bus-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "forge-harness",
+ "serde_json",
+ "zbus",
+]
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1259,6 +1269,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "bus-tools",
  "clap",
  "clap_complete",
  "forge-harness",
@@ -1333,6 +1344,22 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "lisa-harnessd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bus-tools",
+ "forge-harness",
+ "lisa-ledger",
+ "lisa-peer",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]

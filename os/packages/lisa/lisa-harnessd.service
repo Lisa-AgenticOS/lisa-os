@@ -1,0 +1,37 @@
+# The one agent loop, as a service (dev.lisaos.Harness1, ADR-0025).
+#
+# Every surface that wants an assistant drives THIS: the Assistant
+# window, the overlay, `lisa assist`, and later schedules and event
+# sources. Two loops would mean two answers to "which tools may the
+# model use" and two places for the provenance rules to drift.
+#
+# It hosts the MODEL, which is why it is not lisa-agentd (policy) and not
+# lisa-consentd (the human's dialog). That separation is issue #145: the
+# process running the model must never be the one that approves its own
+# privileged calls.
+#
+# UNLIKE agentd, this one needs the network — but only loopback, to reach
+# the inferenced companion on :7778. Egress belongs to lisa-remoted;
+# IPAddressAllow pins that to localhost so a model endpoint cannot be
+# pointed at the internet by configuration.
+[Unit]
+Description=Lisa agent harness (dev.lisaos.Harness1)
+After=dbus.service lisa-agentd.service
+Wants=lisa-agentd.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/lisa-harnessd
+Restart=on-failure
+RestartSec=2
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/lisa
+
+[Install]
+WantedBy=default.target
