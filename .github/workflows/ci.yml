@@ -271,9 +271,13 @@ jobs:
             pacman -Qlp "$pkg" | grep -q usr/bin/llama-server \
               && echo "OK: llama-server present" \
               || { echo "FAIL: llama-server missing from package"; exit 1; }
-            bsdtar -xOf "$pkg" usr/bin/llama-server | file - | grep -q "ARM aarch64" \
-              && echo "OK: llama-server is an aarch64 binary" \
-              || { echo "FAIL: llama-server is not aarch64"; exit 1; }'
+            bsdtar -xOf "$pkg" usr/bin/llama-server > /tmp/llama-server
+            desc=$(file -b /tmp/llama-server)
+            echo "llama-server: $desc"
+            case "$desc" in
+              *"ARM aarch64"*|*aarch64*) echo "OK: llama-server is an aarch64 binary" ;;
+              *) echo "FAIL: llama-server is not aarch64 — file said: $desc"; exit 1 ;;
+            esac'
 
   # zen-browser on aarch64 (ADR-0021, issue #28). Cheap but load-bearing:
   # this package is a repackage of an upstream release asset, so what can
@@ -307,9 +311,13 @@ jobs:
             pacman -Qlp "$pkg" | grep -q opt/zen/zen \
               && echo "OK: zen binary present" \
               || { echo "FAIL: zen binary missing from package"; exit 1; }
-            bsdtar -xOf "$pkg" opt/zen/zen | file - | grep -q "ARM aarch64" \
-              && echo "OK: zen is an aarch64 binary" \
-              || { echo "FAIL: zen is not aarch64"; exit 1; }
+            bsdtar -xOf "$pkg" opt/zen/zen > /tmp/zen
+            desc=$(file -b /tmp/zen)
+            echo "zen: $desc"
+            case "$desc" in
+              *"ARM aarch64"*|*aarch64*) echo "OK: zen is an aarch64 binary" ;;
+              *) echo "FAIL: zen is not aarch64 — file said: $desc"; exit 1 ;;
+            esac
             # The launcher is the half that stays in the image forever; if
             # it lost the .desktop, the icon or the resolver, the app grid
             # entry would vanish the moment the payload moves to /var.
@@ -344,18 +352,20 @@ jobs:
           set -o pipefail
           sudo apt-get update -qq
           sudo apt-get install -qq -y --no-install-recommends zstd file >/dev/null
-          # zstd -19 on a ~380 MiB tree needs real scratch space, and the
-          # hosted runner's / is tight. Reclaim before packing: the job's
-          # first failure was a bare `tar: stdout: write error`, which is
-          # ENOSPC wearing a disguise.
+          # zstd -19 on a ~380 MiB tree wants real scratch space and the
+          # hosted runner's / is tight, so reclaim before packing.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
-          # The preloaded docker images are the biggest single win left,
-          # and this job needs none of them.
-          sudo docker image prune -af >/dev/null 2>&1 || true
           df -h / | tail -1
           bash os/repo-tools/build-zen-payload.sh x86_64 99999999.0 payload
-          tar --zstd -tf payload/lisa-zen_99999999.0_x86_64.tar.zst | grep -qx './zen'
+          # Listed to a file, not piped into `grep -q`. `grep -q` exits at
+          # the first match, tar takes EPIPE on its next write, and
+          # `set -o pipefail` reports the whole pipeline as failed — after
+          # the payload built perfectly. That is what `tar: stdout: write
+          # error` was here, not the ENOSPC an earlier comment guessed at.
+          tar --zstd -tf payload/lisa-zen_99999999.0_x86_64.tar.zst > payload/listing
+          grep -qx './zen' payload/listing \
+            || { echo "payload has no ./zen at its root:"; head -20 payload/listing; exit 1; }
           mkdir -p tree && tar --zstd -xf payload/lisa-zen_99999999.0_x86_64.tar.zst -C tree
           test -x tree/zen
           file tree/zen | grep -q 'x86-64'
