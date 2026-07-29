@@ -146,7 +146,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build addon + run protocol tests in Arch
         run: |
-          sudo podman run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
             pacman -Sy --noconfirm --needed base-devel cmake fcitx5 >/dev/null
             # The dbus module headers (fcitx-module/dbus/dbus_public.h)
             # moved out of the fcitx5 package into the addon package;
@@ -173,7 +173,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: makepkg gnome-control-center-lisa in Arch
         run: |
-          sudo podman run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
             # devtools provides arch-meson (used by the PKGBUILD build()).
             pacman -Syu --noconfirm --needed base-devel git devtools >/dev/null
             useradd -m builder
@@ -203,7 +203,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: makepkg gnome-control-center-lisa in Arch Linux ARM
         run: |
-          sudo podman run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
             # pacman >= 7 sandbox cannot apply inside the container.
             sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
             pacman -Syu --noconfirm --needed base-devel git devtools >/dev/null
@@ -230,7 +230,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: makepkg llama.cpp in Arch
         run: |
-          sudo podman run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
             pacman -Syu --noconfirm --needed base-devel git cmake >/dev/null
             useradd -m builder
             printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
@@ -258,7 +258,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: makepkg llama.cpp in Arch Linux ARM
         run: |
-          sudo podman run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
             sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
             pacman -Syu --noconfirm --needed base-devel git cmake file >/dev/null
             useradd -m builder
@@ -291,7 +291,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: makepkg zen-browser in Arch Linux ARM
         run: |
-          sudo podman run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
             sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
             pacman -Syu --noconfirm --needed base-devel file >/dev/null
             useradd -m builder
@@ -350,6 +350,9 @@ jobs:
           # ENOSPC wearing a disguise.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          # The preloaded docker images are the biggest single win left,
+          # and this job needs none of them.
+          sudo docker image prune -af >/dev/null 2>&1 || true
           df -h / | tail -1
           bash os/repo-tools/build-zen-payload.sh x86_64 99999999.0 payload
           tar --zstd -tf payload/lisa-zen_99999999.0_x86_64.tar.zst | grep -qx './zen'
@@ -424,7 +427,7 @@ jobs:
           # kills dbus-broker's launcher child, crashlooping the system bus
           # and wedging PID1 (throwaway CI container; the image job already
           # runs privileged for the same reason).
-          sudo podman run -d --name lisa-e2e --privileged --systemd=always -v "$PWD":/src:ro \
+          sudo podman --runtime runc run -d --name lisa-e2e --privileged --systemd=always -v "$PWD":/src:ro \
             docker.io/library/archlinux:latest /usr/lib/systemd/systemd
           # systemd on runners can take several 90 s job-timeout cycles to
           # settle; require running|degraded before testing — piling work
