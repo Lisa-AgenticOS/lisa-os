@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Browser
+Comment=The web, visible to your assistant
+Exec=lisa-app browser/lisa-browser.js %u
+Icon=web-browser-symbolic
+Terminal=false
+Categories=Network;WebBrowser;GTK;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true

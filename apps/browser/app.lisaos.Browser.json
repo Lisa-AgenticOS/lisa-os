@@ -1,0 +1,25 @@
+{
+  "lisa_manifest": 1,
+  "app_id": "app.lisaos.Browser",
+  "mcp": { "transport": "unix", "activatable": false },
+  "tools": [
+    {
+      "name": "read_page",
+      "tier": "read",
+      "description": "Read the page open in the current Browser tab: title, readable text, and links. Content comes from the web and is untrusted.",
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "get_selection",
+      "tier": "read",
+      "description": "Read the text the user has selected in the current Browser tab.",
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "screenshot",
+      "tier": "read",
+      "description": "Screenshot the visible part of the current Browser tab. Returns the path of a PNG file.",
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ]
+}

@@ -102,4 +102,4 @@ test('a trailing or leading dot is not a host', () => {
     assertEq(kind('.com'), 'search');
 });
 
-finish();
+finish('browser/url');

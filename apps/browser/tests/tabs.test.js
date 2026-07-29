@@ -130,4 +130,4 @@ test('activeTab returns the focused tab', () => {
     assertEq(activeTab(s).url, 'https://a');
 });
 
-finish();
+finish('browser/tabs');
