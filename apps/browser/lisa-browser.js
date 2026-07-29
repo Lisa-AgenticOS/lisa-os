@@ -29,9 +29,42 @@ const HOME = 'https://duckduckgo.com';
 
 const app = new Adw.Application({application_id: 'app.lisaos.Browser'});
 let win = null;
+let session = null;
 let tabView = null;
 let urlBar = null;
 let mcp = null;
+
+/// The one network session every tab shares — and the reason logins
+/// survive a restart.
+///
+/// WebKitGTK keeps cookies in MEMORY unless persistent storage is turned
+/// on explicitly; a WebView built with no session at all also lands in a
+/// data directory named after the process (`gjs`), shared with every
+/// other GJS app that touches WebKit. Both were true here until the
+/// first real test: signing into Google worked, and signed you straight
+/// back out on restart.
+function networkSession() {
+    if (session) return session;
+    const data = GLib.build_filenamev([GLib.get_user_data_dir(), 'lisa-browser']);
+    const cache = GLib.build_filenamev([GLib.get_user_cache_dir(), 'lisa-browser']);
+    GLib.mkdir_with_parents(data, 0o700);
+    GLib.mkdir_with_parents(cache, 0o700);
+    session = new WebKit.NetworkSession({
+        data_directory: data,
+        cache_directory: cache,
+    });
+    // The line that actually persists a login. SQLite rather than the
+    // plain-text format: it is the one WebKit maintains, and a cookie
+    // jar is a credential store in everything but name.
+    session.get_cookie_manager().set_persistent_storage(
+        GLib.build_filenamev([data, 'cookies.sqlite']),
+        WebKit.CookiePersistentStorage.SQLITE);
+    // Third-party cookies stay blocked. Logins that need them are rare
+    // and the alternative is being tracked across every site you open.
+    session.get_cookie_manager().set_accept_policy(
+        WebKit.CookieAcceptPolicy.NO_THIRD_PARTY);
+    return session;
+}
 
 function currentView() {
     const page = tabView.get_selected_page();
@@ -42,6 +75,11 @@ function currentView() {
 /// signal hands us a view WebKit made itself, which must not be
 /// re-created or pre-loaded.
 function attachTab(view, focus = true) {
+    // Without these the view is sized to its natural height and the rest
+    // of the tab is dead space — the page renders as a band with black
+    // below it (seen on the first real screenshot, 2026-07-29).
+    view.set_vexpand(true);
+    view.set_hexpand(true);
     const page = tabView.append(view);
     page.set_title('New Tab');
     view.connect('notify::title', () => {
@@ -63,6 +101,8 @@ function attachTab(view, focus = true) {
     // undefined behaviour, and it crashed the browser on the first real
     // popup it met: Google sign-in (2026-07-29).
     view.connect('create', (opener) => {
+        // No network_session here on purpose: a related view inherits
+        // the opener's session, and passing both is an error.
         const popup = new WebKit.WebView({related_view: opener});
         // Attach only once WebKit says it is ready; attaching a view that
         // never becomes ready would leave an empty tab behind.
@@ -79,7 +119,7 @@ function attachTab(view, focus = true) {
 
 /// A new tab we open ourselves, with a URL to load.
 function newTab(url = HOME, focus = true) {
-    const view = attachTab(new WebKit.WebView(), focus);
+    const view = attachTab(new WebKit.WebView({network_session: networkSession()}), focus);
     if (url) view.load_uri(url);
     return view;
 }
@@ -181,7 +221,7 @@ function buildWindow() {
     header.pack_start(reload);
     header.pack_end(newBtn);
 
-    tabView = new Adw.TabView();
+    tabView = new Adw.TabView({vexpand: true, hexpand: true});
     tabView.connect('notify::selected-page', () => {
         const view = currentView();
         urlBar.set_text(view?.get_uri() ?? '');
@@ -193,15 +233,13 @@ function buildWindow() {
         if (tabView.get_n_pages() === 0) win.close();
         return true;
     });
-    const tabBar = new Adw.TabBar({view: tabView, autohide: true});
+    const tabBar = new Adw.TabBar({view: tabView, autohide: false});
 
-    const box = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
     const toolbar = new Adw.ToolbarView();
     toolbar.add_top_bar(header);
     toolbar.add_top_bar(tabBar);
     toolbar.set_content(tabView);
-    box.append(toolbar);
-    win.set_content(box);
+    win.set_content(toolbar);
 
     // Shortcuts: the three everyone's hands already know.
     const add = (accel, fn) => {
