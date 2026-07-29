@@ -92,7 +92,41 @@ pub fn build_upstream(
                 let content = m["content"].as_str().unwrap_or_default().to_string();
                 match role {
                     "system" | "developer" => system_parts.push(content),
-                    "assistant" => turns.push(json!({"role": "assistant", "content": content})),
+                    // A tool RESULT. Anthropic carries these as a user
+                    // turn holding a tool_result block, not as a role of
+                    // its own — dropping them (as this did) leaves the
+                    // model asking for the same tool forever, because it
+                    // never learns what came back.
+                    "tool" => turns.push(json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": m["tool_call_id"].as_str().unwrap_or_default(),
+                            "content": content,
+                        }],
+                    })),
+                    "assistant" => {
+                        // An assistant turn that CALLED a tool must go
+                        // back as a tool_use block, or the tool_result
+                        // that follows refers to nothing and Anthropic
+                        // rejects the conversation.
+                        match m["tool_calls"].as_array().and_then(|c| c.first()) {
+                            Some(call) => {
+                                let args = call["function"]["arguments"].as_str().unwrap_or("{}");
+                                turns.push(json!({
+                                    "role": "assistant",
+                                    "content": [{
+                                        "type": "tool_use",
+                                        "id": call["id"].as_str().unwrap_or("call_1"),
+                                        "name": call["function"]["name"].as_str().unwrap_or(""),
+                                        "input": serde_json::from_str::<Value>(args)
+                                            .unwrap_or_else(|_| json!({})),
+                                    }],
+                                }));
+                            }
+                            None => turns.push(json!({"role": "assistant", "content": content})),
+                        }
+                    }
                     _ => turns.push(json!({"role": "user", "content": content})),
                 }
             }
@@ -103,6 +137,41 @@ pub fn build_upstream(
             });
             if !system_parts.is_empty() {
                 out["system"] = Value::String(system_parts.join("\n"));
+            }
+            // TOOLS. Without this the model is simply never told they
+            // exist, and answers — correctly — that it cannot do
+            // anything. The shapes differ only in nesting: OpenAI wraps
+            // the declaration in `function`, Anthropic does not, and
+            // calls the schema `input_schema`.
+            if let Some(tools) = body["tools"].as_array()
+                && !tools.is_empty()
+            {
+                out["tools"] = Value::Array(
+                    tools
+                        .iter()
+                        .map(|t| {
+                            let f = &t["function"];
+                            json!({
+                                "name": f["name"].as_str().unwrap_or_default(),
+                                "description": f["description"].as_str().unwrap_or_default(),
+                                "input_schema": f
+                                    .get("parameters")
+                                    .cloned()
+                                    .unwrap_or_else(|| json!({"type": "object"})),
+                            })
+                        })
+                        .collect(),
+                );
+                // "auto" is Anthropic's default; only a forced choice
+                // needs saying, and OpenAI's "none" has no equivalent
+                // beyond simply not offering the tools.
+                match body["tool_choice"].as_str() {
+                    Some("required") => out["tool_choice"] = json!({"type": "any"}),
+                    Some("none") => {
+                        out.as_object_mut().map(|o| o.remove("tools"));
+                    }
+                    _ => {}
+                }
             }
             // Streaming requests stream upstream too (ADR-0010 update):
             // the OpenAI-compat dialect passes the flag through verbatim;
@@ -143,6 +212,35 @@ pub fn translate_response(dialect: Dialect, upstream: &Value) -> Value {
                         .join("")
                 })
                 .unwrap_or_default();
+            // tool_use blocks become OpenAI tool_calls. Dropping them —
+            // which keeping only `text` did — means a model that called
+            // a tool looks like one that said nothing, and the loop ends
+            // having done nothing while the model believes it acted.
+            let tool_calls: Vec<Value> = upstream["content"]
+                .as_array()
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|b| b["type"] == "tool_use")
+                        .map(|b| {
+                            json!({
+                                "id": b["id"].as_str().unwrap_or("call_1"),
+                                "type": "function",
+                                "function": {
+                                    "name": b["name"].as_str().unwrap_or_default(),
+                                    // OpenAI carries arguments as a JSON
+                                    // *string*; Anthropic as an object.
+                                    "arguments": b["input"].to_string(),
+                                },
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut message = json!({"role": "assistant", "content": text});
+            if !tool_calls.is_empty() {
+                message["tool_calls"] = Value::Array(tool_calls.clone());
+            }
             let input = upstream["usage"]["input_tokens"].as_u64().unwrap_or(0);
             let output = upstream["usage"]["output_tokens"].as_u64().unwrap_or(0);
             json!({
@@ -151,9 +249,15 @@ pub fn translate_response(dialect: Dialect, upstream: &Value) -> Value {
                 "model": upstream.get("model").cloned().unwrap_or(Value::Null),
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": text},
-                    "finish_reason":
-                        if upstream["stop_reason"] == "max_tokens" { "length" } else { "stop" },
+                    "message": message,
+                    "finish_reason": match upstream["stop_reason"].as_str() {
+                        Some("max_tokens") => "length",
+                        // The loop keys off this to know a tool was
+                        // called rather than a turn finished.
+                        Some("tool_use") => "tool_calls",
+                        _ if !tool_calls.is_empty() => "tool_calls",
+                        _ => "stop",
+                    },
                 }],
                 "usage": {
                     "prompt_tokens": input,
@@ -219,6 +323,152 @@ pub async fn send_stream(
         });
     }
     Ok(resp.bytes_stream().map(|r| r.map(|b| b.to_vec())))
+}
+
+#[cfg(test)]
+mod tool_translation_tests {
+    use super::*;
+
+    use crate::registry::builtin_providers;
+
+    fn anthropic(body: Value) -> Value {
+        let spec = builtin_providers()
+            .into_iter()
+            .find(|p| p.id == "anthropic")
+            .unwrap();
+        build_upstream(&spec, "sk-ant-test", &body).unwrap().body
+    }
+
+    /// Without this the model is never told the tools exist and answers,
+    /// correctly, that it cannot do anything — which is exactly what the
+    /// Assistant reported on the device.
+    #[test]
+    fn tools_reach_anthropic_in_its_own_shape() {
+        let out = anthropic(json!({
+            "model": "claude-x",
+            "messages": [{"role": "user", "content": "read the page"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_page",
+                    "description": "Read the open page",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                },
+            }],
+            "tool_choice": "auto",
+        }));
+        let t = &out["tools"][0];
+        assert_eq!(t["name"], "read_page");
+        assert_eq!(t["description"], "Read the open page");
+        // Anthropic calls it input_schema and does not nest under
+        // `function`.
+        assert_eq!(t["input_schema"]["properties"]["q"]["type"], "string");
+        assert!(t.get("function").is_none());
+        // "auto" is Anthropic's default; saying so is noise.
+        assert!(out.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn tool_choice_none_removes_the_tools_entirely() {
+        let out = anthropic(json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "t", "parameters": {}}}],
+            "tool_choice": "none",
+        }));
+        assert!(out.get("tools").is_none(), "not offering them IS 'none'");
+    }
+
+    /// An assistant turn that called a tool must go back as a tool_use
+    /// block: the tool_result that follows refers to its id, and without
+    /// it Anthropic rejects the whole conversation.
+    #[test]
+    fn a_tool_call_and_its_result_survive_the_round_trip() {
+        let out = anthropic(json!({
+            "messages": [
+                {"role": "user", "content": "read it"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "toolu_42",
+                    "type": "function",
+                    "function": {"name": "read_page", "arguments": "{\"q\":\"x\"}"},
+                }]},
+                {"role": "tool", "tool_call_id": "toolu_42", "content": "the page says hello"},
+            ],
+        }));
+        let turns = out["messages"].as_array().unwrap();
+        assert_eq!(turns.len(), 3);
+
+        let call = &turns[1]["content"][0];
+        assert_eq!(call["type"], "tool_use");
+        assert_eq!(call["id"], "toolu_42");
+        assert_eq!(call["name"], "read_page");
+        // Arguments are a JSON *string* on the OpenAI side and an object
+        // on Anthropic's.
+        assert_eq!(call["input"]["q"], "x");
+
+        let result = &turns[2];
+        assert_eq!(result["role"], "user", "Anthropic has no `tool` role");
+        assert_eq!(result["content"][0]["type"], "tool_result");
+        assert_eq!(result["content"][0]["tool_use_id"], "toolu_42");
+        assert_eq!(result["content"][0]["content"], "the page says hello");
+    }
+
+    #[test]
+    fn malformed_call_arguments_do_not_lose_the_turn() {
+        let out = anthropic(json!({
+            "messages": [{"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1", "function": {"name": "t", "arguments": "not json"},
+            }]}],
+        }));
+        assert_eq!(out["messages"][0]["content"][0]["input"], json!({}));
+    }
+
+    /// Keeping only `text` blocks meant a model that called a tool
+    /// looked like one that said nothing: the loop ended having done
+    /// nothing while the model believed it had acted.
+    #[test]
+    fn tool_use_comes_back_as_tool_calls() {
+        let norm = translate_response(
+            Dialect::AnthropicMessages,
+            &json!({
+                "id": "msg_1",
+                "model": "claude-x",
+                "stop_reason": "tool_use",
+                "content": [
+                    {"type": "text", "text": "Let me look."},
+                    {"type": "tool_use", "id": "toolu_9", "name": "read_page",
+                     "input": {"q": "x"}},
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            }),
+        );
+        let msg = &norm["choices"][0]["message"];
+        assert_eq!(msg["content"], "Let me look.");
+        let call = &msg["tool_calls"][0];
+        assert_eq!(call["id"], "toolu_9");
+        assert_eq!(call["function"]["name"], "read_page");
+        // OpenAI wants arguments as a string.
+        assert_eq!(call["function"]["arguments"], r#"{"q":"x"}"#);
+        assert_eq!(norm["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[test]
+    fn a_plain_answer_carries_no_tool_calls_key_at_all() {
+        let norm = translate_response(
+            Dialect::AnthropicMessages,
+            &json!({
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "hello"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+        );
+        let msg = &norm["choices"][0]["message"];
+        assert_eq!(msg["content"], "hello");
+        assert!(
+            msg.get("tool_calls").is_none(),
+            "an absent key, not an empty array"
+        );
+        assert_eq!(norm["choices"][0]["finish_reason"], "stop");
+    }
 }
 
 #[cfg(test)]
