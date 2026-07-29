@@ -249,10 +249,23 @@ and `ConsentChip` where they fit.
 /// narrate the run live (the difference between an agent and a spinner).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentEvent {
-    Turn { n: usize, max: usize },
-    Call { name: String, detail: String },
-    CallResult { ok: bool, chars: usize },
-    VerifierFindings { chars: usize },
+    Turn {
+        n: usize,
+        max: usize,
+    },
+    /// A fragment of assistant text, as it arrives.
+    Delta(String),
+    Call {
+        name: String,
+        detail: String,
+    },
+    CallResult {
+        ok: bool,
+        chars: usize,
+    },
+    VerifierFindings {
+        chars: usize,
+    },
     VerifierClean,
     DoneClaimed,
 }
@@ -434,7 +447,15 @@ pub fn forge_agent_with_tools(
             n: turn,
             max: config.max_turns,
         });
-        match backend.next_action(&history, &specs)? {
+        // Streaming: a person watching a chat window sees words appear
+        // instead of a spinner. Control flow is unchanged — a tool call
+        // is only knowable once complete — so this is purely about how
+        // the wait feels, which for a chat surface is most of the thing.
+        let action = {
+            let mut sink = |d: &str| observe(AgentEvent::Delta(d.to_string()));
+            backend.next_action_streaming(&history, &specs, &mut sink)?
+        };
+        match action {
             AgentAction::Done(summary) => {
                 observe(AgentEvent::DoneClaimed);
                 // "Done" only counts if the verifier agrees. A `None`

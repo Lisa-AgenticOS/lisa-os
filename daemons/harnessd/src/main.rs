@@ -42,6 +42,19 @@ mod loop_runner;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// This user's own Ledger. `STATE_DIRECTORY` wins when systemd sets it
+/// (a user unit gets a per-user one); otherwise `$HOME`. Never the
+/// shared system path — see the note in `main`.
+fn ledger_path() -> std::path::PathBuf {
+    if let Some(state) = std::env::var_os("STATE_DIRECTORY") {
+        return std::path::PathBuf::from(state).join("ledger.db");
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    home.join(".local/share/lisa/ledger.db")
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -53,13 +66,22 @@ async fn main() -> anyhow::Result<()> {
     // No ledger, no loop. The harness records every tool call before it
     // runs (#129), so a machine that cannot write the record must not
     // act — the same rule agentd applies to the bus.
-    let ledger = Arc::new(lisa_ledger::Ledger::open(
-        lisa_ledger::Ledger::default_path(),
-    )?);
-    info!(
-        "ledger open at {}",
-        lisa_ledger::Ledger::default_path().display()
-    );
+    //
+    // PER-USER, explicitly. `Ledger::default_path()` prefers the shared
+    // /var/lib/lisa when it exists, which is right for a system daemon
+    // and wrong for this one: harnessd runs one instance per logged-in
+    // user, and its Ledger holds what THAT person asked and what was
+    // done about it. Two users sharing one file would mean each reading
+    // the other's assistant history — a privacy failure, not an
+    // inconvenience. (On the reference machine /var/lib/lisa is
+    // root-owned and unwritable anyway, so the shared path would simply
+    // have refused to open; that is luck, not design.)
+    let path = ledger_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let ledger = Arc::new(lisa_ledger::Ledger::open(&path)?);
+    info!("ledger open at {}", path.display());
 
     let conn = dbus::serve(ledger).await?;
     info!("serving dev.lisaos.Harness1 on the session bus");

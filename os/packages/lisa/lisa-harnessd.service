@@ -31,6 +31,10 @@ NoNewPrivileges=yes
 PrivateDevices=yes
 ProtectHome=read-only
 ProtectSystem=strict
+# Per-user state. StateDirectory gives this unit its own directory
+# under the user's home, so two people on one machine never share an
+# assistant Ledger.
+StateDirectory=lisa
 ReadWritePaths=%h/.local/share/lisa
 
 [Install]

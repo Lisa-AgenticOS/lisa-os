@@ -106,15 +106,25 @@ pub fn run(
         }
         match ev {
             AgentEvent::Call { name, detail } => emit(Progress::Tool { name, detail }),
-            AgentEvent::DoneClaimed => {}
+            // The reason streaming exists: a frontend renders these as
+            // they arrive instead of showing a spinner.
+            AgentEvent::Delta(text) => emit(Progress::Token(text)),
             _ => {}
         }
     };
 
     // `project` is only the verifier's working directory, and the
-    // verifier is None — but the loop still wants a path, so give it one
-    // that exists and that nothing will be written to.
-    let project = std::env::temp_dir();
+    // verifier is None — but the loop still wants a path. Use a
+    // per-user one rather than /tmp: nothing is written there today, and
+    // a shared directory is not a thing to leave lying in a path
+    // argument for someone to start writing into later.
+    let project = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+        });
     match forge_harness::forge_agent_with_tools(
         &req.prompt,
         &project,
@@ -124,7 +134,9 @@ pub fn run(
         &mut observe,
     ) {
         Ok(report) => {
-            emit(Progress::Token(report.summary.clone()));
+            // NOT emitted as a Token: the summary is the text that was
+            // already streamed delta by delta, and sending it again
+            // prints the whole answer twice.
             emit(Progress::Finished {
                 ok: true,
                 summary: report.summary,

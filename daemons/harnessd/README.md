@@ -60,12 +60,23 @@ Today every session peer is a desktop surface, so the ceiling is
 `Prompt`. The enforcement point exists now so that when cron and mail
 arrive they get a lower ceiling and nothing else has to change.
 
+## Streaming
+
+`Token` signals carry deltas as they arrive, so a chat window shows words
+appearing rather than a spinner. Control flow is unchanged — a tool call
+is only knowable once its arguments are complete — so streaming is purely
+about how the wait feels, which for a chat surface is most of the thing.
+
+`forge` ignores deltas: a build loop printing the model's prose token by
+token buries the tool calls that matter.
+
+The fold lives in `openai.rs` as a pure function, because everything that
+goes wrong with streaming tool calls lives there — arguments arrive as
+fragments and are only valid JSON once concatenated, and parsing early
+turns good input into an error.
+
 ## Limits
 
-- **Not streaming.** `forge-harness`'s backend does one request per turn,
-  so `Token` carries the finished text rather than a live stream. The
-  Assistant window will feel less alive than the chat lane until the
-  backend streams.
 - **One thread per run**, and a signal emit builds a small runtime each
   time. Correct, not elegant.
 - **Cancel is cooperative** — a turn already in flight finishes. Killing

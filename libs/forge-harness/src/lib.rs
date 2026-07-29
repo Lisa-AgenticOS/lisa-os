@@ -67,6 +67,26 @@ pub trait Backend {
         messages: &[Message],
         tools: &[ToolSpec],
     ) -> Result<AgentAction, ForgeError>;
+
+    /// The same turn, reporting assistant text as it arrives.
+    ///
+    /// The loop needs the WHOLE message before it can act — a tool call
+    /// is only knowable once its arguments are complete — so streaming
+    /// changes nothing about control flow. What it changes is whether a
+    /// person watching sees words appear or a spinner: for `forge`,
+    /// nobody is watching a turn, and for a chat window that difference
+    /// is the entire feel of the thing.
+    ///
+    /// Default delegates, so a scripted backend stays three lines.
+    fn next_action_streaming(
+        &mut self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<AgentAction, ForgeError> {
+        let _ = &on_delta;
+        self.next_action(messages, tools)
+    }
 }
 
 #[derive(Debug)]
