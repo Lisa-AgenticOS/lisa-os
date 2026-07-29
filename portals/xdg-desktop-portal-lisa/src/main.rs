@@ -42,6 +42,31 @@ struct Args {
     /// Per-app tokens/day quota.
     #[arg(long, default_value_t = QuotaConfig::default().tokens_per_day)]
     tokens_per_day: i64,
+    /// Per-app cap on simultaneously open sessions (issue #111).
+    #[arg(long, default_value_t = QuotaConfig::default().max_sessions_per_app)]
+    max_sessions: usize,
+    /// Programs allowed to change grants (issue #107). Repeatable;
+    /// replaces the shipped allowlist entirely when given.
+    #[arg(long = "manager")]
+    managers: Vec<PathBuf>,
+}
+
+/// Whether the message bus hands out a pidfd for its peers.
+///
+/// Asked of the broker about *ourselves* rather than read off a version
+/// string: the thing that matters is the field arriving in the reply,
+/// which is what `lisa_peer::resolve` keys off for every caller.
+async fn broker_supplies_pidfd(conn: &zbus::Connection) -> bool {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
+        return false;
+    };
+    let Some(me) = conn.unique_name() else {
+        return false;
+    };
+    match dbus.get_connection_credentials(me.to_owned().into()).await {
+        Ok(creds) => creds.process_fd().is_some(),
+        Err(_) => false,
+    }
 }
 
 /// The portal is per-user: its ledger lives in the user's data dir (the
@@ -97,7 +122,20 @@ async fn main() -> anyhow::Result<()> {
         other => anyhow::bail!("unknown consent backend `{other}` (ui | allow | deny)"),
     };
 
-    let state = PortalState::new(
+    let managers = if args.managers.is_empty() {
+        lisa_portal::manager::default_managers()
+    } else {
+        args.managers
+    };
+    // Logged as configured, not as resolved: an entry that is missing
+    // today (the channel CLI before the first `lisa apps update`) is
+    // resolved again at each check, and a startup snapshot would say
+    // otherwise.
+    for m in &managers {
+        info!(manager = %m.display(), "may change grants");
+    }
+
+    let state = PortalState::with_policy(
         Arc::new(ProcResolver::new()),
         consent,
         upstream,
@@ -106,8 +144,31 @@ async fn main() -> anyhow::Result<()> {
         QuotaConfig {
             requests_per_min: args.requests_per_min,
             tokens_per_day: args.tokens_per_day,
+            max_sessions_per_app: args.max_sessions,
+            ..QuotaConfig::default()
         },
+        lisa_portal::consent::PromptPolicy::default(),
+        managers,
     );
+    // Say out loud whether this broker can tell us who anyone is.
+    //
+    // `GetConnectionCredentials` gained `ProcessFD` in dbus 1.16, and
+    // without it `lisa_peer::exe_of_peer` refuses to name a program —
+    // correctly, because the alternative is a bare pid that can be
+    // recycled (#136). But the consequences here are not subtle: every
+    // host app collapses into the shared `host:unknown` bucket, so they
+    // share one grant and one quota, and nothing can manage grants at
+    // all. That must never be something an operator has to infer from
+    // behaviour.
+    if !broker_supplies_pidfd(&session).await {
+        tracing::error!(
+            "this message bus supplies no ProcessFD (dbus < 1.16): host apps \
+             cannot be told apart and will share the `host:unknown` grant, and \
+             grant management is refused. Sandboxed (Flatpak) identity is \
+             unaffected."
+        );
+    }
+
     let _conn = portal::serve(state).await?;
     info!(
         "{} registered at {}",

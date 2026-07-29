@@ -130,3 +130,36 @@ fix hands the attacker the reconnaissance for the next attempt.
   own**. Two of today's fixes were later found wrong in a new way, and a
   security primitive adopted by four daemons deserves a round before it
   is extended to all of them.
+
+## Adoption: the portal (#106, #107, #108)
+
+The portal was the surface this ADR was written from, and it is now on
+the primitive. Three things came out of doing it that the ADR did not
+anticipate:
+
+1. **`exe` alone was not enough.** Swapping `comm` for `exe` and keeping
+   the basename comparison would have moved the forgery rather than
+   removed it: a process that cannot set its `comm` can still name a
+   file. Host identity matches the **whole resolved path** against an
+   installed `.desktop` entry, and resolves bare `Exec=` names from a
+   fixed system list rather than `$PATH`.
+
+2. **The p2p suites stayed meaningful, and that was the problem.**
+   `PeerId::Direct` let the existing tests keep running — but it also
+   means a p2p suite *cannot fail* an ownership test, because there is
+   only one peer to be. The portal's ownership fix needed a test file
+   that starts a real `dbus-daemon` and connects two clients
+   (`portals/xdg-desktop-portal-lisa/tests/bus.rs`). `Direct` keeping
+   old tests green is a convenience for unrelated coverage, never
+   evidence about ownership.
+
+3. **The CI assertion this ADR asked for exists**, and it needed a
+   second mechanism: the bus tests skip where `dbus-daemon` cannot be
+   started (Homebrew's macOS build does not print its address), so
+   `LISA_REQUIRE_BUS_TESTS=1` makes skipping fatal and CI sets it. A
+   test that skips silently is the same failure as a test that does not
+   exist.
+
+The credentials half (`Peer` + `exe_of_peer`) answers only #107 —
+"may this caller mint grants for other apps" — via an allowlist of
+shipped executables. Everything else the portal needed was ownership.

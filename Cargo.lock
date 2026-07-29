@@ -3019,6 +3019,7 @@ dependencies = [
  "futures",
  "lisa-inferenced",
  "lisa-ledger",
+ "lisa-peer",
  "rusqlite",
  "tempfile",
  "thiserror",

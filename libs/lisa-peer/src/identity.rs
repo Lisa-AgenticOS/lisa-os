@@ -56,6 +56,18 @@ pub enum IdentityError {
 /// window this function exists to close.
 #[cfg(unix)]
 pub fn exe_of_peer(peer: &crate::Peer) -> Result<PathBuf, IdentityError> {
+    exe_of_pid(pid_of_peer(peer)?)
+}
+
+/// The pid of `peer`, pinned by the broker's pidfd.
+///
+/// Use this — never [`crate::Peer::pid`] — whenever a `/proc/<pid>/…`
+/// read feeds a decision about *who* the caller is. The portal reads two
+/// such paths (`root/.flatpak-info` and `exe`); both must be about the
+/// same, un-recycled process, which is what the pidfd guarantees and a
+/// bare pid does not (#136).
+#[cfg(unix)]
+pub fn pid_of_peer(peer: &crate::Peer) -> Result<u32, IdentityError> {
     // Checked before the platform gate: "we were given no pidfd" is true
     // and actionable everywhere, and it is the property under test on a
     // macOS dev host.
@@ -66,7 +78,7 @@ pub fn exe_of_peer(peer: &crate::Peer) -> Result<PathBuf, IdentityError> {
         return Err(IdentityError::Unsupported);
     }
     use std::os::fd::AsRawFd;
-    exe_of_pid(pid_of_pidfd(fd.as_raw_fd())?)
+    pid_of_pidfd(fd.as_raw_fd())
 }
 
 /// The pid a pidfd refers to, from the kernel's own view of our fd
@@ -133,6 +145,20 @@ mod tests {
     /// a `Peer` carrying only a pid must refuse to name a program, on
     /// every platform, rather than resolve a pid that may already
     /// belong to somebody else.
+    /// Same rule one level down: the portal reads two `/proc` paths for
+    /// one caller, and both must be about the pinned process. A `Peer`
+    /// with only a pid must not yield one.
+    #[cfg(unix)]
+    #[test]
+    fn a_peer_without_a_pidfd_yields_no_pid_either() {
+        let peer = crate::Peer::without_process_fd(
+            crate::PeerId::Bus(":1.7".into()),
+            Some(0),
+            Some(std::process::id()),
+        );
+        assert_eq!(pid_of_peer(&peer), Err(IdentityError::NoProcessFd));
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_peer_without_a_pidfd_refuses_to_name_a_program() {

@@ -18,16 +18,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// device: the Ledger showed a question about the open web page being
 /// answered by something that had been told it edits files.
 ///
-/// The tool names are deliberately absent: they are discovered at
-/// runtime from whatever apps are installed, and a prompt that lists
-/// them goes stale the first time somebody installs an app.
-/// What the assistant is told it is.
-///
-/// NOT forge's prompt, which describes a coding agent in a jailed
-/// project directory — the loop is shared, the job is not. Caught on the
-/// device: the Ledger showed a question about the open web page being
-/// answered by something that had been told it edits files.
-///
 /// Tool NAMES are deliberately absent: they are discovered at runtime
 /// from whatever apps are installed, and a prompt that lists them goes
 /// stale the first time somebody installs one.
@@ -49,9 +39,8 @@ a different spelling of the same thing.";
 
 /// Appended when a working folder has been granted: the assistant can
 /// read and write files, so it needs to know the rules of the jail.
-const CODER_PROMPT: &str = "\
-
-You also have file tools, working inside ONE folder the person chose:
+const CODER_PROMPT: &str =
+    "\n\nYou also have file tools, working inside ONE folder the person chose:
 
     {workspace}
 
@@ -60,20 +49,17 @@ you should not try — say what you need instead. Look before you edit: \
 list and read first, make targeted edits rather than rewriting whole \
 files, and run the project's own checks when there are any.";
 
-/// Appended when there is NO working folder yet and the person seems to \
-/// want files written.
-const NO_WORKSPACE_PROMPT: &str = "\
-
-You have NO working folder, so you cannot read or write files at all. If \
+/// Appended when there is NO working folder yet and the person seems
+/// to want files written.
+const NO_WORKSPACE_PROMPT: &str = "\n\nYou have NO working folder, so you cannot read or write files at all. If \
 the task needs that, do not describe file contents as though you had \
 saved them and do not pretend to write anything. Say that you need a \
 folder and ask them to choose one with the folder button — then wait.";
 
-/// Appended when skills exist. The bodies stay on disk: the catalog is \
-/// what belongs in a prompt.
-const SKILLS_PROMPT: &str = "\
-
-Skills — step-by-step workflows for specific jobs. Read the full one \
+/// Appended when skills exist. The bodies stay on disk: the catalog
+/// is what belongs in a prompt.
+const SKILLS_PROMPT: &str =
+    "\n\nSkills — step-by-step workflows for specific jobs. Read the full one \
 with read_skill BEFORE starting a task it covers; these lines are only \
 names:
 
@@ -221,5 +207,60 @@ pub fn run(
             // happened rather than a type name.
             summary: format!("{e}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Each appended section has to start on its own line.
+    ///
+    /// These constants were written as `"\` followed by a blank line,
+    /// which reads as "start with an empty line" and is not: the escaped
+    /// newline swallows the line break *and* the blank line after it, so
+    /// every section ran on from the previous sentence. Clippy noticed;
+    /// nothing else would have, because a prompt that reads slightly
+    /// worse produces answers that are slightly worse.
+    #[test]
+    fn appended_sections_are_separated_from_what_precedes_them() {
+        let with_dir = system_prompt(&Some(PathBuf::from("/home/me/proj")), "");
+        assert!(
+            with_dir.contains("thing.\n\nYou also have file tools"),
+            "the coder section ran into the previous sentence:\n{with_dir}"
+        );
+        assert!(with_dir.contains("/home/me/proj"));
+
+        let without = system_prompt(&None, "- demo: a demo skill");
+        assert!(
+            without.contains("thing.\n\nYou have NO working folder"),
+            "the no-workspace section ran on:\n{without}"
+        );
+        assert!(
+            without.contains("wait.\n\nSkills — step-by-step"),
+            "the skills section ran on:\n{without}"
+        );
+        assert!(without.ends_with("- demo: a demo skill"));
+    }
+
+    /// No skills, no mention of them — advertising `read_skill` with an
+    /// empty catalogue spends a turn on a tool that can only fail.
+    #[test]
+    fn an_empty_catalogue_is_left_out_entirely() {
+        let p = system_prompt(&None, "   \n  ");
+        assert!(!p.contains("Skills"), "{p}");
+        assert!(!p.contains("read_skill"), "{p}");
+    }
+
+    /// The two file-tool sections are mutually exclusive: telling the
+    /// model both that it has a folder and that it has none is how it
+    /// ends up claiming to have saved something.
+    #[test]
+    fn the_model_is_never_told_both_things_about_files() {
+        let with_dir = system_prompt(&Some(PathBuf::from("/tmp/x")), "");
+        assert!(!with_dir.contains("NO working folder"));
+        let without = system_prompt(&None, "");
+        assert!(!without.contains("You also have file tools"));
     }
 }
