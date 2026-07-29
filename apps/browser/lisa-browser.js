@@ -38,8 +38,10 @@ function currentView() {
     return page ? page.get_child() : null;
 }
 
-function newTab(url = HOME, focus = true) {
-    const view = new WebKit.WebView();
+/// Wire an EXISTING WebView into a tab. Split out because the `create`
+/// signal hands us a view WebKit made itself, which must not be
+/// re-created or pre-loaded.
+function attachTab(view, focus = true) {
     const page = tabView.append(view);
     page.set_title('New Tab');
     view.connect('notify::title', () => {
@@ -51,14 +53,34 @@ function newTab(url = HOME, focus = true) {
     view.connect('notify::estimated-load-progress', () => {
         page.set_loading(view.estimated_load_progress < 1);
     });
-    // Middle-click / target=_blank land beside their opener, focused per
-    // GNOME convention.
-    view.connect('create', () => {
-        const v = newTab('about:blank', true);
-        return v;
+    // window.open / target=_blank / middle-click.
+    //
+    // WebKit REQUIRES the returned view to be constructed with
+    // `related-view` — it shares the opener's web process and its
+    // window-open relationship — and it must NOT be loaded here, because
+    // WebKit performs the load itself on the view we hand back. Returning
+    // a fresh unrelated WebView that had already loaded about:blank is
+    // undefined behaviour, and it crashed the browser on the first real
+    // popup it met: Google sign-in (2026-07-29).
+    view.connect('create', (opener) => {
+        const popup = new WebKit.WebView({related_view: opener});
+        // Attach only once WebKit says it is ready; attaching a view that
+        // never becomes ready would leave an empty tab behind.
+        popup.connect('ready-to-show', () => attachTab(popup, true));
+        popup.connect('close', () => {
+            const p = tabView.get_page(popup);
+            if (p) tabView.close_page(p);
+        });
+        return popup;
     });
-    if (url) view.load_uri(url);
     if (focus) tabView.set_selected_page(page);
+    return view;
+}
+
+/// A new tab we open ourselves, with a URL to load.
+function newTab(url = HOME, focus = true) {
+    const view = attachTab(new WebKit.WebView(), focus);
+    if (url) view.load_uri(url);
     return view;
 }
 
