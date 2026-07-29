@@ -13,7 +13,7 @@
         "additionalProperties": false,
         "properties": {
           "title": { "type": "string", "maxLength": 120 },
-          "body": { "type": "string", "maxLength": 4000 }
+          "body": { "type": "string" }
         }
       },
       "undo": { "tool": "delete_note", "map": { "id": "$result.id" } }
@@ -37,7 +37,7 @@
         "required": ["query"],
         "additionalProperties": false,
         "properties": {
-          "query": { "type": "string", "maxLength": 4000 },
+          "query": { "type": "string", "maxLength": 200 },
           "limit": { "type": "integer", "minimum": 1, "default": 20 }
         }
       }
