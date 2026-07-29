@@ -34,9 +34,9 @@ mod credentials;
 mod identity;
 
 pub use credentials::{Peer, resolve};
-#[cfg(unix)]
-pub use identity::exe_of_peer;
 pub use identity::{IdentityError, exe_of_pid};
+#[cfg(unix)]
+pub use identity::{exe_of_peer, pid_of_peer};
 
 use thiserror::Error;
 

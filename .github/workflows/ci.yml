@@ -32,6 +32,7 @@ jobs:
               - 'Cargo.lock'
               - 'libs/**'
               - 'daemons/**'
+              - 'portals/**'
               - 'cli/**'
               - 'models/**'
               - 'tests/e2e/**'
@@ -42,6 +43,7 @@ jobs:
               - 'Cargo.lock'
               - 'libs/**'
               - 'daemons/**'
+              - 'portals/**'
               - 'cli/**'
               - 'models/**'
               - 'tests/e2e/**'
@@ -88,7 +90,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The portal's caller-identity tests need a real message broker:
+      # p2p has exactly one peer, so "another app cannot drive your
+      # session" is not a statement it can even make (ADR-0033).
+      - run: sudo apt-get update && sudo apt-get install -y dbus
       - run: cargo test --workspace --locked
+        env:
+          LISA_REQUIRE_BUS_TESTS: '1'
 
   # PLAN §5.7 shell surfaces: pure-logic unit tests (overlay envelope,
   # launcher ranking, ledger view-model) — runtime-agnostic modules run

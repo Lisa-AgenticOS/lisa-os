@@ -6,7 +6,7 @@
 //! pixels) are exercised on Linux systems.
 
 use lisa_portal::consent::{ConsentUi, StaticConsent};
-use lisa_portal::grants::{Effective, GrantStore};
+use lisa_portal::grants::{Effective, GrantAction, GrantStore};
 use lisa_portal::identity::{AppIdentity, StaticIdentity};
 use lisa_portal::portal::{PORTAL_PATH, PortalState, serve_on_builder};
 use lisa_portal::quota::QuotaConfig;
@@ -15,12 +15,20 @@ use lisa_portal::upstream::{InferenceUpstream, ZbusUpstream};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 struct Harness {
-    #[allow(dead_code)]
     server: zbus::Connection,
     client: zbus::Connection,
+    state: Arc<PortalState>,
     grants: Arc<GrantStore>,
     ledger: Arc<lisa_ledger::Ledger>,
     #[allow(dead_code)]
@@ -36,7 +44,7 @@ async fn harness_with(
     let grants = Arc::new(GrantStore::open_in_memory().unwrap());
     let ledger_dir = tempfile::tempdir().unwrap();
     let ledger = Arc::new(lisa_ledger::Ledger::open(ledger_dir.path().join("ledger.db")).unwrap());
-    let state = PortalState::new(
+    let state: Arc<PortalState> = PortalState::new(
         Arc::new(StaticIdentity(identity)),
         consent,
         upstream,
@@ -61,6 +69,7 @@ async fn harness_with(
     Harness {
         server,
         client,
+        state,
         grants,
         ledger,
         ledger_dir,
@@ -257,12 +266,30 @@ async fn revoke_kills_the_live_session_and_next_use_reprompts() {
     let reader = read_to_eof(fd);
 
     let started = std::time::Instant::now();
-    let grants = grants_proxy(&h).await;
-    let reply = grants
-        .call_method("Revoke", &("host:demo", "inference"))
-        .await
+    // Straight at the revocation, not through the D-Bus verb: writing a
+    // grant action now requires being an allowlisted program on a real
+    // broker (issue #107), which `tests/bus.rs` covers. What is under
+    // test here is that a revoke kills the live session in time.
+    h.grants
+        .record("host:demo", "inference", GrantAction::Revoke)
         .unwrap();
-    let (killed,): (u32,) = reply.body().deserialize().unwrap();
+    h.ledger
+        .append(&lisa_ledger::Event {
+            kind: "context.grant".into(),
+            app_id: "host:demo".into(),
+            status: "revoked".into(),
+            detail: "scope=inference action=revoke via=settings".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let killed = lisa_portal::portal::revoke_sessions(
+        &h.state,
+        h.server.object_server(),
+        "host:demo",
+        "inference",
+    )
+    .await
+    .unwrap();
     assert_eq!(killed, 1);
 
     // The daemon side dropped its pipe writer → the app's fd sees EOF...
@@ -296,18 +323,19 @@ async fn request_rate_quota_refuses_the_excess_call() {
         QuotaConfig {
             requests_per_min: 2,
             tokens_per_day: 1_000_000,
+            ..QuotaConfig::default()
         },
     )
     .await;
+    // OpenSession spends one of the two (issue #111 — it used to be
+    // free), so exactly one Embed is left in the window.
     let (path, _fd) = open_session(&h).await.unwrap();
     let session = session_proxy(&h, path).await;
-    for _ in 0..2 {
-        session.call_method("Embed", &(vec!["x"],)).await.unwrap();
-    }
+    session.call_method("Embed", &(vec!["x"],)).await.unwrap();
     let err = session
         .call_method("Embed", &(vec!["x"],))
         .await
-        .expect_err("third request in the window must hit the quota");
+        .expect_err("the third request in the window must hit the quota");
     assert!(err.to_string().contains("LimitsExceeded"), "{err}");
 }
 
@@ -320,67 +348,286 @@ async fn token_budget_quota_refuses_once_spent() {
         QuotaConfig {
             requests_per_min: 1000,
             tokens_per_day: 5,
+            ..QuotaConfig::default()
         },
     )
     .await;
     let (path, _fd) = open_session(&h).await.unwrap();
     let session = session_proxy(&h, path).await;
-    // Six words spend the 5-token budget.
+    // Four words fit inside the 5-token budget.
     session
-        .call_method("Embed", &(vec!["one two three four five six"],))
+        .call_method("Embed", &(vec!["one two three four"],))
         .await
         .unwrap();
     let err = session
-        .call_method("Embed", &(vec!["more"],))
+        .call_method("Embed", &(vec!["more words than are left"],))
         .await
         .expect_err("budget is spent");
     assert!(err.to_string().contains("LimitsExceeded"), "{err}");
 }
 
+/// Issue #114 through the real surface: a request bigger than the whole
+/// day's budget is refused outright rather than admitted and charged.
+/// Before the fix this call succeeded and left the counter at ~1000
+/// against a cap of 5.
 #[tokio::test]
-async fn grants_management_is_refused_to_sandboxed_callers() {
-    // The resolver says every caller is a Flatpak app — so even the
-    // management surface must refuse (apps cannot grant themselves).
+async fn one_huge_request_cannot_blow_through_the_daily_budget() {
+    let h = harness_with(
+        AppIdentity::host("host:hog"),
+        Arc::new(StaticConsent::allow_always()),
+        Arc::new(StubUpstream),
+        QuotaConfig {
+            requests_per_min: 1000,
+            tokens_per_day: 5,
+            ..QuotaConfig::default()
+        },
+    )
+    .await;
+    let (path, _fd) = open_session(&h).await.unwrap();
+    let session = session_proxy(&h, path).await;
+    let huge = "word ".repeat(1000);
+    let err = session
+        .call_method("Embed", &(vec![huge],))
+        .await
+        .expect_err("a request larger than the whole budget must be refused");
+    assert!(err.to_string().contains("LimitsExceeded"), "{err}");
+    assert_eq!(
+        h.grants
+            .tokens_used("host:hog", &lisa_portal::quota::day_key(now_secs()))
+            .unwrap(),
+        0,
+        "a refused request must not be charged"
+    );
+}
+
+/// Issue #114's other half: output is charged for, so a two-word prompt
+/// cannot drive an unbounded generation for two tokens.
+#[tokio::test]
+async fn a_generation_is_charged_for_the_output_it_reserves() {
+    let h = harness_with(
+        AppIdentity::host("host:writer"),
+        Arc::new(StaticConsent::allow_always()),
+        Arc::new(StubUpstream),
+        QuotaConfig {
+            requests_per_min: 1000,
+            tokens_per_day: 100,
+            assumed_output_tokens: 500,
+            ..QuotaConfig::default()
+        },
+    )
+    .await;
+    let (path, _fd) = open_session(&h).await.unwrap();
+    let session = session_proxy(&h, path).await;
+    // Two words, but 500 reserved for what comes back: over budget.
+    let err = session
+        .call_method(
+            "Generate",
+            &("write everything", HashMap::<String, OwnedValue>::new()),
+        )
+        .await
+        .expect_err("an unbounded generation must be charged for its output");
+    assert!(err.to_string().contains("LimitsExceeded"), "{err}");
+
+    // Stating a small ceiling brings it inside the budget.
+    let mut params = HashMap::<String, OwnedValue>::new();
+    params.insert(
+        "max_tokens".into(),
+        OwnedValue::try_from(zbus::zvariant::Value::from(10i64)).unwrap(),
+    );
+    session
+        .call_method("Generate", &("write everything", params))
+        .await
+        .expect("a bounded generation fits");
+}
+
+/// Issue #111: OpenSession was neither rate-limited nor capped, so an
+/// app could hold unbounded upstream sessions, file descriptors and
+/// D-Bus objects. Fifty in a row used to be admitted with the request
+/// quota set to 1.
+#[tokio::test]
+async fn open_session_is_rate_limited_and_capped() {
+    let h = harness_with(
+        AppIdentity::host("host:leak"),
+        Arc::new(StaticConsent::allow_always()),
+        Arc::new(StubUpstream),
+        QuotaConfig {
+            requests_per_min: 1,
+            tokens_per_day: 1_000_000,
+            ..QuotaConfig::default()
+        },
+    )
+    .await;
+    open_session(&h).await.expect("the first one is allowed");
+    let err = open_session(&h)
+        .await
+        .expect_err("opening sessions must spend the request quota");
+    assert!(err.to_string().contains("LimitsExceeded"), "{err}");
+}
+
+/// The concurrent-session cap, separately from the rate limit: an app
+/// that opens slowly still cannot hold an unbounded number open.
+#[tokio::test]
+async fn an_app_cannot_hold_unbounded_sessions_open() {
+    let h = harness_with(
+        AppIdentity::host("host:leak"),
+        Arc::new(StaticConsent::allow_always()),
+        Arc::new(StubUpstream),
+        QuotaConfig {
+            requests_per_min: 1000,
+            tokens_per_day: 1_000_000,
+            max_sessions_per_app: 3,
+            ..QuotaConfig::default()
+        },
+    )
+    .await;
+    let mut open = Vec::new();
+    for i in 0..3 {
+        open.push(
+            open_session(&h)
+                .await
+                .unwrap_or_else(|e| panic!("session {i}: {e}")),
+        );
+    }
+    let err = open_session(&h)
+        .await
+        .expect_err("the fourth session must be refused");
+    assert!(err.to_string().contains("LimitsExceeded"), "{err}");
+
+    // Closing one makes room again — the cap counts what is open, not
+    // what was ever opened.
+    let (path, _) = open.pop().unwrap();
+    session_proxy(&h, path)
+        .await
+        .call_method("Close", &())
+        .await
+        .unwrap();
+    open_session(&h)
+        .await
+        .expect("a closed session frees its slot");
+}
+
+/// Issue #113: a refusal the user did not ask to remember left no trace,
+/// so an app could re-summon the dialog forever and win by attrition.
+/// The consent UI here says "no, not now" every time; it must stop being
+/// asked.
+#[tokio::test]
+async fn an_app_cannot_re_prompt_until_the_user_gives_in() {
+    #[derive(Default)]
+    struct CountingConsent {
+        asked: std::sync::atomic::AtomicUsize,
+    }
+    impl ConsentUi for CountingConsent {
+        fn ask(
+            &self,
+            _app: &AppIdentity,
+            _scope: &str,
+        ) -> futures::future::BoxFuture<'_, Option<lisa_portal::consent::ConsentReply>> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                Some(lisa_portal::consent::ConsentReply {
+                    allow: false,
+                    remember: false,
+                })
+            })
+        }
+    }
+
+    let consent = Arc::new(CountingConsent::default());
+    let h = harness_with(
+        AppIdentity::host("host:nag"),
+        Arc::clone(&consent) as Arc<dyn ConsentUi>,
+        Arc::new(StubUpstream),
+        QuotaConfig::default(),
+    )
+    .await;
+    for _ in 0..25 {
+        assert!(
+            open_session(&h).await.is_err(),
+            "a refused app got a session"
+        );
+    }
+    let asked = consent.asked.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        asked <= lisa_portal::consent::PromptPolicy::default().max_refusals as usize,
+        "the user was asked {asked} times after refusing"
+    );
+    // And the app is not permanently denied — the user said "not now",
+    // not "never".
+    assert_eq!(
+        h.grants.effective("host:nag", "inference").unwrap(),
+        Effective::Unset
+    );
+}
+
+/// Issue #107. Grant management used to reject only Flatpak callers,
+/// which meant every other process could mint a grant for any app id.
+/// Now it takes an identified, allowlisted program — and a caller the
+/// portal cannot identify at all is nobody, so all four verbs refuse.
+///
+/// This transport has no credentials to offer, which is precisely the
+/// case that has to fail closed. The *allowed* path needs a real broker
+/// and a real executable: `tests/bus.rs`.
+#[tokio::test]
+async fn grant_management_refuses_every_unidentified_caller() {
     let h = harness(
-        AppIdentity::flatpak("org.example.Demo"),
+        AppIdentity::host("host:whoever"),
         Arc::new(StaticConsent::unavailable()),
     )
     .await;
     let grants = grants_proxy(&h).await;
+    for (verb, body) in [
+        ("Grant", ("org.example.Victim", "inference")),
+        ("Deny", ("org.gnome.Calendar", "inference")),
+    ] {
+        let err = grants.call_method(verb, &body).await.unwrap_err();
+        assert!(err.to_string().contains("AccessDenied"), "{verb}: {err}");
+    }
     let err = grants
-        .call_method("Grant", &("org.example.Demo", "inference"))
+        .call_method("Revoke", &("org.example.Victim", "inference"))
         .await
-        .expect_err("sandboxed callers cannot manage grants");
-    assert!(err.to_string().contains("AccessDenied"));
+        .unwrap_err();
+    assert!(err.to_string().contains("AccessDenied"), "{err}");
+    let err = grants.call_method("List", &()).await.unwrap_err();
+    assert!(err.to_string().contains("AccessDenied"), "{err}");
+
+    // Nothing was written: the victim has no grant it never consented to.
+    assert_eq!(
+        h.grants
+            .effective("org.example.Victim", "inference")
+            .unwrap(),
+        Effective::Unset
+    );
+    assert_eq!(
+        h.grants
+            .effective("org.gnome.Calendar", "inference")
+            .unwrap(),
+        Effective::Unset,
+        "a lock-out was persisted by an unauthenticated caller"
+    );
 }
 
 #[tokio::test]
-async fn settings_grant_pre_authorizes_without_a_prompt() {
+async fn a_pre_granted_app_opens_without_a_prompt() {
     let h = harness(
         AppIdentity::host("host:settings-demo"),
         // Consent backend absent: only the pre-grant can authorize.
         Arc::new(StaticConsent::unavailable()),
     )
     .await;
-    let grants = grants_proxy(&h).await;
-    grants
-        .call_method("Grant", &("host:settings-demo", "inference"))
-        .await
+    // Seeded through the store rather than the D-Bus verb: writing a
+    // grant now requires being an allowlisted program, and this test is
+    // about what a pre-grant *does*, not about who may write one.
+    h.grants
+        .record("host:settings-demo", "inference", GrantAction::Allow)
         .unwrap();
     open_session(&h)
         .await
         .expect("pre-granted app opens with no prompt");
 
-    let reply = grants.call_method("List", &()).await.unwrap();
-    let (rows,): (Vec<(String, String, String)>,) = reply.body().deserialize().unwrap();
-    assert_eq!(
-        rows,
-        vec![(
-            "host:settings-demo".to_string(),
-            "inference".to_string(),
-            "allowed".to_string()
-        )]
-    );
+    let rows = h.grants.list().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].app_id, "host:settings-demo");
+    assert_eq!(rows[0].state, Effective::Allowed);
 }
 
 #[tokio::test]

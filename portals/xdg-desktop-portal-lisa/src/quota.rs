@@ -13,6 +13,19 @@ use std::collections::{HashMap, VecDeque};
 pub struct QuotaConfig {
     pub requests_per_min: u32,
     pub tokens_per_day: i64,
+    /// How many portal sessions one app may hold open at once.
+    ///
+    /// Each session is an upstream daemon session, a passed file
+    /// descriptor and a registered D-Bus object, and `OpenSession` used
+    /// to be subject to no limit whatsoever (#111) — 50 in a row, with a
+    /// requests/min quota of 1 configured, all admitted.
+    pub max_sessions_per_app: usize,
+    /// What a generation is charged for its output when nothing says
+    /// how long it will be.
+    ///
+    /// See [`output_reservation`]: the portal cannot observe output, so
+    /// it reserves rather than measures.
+    pub assumed_output_tokens: i64,
 }
 
 impl Default for QuotaConfig {
@@ -20,6 +33,8 @@ impl Default for QuotaConfig {
         Self {
             requests_per_min: 120,
             tokens_per_day: 500_000,
+            max_sessions_per_app: 16,
+            assumed_output_tokens: 2_048,
         }
     }
 }
@@ -30,6 +45,8 @@ pub enum QuotaExceeded {
     Rate,
     #[error("per-app daily token budget exceeded (tokens/day quota)")]
     Tokens,
+    #[error("too many open sessions for this app")]
+    Sessions,
 }
 
 /// Day bucket key for persisted token accounting.
@@ -67,19 +84,45 @@ impl QuotaBook {
     }
 }
 
-/// Token-budget check against persisted daily usage.
-pub fn check_tokens(used_today: i64, cfg: &QuotaConfig) -> Result<(), QuotaExceeded> {
-    if used_today >= cfg.tokens_per_day {
-        Err(QuotaExceeded::Tokens)
-    } else {
-        Ok(())
+/// What one generation costs the daily budget: its prompt, plus a
+/// reservation for the output it is about to produce.
+///
+/// **A reservation, not a measurement — and the difference is the
+/// honest part.** Tokens stream from `inferenced` straight down the
+/// app's file descriptor; the portal never sees them, so it cannot
+/// count what came back. Before this it counted nothing at all (#114),
+/// which meant an app could drive arbitrarily long generations at the
+/// price of a short prompt.
+///
+/// So the budget is charged up front for the largest output the request
+/// could produce: `max_tokens` when the caller states one — which is the
+/// caller *lowering* its own bill, so there is no incentive to lie
+/// upward and lying downward does not buy more output — and
+/// `assumed_output_tokens` when it does not.
+///
+/// Real accounting replaces this when `inferenced` reports TokenUsage
+/// per session (M2 backlog, `daemons/inferenced/src/dbus.rs`). Until
+/// then the number is deliberately an over-estimate: this is an
+/// anti-abuse bound, not a bill.
+pub fn generation_cost(prompt: &str, max_tokens: Option<i64>, cfg: &QuotaConfig) -> i64 {
+    estimate_tokens(prompt).saturating_add(output_reservation(max_tokens, cfg))
+}
+
+/// The output half of [`generation_cost`].
+pub fn output_reservation(max_tokens: Option<i64>, cfg: &QuotaConfig) -> i64 {
+    match max_tokens {
+        // A stated ceiling is honoured, but never as a way to reserve
+        // *less* than nothing, and never above the day's whole budget —
+        // a caller asking for a billion tokens should be refused by the
+        // budget, not overflow the arithmetic that enforces it.
+        Some(n) if n > 0 => n.min(cfg.tokens_per_day),
+        Some(_) => 0,
+        None => cfg.assumed_output_tokens,
     }
 }
 
-/// Coarse token estimate (whitespace words) — used for quota accounting
-/// until `inferenced` emits real TokenUsage per session (M2 backlog,
-/// see `daemons/inferenced/src/dbus.rs`). Over-counting is preferred to
-/// under-counting for an anti-abuse bound.
+/// Coarse token estimate (whitespace words). Over-counting is preferred
+/// to under-counting for an anti-abuse bound.
 pub fn estimate_tokens(text: &str) -> i64 {
     text.split_whitespace().count() as i64
 }
@@ -92,6 +135,7 @@ mod tests {
         QuotaConfig {
             requests_per_min: rpm,
             tokens_per_day: tpd,
+            ..QuotaConfig::default()
         }
     }
 
@@ -121,11 +165,36 @@ mod tests {
         );
     }
 
+    /// Issue #114's second half: output was never charged at all, so a
+    /// two-word prompt could drive an unbounded generation for two
+    /// tokens of budget.
     #[test]
-    fn token_budget_refuses_at_the_cap() {
-        let cfg = cfg(10, 100);
-        assert!(check_tokens(99, &cfg).is_ok());
-        assert_eq!(check_tokens(100, &cfg), Err(QuotaExceeded::Tokens));
+    fn a_generation_is_charged_for_its_output_too() {
+        let cfg = cfg(10, 100_000);
+        let prompt = "write me a novel";
+        assert_eq!(estimate_tokens(prompt), 4);
+        assert_eq!(
+            generation_cost(prompt, None, &cfg),
+            4 + cfg.assumed_output_tokens
+        );
+        // A stated ceiling is what gets charged instead.
+        assert_eq!(generation_cost(prompt, Some(50), &cfg), 54);
+    }
+
+    /// The reservation must not be turnable into a discount or an
+    /// overflow: zero and negative ceilings reserve nothing (the prompt
+    /// is still charged), and an absurd one is clamped to the day.
+    #[test]
+    fn a_stated_ceiling_cannot_be_gamed() {
+        let cfg = cfg(10, 1_000);
+        assert_eq!(output_reservation(Some(0), &cfg), 0);
+        assert_eq!(output_reservation(Some(-5), &cfg), 0);
+        assert_eq!(output_reservation(Some(i64::MAX), &cfg), cfg.tokens_per_day);
+        assert_eq!(
+            generation_cost("a b c", Some(i64::MAX), &cfg),
+            3 + cfg.tokens_per_day,
+            "clamped, and still far past a 1000-token budget — refused, not overflowed"
+        );
     }
 
     #[test]

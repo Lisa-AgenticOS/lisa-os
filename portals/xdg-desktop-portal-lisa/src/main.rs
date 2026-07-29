@@ -42,6 +42,13 @@ struct Args {
     /// Per-app tokens/day quota.
     #[arg(long, default_value_t = QuotaConfig::default().tokens_per_day)]
     tokens_per_day: i64,
+    /// Per-app cap on simultaneously open sessions (issue #111).
+    #[arg(long, default_value_t = QuotaConfig::default().max_sessions_per_app)]
+    max_sessions: usize,
+    /// Programs allowed to change grants (issue #107). Repeatable;
+    /// replaces the shipped allowlist entirely when given.
+    #[arg(long = "manager")]
+    managers: Vec<PathBuf>,
 }
 
 /// The portal is per-user: its ledger lives in the user's data dir (the
@@ -97,7 +104,20 @@ async fn main() -> anyhow::Result<()> {
         other => anyhow::bail!("unknown consent backend `{other}` (ui | allow | deny)"),
     };
 
-    let state = PortalState::new(
+    let managers = if args.managers.is_empty() {
+        lisa_portal::manager::default_managers()
+    } else {
+        args.managers
+    };
+    // Logged as configured, not as resolved: an entry that is missing
+    // today (the channel CLI before the first `lisa apps update`) is
+    // resolved again at each check, and a startup snapshot would say
+    // otherwise.
+    for m in &managers {
+        info!(manager = %m.display(), "may change grants");
+    }
+
+    let state = PortalState::with_policy(
         Arc::new(ProcResolver::new()),
         consent,
         upstream,
@@ -106,7 +126,11 @@ async fn main() -> anyhow::Result<()> {
         QuotaConfig {
             requests_per_min: args.requests_per_min,
             tokens_per_day: args.tokens_per_day,
+            max_sessions_per_app: args.max_sessions,
+            ..QuotaConfig::default()
         },
+        lisa_portal::consent::PromptPolicy::default(),
+        managers,
     );
     let _conn = portal::serve(state).await?;
     info!(
