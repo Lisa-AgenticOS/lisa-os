@@ -1,6 +1,6 @@
 // Unit tests for the desktop shell's geometry (ADR-0035).
 import {test, assertEq, finish} from '../../testing/harness.js';
-import {bottomRightBarriers, bottomRightOf, dockPlacement} from '../lib/layout.js';
+import {bottomRightBarriers, bottomRightOf, dockPlacement, showAppsAction} from '../lib/layout.js';
 
 test('the hot corner is the monitor\'s far edge, not its size', () => {
     // Primary at the origin.
@@ -84,3 +84,21 @@ test('odd leftover pixels round rather than producing a fractional position', ()
 });
 
 finish('desktop/layout');
+
+test('show-apps from inside the overview mirrors instead of calling showApps()', () => {
+    // The reported bug: in the overview, the dock's button did nothing.
+    // `Overview.show()` returns early when `_shown` is already true, so
+    // `showApps()` is a no-op there — the state has to move through
+    // GNOME's own dash button, which ControlsManager listens to.
+    assertEq(showAppsAction({overviewVisible: true, checked: true}), 'mirror');
+    // And back again: unchecking returns to the window picker rather
+    // than leaving the button latched over a grid it cannot leave.
+    assertEq(showAppsAction({overviewVisible: true, checked: false}), 'mirror');
+});
+
+test('show-apps from the desktop opens the overview on the grid', () => {
+    assertEq(showAppsAction({overviewVisible: false, checked: true}), 'open-app-grid');
+    // Unchecking while the overview is closed is the reset our own
+    // `hidden` handler performs; it must not reopen anything.
+    assertEq(showAppsAction({overviewVisible: false, checked: false}), 'none');
+});

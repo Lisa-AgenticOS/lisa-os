@@ -41,7 +41,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.js';
 import {Dash} from 'resource:///org/gnome/shell/ui/dash.js';
 
-import {bottomRightBarriers, bottomRightOf, dockPlacement} from './lib/layout.js';
+import {bottomRightBarriers, bottomRightOf, dockPlacement, showAppsAction} from './lib/layout.js';
 
 /// Gap between the dock and the bottom edge of the screen. The dock
 /// floats; it does not sit in the corner.
@@ -276,10 +276,29 @@ export default class LisaDesktopExtension extends Extension {
         // GNOME wires its dash's show-apps button from the overview's
         // own controls, so a Dash used outside the overview has a button
         // that does nothing at all. Wire it to the same destination.
+        //
+        // `Main.overview.showApps()` alone was right only from the
+        // desktop: it is `show(APP_GRID)`, and `show()` returns early
+        // when the overview is already up. Pressed from inside the
+        // overview — which is exactly where a person goes looking for
+        // "all apps" — the button latched and nothing happened.
+        //
+        // See `showAppsAction` for the reasoning; the two branches are
+        // unit-tested there, which is the only place they can be.
         const showApps = this._dock.dash.showAppsButton;
         this._connect(showApps, 'notify::checked', () => {
-            if (showApps.checked)
+            const visible = Main.overview.visibleTarget ?? Main.overview.visible;
+            switch (showAppsAction({overviewVisible: visible, checked: showApps.checked})) {
+            case 'open-app-grid':
                 Main.overview.showApps();
+                break;
+            case 'mirror':
+                // GNOME's dash is hidden, but its button is still the
+                // thing `ControlsManager` listens to, and a hidden
+                // actor's properties notify exactly the same.
+                Main.overview.dash.showAppsButton.checked = showApps.checked;
+                break;
+            }
         });
 
         this._connect(Main.layoutManager, 'monitors-changed', () => {
