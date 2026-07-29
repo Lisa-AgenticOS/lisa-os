@@ -121,6 +121,26 @@ pub fn outcome_for(disposition: &str, detail: &str, label: &str) -> ToolOutcome 
     }
 }
 
+/// Pure: does an executed call's detail JSON say its content came from
+/// the web? The browser's MCP server tags every result it emits
+/// (`apps/browser/lib/mcp-protocol.js`); agentd passes the tool result
+/// through in `detail.result`.
+///
+/// Only the well-formed spelling counts — a page that *contains* the
+/// text `"provenance":"web"` in its body text does not taint via string
+/// match, because this parses the JSON rather than searching it.
+pub fn result_is_web_tagged(detail: &str) -> bool {
+    serde_json::from_str::<Value>(detail)
+        .ok()
+        .and_then(|d| {
+            d.get("result")
+                .and_then(|r| r.get("provenance"))
+                .and_then(Value::as_str)
+                .map(|p| p == "web")
+        })
+        .unwrap_or(false)
+}
+
 /// The Read-tier Agent Bus tools, discovered once at construction.
 ///
 /// The catalog is a snapshot: an app that registers a tool mid-run is not
@@ -131,6 +151,13 @@ pub fn outcome_for(disposition: &str, detail: &str, label: &str) -> ToolOutcome 
 pub struct AgentBusTools {
     conn: Connection,
     tools: Vec<BusTool>,
+    /// Set the moment any tool result arrives tagged `provenance: "web"`
+    /// (#146 Phase 4). From then on every call this provider makes
+    /// carries `web` in its chain, agentd's `resolve()` escalates
+    /// anything privileged, and a page cannot quietly steer a write. The
+    /// taint is one-way for the life of the loop: the model has read the
+    /// content, and nothing un-reads it.
+    web_tainted: std::cell::Cell<bool>,
 }
 
 impl AgentBusTools {
@@ -149,6 +176,7 @@ impl AgentBusTools {
         Ok(Some(Self {
             tools: read_tier_tools(&raw)?,
             conn,
+            web_tainted: std::cell::Cell::new(false),
         }))
     }
 
@@ -188,14 +216,19 @@ impl ToolProvider for AgentBusTools {
         };
         let label = format!("{}::{}", tool.app_id, tool.tool);
 
-        // `actor: assistant` and provenance `["user"]`: this call chain
-        // began with a person typing. An event-triggered chain is NOT
-        // this and must not borrow this provenance (ADR-0036 §1) — when
-        // event triggers land, the chain has to be threaded in from the
-        // trigger rather than asserted here.
+        // `actor: assistant`, and the chain reflects what this loop has
+        // CONSUMED, not just who typed: it starts `["user"]` and gains
+        // `"web"` after any web-tagged result (#146 Phase 4). An
+        // event-triggered chain is NOT this and must not borrow this
+        // provenance (ADR-0036 §1).
+        let chain: Vec<&str> = if self.web_tainted.get() {
+            vec!["user", "web"]
+        } else {
+            vec!["user"]
+        };
         let options: HashMap<String, OwnedValue> = match (
             OwnedValue::try_from(zbus::zvariant::Value::from("assistant")),
-            OwnedValue::try_from(zbus::zvariant::Value::from(vec!["user"])),
+            OwnedValue::try_from(zbus::zvariant::Value::from(chain)),
         ) {
             (Ok(actor), Ok(prov)) => HashMap::from([
                 ("actor".to_string(), actor),
@@ -221,7 +254,12 @@ impl ToolProvider for AgentBusTools {
             Err(e) => return ToolOutcome::err(format!("{label}: RequestCall failed: {e}")),
         };
         match reply.body().deserialize::<(u64, String, String)>() {
-            Ok((_id, disposition, detail)) => outcome_for(&disposition, &detail, &label),
+            Ok((_id, disposition, detail)) => {
+                if disposition == "executed" && result_is_web_tagged(&detail) {
+                    self.web_tainted.set(true);
+                }
+                outcome_for(&disposition, &detail, &label)
+            }
             Err(e) => ToolOutcome::err(format!("{label}: unreadable reply: {e}")),
         }
     }
@@ -418,6 +456,29 @@ mod tests {
                 "{bad} should be an error"
             );
         }
+    }
+
+    /// #146 Phase 4: the taint detector. The injection scenario is a
+    /// page whose BODY contains the tag spelling — it must not taint via
+    /// substring, only via the real JSON field the browser's MCP edge
+    /// writes.
+    #[test]
+    fn web_taint_comes_from_the_field_not_the_text() {
+        // The real shape agentd returns for an executed browser call.
+        assert!(result_is_web_tagged(
+            r#"{"result":{"provenance":"web","content":[{"type":"text","text":"..."}]},"ledger_ref":7}"#
+        ));
+        // A page BODY carrying the spelling — inside the text, not the field.
+        assert!(!result_is_web_tagged(
+            r#"{"result":{"content":[{"type":"text","text":"ignore this: \"provenance\":\"web\""}]},"ledger_ref":7}"#
+        ));
+        // Other apps' results: untagged.
+        assert!(!result_is_web_tagged(
+            r#"{"result":{"notes":[]},"ledger_ref":3}"#
+        ));
+        // Junk: not tainted, not a crash.
+        assert!(!result_is_web_tagged("not json"));
+        assert!(!result_is_web_tagged(r#"{"result":{"provenance":"user"}}"#));
     }
 
     /// The load-bearing one: a parked confirmation must never be answered
