@@ -29,10 +29,12 @@ test('the initialized notification gets NO reply', () => {
     assertEq(rNote, null);
 });
 
-test('tools/call runs the tool and TAGS THE RESULT web', () => {
-    assertEq(rCall.result.provenance, 'web',
-        'page content must carry its provenance out of the browser');
-    assertEq(JSON.parse(rCall.result.content[0].text).title, 'T');
+test('tools/call tags the PAYLOAD web — the envelope gets stripped downstream', () => {
+    const payload = JSON.parse(rCall.result.content[0].text);
+    assertEq(payload.provenance, 'web',
+        'agentd unwraps content[0].text and drops the envelope; the tag must survive that');
+    assertEq(payload.title, 'T');
+    assertEq(rCall.result.provenance, 'web');
 });
 
 test('a throwing tool is an isError result, not a dead socket', () => {

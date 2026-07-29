@@ -29,9 +29,15 @@ export async function handleRequest(req, tools) {
             return fail(-32601, `no tool ${JSON.stringify(name)}`);
         try {
             const out = await fn(req.params?.arguments ?? {});
-            // The tag. Content assembled from a web page is web-provenance
-            // by definition, whatever the page said about itself.
-            return reply({content: [{type: 'text', text: JSON.stringify(out)}], provenance: 'web'});
+            // The tag goes INSIDE the payload, not (only) on the JSON-RPC
+            // envelope: agentd's dispatcher unwraps content[0].text and
+            // discards the envelope, which is exactly how the first
+            // on-device run lost the tag (2026-07-29). Content assembled
+            // from a web page is web-provenance by definition, whatever
+            // the page said about itself — and the spread is AFTER `out`,
+            // so a page cannot override the tag via a crafted field.
+            const tagged = {...out, provenance: 'web'};
+            return reply({content: [{type: 'text', text: JSON.stringify(tagged)}], provenance: 'web'});
         } catch (e) {
             return reply({content: [{type: 'text', text: `error: ${e.message ?? e}`}], isError: true});
         }
