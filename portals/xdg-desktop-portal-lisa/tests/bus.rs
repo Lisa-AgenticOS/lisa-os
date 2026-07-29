@@ -25,6 +25,22 @@
 //! failure. CI sets it. Without that, a runner that quietly lost its bus
 //! would report a green suite for tests that never executed — which is
 //! the exact way this repo has been fooled before.
+//!
+//! # The pidfd, and a broker old enough not to have one
+//!
+//! `GetConnectionCredentials` gained `ProcessFD` in **dbus 1.16**.
+//! Without it `lisa_peer::exe_of_peer` refuses to name a program — by
+//! design, since the alternative is a bare pid that can be recycled
+//! (#136) — and the portal's consequences are concrete: no caller can
+//! manage grants, and every host app resolves to the shared
+//! `host:unknown` bucket instead of its own identity.
+//!
+//! That is a property of the *system*, not of the tests, so it is
+//! asserted in both directions rather than skipped: with a pidfd, an
+//! allowlisted program can manage grants; without one, nobody can.
+//! Lisa OS ships on Arch (dbus 1.16), so the first branch is the one
+//! that matters — `LISA_REQUIRE_PIDFD=1` makes its absence a failure,
+//! and CI runs one job on a base new enough to hold it.
 
 use lisa_portal::consent::StaticConsent;
 use lisa_portal::grants::{Effective, GrantStore};
@@ -173,6 +189,47 @@ async fn open_session(conn: &zbus::Connection) -> zbus::Result<OwnedObjectPath> 
     let (path, _fd): (OwnedObjectPath, zbus::zvariant::OwnedFd) =
         reply.body().deserialize().unwrap();
     Ok(path)
+}
+
+/// Whether this broker hands out a pidfd for its peers (dbus >= 1.16).
+///
+/// Linux-only because its only caller is: a pidfd is a Linux concept,
+/// and on any other host the answer is already "no".
+///
+/// Asked of the broker rather than assumed from a version string: what
+/// matters is the field arriving in the reply, which is exactly what
+/// `lisa_peer::resolve` keys off.
+#[cfg(target_os = "linux")]
+async fn broker_supplies_pidfd(conn: &zbus::Connection) -> bool {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
+        return false;
+    };
+    let Some(me) = conn.unique_name() else {
+        return false;
+    };
+    match dbus.get_connection_credentials(me.to_owned().into()).await {
+        Ok(creds) => creds.process_fd().is_some(),
+        Err(_) => false,
+    }
+}
+
+/// `Ok` to run pidfd-dependent assertions, or a reason not to.
+#[cfg(target_os = "linux")]
+fn pidfd_required_or_skipped(has_pidfd: bool) -> bool {
+    if has_pidfd {
+        return true;
+    }
+    if std::env::var_os("LISA_REQUIRE_PIDFD").is_some() {
+        panic!(
+            "LISA_REQUIRE_PIDFD is set but this broker supplies no ProcessFD \
+             (dbus < 1.16) — host identity would collapse to host:unknown here"
+        );
+    }
+    eprintln!(
+        "broker supplies no ProcessFD (dbus < 1.16): asserting the \
+         no-pidfd branch instead (set LISA_REQUIRE_PIDFD=1 to make this fatal)"
+    );
+    false
 }
 
 async fn session_proxy(conn: &zbus::Connection, path: &OwnedObjectPath) -> zbus::Proxy<'static> {
@@ -346,8 +403,13 @@ async fn a_bus_caller_that_is_not_a_manager_cannot_write_grants() {
 /// Linux-only, and honestly so: matching the caller's executable needs
 /// `/proc/<pid>/exe` reached through the broker's pidfd, and neither
 /// exists on the macOS dev host — where this same call is refused, which
-/// is what the test above asserts. ADR-0033 flagged exactly this gap and
-/// asked for a CI assertion rather than a local run; this is it.
+/// is what the negative control above asserts. ADR-0033 flagged exactly
+/// this gap and asked for a CI assertion rather than a local run; this
+/// is it.
+///
+/// On a broker older than dbus 1.16 there is no pidfd to resolve, and
+/// the test asserts *that* branch instead of skipping: nobody can manage
+/// grants, which is the fail-closed behaviour and worth pinning too.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_allowlisted_program_can_manage_grants() {
@@ -367,10 +429,26 @@ async fn an_allowlisted_program_can_manage_grants() {
     .await
     .unwrap();
 
-    grants
+    let granted = grants
         .call_method("Grant", &("org.example.Demo", "inference"))
-        .await
-        .expect("an allowlisted program must be able to grant");
+        .await;
+
+    if !pidfd_required_or_skipped(broker_supplies_pidfd(&settings).await) {
+        // No pidfd: the portal cannot name the caller's program, so it
+        // refuses — including the program that would otherwise be
+        // allowed. Fail-closed, and a real deployment consequence.
+        assert!(
+            granted.is_err(),
+            "a portal that cannot identify anyone must not authorize anyone"
+        );
+        assert_eq!(
+            f.grants.effective("org.example.Demo", "inference").unwrap(),
+            Effective::Unset
+        );
+        return;
+    }
+
+    granted.expect("an allowlisted program must be able to grant");
     assert_eq!(
         f.grants.effective("org.example.Demo", "inference").unwrap(),
         Effective::Allowed

@@ -98,6 +98,28 @@ jobs:
         env:
           LISA_REQUIRE_BUS_TESTS: '1'
 
+  # The runner image ships dbus 1.14, which predates `ProcessFD` in
+  # GetConnectionCredentials. Without a pidfd the portal cannot name a
+  # caller's executable at all, so #106/#107's mechanism — the one thing
+  # ADR-0033 asked to be asserted in CI rather than run locally — is
+  # untestable there. Lisa OS ships on Arch (dbus 1.16); Debian trixie
+  # is the closest base the runner can host.
+  portal-identity:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v5
+      - run: apt-get update && apt-get install -y dbus curl build-essential pkg-config
+      - run: dbus-daemon --version | head -1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p xdg-desktop-portal-lisa --locked
+        env:
+          LISA_REQUIRE_BUS_TESTS: '1'
+          LISA_REQUIRE_PIDFD: '1'
+
   # PLAN §5.7 shell surfaces: pure-logic unit tests (overlay envelope,
   # launcher ranking, ledger view-model) — runtime-agnostic modules run
   # under node here, gjs on the image, jsc on macOS dev hosts.

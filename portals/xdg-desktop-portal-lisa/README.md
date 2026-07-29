@@ -183,6 +183,28 @@ enumeration of everyone else's sessions (issue #108).
   after a five-second wait. `LISA_REQUIRE_BUS_TESTS=1` makes skipping
   fatal; CI sets it, so the skip can never be mistaken for a pass.
 
+### A broker without pidfds
+
+`GetConnectionCredentials` gained `ProcessFD` in **dbus 1.16**. Without
+it `lisa_peer::exe_of_peer` refuses to name a program — deliberately,
+since the alternative is a bare pid that can be recycled (#136) — and
+the portal degrades in two visible ways:
+
+- no caller can manage grants, and
+- **every host app resolves to the shared `host:unknown` bucket**, so
+  they share one grant and one quota.
+
+Flatpak identity is unaffected. The portal logs this at `error` on
+startup rather than leaving it to be inferred from behaviour. Lisa OS
+ships on Arch (dbus 1.16), so this is a warning about foreign hosts, not
+about the target.
+
+The tests assert **both** branches instead of skipping the awkward one.
+GitHub's runner image carries dbus 1.14, so the main `test` job
+exercises the no-pidfd side; a separate `portal-identity` job runs the
+suite in a `debian:trixie` container with `LISA_REQUIRE_PIDFD=1`, which
+is where the #106/#107 mechanism is actually proven.
+
 ## Status
 
 **M2 core implemented and tested**; the six findings of the adversarial
