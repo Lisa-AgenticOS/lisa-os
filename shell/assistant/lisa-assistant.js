@@ -130,6 +130,19 @@ class AssistantWindow {
         exportBtn.connect('clicked', () => this._export());
         header.pack_end(exportBtn);
 
+        // The working folder. A button, because the grant has to come
+        // from a person: the model gets no file tools until one exists,
+        // cannot choose one, and cannot widen the one it has. Same shape
+        // Claude Desktop uses, and the same reason — a capability handed
+        // in from outside the loop (ADR-0030).
+        this._workspace = null;
+        this._folderBtn = new Gtk.Button({
+            icon_name: 'folder-symbolic',
+            tooltip_text: 'No working folder — the assistant cannot read or write files',
+        });
+        this._folderBtn.connect('clicked', () => this._chooseWorkspace());
+        header.pack_end(this._folderBtn);
+
         // Conversation.
         this._log = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL, spacing: 10,
@@ -434,6 +447,11 @@ class AssistantWindow {
         // `trigger: prompt` — a person typed this. The daemon clamps it
         // against what this caller is allowed to claim; a surface can
         // only ever narrow its own trust, never widen it (ADR-0036 §1).
+        // The working folder, if one has been granted. Absent means the
+        // daemon offers no file tools at all — the assistant then says
+        // it needs a folder rather than pretending to save something.
+        // The path comes from a file chooser the PERSON drove; the model
+        // never picks it and cannot widen it (ADR-0030).
         // History travels WITH the run. The daemon keeps no sessions of
         // its own — it would then be one store holding every user's and
         // every surface's conversations — so this window keeps its
@@ -444,6 +462,8 @@ class AssistantWindow {
             trigger: GLib.Variant.new_string('prompt'),
             history: GLib.Variant.new_string(JSON.stringify(history)),
         };
+        if (this._workspace)
+            options.workspace = GLib.Variant.new_string(this._workspace);
         // Sync so the run id is set before any Token signal is dispatched
         // (the main loop can't deliver a signal until this returns).
         try {
@@ -674,6 +694,40 @@ class AssistantWindow {
         this._memorySet(LEGACY_CONVERSATION_KEY, '');
         this._renderSessionList();
         return true;
+    }
+
+    /// Pick the folder the assistant may work in.
+    ///
+    /// Nothing here is clever on purpose: a folder chooser, and the path
+    /// goes to the daemon, which validates it and refuses the ones that
+    /// would hand over too much. Clicking again re-picks; picking
+    /// nothing clears the grant, so there is always a way to take it
+    /// back that is as easy as giving it.
+    _chooseWorkspace() {
+        const dialog = new Gtk.FileDialog({title: 'Choose a working folder'});
+        dialog.select_folder(this, null, (d, res) => {
+            let folder = null;
+            try {
+                folder = d.select_folder_finish(res);
+            } catch {
+                return; // dismissed — leave the current grant alone
+            }
+            this._setWorkspace(folder ? folder.get_path() : null);
+        });
+    }
+
+    _setWorkspace(path) {
+        this._workspace = path;
+        if (path) {
+            const name = path.split('/').filter(Boolean).pop() ?? path;
+            this._folderBtn.tooltip_text = `Working in ${path}`;
+            this._folderBtn.add_css_class('suggested-action');
+            this._systemNote(`📁 Working folder: ${name}`);
+        } else {
+            this._folderBtn.tooltip_text =
+                'No working folder — the assistant cannot read or write files';
+            this._folderBtn.remove_css_class('suggested-action');
+        }
     }
 
     /// Write the open conversation and re-file it at the top of the index.

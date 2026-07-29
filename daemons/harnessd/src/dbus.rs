@@ -157,9 +157,29 @@ impl Harness1 {
 
         let history = parse_history(opt_str(&options, "history").as_deref());
 
+        // The working folder. Validated here, refused loudly: a bad one
+        // is a mistake worth telling the person about, not a silent
+        // downgrade to "no files" that leaves them wondering why the
+        // assistant will not write anything.
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let workspace = match opt_str(&options, "workspace") {
+            None => None,
+            Some(raw) => match crate::workspace::validate(&raw, home.as_deref()) {
+                Ok(dir) => Some(dir),
+                Err(why) => {
+                    return Err(zbus::fdo::Error::InvalidArgs(format!(
+                        "working folder {raw:?}: {why}"
+                    )));
+                }
+            },
+        };
+        let skills = crate::skills::load();
+
         let req = Request {
             prompt,
             history,
+            workspace: workspace.clone(),
+            skills_catalog: crate::skills::catalog_lines(&skills),
             url: opt_str(&options, "url").unwrap_or_else(|| DEFAULT_URL.to_string()),
             model: opt_str(&options, "model"),
             max_turns: 12,
@@ -203,20 +223,30 @@ impl Harness1 {
                 }
             };
             let mut send = send;
+            // The families this run gets, assembled from what it
+            // actually has. A surface with no workspace gets no file
+            // tools — not disabled ones, absent ones, so the model
+            // cannot call something that will only refuse.
             let bus = bus_tools::AgentBusTools::discover_with_trigger(trigger.provenance())
                 .ok()
                 .flatten();
-            match bus {
-                Some(bus) => {
-                    let providers: [&dyn forge_harness::ToolProvider; 1] = [&bus];
-                    loop_runner::run(req, &providers, ledger, cancel, &mut send);
-                }
-                None => {
-                    // No agentd: still useful as plain chat, and saying so
-                    // beats failing with a bus error the person cannot act on.
-                    loop_runner::run(req, &[], ledger, cancel, &mut send);
-                }
+            let workspace_tools = req
+                .workspace
+                .as_ref()
+                .and_then(|dir| forge_harness::WorkspaceTools::new(dir).ok());
+            let skill_tools = crate::skills::SkillTools::new(skills);
+
+            let mut providers: Vec<&dyn forge_harness::ToolProvider> = Vec::new();
+            if let Some(b) = bus.as_ref() {
+                providers.push(b);
             }
+            if let Some(w) = workspace_tools.as_ref() {
+                providers.push(w);
+            }
+            if !skill_tools.is_empty() {
+                providers.push(&skill_tools);
+            }
+            loop_runner::run(req, &providers, ledger, cancel, &mut send);
             running.lock().expect("running lock").remove(&id);
         });
 

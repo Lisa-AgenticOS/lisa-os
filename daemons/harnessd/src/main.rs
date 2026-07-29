@@ -38,6 +38,8 @@
 
 mod dbus;
 mod loop_runner;
+mod skills;
+mod workspace;
 
 use std::sync::Arc;
 use tracing::{info, warn};

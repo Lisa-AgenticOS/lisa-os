@@ -75,6 +75,56 @@ goes wrong with streaming tool calls lives there — arguments arrive as
 fragments and are only valid JSON once concatenated, and parsing early
 turns good input into an error.
 
+## Tool families, assembled from what a run actually has
+
+| Family | When | Tier |
+|---|---|---|
+| Agent Bus (`bus-tools`) | always | read-tier only until #145 lands |
+| Skills (`read_skill`) | when any skill is installed | read |
+| Workspace (files, commands) | **only with a granted folder** | jailed to that folder |
+
+The families are assembled per run, so a surface with no workspace gets
+no file tools — absent, not disabled. A tool the model can call only to
+be refused wastes a turn and teaches it nothing.
+
+## The working folder is a grant
+
+To write code the assistant needs somewhere to write, and handing it one
+is a grant rather than a setting. **The folder comes from a person
+choosing it in a file chooser; the model never picks it and cannot widen
+it** — the same shape Claude Desktop uses, and the same reason
+(ADR-0030: the capability is handed in from outside the loop).
+
+`workspace::validate` refuses a path that is not absolute, does not
+exist, is not a directory, is the whole home, is a system folder, or
+lies outside the user's home. It resolves before judging, because
+`~/proj/..` is the home root however it is spelled.
+
+**The containment is the home requirement, not the denylist.** A prefix
+denylist looks like the defence and is not: canonicalisation can move a
+path out from under it — `/etc` resolves to `/private/etc` on macOS, so
+`starts_with("/etc")` stops matching the thing it was written for. The
+test found that, not a reading of the code. No `$HOME` therefore means
+no workspace at all: failing closed beats a grant whose only real check
+has evaporated.
+
+The system prompt describes the CURRENT grant. With a folder it explains
+the jail; without one it says plainly that there are no file tools and
+to ask the person to choose a folder — because an assistant told it can
+write files when it cannot will confidently claim to have saved
+something, which is the failure people never forgive.
+
+## Skills
+
+A skill is markdown with `name`/`description` frontmatter and a workflow
+body. The **catalog** — one line each — goes in the system prompt; the
+bodies do not, and pasting every skill into every conversation spends the
+context window before the question is read. The model fetches what it
+needs with `read_skill`.
+
+With no skills installed, no tool is offered and the prompt says nothing
+about them.
+
 ## Limits
 
 - **One thread per run**, and a signal emit builds a small runtime each
