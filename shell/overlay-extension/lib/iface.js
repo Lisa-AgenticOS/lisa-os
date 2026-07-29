@@ -90,6 +90,48 @@ export const OVERLAY_OBJECT_PATH = '/dev/lisaos/Overlay1';
 // Summon()'s options (a{sv}) accept the same chip booleans as Ask()
 // ("my_stuff", "window", "selection") to preset the toggles; an empty
 // prompt just shows the layer, exactly like Super+Shift+Space.
+/// dev.lisaos.Harness1 — the one agent loop, as a service (ADR-0025).
+///
+/// The Assistant window drives THIS rather than Overlay1's chat lane:
+/// the chat lane has no tools by construction, so an assistant asked
+/// about the open page could only say it had no way to look.
+///
+/// Deliberately shaped like Ask/Token/Finished, so adopting it was a
+/// change of destination rather than a rewrite of the rendering.
+export const HARNESS_IFACE_XML = `
+<node>
+  <interface name="dev.lisaos.Harness1">
+    <method name="Ping">
+      <arg type="s" direction="out" name="version"/>
+    </method>
+    <method name="Run">
+      <arg type="s" direction="in" name="prompt"/>
+      <arg type="a{sv}" direction="in" name="options"/>
+      <arg type="t" direction="out" name="run_id"/>
+    </method>
+    <method name="Cancel">
+      <arg type="t" direction="in" name="run_id"/>
+    </method>
+    <signal name="Tool">
+      <arg type="t" name="run_id"/>
+      <arg type="s" name="name"/>
+      <arg type="s" name="detail"/>
+    </signal>
+    <signal name="Token">
+      <arg type="t" name="run_id"/>
+      <arg type="s" name="delta"/>
+    </signal>
+    <signal name="Finished">
+      <arg type="t" name="run_id"/>
+      <arg type="b" name="ok"/>
+      <arg type="s" name="summary"/>
+    </signal>
+  </interface>
+</node>`;
+
+export const HARNESS_BUS_NAME = 'dev.lisaos.Harness1';
+export const HARNESS_OBJECT_PATH = '/dev/lisaos/Harness1';
+
 export const OVERLAY_UI_IFACE_XML = `
 <node>
   <interface name="dev.lisaos.Overlay1.UI">

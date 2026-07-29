@@ -27,6 +27,7 @@ import Soup from 'gi://Soup?version=3.0';
 
 import {
     OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH,
+    HARNESS_IFACE_XML, HARNESS_BUS_NAME, HARNESS_OBJECT_PATH,
 } from '../overlay-extension/lib/iface.js';
 import {
     parseLocalModels, usableProviders, cloudEntries, mergeModelList,
@@ -54,6 +55,7 @@ const APP_ID = 'app.lisaos.Assistant';            // Context1 memory namespace
 const EGRESS_COLOR = '#E66100';                 // the Ledger "leaves" colour
 
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
+const HarnessProxy = Gio.DBusProxy.makeProxyWrapper(HARNESS_IFACE_XML);
 
 /// Breakpoint setters take a GValue; box it here rather than lean on
 /// GJS's implicit conversion, which is not the same across versions.
@@ -346,21 +348,46 @@ class AssistantWindow {
             this._openSession(next.id).catch(e => logError(e, 'open session'));
     }
 
-    // ---- backend (dev.lisaos.Overlay1) -----------------------------------
+    // ---- backend (dev.lisaos.Harness1) -----------------------------------
+    //
+    // The Assistant drives the HARNESS, not Overlay1's chat lane. That
+    // lane skips the Agent Bus by construction, so the assistant had no
+    // tools at all — asked about the page you were looking at, Claude
+    // could only answer that it had no way to look (seen on the device,
+    // 2026-07-29).
+    //
+    // The overlay keeps its own lane and its own job: small things, fast,
+    // one action, Siri-shaped. Real work happens here.
 
     _connectBackend() {
         try {
-            this._overlay = OverlayProxy(Gio.DBus.session,
-                OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH);
-            this._overlay.connectSignal('Token',
-                (_p, _s, [qid, text]) => this._onToken(Number(qid), text));
-            this._overlay.connectSignal('Finished',
-                (_p, _s, [qid, status, detail]) =>
-                    this._onFinished(Number(qid), status, detail));
+            this._harness = HarnessProxy(Gio.DBus.session,
+                HARNESS_BUS_NAME, HARNESS_OBJECT_PATH);
+            this._harness.connectSignal('Token',
+                (_p, _s, [rid, text]) => this._onToken(Number(rid), text));
+            // Tool calls are narrated in the transcript: an assistant
+            // that silently reads your browser is worse than one that
+            // says it did.
+            this._harness.connectSignal('Tool',
+                (_p, _s, [rid, name, detail]) =>
+                    this._onTool(Number(rid), name, detail));
+            this._harness.connectSignal('Finished',
+                (_p, _s, [rid, ok, summary]) =>
+                    this._onFinished(Number(rid), ok ? 'ok' : 'error', summary));
         } catch (e) {
-            this._overlay = null;
+            this._harness = null;
             this._systemNote(`Assistant backend unavailable: ${e.message}`);
         }
+    }
+
+    /// Narrate a tool call as a distinct line, not as assistant prose —
+    /// what the model DID and what it SAID should not read the same.
+    _onTool(rid, name, detail) {
+        if (rid !== this._activeQid)
+            return;
+        const pretty = name.replace(/^app_lisaos_/, '').replace(/__/, ' · ');
+        this._systemNote(`⚙ ${pretty}${detail ? ` ${detail}` : ''}`);
+        this._scrollToBottom();
     }
 
     _onToken(qid, text) {
@@ -392,7 +419,7 @@ class AssistantWindow {
 
     _send() {
         const prompt = this._entry.text.trim();
-        if (prompt === '' || this._activeQid !== null || !this._overlay)
+        if (prompt === '' || this._activeQid !== null || !this._harness)
             return;
         if (!this._model) {
             this._systemNote('Pick a model first.');
@@ -404,16 +431,24 @@ class AssistantWindow {
         this._current = this._addTurn('assistant', '', this._model);
         this._setBusy(true);
 
+        // `trigger: prompt` — a person typed this. The daemon clamps it
+        // against what this caller is allowed to claim; a surface can
+        // only ever narrow its own trust, never widen it (ADR-0036 §1).
+        // History travels WITH the run. The daemon keeps no sessions of
+        // its own — it would then be one store holding every user's and
+        // every surface's conversations — so this window keeps its
+        // sessions where it always has (per-user contextd) and hands the
+        // relevant ones over per run.
         const options = {
-            lane: GLib.Variant.new_string('chat'),
-            model_hint: GLib.Variant.new_string(this._model),
-            history_json: GLib.Variant.new_string(JSON.stringify(history)),
+            model: GLib.Variant.new_string(this._model),
+            trigger: GLib.Variant.new_string('prompt'),
+            history: GLib.Variant.new_string(JSON.stringify(history)),
         };
-        // Sync so the query id is set before any Token signal is dispatched
+        // Sync so the run id is set before any Token signal is dispatched
         // (the main loop can't deliver a signal until this returns).
         try {
-            const [qid] = this._overlay.AskSync(prompt, options);
-            this._activeQid = Number(qid);
+            const [rid] = this._harness.RunSync(prompt, options);
+            this._activeQid = Number(rid);
         } catch (e) {
             // Match the guard in _onFinished so the failure renders and
             // the composer un-sticks.
@@ -423,11 +458,11 @@ class AssistantWindow {
     }
 
     _stop() {
-        if (this._activeQid === null || !this._overlay)
+        if (this._activeQid === null || !this._harness)
             return;
         // Fire-and-forget: the backend answers with Finished('cancelled'),
         // which keeps the partial text and re-enables the composer.
-        this._overlay.CancelRemote(this._activeQid, () => {});
+        this._harness.CancelRemote(this._activeQid, () => {});
     }
 
     // ---- conversation widgets ------------------------------------------

@@ -199,6 +199,15 @@ pub struct AgentConfig {
     /// `AgentConfig::new` keeps the forge prompt, so `forge` is unchanged
     /// and the caller that needs something else has to say so.
     pub system_prompt: String,
+    /// Prior turns of THIS conversation, replayed before the new one.
+    ///
+    /// The loop is deliberately stateless: it holds no session of its
+    /// own, so a daemon running it for several clients cannot leak one
+    /// conversation into another, and there is no shared store to get
+    /// the ownership of wrong. The client owns its history and hands it
+    /// over per run — which is also why sessions stay wherever the
+    /// client already keeps them.
+    pub prior_turns: Vec<Message>,
 }
 
 impl AgentConfig {
@@ -210,6 +219,7 @@ impl AgentConfig {
             history_char_budget: 48_000,
             ledger,
             system_prompt: FORGE_SYSTEM_PROMPT.to_string(),
+            prior_turns: Vec::new(),
         }
     }
 }
@@ -436,10 +446,9 @@ pub fn forge_agent_with_tools(
     observe: &mut dyn FnMut(AgentEvent),
 ) -> Result<AgentReport, ForgeError> {
     let specs: Vec<ToolSpec> = providers.iter().flat_map(|p| p.specs()).collect();
-    let mut history = vec![
-        Message::system(&config.system_prompt),
-        Message::user(format!("Task: {task}")),
-    ];
+    let mut history = vec![Message::system(&config.system_prompt)];
+    history.extend(config.prior_turns.iter().cloned());
+    history.push(Message::user(format!("Task: {task}")));
     let mut verifier_output = String::new();
     for turn in 1..=config.max_turns {
         elide_stale_tool_results(&mut history, config.history_char_budget, 4);

@@ -55,6 +55,12 @@ pub enum Progress {
 /// One request to run.
 pub struct Request {
     pub prompt: String,
+    /// Prior turns, supplied by the CLIENT. The daemon keeps no
+    /// sessions: it would then be one store holding every user's and
+    /// every surface's conversations, and the question "who may read
+    /// this one" would need answering forever. Stateless means the
+    /// answer is "whoever already has it".
+    pub history: Vec<forge_harness::Message>,
     pub url: String,
     pub model: Option<String>,
     pub max_turns: usize,
@@ -96,6 +102,7 @@ pub fn run(
         // No project to verify: this is a conversation, not a build.
         verifier: Verifier::None,
         system_prompt: ASSISTANT_PROMPT.to_string(),
+        prior_turns: req.history,
         ..AgentConfig::new(ledger)
     };
 
