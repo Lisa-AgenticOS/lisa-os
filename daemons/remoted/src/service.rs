@@ -173,6 +173,7 @@ impl Broker {
     /// defaults to no everywhere it is not explicitly supplied.
     pub fn add_provider(
         &self,
+        _who: &lisa_peer::manager::Manager,
         id: &str,
         name: &str,
         base_url: &str,
@@ -185,7 +186,11 @@ impl Broker {
             .add_custom(id, name, base_url, locality)?)
     }
 
-    pub fn remove_provider(&self, id: &str) -> Result<(), BrokerError> {
+    pub fn remove_provider(
+        &self,
+        _who: &lisa_peer::manager::Manager,
+        id: &str,
+    ) -> Result<(), BrokerError> {
         self.registry
             .lock()
             .expect("registry lock")
@@ -195,13 +200,27 @@ impl Broker {
         Ok(())
     }
 
-    pub fn set_key(&self, id: &str, key: &str) -> Result<(), BrokerError> {
+    /// Store a provider credential.
+    ///
+    /// Manager-only: an unauthenticated caller could otherwise overwrite
+    /// the user's key with its own and route their traffic — and their
+    /// bill — through the attacker's account (#99).
+    pub fn set_key(
+        &self,
+        _who: &lisa_peer::manager::Manager,
+        id: &str,
+        key: &str,
+    ) -> Result<(), BrokerError> {
         // Only registered providers can hold credentials.
         self.registry.lock().expect("registry lock").get(id)?;
         Ok(self.secrets.set(id, key)?)
     }
 
-    pub fn clear_key(&self, id: &str) -> Result<(), BrokerError> {
+    pub fn clear_key(
+        &self,
+        _who: &lisa_peer::manager::Manager,
+        id: &str,
+    ) -> Result<(), BrokerError> {
         Ok(self.secrets.remove(id)?)
     }
 
@@ -209,7 +228,20 @@ impl Broker {
         json!({ "may_offload": self.consent.lock().expect("consent lock").snapshot() })
     }
 
-    pub fn set_consent(&self, scope: &str, allowed: bool) -> Result<(), BrokerError> {
+    /// Flip a per-scope "may offload" switch.
+    ///
+    /// Takes a `Manager` rather than checking one (issue #99): the proof
+    /// is minted by the surface that resolved the caller, and a method
+    /// that cannot be called without one cannot be reached by a caller
+    /// nobody checked. This is the switch PLAN §5.11 rests on — any
+    /// session peer could turn on all six and then proxy `mail`, `files`
+    /// and `screen` content out through the broker.
+    pub fn set_consent(
+        &self,
+        who: &lisa_peer::manager::Manager,
+        scope: &str,
+        allowed: bool,
+    ) -> Result<(), BrokerError> {
         self.consent
             .lock()
             .expect("consent lock")
@@ -217,7 +249,7 @@ impl Broker {
         // Consent flips are themselves auditable events.
         self.ledger.append(&Event {
             kind: "remote.consent".into(),
-            app_id: "settings".into(),
+            app_id: who.label().into(),
             model: String::new(),
             input_hash: String::new(),
             preview: format!("may_offload {scope} = {allowed}"),
@@ -234,7 +266,11 @@ impl Broker {
     /// the authorize URL for the panel to open in the browser. The broker
     /// never launches a browser (egress isolation). Only `anthropic` and
     /// `openai` are OAuth-capable (ADR-0010 §4).
-    pub async fn begin_login(&self, provider_id: &str) -> Result<String, BrokerError> {
+    pub async fn begin_login(
+        &self,
+        _who: &lisa_peer::manager::Manager,
+        provider_id: &str,
+    ) -> Result<String, BrokerError> {
         // A registered provider only — a login for an unknown row is a
         // client error, not a callback we should bind a port for.
         self.registry
@@ -246,11 +282,15 @@ impl Broker {
 
     /// Forget a stored OAuth session (idempotent). Ledgered as a
     /// revocation of the egress capability the sign-in granted.
-    pub fn logout(&self, provider_id: &str) -> Result<(), BrokerError> {
+    pub fn logout(
+        &self,
+        who: &lisa_peer::manager::Manager,
+        provider_id: &str,
+    ) -> Result<(), BrokerError> {
         self.oauth.logout(provider_id)?;
         self.ledger.append(&Event {
             kind: "remote.grant".into(),
-            app_id: "settings".into(),
+            app_id: who.label().into(),
             model: format!("{provider_id}:oauth"),
             status: "revoked".into(),
             detail: json!({

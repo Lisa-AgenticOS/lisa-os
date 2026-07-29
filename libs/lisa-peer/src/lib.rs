@@ -25,13 +25,18 @@
 //!
 //! **Credentials** ([`Peer`]) answer *"which user and process is this?"*
 //! — needed only where a decision depends on the program itself, such as
-//! "may this caller mint grants for other apps".
+//! "may this caller mint grants for other apps". They come from the
+//! D-Bus broker ([`resolve`]) or, for a plain unix socket, from the
+//! kernel ([`unix::peer_of_socket`]).
 //!
 //! Most of the filed issues are fixed by the first, which is why it is
 //! usable without a message broker.
 
 mod credentials;
 mod identity;
+pub mod manager;
+#[cfg(unix)]
+pub mod unix;
 
 pub use credentials::{Peer, resolve};
 pub use identity::{IdentityError, exe_of_pid};

@@ -1,12 +1,19 @@
-//! Who may write grants (issue #107, ADR-0033).
+//! Who may operate the user's own management surfaces (issues #107,
+//! #99; ADR-0033).
 //!
-//! `Grant`/`Deny`/`Revoke` take an `app_id` argument that has nothing to
-//! do with the caller. Before this module the only check was "not a
-//! Flatpak app", so any unsandboxed process on the session bus could
-//! pre-grant `inference` to a victim app — a consent bypass — or write a
-//! remembered `Deny` and lock an app out permanently. The interface
-//! comment said "for the user's own tooling"; a comment is not a
-//! boundary.
+//! Two daemons have a plane that is "for the user's own tooling" and was
+//! enforced by saying so in a comment:
+//!
+//! - the portal's `Grant`/`Deny`/`Revoke`, which take an `app_id` with
+//!   no relation to the caller — so any unsandboxed process could
+//!   pre-grant a scope to a victim app, or write a remembered `Deny` and
+//!   lock one out (#107);
+//! - `remoted`'s `SetConsent`/`SetKey`/`AddProvider`/`BeginLogin`, where
+//!   any session peer could turn on every offload scope and then proxy
+//!   `mail`, `files` and `screen` content out through the broker (#99).
+//!
+//! ADR-0033 rejected "fix each surface locally — forty patches, forty
+//! chances to differ", so the rule lives here once.
 //!
 //! # The rule
 //!
@@ -37,7 +44,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Programs that may manage grants on a Lisa OS system.
+/// Programs that may operate a management plane on a Lisa OS system.
 ///
 /// - the CLI's two real locations — `/usr/bin/lisa` is a resolver shell
 ///   script that `exec`s one of these, so neither the script nor the
@@ -55,11 +62,11 @@ pub enum ManagerRefusal {
     NotOurUser,
     #[error("the caller could not be identified, so it cannot manage grants")]
     Unidentified,
-    #[error("only Settings and the lisa CLI can change grants")]
+    #[error("only Settings and the lisa CLI can change this")]
     NotAManager,
 }
 
-/// May this caller write grants?
+/// May this caller operate a management plane?
 ///
 /// `exe` is the caller's executable as the kernel reports it, already
 /// symlink-resolved; `managers` are the allowlisted paths, likewise
@@ -115,8 +122,9 @@ mod tests {
         p.canonicalize().unwrap()
     }
 
-    /// Issue #107. The demonstrated exploit was a plain host process
-    /// calling `Grant("org.example.Victim", "inference")`.
+    /// Issues #107 and #99. The demonstrated exploits were a plain host
+    /// process calling `Grant("org.example.Victim", "inference")` and a
+    /// plain session peer calling `SetConsent("mail", true)`.
     #[test]
     fn an_ordinary_host_process_cannot_manage_grants() {
         let dir = tempfile::tempdir().unwrap();
@@ -204,11 +212,79 @@ mod tests {
         assert_eq!(managers, vec![real]);
     }
 
+    /// The proof cannot be minted without passing the check, and it
+    /// carries the program's own name rather than a fixed label.
+    #[test]
+    fn the_manager_proof_names_the_program_that_earned_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = exe(dir.path(), "gnome-control-center");
+        let attacker = exe(dir.path(), "totally-normal-app");
+        let managers = std::slice::from_ref(&settings);
+
+        let ok = Manager::authorize(true, Some(&settings), managers).unwrap();
+        assert_eq!(ok.label(), "gnome-control-center");
+
+        assert_eq!(
+            Manager::authorize(true, Some(&attacker), managers),
+            Err(ManagerRefusal::NotAManager)
+        );
+        assert_eq!(
+            Manager::authorize(true, None, managers),
+            Err(ManagerRefusal::Unidentified)
+        );
+        assert_eq!(
+            Manager::authorize(false, Some(&settings), managers),
+            Err(ManagerRefusal::NotOurUser)
+        );
+    }
+
     /// The shipped defaults are the three files documented above — a
     /// fourth appearing without a decision is worth failing over.
     #[test]
     fn the_default_allowlist_is_the_documented_three() {
         assert_eq!(default_managers().len(), 3);
         assert!(default_managers().iter().all(|p| p.is_absolute()));
+    }
+}
+
+/// Proof that a caller passed [`may_manage`], plus a name for the audit
+/// trail.
+///
+/// The Ledger used to record every management action as `app_id:
+/// "settings"` regardless of who made it — so the one surface that could
+/// have shown a user "something turned on all your egress scopes"
+/// actively blamed Settings for it (#99). Now the entry names the
+/// program the kernel says it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Manager {
+    label: String,
+}
+
+impl Manager {
+    /// Check `peer` against `managers` and, on success, mint the proof.
+    ///
+    /// `exe` is the caller's executable as the kernel reports it —
+    /// `lisa_peer::exe_of_peer`, whose Err cases all mean "we cannot
+    /// name this program", which is a refusal rather than a fallback.
+    pub fn authorize(
+        same_user: bool,
+        exe: Option<&Path>,
+        managers: &[PathBuf],
+    ) -> Result<Manager, ManagerRefusal> {
+        may_manage(same_user, exe, managers)?;
+        Ok(Manager {
+            label: exe
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                // Unreachable: `may_manage` refuses a caller with no
+                // exe. Named rather than unwrapped, because a panic in
+                // an authorization path is a denial of service.
+                .unwrap_or_else(|| "unknown".into()),
+        })
+    }
+
+    /// How this caller appears in the Ledger.
+    pub fn label(&self) -> &str {
+        &self.label
     }
 }

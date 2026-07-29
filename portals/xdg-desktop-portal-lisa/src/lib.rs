@@ -19,8 +19,12 @@
 //! guarded by a comment; session objects trusted whoever held a path
 //! anyone could guess. So caller identity comes from the transport now
 //! (`lisa_peer`, ADR-0033), and the things that depend on it —
-//! [`identity`], [`manager`], session ownership in [`portal`] — take it
+//! [`identity`], `lisa_peer::manager`, session ownership in [`portal`] — take it
 //! as an argument rather than deriving it from the message.
+//!
+//! Who may *manage* grants is `lisa_peer::manager` — shared with
+//! `remoted`, which had the same hole on its own management plane
+//! (#99). One rule, one place.
 //!
 //! The D-Bus surface (`dev.lisaos.portal.Inference`, `dev.lisaos.portal.Grants`)
 //! lives in [`portal`]; everything it decides with — identity, grants,
@@ -32,7 +36,6 @@
 pub mod consent;
 pub mod grants;
 pub mod identity;
-pub mod manager;
 pub mod portal;
 pub mod quota;
 pub mod upstream;
