@@ -5,6 +5,8 @@
 //! systems.
 
 use crate::service::Broker;
+use lisa_peer::manager::Manager;
+use std::path::PathBuf;
 use std::sync::Arc;
 use zbus::object_server::SignalEmitter;
 
@@ -13,12 +15,59 @@ pub const OBJECT_PATH: &str = "/dev/lisaos/Remote1";
 
 pub struct Remote1 {
     broker: Arc<Broker>,
+    /// Programs allowed to operate this plane (issue #99).
+    managers: Vec<PathBuf>,
 }
 
 impl Remote1 {
     pub fn new(broker: Arc<Broker>) -> Self {
-        Self { broker }
+        Self::with_managers(broker, lisa_peer::manager::default_managers())
     }
+
+    pub fn with_managers(broker: Arc<Broker>, managers: Vec<PathBuf>) -> Self {
+        Self { broker, managers }
+    }
+
+    /// Who is calling, and may they change anything?
+    ///
+    /// `dev.lisaos.Remote1` sits on the **session bus**, which anything
+    /// the user runs can reach: a Flatpak app with session access, an
+    /// app the agent built, a script. Before this there was no check of
+    /// any kind, so all six offload scopes could be turned on by any of
+    /// them with no prompt and no interaction — and the only trace was a
+    /// `remote.consent` row attributed to Settings (#99).
+    ///
+    /// Reads stay open; this guards the mutations.
+    async fn manager(
+        &self,
+        conn: &zbus::Connection,
+        header: &zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<Manager> {
+        let peer = lisa_peer::resolve(conn, header)
+            .await
+            .map_err(|_| refused(None))?;
+        #[cfg(unix)]
+        let exe = lisa_peer::exe_of_peer(&peer).ok();
+        #[cfg(not(unix))]
+        let exe: Option<PathBuf> = None;
+        let managers = lisa_peer::manager::resolve_managers(&self.managers);
+        Manager::authorize(peer.is_same_user_as_us(), exe.as_deref(), &managers)
+            .map_err(|_| refused(exe.as_deref()))
+    }
+}
+
+/// One refusal for every reason, so a caller cannot tell "you are not a
+/// manager" from "we could not identify you" and probe accordingly. The
+/// specific reason goes to the daemon's log, where the person who owns
+/// the machine can read it.
+fn refused(exe: Option<&std::path::Path>) -> zbus::fdo::Error {
+    tracing::warn!(
+        exe = exe.map(|p| p.display().to_string()).unwrap_or_default(),
+        "refused a management call from a program that is not a manager"
+    );
+    zbus::fdo::Error::AccessDenied(
+        "only Settings and the lisa CLI can change remote-provider settings".into(),
+    )
 }
 
 fn fail(e: impl std::fmt::Display) -> zbus::fdo::Error {
@@ -41,33 +90,73 @@ impl Remote1 {
     }
 
     /// Register a user-supplied OpenAI-compatible endpoint (§5.11).
-    fn add_provider(
+    ///
+    /// Public-internet rules only. An endpoint on this machine or this
+    /// LAN is a deliberate, explained choice (#92), and Settings has no
+    /// UI for that question — so it is made where the question can
+    /// actually be asked: `lisa remote add --allow-local`.
+    async fn add_provider(
         &self,
         id: String,
         display_name: String,
         base_url: String,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<()> {
+        let who = self.manager(conn, &header).await?;
         self.broker
-            .add_provider(&id, &display_name, &base_url)
+            .add_provider(
+                &who,
+                &id,
+                &display_name,
+                &base_url,
+                crate::net::Locality::PublicOnly,
+            )
             .map_err(fail)
     }
 
-    fn remove_provider(&self, id: String) -> zbus::fdo::Result<()> {
-        self.broker.remove_provider(&id).map_err(fail)
+    async fn remove_provider(
+        &self,
+        id: String,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let who = self.manager(conn, &header).await?;
+        self.broker.remove_provider(&who, &id).map_err(fail)
     }
 
     /// Store a credential. Write-only: no method returns key material.
-    fn set_key(&self, id: String, key: String) -> zbus::fdo::Result<()> {
-        self.broker.set_key(&id, &key).map_err(fail)
+    async fn set_key(
+        &self,
+        id: String,
+        key: String,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let who = self.manager(conn, &header).await?;
+        self.broker.set_key(&who, &id, &key).map_err(fail)
     }
 
-    fn clear_key(&self, id: String) -> zbus::fdo::Result<()> {
-        self.broker.clear_key(&id).map_err(fail)
+    async fn clear_key(
+        &self,
+        id: String,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let who = self.manager(conn, &header).await?;
+        self.broker.clear_key(&who, &id).map_err(fail)
     }
 
     /// Flip a per-scope "may offload" switch (default: nothing leaves).
-    fn set_consent(&self, scope: String, allowed: bool) -> zbus::fdo::Result<()> {
-        self.broker.set_consent(&scope, allowed).map_err(fail)
+    async fn set_consent(
+        &self,
+        scope: String,
+        allowed: bool,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let who = self.manager(conn, &header).await?;
+        self.broker.set_consent(&who, &scope, allowed).map_err(fail)
     }
 
     /// Begin "Sign in with …" for an OAuth-capable provider (`anthropic`
@@ -76,13 +165,28 @@ impl Remote1 {
     /// the token exchange when the browser redirects back; completion
     /// arrives asynchronously via the `LoginCompleted` signal. Fails for
     /// key-only providers.
-    async fn begin_login(&self, provider_id: String) -> zbus::fdo::Result<String> {
-        self.broker.begin_login(&provider_id).await.map_err(fail)
+    async fn begin_login(
+        &self,
+        provider_id: String,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        let who = self.manager(conn, &header).await?;
+        self.broker
+            .begin_login(&who, &provider_id)
+            .await
+            .map_err(fail)
     }
 
     /// Forget a stored OAuth session (idempotent).
-    fn logout(&self, provider_id: String) -> zbus::fdo::Result<()> {
-        self.broker.logout(&provider_id).map_err(fail)
+    async fn logout(
+        &self,
+        provider_id: String,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let who = self.manager(conn, &header).await?;
+        self.broker.logout(&who, &provider_id).map_err(fail)
     }
 
     /// The provider's live model list (its own `/models`), as a JSON array

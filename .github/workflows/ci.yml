@@ -115,7 +115,11 @@ jobs:
       - run: dbus-daemon --version | head -1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p xdg-desktop-portal-lisa --locked
+      # remoted joined the portal here: its management plane resolves
+      # callers the same way, over D-Bus *and* over its unix socket
+      # (SO_PEERPIDFD), and neither can be proven on the runner's dbus
+      # 1.14 base.
+      - run: cargo test -p xdg-desktop-portal-lisa -p lisa-remoted -p lisa-peer --locked
         env:
           LISA_REQUIRE_BUS_TESTS: '1'
           LISA_REQUIRE_PIDFD: '1'

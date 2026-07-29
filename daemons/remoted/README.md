@@ -56,6 +56,53 @@ unix socket and gains no network itself.
   store and scrubs them off the world-readable FAT ESP. Shipped as the
   `lisa-remoted-provision.service` oneshot; superseded by the M7 OOBE.
 
+## Who may change things (issue #99)
+
+`SetConsent`, `SetKey`, `ClearKey`, `AddProvider`, `RemoveProvider`,
+`BeginLogin` and `Logout` are reachable only from a program Lisa ships
+for the purpose, running as this daemon's own user. The allowlist is
+`lisa_peer::manager::DEFAULT_MANAGERS` — Settings and the two CLI copies
+— shared with the portal, because the same hole existed there (#107).
+
+**Reads stay open**: `Ping`, `State`, `ListModels`, `GET /health`,
+`/v1/providers`, `/v1/consent`, and the whole data plane. `inferenced`
+calls the data plane, and what it may send is governed by the offload
+scopes, which are now the thing that cannot be flipped from outside.
+
+Identity comes from the transport, on both planes:
+
+| plane | how |
+|---|---|
+| `dev.lisaos.Remote1` (session bus) | `GetConnectionCredentials` → pidfd → `/proc/<pid>/exe` |
+| `remoted.sock` | `SO_PEERCRED` + `SO_PEERPIDFD` → `/proc/<pid>/exe` |
+
+Before this there was no check of any kind. The socket's 0600 mode was
+described as the access control, and it is a real defence against
+*another user* — but the threat is another **process of the same user**:
+an app you installed, a Flatpak with session access, something the agent
+built. Any of them could `PUT /v1/consent` six times, turn on every
+offload scope, and then proxy `mail`, `files`, `screen` and `memory`
+content out through the broker. The only trace was one `remote.consent`
+row attributed to `settings` — so the audit trail actively blamed the
+panel. Management entries now name the program the kernel reports.
+
+### Where this degrades
+
+Naming a program needs a pidfd. Without one — a kernel before 6.5, a
+D-Bus broker before 1.16, a non-Linux host — nothing can be identified
+and **every management call is refused**. That is fail-closed and
+intentional, and both branches are asserted rather than skipped:
+`LISA_REQUIRE_PIDFD=1` makes the unidentifiable case a test failure, and
+CI sets it in the job whose base is new enough.
+
+### The limit, stated plainly
+
+An allowlisted program is trusted completely. This moves the boundary
+from "any process on your session bus" to "three files"; it is not the
+same as proving those three files never misbehave. A per-action
+confirmation for consent flips — the switch PLAN §5.11 rests on — is
+still worth having and is not here.
+
 ## Interfaces
 
 - Unix-socket HTTP: `POST /v1/chat/completions` (OpenAI-compat body +

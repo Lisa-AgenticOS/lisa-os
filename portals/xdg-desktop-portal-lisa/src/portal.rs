@@ -23,10 +23,10 @@ use crate::SCOPE_INFERENCE;
 use crate::consent::{Authorization, ConsentUi, PromptPolicy, authorize, needs_prompt};
 use crate::grants::{GrantAction, GrantStore};
 use crate::identity::{AppIdentity, IdentityResolver};
-use crate::manager::{may_manage, resolve_managers};
 use crate::quota::{QuotaBook, QuotaConfig, QuotaExceeded, day_key, estimate_tokens};
 use crate::upstream::{InferenceUpstream, UpstreamSession};
 use lisa_ledger::{Event as LedgerEvent, Ledger, preview_of};
+use lisa_peer::manager::{may_manage, resolve_managers};
 use lisa_peer::{Owner, Peer, PeerId};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -83,7 +83,7 @@ impl PortalState {
             ledger,
             quota_cfg,
             PromptPolicy::default(),
-            crate::manager::default_managers(),
+            lisa_peer::manager::default_managers(),
         )
     }
 
@@ -619,7 +619,7 @@ impl GrantsPortal {
     /// unsandboxed process on the session bus could mint a grant for any
     /// app id, or write a remembered `Deny` and lock an app out for good
     /// (issue #107). The check is now the caller's *executable* against
-    /// the shipped allowlist — see `crate::manager`.
+    /// the shipped allowlist — see `lisa_peer::manager`.
     async fn require_manager(
         &self,
         conn: &zbus::Connection,

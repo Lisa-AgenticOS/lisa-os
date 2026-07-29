@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let managers = if args.managers.is_empty() {
-        lisa_portal::manager::default_managers()
+        lisa_peer::manager::default_managers()
     } else {
         args.managers
     };

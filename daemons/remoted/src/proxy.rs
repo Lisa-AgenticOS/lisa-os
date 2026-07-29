@@ -8,6 +8,34 @@ use crate::oauth;
 use crate::registry::{AuthStyle, Dialect, ProviderSpec};
 use serde_json::{Value, json};
 
+/// How much of a provider's reply we are willing to repeat.
+///
+/// A provider is an untrusted remote party (§5.11: the user supplies the
+/// endpoint), and its error body used to be copied verbatim into the
+/// caller's error string *and* into the append-only Ledger. A mock
+/// provider answering 500 with 2 MiB of JSON put 2 MiB into one Ledger
+/// row (issue #102). The Ledger is the OS's integrity surface, not a
+/// provider-writable blob store, and it cannot be pruned.
+///
+/// 2 KiB is far more than any real API error message and still enough to
+/// diagnose one.
+pub const MAX_UPSTREAM_BODY: usize = 2 * 1024;
+
+/// Truncate an untrusted body to something safe to store and show,
+/// saying so where it was cut rather than silently shortening it.
+pub fn cap_body(body: &str) -> String {
+    if body.len() <= MAX_UPSTREAM_BODY {
+        return body.to_string();
+    }
+    // On a char boundary: the body may be arbitrary bytes rendered
+    // lossily, and slicing mid-codepoint would panic.
+    let mut end = MAX_UPSTREAM_BODY;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… [{} bytes truncated]", &body[..end], body.len() - end)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
     #[error("provider {0} has no endpoint configured")]
@@ -297,7 +325,7 @@ pub async fn send(client: &reqwest::Client, req: &UpstreamRequest) -> Result<Val
     if !status.is_success() {
         return Err(ProxyError::Upstream {
             status: status.as_u16(),
-            body: body.to_string(),
+            body: cap_body(&body.to_string()),
         });
     }
     Ok(body)
@@ -319,7 +347,7 @@ pub async fn send_stream(
         let body = resp.text().await.unwrap_or_default();
         return Err(ProxyError::Upstream {
             status: status.as_u16(),
-            body,
+            body: cap_body(&body),
         });
     }
     Ok(resp.bytes_stream().map(|r| r.map(|b| b.to_vec())))

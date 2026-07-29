@@ -60,3 +60,40 @@ export function dockPlacement(monitor, size, margin) {
     const y = monitor.y + Math.max(0, monitor.height - size.height - margin);
     return {x, y};
 }
+
+/// What clicking the dock's "Show Applications" button should do.
+///
+/// The dock is a `Dash` built outside the overview, so its show-apps
+/// button is wired by nobody — GNOME connects its own dash's button
+/// inside `ControlsManager`. The extension therefore drives it, and the
+/// obvious wiring (`Main.overview.showApps()`) is right exactly half the
+/// time:
+///
+/// ```js
+/// showApps() { this.show(ControlsState.APP_GRID); }
+/// show(state) { …; if (this._shown) return; … }   // gnome-shell 50
+/// ```
+///
+/// From the desktop that opens the overview on the app grid. From
+/// *inside* the overview `_shown` is already true, so it returns
+/// immediately and the button does nothing at all — which is what a
+/// person sees as "show all apps is broken", because the overview is
+/// where you look for it.
+///
+/// The supported way to move between pages of an open overview is
+/// GNOME's own dash button: `ControlsManager` listens to its
+/// `notify::checked` and eases the state adjustment between
+/// WINDOW_PICKER and APP_GRID. Our button mirrors onto it.
+///
+/// Returns an action name so the decision is testable without GNOME:
+///   'open-app-grid'  — overview closed: open it straight to the grid.
+///   'mirror'         — overview open: copy `checked` onto GNOME's
+///                      button and let ControlsManager animate.
+///   'none'           — nothing to do.
+export function showAppsAction({overviewVisible, checked}) {
+    if (!overviewVisible)
+        return checked ? 'open-app-grid' : 'none';
+    // Both directions matter: unchecking is how you get back to the
+    // window picker without closing the overview.
+    return 'mirror';
+}

@@ -109,11 +109,18 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!(socket = %socket.display(), state = %state_dir.display(), "lisa-remoted up");
 
+    // `into_make_service_with_connect_info` is what carries the kernel's
+    // answer about each peer into the handlers (issue #99). Without it
+    // every management route refuses — which is the right way round for
+    // a wiring mistake, but it does mean this line is load-bearing.
     let app = lisa_remoted::api::router(broker);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<lisa_remoted::api::PeerInfo>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }

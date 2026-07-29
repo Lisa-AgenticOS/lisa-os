@@ -22,6 +22,18 @@ struct Fixture {
     ledger: Arc<lisa_ledger::Ledger>,
 }
 
+/// A `Manager` for tests that need to set state up.
+///
+/// Not a backdoor: it goes through the real `authorize`, with the test
+/// binary in its own allowlist — the same shape as Settings being in
+/// the shipped one. There is deliberately no `#[cfg(test)]` constructor
+/// in the daemon, because that is a door somebody eventually walks
+/// through in production.
+fn as_manager() -> lisa_peer::manager::Manager {
+    let me = std::env::current_exe().unwrap().canonicalize().unwrap();
+    lisa_peer::manager::Manager::authorize(true, Some(&me), std::slice::from_ref(&me)).unwrap()
+}
+
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Arc::new(lisa_ledger::Ledger::open(dir.path().join("ledger.db")).unwrap());
@@ -186,18 +198,20 @@ async fn providers_list_includes_builtins_and_custom_rows() {
         ]
     );
 
+    // Registering is manager-only (#99); the listing is what this test
+    // is about, and reading it stays open.
+    f.broker
+        .add_provider(
+            &as_manager(),
+            "homelab",
+            "Homelab",
+            "http://10.0.0.2:8080/v1",
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
     let res = router
         .clone()
-        .oneshot(
-            Request::post("/v1/providers")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({"id": "homelab", "display_name": "Homelab",
-                           "base_url": "http://10.0.0.2:8080/v1"})
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
+        .oneshot(Request::get("/v1/providers").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -211,33 +225,24 @@ async fn providers_list_includes_builtins_and_custom_rows() {
         "custom provider registered"
     );
 
-    // Built-ins cannot be removed.
-    let res = router
-        .oneshot(
-            Request::delete("/v1/providers/openai")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    // Built-ins cannot be removed — a rule about the row, not about the
+    // caller, so it is asserted where a caller exists.
+    assert!(
+        f.broker.remove_provider(&as_manager(), "openai").is_err(),
+        "a built-in was removed"
+    );
 }
 
 #[tokio::test]
 async fn keys_are_write_only_presence_is_reported() {
     let f = fixture();
     let router = api::router(Arc::clone(&f.broker));
-    let res = router
-        .clone()
-        .oneshot(
-            Request::put("/v1/providers/tinker/key")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"key": "tk-secret"}).to_string()))
-                .unwrap(),
-        )
-        .await
+    // Written through the broker: storing a key is manager-only now
+    // (#99), and what this test is about is that the value never comes
+    // back out — not who may put it in.
+    f.broker
+        .set_key(&as_manager(), "tinker", "tk-secret")
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
 
     let res = router
         .oneshot(Request::get("/v1/providers").body(Body::empty()).unwrap())
@@ -283,9 +288,17 @@ async fn default_consent_refuses_egress_and_ledgers_the_denial() {
 async fn consented_request_proxies_and_is_ledgered_before_and_after() {
     let f = fixture();
     let base = mock_provider().await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
-    f.broker.set_key("mock", "mk-1").unwrap();
-    f.broker.set_consent("prompt", true).unwrap();
+    f.broker
+        .add_provider(
+            &as_manager(),
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
+    f.broker.set_key(&as_manager(), "mock", "mk-1").unwrap();
+    f.broker.set_consent(&as_manager(), "prompt", true).unwrap();
     let consent_rows = f.ledger.tail(10).unwrap().len();
 
     let router = api::router(Arc::clone(&f.broker));
@@ -318,9 +331,17 @@ async fn consented_request_proxies_and_is_ledgered_before_and_after() {
 async fn streaming_request_proxies_sse_and_is_ledgered_before_and_after() {
     let f = fixture();
     let base = mock_stream_provider(false).await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
-    f.broker.set_key("mock", "mk-1").unwrap();
-    f.broker.set_consent("prompt", true).unwrap();
+    f.broker
+        .add_provider(
+            &as_manager(),
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
+    f.broker.set_key(&as_manager(), "mock", "mk-1").unwrap();
+    f.broker.set_consent(&as_manager(), "prompt", true).unwrap();
     let consent_rows = f.ledger.tail(10).unwrap().len();
 
     let router = api::router(Arc::clone(&f.broker));
@@ -368,9 +389,17 @@ async fn streaming_request_proxies_sse_and_is_ledgered_before_and_after() {
 async fn truncated_provider_stream_surfaces_and_ledgers_an_error() {
     let f = fixture();
     let base = mock_stream_provider(true).await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
-    f.broker.set_key("mock", "mk-1").unwrap();
-    f.broker.set_consent("prompt", true).unwrap();
+    f.broker
+        .add_provider(
+            &as_manager(),
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
+    f.broker.set_key(&as_manager(), "mock", "mk-1").unwrap();
+    f.broker.set_consent(&as_manager(), "prompt", true).unwrap();
 
     let router = api::router(Arc::clone(&f.broker));
     let res = router
@@ -419,9 +448,17 @@ async fn streaming_never_bypasses_consent() {
 async fn unconsented_scope_is_refused_even_when_prompt_is_allowed() {
     let f = fixture();
     let base = mock_provider().await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
-    f.broker.set_key("mock", "mk-1").unwrap();
-    f.broker.set_consent("prompt", true).unwrap();
+    f.broker
+        .add_provider(
+            &as_manager(),
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
+    f.broker.set_key(&as_manager(), "mock", "mk-1").unwrap();
+    f.broker.set_consent(&as_manager(), "prompt", true).unwrap();
 
     let router = api::router(Arc::clone(&f.broker));
     let res = router
@@ -436,7 +473,7 @@ async fn unconsented_scope_is_refused_even_when_prompt_is_allowed() {
 #[tokio::test]
 async fn missing_credential_is_a_precondition_failure_not_egress() {
     let f = fixture();
-    f.broker.set_consent("prompt", true).unwrap();
+    f.broker.set_consent(&as_manager(), "prompt", true).unwrap();
     let router = api::router(Arc::clone(&f.broker));
     let res = router
         .oneshot(chat_request("openai", "prompt"))
@@ -471,25 +508,16 @@ async fn unknown_provider_is_404_and_missing_header_is_400() {
 #[tokio::test]
 async fn oauth_begin_rejects_key_only_providers() {
     let f = fixture();
-    let router = api::router(f.broker);
-    // A key-only provider has no OAuth flow (and binds no callback port).
-    let res = router
-        .oneshot(
-            Request::post("/v1/oauth/tinker/begin")
-                .body(Body::empty())
-                .unwrap(),
-        )
+    // A key-only provider has no OAuth flow (and binds no callback
+    // port). Driven through the broker because starting a login is
+    // manager-only (#99); the refusal for everyone else is asserted in
+    // `management_routes_refuse_a_caller_with_no_credentials`.
+    let err = f
+        .broker
+        .begin_login(&as_manager(), "tinker")
         .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(res).await;
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("does not support OAuth"),
-        "{body}"
-    );
+        .expect_err("a key-only provider has no OAuth flow");
+    assert!(err.to_string().contains("does not support OAuth"), "{err}");
 }
 
 #[tokio::test]
@@ -512,32 +540,20 @@ async fn oauth_state_reports_capability_and_logout_is_idempotent() {
     assert_eq!(anthropic["oauth_capable"], true);
     assert_eq!(anthropic["connected"], false);
 
-    // Logout without a session is a clean 200 no-op.
-    let res = router
-        .oneshot(
-            Request::delete("/v1/oauth/anthropic")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
+    // Logout without a session is a clean no-op.
+    f.broker.logout(&as_manager(), "anthropic").unwrap();
 }
 
 #[tokio::test]
 async fn consent_toggle_is_reflected_and_ledgered() {
     let f = fixture();
     let router = api::router(Arc::clone(&f.broker));
+    f.broker.set_consent(&as_manager(), "screen", true).unwrap();
+
+    // Reading consent stays open — the Settings page and the CLI both
+    // render it, and knowing what is switched on is not the risk.
     let res = router
-        .clone()
-        .oneshot(
-            Request::put("/v1/consent")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({"scope": "screen", "allowed": true}).to_string(),
-                ))
-                .unwrap(),
-        )
+        .oneshot(Request::get("/v1/consent").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -547,4 +563,179 @@ async fn consent_toggle_is_reflected_and_ledgered() {
 
     let entries = f.ledger.tail(5).unwrap();
     assert_eq!(entries[0].kind, "remote.consent");
+    // And it names the program that did it, not a fixed "settings"
+    // label that would blame the panel for somebody else's action.
+    assert!(
+        entries[0].app_id.contains("api-"),
+        "the consent entry should name the caller, got {:?}",
+        entries[0].app_id
+    );
+}
+
+/// Issue #92 over the socket, which is the surface the CLI uses: the
+/// same LAN endpoint without `allow_local` is refused, and nothing is
+/// written. Silence is not consent.
+#[tokio::test]
+async fn a_local_endpoint_needs_the_caller_to_say_so() {
+    let f = fixture();
+    for url in [
+        "http://10.0.0.2:8080/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://169.254.169.254/latest/meta-data",
+    ] {
+        assert!(
+            f.broker
+                .add_provider(
+                    &as_manager(),
+                    "sneaky",
+                    "x",
+                    url,
+                    lisa_remoted::net::Locality::PublicOnly
+                )
+                .is_err(),
+            "{url} was registered without allow_local"
+        );
+    }
+    assert!(
+        f.broker.providers_json()["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["id"] != "sneaky"),
+        "a refused provider was written anyway"
+    );
+}
+
+/// Issue #109: a credential in the URL is refused outright, whatever the
+/// caller says about locality — it would otherwise be persisted and
+/// appended to an append-only Ledger.
+#[tokio::test]
+async fn a_credential_in_the_url_is_refused() {
+    let f = fixture();
+    for locality in [
+        lisa_remoted::net::Locality::PublicOnly,
+        lisa_remoted::net::Locality::LocalAllowed,
+    ] {
+        assert!(
+            f.broker
+                .add_provider(
+                    &as_manager(),
+                    "corp",
+                    "Corp",
+                    "https://alice:hunter2@llm.corp.example/v1",
+                    locality
+                )
+                .is_err(),
+            "userinfo accepted for {locality:?}"
+        );
+    }
+    let shown = f.broker.providers_json().to_string();
+    assert!(
+        !shown.contains("hunter2"),
+        "the credential is readable: {shown}"
+    );
+}
+
+/// Issue #99, on the socket plane. The filed exploit was six unauthenticated
+/// `PUT /v1/consent` calls turning on every offload scope, after which
+/// `screen`, `mail`, `files` and `memory` content could be proxied out
+/// through the broker — with the only trace a `remote.consent` row
+/// blaming Settings.
+///
+/// A router built without connect info is a caller nobody vouched for,
+/// which is the same answer an unauthorized program gets.
+#[tokio::test]
+async fn management_routes_refuse_a_caller_with_no_credentials() {
+    let f = fixture();
+    let router = api::router(Arc::clone(&f.broker));
+
+    let json_req = |method: &str, path: &str, body: Value| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let empty_req = |method: &str, path: &str| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let attempts = vec![
+        json_req(
+            "PUT",
+            "/v1/consent",
+            json!({"scope": "mail", "allowed": true}),
+        ),
+        json_req(
+            "PUT",
+            "/v1/consent",
+            json!({"scope": "screen", "allowed": true}),
+        ),
+        json_req(
+            "POST",
+            "/v1/providers",
+            json!({"id": "sink", "display_name": "Sink", "base_url": "https://attacker.example/v1"}),
+        ),
+        json_req(
+            "PUT",
+            "/v1/providers/openai/key",
+            json!({"key": "sk-attacker"}),
+        ),
+        empty_req("DELETE", "/v1/providers/openai/key"),
+        empty_req("DELETE", "/v1/providers/openai"),
+        empty_req("POST", "/v1/oauth/anthropic/begin"),
+        empty_req("DELETE", "/v1/oauth/anthropic"),
+    ];
+    for req in attempts {
+        let (method, path) = (req.method().clone(), req.uri().clone());
+        let res = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "{method} {path} was allowed to an unidentified caller"
+        );
+    }
+
+    // Nothing moved. This is the half that matters: a refusal that
+    // still wrote would be worse than no refusal, because it would look
+    // safe.
+    let consent = f.broker.consent_json();
+    for scope in ["prompt", "files", "mail", "calendar", "screen", "memory"] {
+        assert_eq!(
+            consent["may_offload"][scope], false,
+            "{scope} was turned on by an unidentified caller"
+        );
+    }
+    assert!(
+        f.broker.providers_json()["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["id"] != "sink"),
+        "an egress endpoint was registered by an unidentified caller"
+    );
+}
+
+/// Reads stay open, and must: the Settings page and `lisa remote list`
+/// both render them, and the data plane's caller needs none of this. A
+/// fix that locked everything would be found by someone noticing their
+/// panel had gone blank, which is not how a boundary should announce
+/// itself.
+#[tokio::test]
+async fn reads_stay_open_to_an_unidentified_caller() {
+    let f = fixture();
+    let router = api::router(Arc::clone(&f.broker));
+    for path in ["/health", "/v1/providers", "/v1/consent"] {
+        let res = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{path} was refused");
+    }
 }

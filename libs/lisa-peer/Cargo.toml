@@ -9,3 +9,6 @@ repository.workspace = true
 libc = "0.2.180"
 thiserror = "2.0.19"
 zbus = { version = "5.18.0", features = ["p2p", "tokio"], default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"
