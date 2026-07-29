@@ -122,10 +122,20 @@ struct AddProvider {
     id: String,
     display_name: String,
     base_url: String,
+    /// "This endpoint is my own machine / my own network." Absent means
+    /// no: a caller that does not mention it gets the public-internet
+    /// rules, which is the safe reading of silence (#92).
+    #[serde(default)]
+    allow_local: bool,
 }
 
 async fn add_provider(State(broker): State<Arc<Broker>>, Json(req): Json<AddProvider>) -> Response {
-    match broker.add_provider(&req.id, &req.display_name, &req.base_url) {
+    let locality = if req.allow_local {
+        crate::net::Locality::LocalAllowed
+    } else {
+        crate::net::Locality::PublicOnly
+    };
+    match broker.add_provider(&req.id, &req.display_name, &req.base_url, locality) {
         Ok(()) => Json(broker.providers_json()).into_response(),
         Err(e) => error_response(e),
     }

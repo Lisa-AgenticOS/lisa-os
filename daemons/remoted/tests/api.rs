@@ -192,8 +192,11 @@ async fn providers_list_includes_builtins_and_custom_rows() {
             Request::post("/v1/providers")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(
+                    // A LAN box now needs the caller to say so (#92);
+                    // silence means the public-internet rules.
                     json!({"id": "homelab", "display_name": "Homelab",
-                           "base_url": "http://10.0.0.2:8080/v1"})
+                           "base_url": "http://10.0.0.2:8080/v1",
+                           "allow_local": true})
                     .to_string(),
                 ))
                 .unwrap(),
@@ -283,7 +286,14 @@ async fn default_consent_refuses_egress_and_ledgers_the_denial() {
 async fn consented_request_proxies_and_is_ledgered_before_and_after() {
     let f = fixture();
     let base = mock_provider().await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
+    f.broker
+        .add_provider(
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
     f.broker.set_key("mock", "mk-1").unwrap();
     f.broker.set_consent("prompt", true).unwrap();
     let consent_rows = f.ledger.tail(10).unwrap().len();
@@ -318,7 +328,14 @@ async fn consented_request_proxies_and_is_ledgered_before_and_after() {
 async fn streaming_request_proxies_sse_and_is_ledgered_before_and_after() {
     let f = fixture();
     let base = mock_stream_provider(false).await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
+    f.broker
+        .add_provider(
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
     f.broker.set_key("mock", "mk-1").unwrap();
     f.broker.set_consent("prompt", true).unwrap();
     let consent_rows = f.ledger.tail(10).unwrap().len();
@@ -368,7 +385,14 @@ async fn streaming_request_proxies_sse_and_is_ledgered_before_and_after() {
 async fn truncated_provider_stream_surfaces_and_ledgers_an_error() {
     let f = fixture();
     let base = mock_stream_provider(true).await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
+    f.broker
+        .add_provider(
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
     f.broker.set_key("mock", "mk-1").unwrap();
     f.broker.set_consent("prompt", true).unwrap();
 
@@ -419,7 +443,14 @@ async fn streaming_never_bypasses_consent() {
 async fn unconsented_scope_is_refused_even_when_prompt_is_allowed() {
     let f = fixture();
     let base = mock_provider().await;
-    f.broker.add_provider("mock", "Mock", &base).unwrap();
+    f.broker
+        .add_provider(
+            "mock",
+            "Mock",
+            &base,
+            lisa_remoted::net::Locality::LocalAllowed,
+        )
+        .unwrap();
     f.broker.set_key("mock", "mk-1").unwrap();
     f.broker.set_consent("prompt", true).unwrap();
 
@@ -547,4 +578,76 @@ async fn consent_toggle_is_reflected_and_ledgered() {
 
     let entries = f.ledger.tail(5).unwrap();
     assert_eq!(entries[0].kind, "remote.consent");
+}
+
+/// Issue #92 over the socket, which is the surface the CLI uses: the
+/// same LAN endpoint without `allow_local` is refused, and nothing is
+/// written. Silence is not consent.
+#[tokio::test]
+async fn a_local_endpoint_needs_the_caller_to_say_so() {
+    let f = fixture();
+    let router = lisa_remoted::api::router(Arc::clone(&f.broker));
+    for url in [
+        "http://10.0.0.2:8080/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://169.254.169.254/latest/meta-data",
+    ] {
+        let res = router
+            .clone()
+            .oneshot(
+                Request::post("/v1/providers")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"id": "sneaky", "display_name": "x", "base_url": url}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "{url} was registered without allow_local"
+        );
+    }
+    assert!(
+        f.broker.providers_json()["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["id"] != "sneaky"),
+        "a refused provider was written anyway"
+    );
+}
+
+/// Issue #109 over the same surface: a credential in the URL is refused
+/// outright, whatever the caller says about locality — it would
+/// otherwise be persisted and appended to an append-only Ledger.
+#[tokio::test]
+async fn a_credential_in_the_url_is_refused_over_the_socket() {
+    let f = fixture();
+    let router = lisa_remoted::api::router(Arc::clone(&f.broker));
+    for allow_local in [false, true] {
+        let res = router
+            .clone()
+            .oneshot(
+                Request::post("/v1/providers")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"id": "corp", "display_name": "Corp",
+                               "base_url": "https://alice:hunter2@llm.corp.example/v1",
+                               "allow_local": allow_local})
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+    let shown = f.broker.providers_json().to_string();
+    assert!(
+        !shown.contains("hunter2"),
+        "the credential is readable: {shown}"
+    );
 }

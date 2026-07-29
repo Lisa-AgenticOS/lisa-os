@@ -41,6 +41,11 @@ impl Remote1 {
     }
 
     /// Register a user-supplied OpenAI-compatible endpoint (§5.11).
+    ///
+    /// Public-internet rules only. An endpoint on this machine or this
+    /// LAN is a deliberate, explained choice (#92), and Settings has no
+    /// UI for that question — so it is made where the question can
+    /// actually be asked: `lisa remote add --allow-local`.
     fn add_provider(
         &self,
         id: String,
@@ -48,7 +53,12 @@ impl Remote1 {
         base_url: String,
     ) -> zbus::fdo::Result<()> {
         self.broker
-            .add_provider(&id, &display_name, &base_url)
+            .add_provider(
+                &id,
+                &display_name,
+                &base_url,
+                crate::net::Locality::PublicOnly,
+            )
             .map_err(fail)
     }
 

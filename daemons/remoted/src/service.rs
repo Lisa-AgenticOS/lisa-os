@@ -47,7 +47,14 @@ pub struct Broker {
     consent: Mutex<Consent>,
     oauth: Arc<OauthManager>,
     ledger: Arc<Ledger>,
+    /// The client for providers on the public internet: redirects
+    /// refused, DNS answers filtered to public addresses.
     http: reqwest::Client,
+    /// The client for providers the user vouched for as local. Same
+    /// redirect policy — "it is my box" is not a reason to let the box
+    /// choose the next destination — but the resolver guard is off,
+    /// because pointing at `127.0.0.1` is the entire point.
+    http_local: reqwest::Client,
 }
 
 impl Broker {
@@ -57,18 +64,54 @@ impl Broker {
         // read_timeout is per-read idle (a long stream keeps flowing; a
         // provider that goes silent gets cut). No total timeout — a slow
         // long generation is legitimate.
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(15))
-            .read_timeout(Duration::from_secs(300))
-            .build()?;
+        //
+        // Redirects are refused outright (issue #96). reqwest follows up
+        // to ten by default, to any host, which meant whoever answered
+        // the first request chose where the prompt actually went — to a
+        // host the Ledger never recorded, since the entry is written
+        // from the *configured* base_url before any hop is known. reqwest
+        // strips `authorization` across origins but not `x-api-key`, so
+        // for the Anthropic dialect the redirect target was handed the
+        // API key. Provider APIs do not need redirects; a 3xx is now an
+        // upstream error, which is visible instead of silent.
+        let client = |guard_dns: bool| -> reqwest::Result<reqwest::Client> {
+            let mut b = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .read_timeout(Duration::from_secs(300))
+                .redirect(reqwest::redirect::Policy::none());
+            if guard_dns {
+                b = b.dns_resolver(Arc::new(crate::net::GuardedResolver));
+            }
+            b.build()
+        };
+        let http = client(true)?;
+        let http_local = client(false)?;
         Ok(Arc::new(Self {
             registry: Mutex::new(Registry::open(state_dir)?),
+            // OAuth talks to the providers' own authorization servers,
+            // which are public by construction.
             oauth: OauthManager::new(http.clone(), secrets.clone()),
             consent: Mutex::new(Consent::open(state_dir)?),
             secrets,
             ledger,
             http,
+            http_local,
         }))
+    }
+
+    /// The HTTP client for `spec`.
+    ///
+    /// The DNS guard exists to stop a provider name resolving to
+    /// loopback or the LAN (issue #92). For a provider the user
+    /// explicitly registered as local, that is not an attack, it is the
+    /// request — so those, and only those, use the unguarded client.
+    /// Everything else, including every built-in, gets the guard.
+    fn client_for(&self, spec: &ProviderSpec) -> &reqwest::Client {
+        if spec.allow_local {
+            &self.http_local
+        } else {
+            &self.http
+        }
     }
 
     /// Subscribe to OAuth login completions — the D-Bus layer forwards
@@ -122,12 +165,24 @@ impl Broker {
         json!({ "providers": providers })
     }
 
-    pub fn add_provider(&self, id: &str, name: &str, base_url: &str) -> Result<(), BrokerError> {
+    /// Register a custom provider.
+    ///
+    /// `locality` carries the user's answer to "is this endpoint your
+    /// own machine or your own network?" — the only thing that makes a
+    /// loopback/LAN address or plaintext `http` acceptable (#92). It
+    /// defaults to no everywhere it is not explicitly supplied.
+    pub fn add_provider(
+        &self,
+        id: &str,
+        name: &str,
+        base_url: &str,
+        locality: crate::net::Locality,
+    ) -> Result<(), BrokerError> {
         Ok(self
             .registry
             .lock()
             .expect("registry lock")
-            .add_custom(id, name, base_url)?)
+            .add_custom(id, name, base_url, locality)?)
     }
 
     pub fn remove_provider(&self, id: &str) -> Result<(), BrokerError> {
@@ -261,8 +316,20 @@ impl Broker {
     /// The provider's own live model list — its `/models` endpoint, never
     /// an invented catalogue (rule 8) — so Settings can offer a real model
     /// dropdown instead of a free-text box (construct's pattern, ADR-0010
-    /// follow-up). Requires a stored credential. This is a metadata read,
-    /// not a generation, so it is not ledgered as `remote.generate`.
+    /// follow-up). Requires a stored credential.
+    ///
+    /// **Ledgered, because it leaves the machine** (issue #91). It used
+    /// to be exempted as "a metadata read, not a generation" — but §5.11
+    /// says every request that leaves the hardware is rendered in the
+    /// Ledger, and the audit trail's job is not to record only the
+    /// interesting egress. A request that reaches a provider with the
+    /// user's credential attached, and returns a body, is egress; that
+    /// it carries no prompt makes it cheaper to record, not exempt.
+    ///
+    /// It is deliberately *not* gated on a `prompt` consent scope: no
+    /// user content is sent, and requiring consent to populate the model
+    /// dropdown would mean the Settings page could not describe what the
+    /// user is being asked to consent to.
     pub async fn list_models(&self, provider_id: &str) -> Result<Vec<String>, BrokerError> {
         let spec = self
             .registry
@@ -280,7 +347,7 @@ impl Broker {
             Dialect::AnthropicMessages => format!("{base}/v1/models"),
             Dialect::OpenaiCompat => format!("{base}/models"),
         };
-        let req = self.http.get(&url);
+        let req = self.client_for(&spec).get(&url);
         let req = match auth {
             AuthStyle::AnthropicApiKey => req
                 .header("x-api-key", &credential)
@@ -290,16 +357,59 @@ impl Broker {
                 .header("anthropic-version", "2023-06-01"),
             AuthStyle::Bearer => req.header("authorization", format!("Bearer {credential}")),
         };
-        let resp = req.send().await.map_err(ProxyError::Http)?;
+        // Before the bytes leave, not after (PLAN §4 rule 4).
+        let start = self.ledger.append(&Event {
+            kind: "remote.models".into(),
+            app_id: "settings".into(),
+            model: spec.id.clone(),
+            status: "started".into(),
+            detail: json!({
+                "egress": "remote",
+                "provider": spec.id,
+                "endpoint": crate::net::redact(&url),
+            })
+            .to_string(),
+            ..Default::default()
+        })?;
+        let outcome = req.send().await;
+        let finish = |status: &str, detail: String| {
+            let _ = self.ledger.append(&Event {
+                kind: "remote.models".into(),
+                app_id: "settings".into(),
+                model: spec.id.clone(),
+                status: status.into(),
+                ref_id: Some(start),
+                detail,
+                ..Default::default()
+            });
+        };
+        let resp = match outcome {
+            Ok(r) => r,
+            Err(e) => {
+                finish(
+                    "error",
+                    json!({"egress": "remote", "error": e.to_string()}).to_string(),
+                );
+                return Err(ProxyError::Http(e).into());
+            }
+        };
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
+            finish(
+                "error",
+                json!({"egress": "remote", "status": status.as_u16()}).to_string(),
+            );
             return Err(ProxyError::Upstream {
                 status: status.as_u16(),
-                body,
+                body: crate::proxy::cap_body(&body),
             }
             .into());
         }
+        finish(
+            "ok",
+            json!({"egress": "remote", "provider": spec.id}).to_string(),
+        );
         let body: Value = resp.json().await.map_err(ProxyError::Http)?;
         let mut ids: Vec<String> = body["data"]
             .as_array()
@@ -344,7 +454,12 @@ impl Broker {
         let detail = json!({
             "egress": "remote",
             "provider": spec.id,
-            "endpoint": spec.base_url,
+            // Redacted (issue #109): a credential the user embedded in
+            // the URL would otherwise be appended to the Ledger on every
+            // request, and the Ledger is append-only — there is no
+            // taking it back out. New rows cannot contain one at all;
+            // rows written before that check can.
+            "endpoint": spec.base_url.as_deref().map(crate::net::redact),
             "scopes": scopes,
         })
         .to_string();
@@ -405,7 +520,7 @@ impl Broker {
     ) -> Result<Value, BrokerError> {
         let p = self.preflight(provider_id, scopes, body).await?;
         let started = Instant::now();
-        let result = proxy::send(&self.http, &p.upstream).await;
+        let result = proxy::send(self.client_for(&p.spec), &p.upstream).await;
         let duration_ms = started.elapsed().as_millis() as i64;
         match result {
             Ok(raw) => {
@@ -471,7 +586,7 @@ impl Broker {
             forwarded_tokens: 0,
             forwarded_chars: 0,
         };
-        let upstream = match proxy::send_stream(&self.http, &p.upstream).await {
+        let upstream = match proxy::send_stream(self.client_for(&p.spec), &p.upstream).await {
             Ok(s) => s,
             Err(e) => {
                 completion.complete("error", Some(&e.to_string()), 0, 0);

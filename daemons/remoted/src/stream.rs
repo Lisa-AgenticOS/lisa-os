@@ -15,17 +15,53 @@ use serde_json::{Value, json};
 /// comment (`:`) and `event:` lines (Anthropic repeats the event name in
 /// the payload's `type` field). Buffers bytes — a multi-byte UTF-8
 /// sequence can never be split, because event boundaries are ASCII.
+///
+/// # Bounded, and linear (issue #103)
+///
+/// The first version appended every byte to an unbounded `Vec` and
+/// rescanned it **from index 0** on each feed. A provider that never
+/// emits a blank line therefore cost O(n²) CPU and unbounded memory,
+/// and the idle timeout never fired because bytes *were* arriving:
+/// 32 MiB of garbage pegged a core for 46 seconds and the buffer was
+/// still resident. The provider is by definition an untrusted remote
+/// party, and this is the only egress daemon.
+///
+/// So: a scan cursor, and a ceiling. Past the ceiling the stream is an
+/// error rather than a slow death.
 #[derive(Default)]
 pub struct SseParser {
     buf: Vec<u8>,
+    /// How far `event_boundary` has already looked. A byte that was not
+    /// a terminator a moment ago is still not one now.
+    scanned: usize,
+    /// Set once the ceiling is passed; every later feed is refused.
+    overflowed: bool,
 }
 
+/// The largest SSE frame we will hold before giving up on a provider.
+///
+/// Real frames are a few KiB; this is orders of magnitude beyond any
+/// legitimate one, and small enough that a hostile stream cannot make
+/// the daemon interesting to the OOM killer.
+pub const MAX_EVENT_BYTES: usize = 512 * 1024;
+
 impl SseParser {
+    /// Whether this parser has given up on the stream. A caller that
+    /// sees `true` should end the stream with an error rather than keep
+    /// feeding it.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+        if self.overflowed {
+            return Vec::new();
+        }
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
-        while let Some((end, sep)) = event_boundary(&self.buf) {
+        while let Some((end, sep)) = event_boundary(&self.buf, self.scanned) {
             let event: Vec<u8> = self.buf.drain(..end + sep).collect();
+            self.scanned = 0;
             let text = String::from_utf8_lossy(&event[..end]);
             let data: Vec<&str> = text
                 .lines()
@@ -37,14 +73,26 @@ impl SseParser {
                 out.push(data.join("\n"));
             }
         }
+        // Nothing left to find in what we have seen; next feed resumes
+        // from here instead of from the start. Backing off by two keeps
+        // a terminator split across two reads visible.
+        self.scanned = self.buf.len().saturating_sub(2);
+        if self.buf.len() > MAX_EVENT_BYTES {
+            self.overflowed = true;
+            // Drop it: holding a hostile buffer after refusing it is the
+            // half of the bug that memory-bounding exists to fix.
+            self.buf = Vec::new();
+            self.scanned = 0;
+        }
         out
     }
 }
 
-/// First blank line (event terminator): returns (bytes before the
-/// terminating newline pair, separator length to also drain).
-fn event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
-    for i in 0..buf.len() {
+/// First blank line (event terminator) at or after `from`: returns
+/// (bytes before the terminating newline pair, separator length to also
+/// drain).
+fn event_boundary(buf: &[u8], from: usize) -> Option<(usize, usize)> {
+    for i in from..buf.len() {
         if buf[i] == b'\n' {
             if buf.get(i + 1) == Some(&b'\n') {
                 return Some((i, 2));
@@ -168,6 +216,78 @@ impl StreamTranslator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #103. A provider that never terminates an event used to
+    /// cost O(n²) CPU and unbounded memory — 32 MiB took 46 seconds and
+    /// was still resident — while the idle timeout stayed quiet because
+    /// bytes *were* arriving.
+    ///
+    /// The assertion is on wall-clock because that is what the bug was.
+    /// The bound is deliberately loose (a second for 32 MiB, against 46
+    /// observed) so this fails on a regression, not on a slow machine.
+    #[test]
+    fn a_provider_that_never_ends_an_event_is_cut_off_quickly() {
+        let mut p = SseParser::default();
+        let chunk = vec![b'A'; 64 * 1024];
+        let started = std::time::Instant::now();
+        for _ in 0..512 {
+            assert!(p.feed(&chunk).is_empty());
+        }
+        let elapsed = started.elapsed();
+        assert!(p.overflowed(), "32 MiB with no event boundary was accepted");
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "quadratic rescan is back: 32 MiB took {elapsed:?}"
+        );
+    }
+
+    /// Bounded means the bytes are actually released, not merely
+    /// noticed. Holding a hostile buffer after refusing it fixes the CPU
+    /// half and leaves the memory half.
+    #[test]
+    fn an_overflowed_parser_drops_what_it_was_holding() {
+        let mut p = SseParser::default();
+        p.feed(&vec![b'A'; MAX_EVENT_BYTES + 1]);
+        assert!(p.overflowed());
+        assert_eq!(p.buf.len(), 0, "the hostile buffer is still resident");
+        // And it stays refused rather than recovering on the next feed.
+        assert!(p.feed(b"data: {}\n\n").is_empty());
+    }
+
+    /// The cursor must not skip a terminator that arrives split across
+    /// two reads — the exact case a resume-where-you-left-off scan gets
+    /// wrong, and the reason the cursor backs off by two.
+    #[test]
+    fn a_boundary_split_across_reads_is_still_found() {
+        for (a, b) in [
+            (&b"data: {\"x\":1}\n"[..], &b"\n"[..]),
+            (&b"data: {\"x\":1}"[..], &b"\n\n"[..]),
+            (&b"data: {\"x\":1}\n\r"[..], &b"\n"[..]),
+            (&b"data: {\"x\":1}\n"[..], &b"\r\n"[..]),
+        ] {
+            let mut p = SseParser::default();
+            assert!(p.feed(a).is_empty(), "premature event from {a:?}");
+            assert_eq!(
+                p.feed(b),
+                vec!["{\"x\":1}".to_string()],
+                "boundary lost when split as {a:?} + {b:?}"
+            );
+        }
+    }
+
+    /// A long-but-legitimate stream of many small frames must not trip
+    /// the ceiling: the bound is on one unterminated frame, not on the
+    /// stream.
+    #[test]
+    fn many_ordinary_frames_never_overflow() {
+        let mut p = SseParser::default();
+        let mut seen = 0;
+        for i in 0..20_000 {
+            seen += p.feed(format!("data: {{\"i\":{i}}}\n\n").as_bytes()).len();
+        }
+        assert_eq!(seen, 20_000);
+        assert!(!p.overflowed());
+    }
 
     #[test]
     fn sse_parser_handles_split_events_crlf_and_comments() {
