@@ -127,15 +127,27 @@ violet — not scrolling kernel/unit text — between the Mac's Apple logo
 and GDM. All console/kernel/systemd text goes to the serial line, leaving
 tty0 (the framebuffer) clean for Plymouth.
 
-The splash is Arch's stock `bgrt` theme with our watermark swapped in
-(`mkosi.extra/usr/share/plymouth/themes/spinner/watermark.png`).
-(`lisa.plymouth`, `ModuleName=two-step` — the same module Arch's stock
-`spinner` theme uses): a solid `#6D45C9` background, the white `Lisa`
-wordmark (`watermark.png`, recolored from `branding/lisa-wordmark.svg`),
-and a subtle comet spinner (`throbber-*.png`). `lisa` is the default via
-the stock theme **and** the
-`themes/default.plymouth` symlink — no `plymouth-set-default-theme` run,
-deterministic in an immutable image.
+The splash is Arch's **stock `bgrt` theme**, unmodified, with one file
+swapped: the watermark it draws from the `spinner` theme directory. We
+ship no theme of our own — an earlier custom `lisa.plymouth` was deleted
+because replacing one PNG is the whole requirement, and a fork of a theme
+is a thing to maintain.
+
+    usr/share/plymouth/themes/spinner/watermark.png   128x37, white Lisa
+    usr/share/plymouth/themes/spinner/.lisa-branded   marker, issue #45
+
+**Both copies must move together.** The watermark lives in *two* trees:
+`initrd-overlay/` and `mkosi.extra/`. `plymouthd` resolves its theme
+inside the **initrd**, so editing only the rooted copy changes nothing
+you can see — which is exactly how a "fixed" splash once shipped without
+ever having rendered.
+
+Rendered from `branding/lisa-wordmark-white.svg` (24x7 viewBox):
+
+    rsvg-convert -w 128 -h 37 -f png -o watermark.png lisa-wordmark-white.svg
+
+Halved from 256x75 on 2026-07-29 — at full size it read as huge on the
+reference iMac's panel.
 
 **Initrd (ADR-0017, mechanism fixed by ADR-0028).** The mkosi image builds
 its own systemd initrd (*mkosi-initrd*, not dracut). It carries **Plymouth +
