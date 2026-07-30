@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mail
+Comment=Your mail, and what the assistant may read of it
+Exec=lisa-app mail/lisa-mail.js %u
+Icon=mail-unread-symbolic
+Terminal=false
+Categories=Network;Email;GTK;
+StartupNotify=true
