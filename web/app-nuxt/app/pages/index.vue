@@ -101,6 +101,28 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
           </div>
         </div>
         <div class="frow">
+          <span class="mk">⚿</span>
+          <div>
+            <h3>Exactly what it asks Google for, and why</h3>
+            <p>
+              Lisa OS requests only what the mail client needs to work, and
+              names each one here because "explain with transparency the purpose
+              for which your app requests user data" deserves a list rather than
+              a paragraph:
+            </p>
+            <ul class="scopes">
+              <li><code>https://mail.google.com/</code> — read and organise your mail over IMAP, which is what lets Lisa Mail download it to your disk, mark it read, and file it. It is the scope Gmail requires for IMAP; there is no narrower one that works.</li>
+              <li><code>.../auth/calendar</code> and <code>.../auth/carddav</code> — only if you switch Calendar or Contacts on for the account.</li>
+              <li><code>.../auth/userinfo.email</code> — to show you which account is connected.</li>
+            </ul>
+            <p>
+              Requested when you connect an account, never before. Revoke them
+              at any time from your Google Account, or by removing the account
+              in Settings.
+            </p>
+          </div>
+        </div>
+        <div class="frow">
           <span class="mk">⊘</span>
           <div>
             <h3>What we never do with it</h3>
@@ -239,4 +261,7 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
 .brandlink { display: inline-flex; align-items: center; gap: .5rem; text-decoration: none; color: inherit; }
 .brandmark { width: 28px; height: 28px; border-radius: 6px; display: block; }
 .brandname { font-weight: 650; letter-spacing: .01em; font-size: 1.02rem; }
+.scopes { padding-left: 1.05rem; margin: .5rem 0; }
+.scopes li { margin: .35rem 0; }
+.scopes code { font-size: .92em; }
 </style>
