@@ -294,6 +294,32 @@ fn os_section() -> Section {
         .unwrap_or_default()
         .unwrap_or_else(|| "(unknown)".into());
     let _ = writeln!(body, "{:<14} {}", "boot entry", entry);
+    // …and the CAUSE, not just the symptom. The lines above show which
+    // entry booted, which only reveals a pin by comparing two runs
+    // weeks apart. A pinned default is one file and one EFI variable,
+    // and reading them says outright whether this machine can ever boot
+    // an update.
+    match pinned_default(
+        &read_first(&["/efi/loader/loader.conf", "/boot/loader/loader.conf"]),
+        read_efi_default().as_deref(),
+    ) {
+        Some(pin) => {
+            let _ = writeln!(body, "{:<14} {} — PINNED", "boot default", pin);
+            let _ = writeln!(
+                body,
+                "{:<14} a pinned default means staged updates install and never boot.",
+                ""
+            );
+            let _ = writeln!(
+                body,
+                "{:<14} clear it with `bootctl set-default @saved` (issue #141).",
+                ""
+            );
+        }
+        None => {
+            let _ = writeln!(body, "{:<14} not pinned", "boot default");
+        }
+    }
     let cmdline_root = std::fs::read_to_string("/proc/cmdline")
         .unwrap_or_default()
         .split_whitespace()
@@ -310,6 +336,70 @@ fn os_section() -> Section {
         title: "System".into(),
         body,
     }
+}
+
+fn read_first(paths: &[&str]) -> String {
+    paths
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
+/// systemd-boot writes the sticky default here.
+const EFI_DEFAULT: &str =
+    "/sys/firmware/efi/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+
+fn read_efi_default() -> Option<String> {
+    let raw = std::fs::read(EFI_DEFAULT).ok()?;
+    // EFI variables carry a 4-byte attribute prefix, then UTF-16LE.
+    let body = raw.get(4..)?;
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .take_while(|&c| c != 0)
+        .collect();
+    let text = String::from_utf16_lossy(&units);
+    Some(text).filter(|t| !t.is_empty())
+}
+
+/// Is the boot default pinned to one specific entry?
+///
+/// Issue #141: the reference iMac staged 20260727.43, rebooted, and came
+/// up on 20260726.34. Nothing failed and nothing logged — the only
+/// evidence was /etc/os-release, and a reboot was spent debugging audio
+/// that had never been installed. A machine that silently stops updating
+/// is indistinguishable from one that works, which is what makes this
+/// worth a dedicated check rather than an eyeball on the entry name.
+///
+/// `@saved` is NOT a pin: it follows whatever booted last, which is how
+/// sd-boot is meant to track an A/B swap. A pattern is not a pin either
+/// — `lisa_*.efi` still resolves to the newest match. Only a literal
+/// entry freezes the machine.
+pub fn pinned_default(loader_conf: &str, efi_var: Option<&str>) -> Option<String> {
+    let is_pin = |value: &str| -> Option<String> {
+        let v = value.trim();
+        if v.is_empty() || v.eq_ignore_ascii_case("@saved") || v.contains('*') || v.contains('?') {
+            return None;
+        }
+        Some(v.to_string())
+    };
+    // The EFI variable wins: bootctl set-default writes there, and it
+    // overrides loader.conf.
+    if let Some(pin) = efi_var.and_then(is_pin) {
+        return Some(pin);
+    }
+    // loader.conf is `key value`, whitespace-separated — not `key=value`.
+    loader_conf
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .find_map(|l| {
+            let rest = l.strip_prefix("default")?;
+            // A key is only `default` if a space follows: `defaults` and
+            // `default-something` are different keys entirely.
+            rest.starts_with(char::is_whitespace).then_some(rest)
+        })
+        .and_then(is_pin)
 }
 
 fn units_section() -> Section {
@@ -596,6 +686,61 @@ mod tests {
         // redaction useless rather than safe.
         assert!(out.contains("llm.corp.example/v1"), "{out}");
         assert!(out.contains("status=ok"), "{out}");
+    }
+
+    /// Issue #141: the iMac staged 20260727.43, rebooted, and came up on
+    /// 20260726.34 with nothing failing and nothing logged. A machine
+    /// that silently stops updating looks exactly like one that works,
+    /// which is why the pin is worth reading directly.
+    #[test]
+    fn a_literal_default_is_a_pin() {
+        assert_eq!(
+            pinned_default("timeout 3\ndefault lisa_20260726.34.efi\n", None).as_deref(),
+            Some("lisa_20260726.34.efi")
+        );
+        // bootctl set-default writes the EFI variable, and it wins over
+        // loader.conf — so a machine can be pinned with a clean conf.
+        assert_eq!(
+            pinned_default("timeout 3\n", Some("lisa_20260726.34.efi")).as_deref(),
+            Some("lisa_20260726.34.efi")
+        );
+    }
+
+    /// The check is only useful if it stays quiet on healthy machines.
+    /// A warning every user sees on every run is a warning nobody reads.
+    #[test]
+    fn the_shapes_that_are_not_pins_stay_quiet() {
+        // @saved follows whatever booted last — exactly how sd-boot is
+        // meant to track an A/B swap.
+        assert_eq!(pinned_default("default @saved\n", None), None);
+        assert_eq!(pinned_default("", Some("@saved")), None);
+        // A pattern still resolves to the newest match.
+        assert_eq!(pinned_default("default lisa_*.efi\n", None), None);
+        assert_eq!(pinned_default("default lisa_?.efi\n", None), None);
+        // Nothing configured at all.
+        assert_eq!(pinned_default("timeout 3\nconsole-mode keep\n", None), None);
+        assert_eq!(pinned_default("", None), None);
+        // …which is the shape the reference iMac actually had once the
+        // pin was cleared: comments and no default line.
+        assert_eq!(
+            pinned_default("#timeout 3\n#console-mode keep\n", None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_commented_or_differently_named_key_is_not_a_default() {
+        // The pin is load-bearing; misreading a comment as one would
+        // tell a healthy machine it can never update again.
+        assert_eq!(
+            pinned_default("#default lisa_20260726.34.efi\n", None),
+            None
+        );
+        // `defaults` and `default-x` are different keys entirely.
+        assert_eq!(pinned_default("defaults lisa_1.efi\n", None), None);
+        assert_eq!(pinned_default("default-entry lisa_1.efi\n", None), None);
+        // An empty value is not a pin either.
+        assert_eq!(pinned_default("default   \n", None), None);
     }
 
     /// A redactor that eats everything is not safe, it is useless: the
