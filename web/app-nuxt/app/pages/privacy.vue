@@ -123,8 +123,8 @@ useHead({
       <span class="mono">LISA OS · GPL-2.0 · BUILT IN THE OPEN</span>
       <span>
         <a :href="repo">GitHub</a> · <a :href="docs">Docs</a> ·
-        <NuxtLink to="/privacy">Privacy</NuxtLink> ·
-        <NuxtLink to="/terms">Terms</NuxtLink>
+        <NuxtLink to="/privacy/">Privacy</NuxtLink> ·
+        <NuxtLink to="/terms/">Terms</NuxtLink>
       </span>
     </footer>
   </div>

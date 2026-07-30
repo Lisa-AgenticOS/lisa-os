@@ -70,7 +70,7 @@ useHead({
         your relationship is with that provider under their terms, and their
         handling of your data is theirs to describe. Lisa OS marks these calls
         and records them so you can see exactly when it happens — see
-        <NuxtLink to="/privacy">Privacy</NuxtLink>.
+        <NuxtLink to="/privacy/">Privacy</NuxtLink>.
       </p>
 
       <h2>Trade marks</h2>
@@ -103,8 +103,8 @@ useHead({
       <span class="mono">LISA OS · GPL-2.0 · BUILT IN THE OPEN</span>
       <span>
         <a :href="repo">GitHub</a> · <a :href="docs">Docs</a> ·
-        <NuxtLink to="/privacy">Privacy</NuxtLink> ·
-        <NuxtLink to="/terms">Terms</NuxtLink>
+        <NuxtLink to="/privacy/">Privacy</NuxtLink> ·
+        <NuxtLink to="/terms/">Terms</NuxtLink>
       </span>
     </footer>
   </div>

@@ -115,7 +115,7 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
               model on it. Our use of Google user data follows the
               <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
               including the Limited Use requirements — set out in full in our
-              <NuxtLink to="/privacy">privacy policy</NuxtLink>.
+              <NuxtLink to="/privacy/">privacy policy</NuxtLink>.
             </p>
           </div>
         </div>
@@ -214,8 +214,8 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       <span class="mono">LISA OS · GPL-2.0 · BUILT IN THE OPEN</span>
       <span>
         <a :href="repo">GitHub</a> · <a :href="docs">Docs</a> ·
-        <NuxtLink to="/privacy">Privacy</NuxtLink> ·
-        <NuxtLink to="/terms">Terms</NuxtLink>
+        <NuxtLink to="/privacy/">Privacy</NuxtLink> ·
+        <NuxtLink to="/terms/">Terms</NuxtLink>
       </span>
     </footer>
   </div>
