@@ -39,6 +39,7 @@ import {
     serializeSession, sessionWithTurns, upsertIndex, removeFromIndex,
     displayIndex, formatSessionTime, migrateLegacyConversation,
 } from './lib/sessions.js';
+import {toPangoMarkup} from './lib/markdown.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
@@ -64,6 +65,25 @@ function boolValue(b) {
     value.init(GObject.TYPE_BOOLEAN);
     value.set_boolean(b);
     return value;
+}
+
+
+/// Put text into a turn's label as rendered Markdown.
+///
+/// Falls back to plain text if Pango refuses the markup. That fallback
+/// is not defensive padding: invalid markup makes a GtkLabel render
+/// NOTHING — not an error, an empty bubble — so the failure mode without
+/// it is a reply that silently disappears. `toPangoMarkup` is written so
+/// this should never fire; it fires anyway, because "should never" is
+/// not a property you get to assert about a model's output.
+function setRendered(label, text) {
+    try {
+        label.set_markup(toPangoMarkup(text));
+    } catch (e) {
+        logError(e, 'assistant: markup refused, showing plain text');
+        label.set_use_markup(false);
+        label.set_label(text);
+    }
 }
 
 class AssistantWindow {
@@ -407,7 +427,10 @@ class AssistantWindow {
         if (qid !== this._activeQid || !this._current)
             return;
         this._current.text += text;
-        this._current.body.label = this._current.text;
+        // Re-rendered per token rather than appended, because Markdown
+        // is not resolvable one character at a time: `**bo` is not bold
+        // until the closing pair arrives.
+        setRendered(this._current.body, this._current.text);
         this._scrollToBottom();
     }
 
@@ -418,7 +441,7 @@ class AssistantWindow {
             const why = detail || status;
             this._current.text = this._current.text
                 ? `${this._current.text}\n\n⚠ ${why}` : `⚠ ${why}`;
-            this._current.body.label = this._current.text;
+            setRendered(this._current.body, this._current.text);
             this._current.body.add_css_class('error');
         }
         this._activeQid = null;
@@ -502,9 +525,10 @@ class AssistantWindow {
             label: isUser ? 'You' : this._assistantHeading(model),
         });
         const body = new Gtk.Label({
-            xalign: 0, wrap: true, selectable: true, label: text,
+            xalign: 0, wrap: true, selectable: true, use_markup: true,
             margin_bottom: 8, margin_start: 10, margin_end: 10, margin_top: 2,
         });
+        setRendered(body, text);
         card.append(heading);
         card.append(body);
         this._log.append(card);
