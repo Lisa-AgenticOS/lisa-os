@@ -73,9 +73,42 @@ can never hand a token for.
 | `lib/actions.js` | what the buttons do, as arithmetic on filenames |
 | `lib/mcp-protocol.js` | JSON-RPC + the provenance tag. Pure |
 | `lib/mcp.js` | the socket |
+| `lib/settings.js` | what the settings page is allowed to say. Pure |
 | `lisa-mail.js` | the window; thin over the above |
 
-`just shell-test` runs the pure half — 38 cases, on any dev host.
+`just shell-test` runs the pure half — 46 cases, on any dev host.
+
+## Settings
+
+A diagnostic before it is a preference sheet. Connect Google in Settings,
+open Mail, see nothing: every layer is behaving as designed and not one
+of them can say so. GOA holds an account it cannot get a token for, the
+Maildir is empty because nothing fills it, and an empty folder is the
+correct thing to draw. The failure lives in the gaps, which is where
+nothing is looking.
+
+So the page reports facts and names the gap:
+
+- **Maildir** — the folder, where the path came from (`LISA_MAILDIR`, the
+  saved setting, or `~/Mail`), and what is in it right now. When the
+  environment set it, the row says so and stops being editable: an env
+  var a stored preference can silently override is a debugging trap.
+- **Syncing** — the first blocking answer, in the order the layers block
+  each other: no mbsync → no keyring (#154) → no account → nothing
+  bridges them (#155). Order is the point. Telling somebody their account
+  is fine while the machine has no syncer sends them to debug the wrong
+  layer.
+- **Accounts** — what GOA reports, including an account with Mail
+  switched off, which from inside this app looks identical to no account
+  and is a different problem. Adding one opens GNOME Settings rather than
+  reimplementing an OAuth flow.
+
+Config is `~/.config/lisa/mail.json`, plain JSON, and a malformed one
+costs you the preferences and not the app — a mail client that will not
+start is the hardest kind of thing to fix from inside a desktop session.
+No GSettings schema, because a schema has to be compiled into the
+session's schema directory to be readable at all, and this app is meant
+to be runnable from a checkout.
 
 ## The buttons
 

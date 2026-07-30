@@ -42,14 +42,48 @@ import {listFolder, messagePath, previewOf} from './lib/maildir.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
 import {actionsFor, flagChange, moveTo} from './lib/actions.js';
 import {McpServer} from './lib/mcp.js';
+import {
+    CONFIG_NAME, accountRows, parseConfig, resolveMaildir, serializeConfig,
+    storeSummary, syncStatus, validateMaildir,
+} from './lib/settings.js';
 
 const APP_ID = 'app.lisaos.Mail';
 
-/// Where the Maildir lives. `LISA_MAILDIR` first so a second account,
-/// or a test corpus, needs no rebuild.
-function maildirRoot() {
-    return GLib.getenv('LISA_MAILDIR') ||
-        GLib.build_filenamev([GLib.get_home_dir(), 'Mail']);
+function configPath() {
+    return GLib.build_filenamev([GLib.get_user_config_dir(), CONFIG_NAME]);
+}
+
+function loadConfig() {
+    return parseConfig(readFile(configPath()));
+}
+
+/// Write the config, and say so if it fails.
+///
+/// Returns a boolean rather than throwing: a settings page that cannot
+/// save is a thing the user needs told, not an exception in a log they
+/// will never read.
+function saveConfig(config) {
+    const path = configPath();
+    try {
+        const dir = Gio.File.new_for_path(path).get_parent();
+        if (dir && !dir.query_exists(null))
+            dir.make_directory_with_parents(null);
+        return GLib.file_set_contents(path, serializeConfig(config));
+    } catch (e) {
+        logError(e, 'mail: could not save settings');
+        return false;
+    }
+}
+
+/// Where the Maildir lives: `LISA_MAILDIR`, then the saved setting,
+/// then `~/Mail`. Which one won is carried along so the settings page
+/// can show a path *and* the reason it is that path.
+function maildirRoot(config = null) {
+    return resolveMaildir({
+        env: GLib.getenv('LISA_MAILDIR'),
+        config: config ?? loadConfig(),
+        home: GLib.get_home_dir(),
+    });
 }
 
 /// Folders, in the order a person thinks of them rather than
@@ -431,21 +465,19 @@ function showMessage(msg) {
     readerBody.buffer.set_text(full.body ?? '', -1);
 }
 
-app.connect('activate', () => {
-    store = new Store(maildirRoot());
-
-    // Sized against the monitor rather than a fixed guess: 1280x820 is
-    // a dialog on the 4K panel this was first seen on. Three panes need
-    // room, and a mail window that opens smaller than its own content
-    // reads as a preview of an app.
-    const display = window_default_size();
-    const window = new Adw.ApplicationWindow({
-        application: app, title: 'Mail',
-        default_width: display.width, default_height: display.height,
-    });
-
-    // Pane 1: folders.
-    folderList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
+/// Rebuild the folder sidebar from the current store.
+///
+/// Separate from `activate` because changing the Maildir in settings
+/// has to take effect without a restart — an app that needs relaunching
+/// to notice its own preference is one people stop trusting the
+/// preference of.
+function reloadFolders() {
+    let child = folderList.get_first_child();
+    while (child) {
+        const next = child.get_next_sibling();
+        folderList.remove(child);
+        child = next;
+    }
     for (const folder of store.folders()) {
         const row = new Gtk.ListBoxRow();
         row._folder = folder;
@@ -460,6 +492,32 @@ app.connect('activate', () => {
         row.set_child(box);
         folderList.append(row);
     }
+    const first = folderList.get_row_at_index(0);
+    if (first)
+        folderList.select_row(first);
+    else
+        loadFolder(currentFolder || 'INBOX');
+}
+
+app.connect('activate', () => {
+    const resolved = maildirRoot();
+    store = new Store(resolved.path);
+    store.source = resolved.source;
+
+    // Sized against the monitor rather than a fixed guess: 1280x820 is
+    // a dialog on the 4K panel this was first seen on. Three panes need
+    // room, and a mail window that opens smaller than its own content
+    // reads as a preview of an app.
+    const display = window_default_size();
+    const window = new Adw.ApplicationWindow({
+        application: app, title: 'Mail',
+        default_width: display.width, default_height: display.height,
+    });
+
+    // Pane 1: folders. Populated by reloadFolders() once the rest of
+    // the window exists — it selects a row, which loads a folder, which
+    // needs the list and reading panes to be there already.
+    folderList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
     folderList.connect('row-selected', (_l, row) => {
         if (row?._folder)
             loadFolder(row._folder);
@@ -494,6 +552,12 @@ app.connect('activate', () => {
         }
     });
     listHeader.set_title_widget(search);
+    const menu = new Gio.Menu();
+    menu.append('Preferences', 'app.preferences');
+    menu.append('About Mail', 'app.about');
+    listHeader.pack_end(new Gtk.MenuButton({
+        icon_name: 'open-menu-symbolic', menu_model: menu, tooltip_text: 'Main menu',
+    }));
     listPane.add_top_bar(listHeader);
     listPane.set_content(new Gtk.ScrolledWindow({child: listBox, vexpand: true}));
 
@@ -529,12 +593,22 @@ app.connect('activate', () => {
         min_sidebar_width: 200, max_sidebar_width: 280, sidebar_width_fraction: 0.18,
     });
     window.set_content(outer);
+    reloadFolders();
 
-    const first = folderList.get_row_at_index(0);
-    if (first)
-        folderList.select_row(first);
-    else
-        loadFolder('INBOX');
+    const preferences = new Gio.SimpleAction({name: 'preferences'});
+    preferences.connect('activate', () => openPreferences(window));
+    app.add_action(preferences);
+    app.set_accels_for_action('app.preferences', ['<Control>comma']);
+
+    const about = new Gio.SimpleAction({name: 'about'});
+    about.connect('activate', () => {
+        const dialog = new Adw.AboutDialog({
+            application_name: 'Mail', application_icon: APP_ID, version: '0.1',
+            comments: 'Reads a Maildir, and gives the assistant a view of it.',
+        });
+        dialog.present(window);
+    });
+    app.add_action(about);
 
     // The Agent Bus surface. Started with the window and stopped with
     // it: socket presence IS tool availability (mcp-bus defers socket
@@ -551,6 +625,227 @@ app.connect('activate', () => {
 
     window.present();
 });
+
+// ---------------------------------------------------------------------
+// Settings — a diagnostic before it is a preference sheet.
+//
+// A user connects Google in Settings, opens Mail, and sees nothing.
+// Every layer is behaving exactly as designed and not one of them can
+// say so: GOA holds an account it cannot get a token for, the Maildir is
+// empty because nothing fills it, and an empty folder is the correct
+// thing to draw. The failure lives in the gaps between them, which is
+// where nothing is looking. This page looks there.
+// ---------------------------------------------------------------------
+
+/// Is there a Secret Service on the bus?
+///
+/// Asked because its absence is invisible everywhere else: Online
+/// Accounts will accept an account and then fail to hand out a token
+/// for it, with an error only the consumer ever sees (issue #154).
+///
+/// Both questions matter — a name with no owner may still be
+/// activatable, and a service that starts on demand is present as far
+/// as anything using it is concerned.
+function hasSecretService() {
+    try {
+        const bus = Gio.DBus.session;
+        const owned = bus.call_sync(
+            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+            'NameHasOwner', new GLib.Variant('(s)', ['org.freedesktop.secrets']),
+            new GLib.VariantType('(b)'), Gio.DBusCallFlags.NONE, 1000, null);
+        if (owned.deepUnpack()[0])
+            return true;
+        const names = bus.call_sync(
+            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+            'ListActivatableNames', null,
+            new GLib.VariantType('(as)'), Gio.DBusCallFlags.NONE, 1000, null);
+        return names.deepUnpack()[0].includes('org.freedesktop.secrets');
+    } catch (e) {
+        logError(e, 'mail: could not ask the bus about a secret service');
+        return false;
+    }
+}
+
+/// Connected accounts, as plain facts.
+///
+/// Loaded through a dynamic import so a system without the GOA typelib
+/// — a dev checkout on another distro, the minimal image — shows "no
+/// account connected" instead of failing to open the settings page. The
+/// page's whole job is to work on the machine that is broken.
+/// One property off a D-Bus proxy, unwrapped, or `null`.
+function cached(proxy, name) {
+    try {
+        return proxy?.get_cached_property(name)?.deepUnpack() ?? null;
+    } catch {
+        return null;
+    }
+}
+
+async function goaAccounts() {
+    let Goa;
+    try {
+        Goa = (await import('gi://Goa?version=1.0')).default;
+    } catch {
+        return [];
+    }
+    try {
+        const client = Goa.Client.new_sync(null);
+        return client.get_accounts().map((obj) => {
+            const account = obj.get_account();
+            const mail = obj.get_mail();
+            if (!account)
+                return null;
+            // Read off the D-Bus proxy, not through the GObject
+            // properties. GOA's generated proxies confuse gjs's
+            // property-accessor fast path, which warns per read: "Type
+            // GITypeInfo of property Goa.Account::provider-name does not
+            // match type GITypeInfo of first argument of setter
+            // complete_remove. Falling back to slow path". There are no
+            // get_provider_name()-style methods to use instead — the
+            // cached property is the interface.
+            return {
+                provider: cached(account, 'ProviderName'),
+                identity: cached(account, 'PresentationIdentity') || cached(account, 'Identity'),
+                imapUser: mail ? cached(mail, 'ImapUserName') : '',
+                // An account with no Mail interface at all is a calendar
+                // or contacts account; from here that is the same thing
+                // as mail being switched off.
+                mailDisabled: cached(account, 'MailDisabled') === true || !mail,
+            };
+        }).filter(Boolean);
+    } catch (e) {
+        logError(e, 'mail: could not read online accounts');
+        return [];
+    }
+}
+
+/// Open Settings at the Online Accounts panel.
+///
+/// Launched rather than reimplemented: adding an account is GNOME's
+/// job, involves a browser and an OAuth flow, and duplicating any part
+/// of that here would be a second place for it to be wrong.
+function openOnlineAccounts() {
+    try {
+        GLib.spawn_async(null, ['gnome-control-center', 'online-accounts'], null,
+            GLib.SpawnFlags.SEARCH_PATH, null);
+        return true;
+    } catch (e) {
+        logError(e, 'mail: could not open Settings');
+        return false;
+    }
+}
+
+function openPreferences(parent) {
+    const dialog = new Adw.PreferencesDialog({title: 'Mail Settings'});
+    const page = new Adw.PreferencesPage();
+    dialog.add(page);
+
+    // --- Where the mail is.
+    const location = new Adw.PreferencesGroup({
+        title: 'Maildir',
+        description: 'The folder Mail reads. Something else writes it — see below.',
+    });
+    const resolved = maildirRoot();
+    const pathRow = new Adw.EntryRow({title: 'Folder', text: resolved.path});
+    // An environment variable that a saved setting can override is a
+    // debugging trap, so when one is set the row says so and stops
+    // pretending to be editable.
+    if (resolved.source === 'env') {
+        pathRow.set_sensitive(false);
+        pathRow.set_title('Folder — set by LISA_MAILDIR');
+    }
+    location.add(pathRow);
+
+    const counts = {};
+    const folders = store.folders();
+    for (const f of folders)
+        counts[f] = store.messages(f).length;
+    location.add(new Adw.ActionRow({
+        title: 'On disk now',
+        subtitle: storeSummary(folders, counts),
+    }));
+    page.add(location);
+
+    // --- Why there is, or is not, mail arriving.
+    const sync = new Adw.PreferencesGroup({title: 'Syncing'});
+    const status = syncStatus({
+        mbsync: GLib.find_program_in_path('mbsync') !== null,
+        secretService: hasSecretService(),
+        accounts: [],
+    });
+    const statusRow = new Adw.ActionRow({title: status.title, subtitle: status.detail});
+    statusRow.add_prefix(new Gtk.Image({
+        icon_name: status.kind === 'ok'
+            ? 'emblem-ok-symbolic'
+            : 'dialog-warning-symbolic',
+    }));
+    sync.add(statusRow);
+    page.add(sync);
+
+    // --- Accounts, filled in once GOA answers.
+    const accountsGroup = new Adw.PreferencesGroup({
+        title: 'Accounts',
+        description: 'Connected in Settings, under Online Accounts.',
+    });
+    const openRow = new Adw.ActionRow({
+        title: 'Open Online Accounts', activatable: true,
+    });
+    openRow.add_suffix(new Gtk.Image({icon_name: 'go-next-symbolic'}));
+    openRow.connect('activated', () => openOnlineAccounts());
+    accountsGroup.add(openRow);
+    page.add(accountsGroup);
+
+    // GOA is read asynchronously so a slow or absent daemon cannot hold
+    // the dialog shut. The rows land when they land; the page is useful
+    // without them.
+    const added = [];
+    goaAccounts().then((accounts) => {
+        for (const row of added)
+            accountsGroup.remove(row);
+        added.length = 0;
+        for (const a of accountRows(accounts)) {
+            const row = new Adw.ActionRow({title: a.title, subtitle: a.subtitle});
+            if (!a.usable)
+                row.add_prefix(new Gtk.Image({icon_name: 'dialog-warning-symbolic'}));
+            accountsGroup.add(row);
+            added.push(row);
+        }
+        // The status depends on the accounts, so it is recomputed rather
+        // than left showing the answer from before they were known.
+        const next = syncStatus({
+            mbsync: GLib.find_program_in_path('mbsync') !== null,
+            secretService: hasSecretService(),
+            accounts,
+        });
+        statusRow.set_title(next.title);
+        statusRow.set_subtitle(next.detail);
+    }).catch((e) => logError(e, 'mail: could not list accounts'));
+
+    // Applied on close rather than per keystroke: a half-typed path is
+    // not a path, and rebuilding the folder list on every character
+    // would read every message in a folder that does not exist yet.
+    dialog.connect('closed', () => {
+        if (resolved.source === 'env')
+            return;
+        const check = validateMaildir(pathRow.text);
+        if (!check.ok) {
+            printerr(`mail: not saving that folder — ${check.reason}`);
+            return;
+        }
+        if (check.path === resolved.path)
+            return;
+        const config = loadConfig();
+        config.maildir = check.path;
+        if (!saveConfig(config))
+            return;
+        const next = maildirRoot(config);
+        store = new Store(next.path);
+        store.source = next.source;
+        reloadFolders();
+    });
+
+    dialog.present(parent);
+}
 
 /// `search_mail` — subjects, senders and previews across folders.
 ///
