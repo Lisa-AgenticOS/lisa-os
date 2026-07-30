@@ -163,6 +163,35 @@ function readFile(path) {
     }
 }
 
+/// The accounts this Maildir holds, and where each one's folders are.
+///
+/// Two layouts exist and both must work. `lisa mail setup` writes a flat
+/// tree for one account (`~/Mail/INBOX`) and a per-account tree for
+/// several (`~/Mail/you_at_example.com/INBOX`). The flat one is what is
+/// already synced on this machine, so it is not a legacy shape to
+/// tolerate — it is the common case, and silently relocating somebody's
+/// Maildir would not be a migration, it would be a disappearance.
+///
+/// Detection is by structure, not by config: a directory holding
+/// `cur/` is a folder, and a directory holding folders is an account.
+function discoverAccounts(root) {
+    const dirs = listDir(root).filter((e) => e.isDir && !e.name.startsWith('.'));
+    const isFolder = (path) => listDir(path).some((e) => e.isDir && (e.name === 'cur' || e.name === 'new'));
+
+    // Flat: the root itself contains folders.
+    if (dirs.some((d) => isFolder(`${root}/${d.name}`)))
+        return [{name: accountLabel() ?? 'Mail', root}];
+
+    // Nested: each subdirectory that contains folders is an account.
+    const out = [];
+    for (const d of dirs) {
+        const path = `${root}/${d.name}`;
+        if (listDir(path).some((e) => e.isDir && isFolder(`${path}/${e.name}`)))
+            out.push({name: d.name.replace('_at_', '@'), root: path});
+    }
+    return out;
+}
+
 /// The mail store: a Maildir on disk, read on demand.
 ///
 /// Deliberately not a cache or a database. A folder is a directory
@@ -171,6 +200,45 @@ function readFile(path) {
 class Store {
     constructor(root) {
         this.root = root;
+        // Every account under this Maildir, and the subtree each one
+        // owns. `root` stays the *current* account's root so nothing
+        // below this line had to learn about accounts.
+        this.accounts = discoverAccounts(root);
+        this.base = root;
+        if (this.accounts.length > 0)
+            this.root = this.accounts[0].root;
+    }
+
+    /// Point the store at one account's subtree.
+    use(account) {
+        const hit = this.accounts.find((a) => a.name === account);
+        if (hit)
+            this.root = hit.root;
+        return !!hit;
+    }
+
+    /// Folder names across every account, for the sidebar's outer level.
+    allFolders() {
+        const seen = [];
+        for (const a of this.accounts) {
+            for (const f of listDir(a.root).filter((e) => e.isDir).map((e) => e.name)) {
+                if (!seen.includes(f))
+                    seen.push(f);
+            }
+        }
+        const known = FOLDER_ORDER.filter((f) => seen.includes(f));
+        return [...known, ...seen.filter((f) => !FOLDER_ORDER.includes(f)).sort()];
+    }
+
+    /// Unread in one folder of one account, without changing `root`.
+    countsIn(accountRoot, folder) {
+        const was = this.root;
+        this.root = accountRoot;
+        try {
+            return this.counts(folder);
+        } finally {
+            this.root = was;
+        }
     }
 
     folders() {
@@ -327,7 +395,7 @@ let readerHtml = null;
 /// Reset on every open: consent is per message, not a mode you leave on.
 let allowRemote = false;
 let remoteBanner = null;
-let accountRow = null;
+let currentAccountName = null;
 /// The message currently open, so the banner can re-render it.
 let openMessageFull = null;
 let readerActions = null;
@@ -745,6 +813,16 @@ function showMessage(msg) {
 /// has to take effect without a restart — an app that needs relaunching
 /// to notice its own preference is one people stop trusting the
 /// preference of.
+/// Rebuild the folder sidebar.
+///
+/// Folder-major, accounts nested inside — the shape Spark uses and the
+/// one in the screenshot that prompted this. INBOX is a group holding
+/// one row per account rather than a single row, because "which of my
+/// inboxes" is the question a person with two accounts is actually
+/// asking, and a merged list cannot answer it.
+///
+/// With one account the expanders collapse to plain rows: nesting a
+/// single mailbox under itself is ceremony, not structure.
 function reloadFolders() {
     let child = folderList.get_first_child();
     while (child) {
@@ -752,29 +830,79 @@ function reloadFolders() {
         folderList.remove(child);
         child = next;
     }
-    if (accountRow)
-        folderList.append(accountRow);
-    for (const folder of store.folders()) {
-        const row = new Gtk.ListBoxRow();
-        row._folder = folder;
-        const box = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL, spacing: 8,
-            margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6,
+
+    const accounts = store.accounts;
+    const multi = accounts.length > 1;
+
+    for (const folder of store.allFolders()) {
+        const present = accounts.filter(
+            (a) => listDir(`${a.root}/${folder}`).some((e) => e.isDir));
+        if (present.length === 0)
+            continue;
+
+        if (!multi) {
+            const a = present[0];
+            folderList.append(folderRow(folder, a, store.countsIn(a.root, folder).unread, false));
+            continue;
+        }
+
+        // One expander per folder, one row per account inside it. The
+        // badge on the expander is the folder's total across accounts,
+        // which is the number you want when it is collapsed.
+        const total = present.reduce((n, a) => n + store.countsIn(a.root, folder).unread, 0);
+        const expander = new Adw.ExpanderRow({
+            title: folder,
+            expanded: folder === 'INBOX',
         });
-        box.append(new Gtk.Label({label: folder, xalign: 0, hexpand: true}));
-        // From the index: the badge is about the folder, not about the
-        // page of it currently drawn.
-        const {unread} = store.counts(folder);
-        if (unread > 0)
-            box.append(new Gtk.Label({label: String(unread), css_classes: ['dim-label', 'caption']}));
-        row.set_child(box);
-        folderList.append(row);
+        if (total > 0) {
+            expander.add_suffix(new Gtk.Label({
+                label: String(total), css_classes: ['dim-label', 'caption'],
+            }));
+        }
+        for (const a of present)
+            expander.add_row(folderRow(folder, a, store.countsIn(a.root, folder).unread, true));
+        folderList.append(expander);
     }
+
     const first = folderList.get_row_at_index(0);
-    if (first)
+    if (first && first._folder)
         folderList.select_row(first);
     else
-        loadFolder(currentFolder || 'INBOX');
+        selectFolder(accounts[0], currentFolder || 'INBOX');
+}
+
+/// One selectable row: a folder within an account.
+function folderRow(folder, account, unread, nested) {
+    const row = nested ? new Adw.ActionRow({title: account.name, activatable: true})
+        : new Gtk.ListBoxRow();
+    row._folder = folder;
+    row._account = account;
+    if (nested) {
+        if (unread > 0) {
+            row.add_suffix(new Gtk.Label({
+                label: String(unread), css_classes: ['dim-label', 'caption'],
+            }));
+        }
+        row.connect('activated', () => selectFolder(account, folder));
+        return row;
+    }
+    const box = new Gtk.Box({
+        orientation: Gtk.Orientation.HORIZONTAL, spacing: 8,
+        margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6,
+    });
+    box.append(new Gtk.Label({label: folder, xalign: 0, hexpand: true}));
+    if (unread > 0)
+        box.append(new Gtk.Label({label: String(unread), css_classes: ['dim-label', 'caption']}));
+    row.set_child(box);
+    return row;
+}
+
+/// Switch to a folder, in an account.
+function selectFolder(account, folder) {
+    if (account)
+        store.use(account.name);
+    currentAccountName = account ? account.name : null;
+    loadFolder(folder, PAGE);
 }
 
 app.connect('activate', () => {
@@ -796,42 +924,21 @@ app.connect('activate', () => {
     // the window exists — it selects a row, which loads a folder, which
     // needs the list and reading panes to be there already.
     folderList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
-    // Filled in once Online Accounts answers; hidden until then so the
-    // sidebar never shows an empty slot where a name should be.
-    accountRow = new Gtk.ListBoxRow({selectable: false, activatable: false, visible: false});
     folderList.connect('row-selected', (_l, row) => {
         if (row?._folder)
-            loadFolder(row._folder);
+            selectFolder(row._account, row._folder);
     });
 
     const sidebar = new Adw.ToolbarView();
-    // The account, not just "Mail". With mail from a real account on
-    // screen, a sidebar that never names it leaves you guessing whose
-    // inbox you are reading — and with two accounts connected, guessing
-    // wrongly.
+    // The account is named in the sidebar itself — as the header's
+    // subtitle when there is one account, and as the rows inside each
+    // folder's expander when there are several. Either way the answer to
+    // "whose mail am I reading" is on screen, which it was not.
     const sidebarTitle = new Adw.WindowTitle({title: 'Mail'});
     sidebar.add_top_bar(new Adw.HeaderBar({title_widget: sidebarTitle}));
     const who = accountLabel();
-    if (who) {
+    if (who)
         sidebarTitle.set_subtitle(who);
-        // …and in the list itself. A header subtitle is easy to miss and
-        // AdwWindowTitle hides it at narrow widths; the account is the
-        // answer to "whose mail am I looking at", so it goes where the
-        // folders are. Spark makes the account a first-class row for the
-        // same reason (issue #67 has the full nested layout).
-        const box = new Gtk.Box({
-            orientation: Gtk.Orientation.HORIZONTAL, spacing: 8,
-            margin_top: 10, margin_bottom: 4, margin_start: 6, margin_end: 6,
-        });
-        const dot = new Gtk.Label({label: '\u25cf'});
-        dot.add_css_class('accent');
-        box.append(dot);
-        const label = new Gtk.Label({label: who, xalign: 0, hexpand: true, ellipsize: 3});
-        label.add_css_class('heading');
-        box.append(label);
-        accountRow.set_child(box);
-        accountRow.set_visible(true);
-    }
     sidebar.set_content(new Gtk.ScrolledWindow({child: folderList, vexpand: true}));
 
     // Pane 2: the grouped message list.

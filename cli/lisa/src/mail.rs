@@ -102,76 +102,143 @@ fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', r"\\").replace('"', "\\\""))
 }
 
+/// A name safe to use as a directory and as an mbsync identifier.
+///
+/// The account's address with the characters that mean something to a
+/// path or to mbsync's grammar removed. `you@example.com` becomes
+/// `you_at_example.com`, which is still recognisable in a file manager —
+/// the Maildir is a directory a person will open one day.
+pub fn slug(address: &str) -> String {
+    let cleaned: String = address
+        .trim()
+        .replace('@', "_at_")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // `.` and `..` survive the filter above because a dot is legal in
+    // an address, and both name a directory OUTSIDE the one we are
+    // building a path in. An address is never literally `..`; a
+    // function that can emit it is still a path-traversal waiting for
+    // the day something else calls it.
+    if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
+        "account".into()
+    } else {
+        cleaned
+    }
+}
+
+/// Where one account's mail lives under the Maildir root.
+///
+/// Each account gets its own subtree. A shared tree would merge two
+/// people's inboxes into one folder with no way to tell them apart, and
+/// "which account is this from" is the question the sidebar exists to
+/// answer.
+pub fn account_root(maildir: &Path, address: &str, multi: bool) -> PathBuf {
+    if multi {
+        maildir.join(slug(address))
+    } else {
+        maildir.to_path_buf()
+    }
+}
+
 /// The whole config file, as text.
 ///
 /// Pure on purpose — this is the part that is easy to get subtly wrong
 /// and impossible to notice, because a config that parses but names the
 /// wrong folder syncs nothing and reports success.
-pub fn render_mbsyncrc(account: &Account, paths: &Paths, credential: &Credential) -> String {
+///
+/// With more than one account, each gets its own store, its own channels
+/// and its own subtree; the single group syncs all of them, so
+/// `lisa mail sync` stays one command.
+pub fn render_mbsyncrc(accounts: &[Account], paths: &Paths, credential: &Credential) -> String {
     let mut out = String::new();
     out.push_str(MARKER);
     out.push_str("\n#\n# Run it with:  lisa mail sync\n\n");
 
-    out.push_str("IMAPAccount lisa\n");
-    out.push_str(&format!("Host {}\n", account.imap_host));
-    out.push_str(&format!("User {}\n", account.imap_user));
+    let multi = accounts.len() > 1;
+    let mut channels = Vec::new();
 
-    match credential {
-        Credential::OnlineAccount => {
-            // A token, not a password: it expires in about an hour, so
-            // it is fetched per run rather than written into this file.
-            out.push_str("PassCmd \"lisa mail token\"\n");
-            out.push_str("AuthMechs XOAUTH2\n");
+    for account in accounts {
+        let id = if multi {
+            slug(&account.identity)
+        } else {
+            "lisa".to_string()
+        };
+        let root = account_root(&paths.maildir, &account.identity, multi);
+
+        out.push_str(&format!("IMAPAccount {id}\n"));
+        out.push_str(&format!("Host {}\n", account.imap_host));
+        out.push_str(&format!("User {}\n", account.imap_user));
+
+        match credential {
+            Credential::OnlineAccount => {
+                // A token, not a password: it expires in about an hour,
+                // so it is fetched per run rather than written here.
+                // `--account` names WHICH account to ask for, because
+                // with several connected the helper cannot guess.
+                out.push_str(&format!(
+                    "PassCmd {}\n",
+                    quote(&format!("lisa mail token --account {}", account.id))
+                ));
+                out.push_str("AuthMechs XOAUTH2\n");
+            }
+            Credential::AppPassword { file } => {
+                out.push_str(&format!(
+                    "PassCmd {}\n",
+                    quote(&format!("cat {}", file.display()))
+                ));
+                out.push_str("AuthMechs LOGIN\n");
+            }
         }
-        Credential::AppPassword { file } => {
-            out.push_str(&format!(
-                "PassCmd {}\n",
-                quote(&format!("cat {}", file.display()))
-            ));
-            out.push_str("AuthMechs LOGIN\n");
+
+        if account.imap_ssl {
+            out.push_str("TLSType IMAPS\n");
+        } else {
+            out.push_str("TLSType STARTTLS\n");
         }
-    }
+        out.push_str("CertificateFile /etc/ssl/certs/ca-certificates.crt\n\n");
 
-    if account.imap_ssl {
-        out.push_str("TLSType IMAPS\n");
-    } else {
-        out.push_str("TLSType STARTTLS\n");
-    }
-    out.push_str("CertificateFile /etc/ssl/certs/ca-certificates.crt\n\n");
+        out.push_str(&format!("IMAPStore {id}-remote\nAccount {id}\n\n"));
+        out.push_str(&format!("MaildirStore {id}-local\n"));
+        out.push_str(&format!("Path {}/\n", root.display()));
+        out.push_str(&format!("Inbox {}/INBOX\n", root.display()));
+        // Verbatim: folder names on disk are the names the Mail app
+        // shows, so a folder called Archive is a directory called
+        // Archive.
+        out.push_str("SubFolders Verbatim\n\n");
 
-    out.push_str("IMAPStore lisa-remote\nAccount lisa\n\n");
-    out.push_str("MaildirStore lisa-local\n");
-    out.push_str(&format!("Path {}/\n", paths.maildir.display()));
-    out.push_str(&format!("Inbox {}/INBOX\n", paths.maildir.display()));
-    // Verbatim: folder names on disk are the names the Mail app shows,
-    // so a folder called Archive is a directory called Archive.
-    out.push_str("SubFolders Verbatim\n\n");
-
-    let folders = if is_gmail(&account.imap_host) {
-        GMAIL_FOLDERS
-    } else {
-        GENERIC_FOLDERS
-    };
-    let mut names = Vec::new();
-    for (remote, local) in folders {
-        let channel = local.to_ascii_lowercase();
-        out.push_str(&format!("Channel {channel}\n"));
-        out.push_str(&format!("Far :lisa-remote:{}\n", quote(remote)));
-        out.push_str(&format!("Near :lisa-local:{}\n", quote(local)));
-        // Create Near only: local folders appear as needed, and nothing
-        // this machine does creates a folder in somebody's account.
-        out.push_str("Create Near\n");
-        // Neither side ever expunges, and neither side removes a folder
-        // because the other one lost it. Together these mean a bug here
-        // costs flags, never messages.
-        out.push_str("Expunge None\n");
-        out.push_str("Remove None\n");
-        out.push_str("SyncState *\n\n");
-        names.push(channel);
+        let folders = if is_gmail(&account.imap_host) {
+            GMAIL_FOLDERS
+        } else {
+            GENERIC_FOLDERS
+        };
+        for (remote, local) in folders {
+            let channel = format!("{id}-{}", local.to_ascii_lowercase());
+            out.push_str(&format!("Channel {channel}\n"));
+            out.push_str(&format!("Far :{id}-remote:{}\n", quote(remote)));
+            out.push_str(&format!("Near :{id}-local:{}\n", quote(local)));
+            // Create Near only: local folders appear as needed, and
+            // nothing this machine does creates a folder in somebody
+            // else's account.
+            out.push_str("Create Near\n");
+            // Neither side ever expunges, and neither side removes a
+            // folder because the other lost it. Together these mean a
+            // bug here costs flags, never messages.
+            out.push_str("Expunge None\n");
+            out.push_str("Remove None\n");
+            out.push_str("SyncState *\n\n");
+            channels.push(channel);
+        }
     }
 
     out.push_str("Group lisa\n");
-    for name in &names {
+    for name in &channels {
         out.push_str(&format!("Channel {name}\n"));
     }
     out.push('\n');
@@ -280,7 +347,23 @@ pub fn accounts() -> Result<Vec<Account>> {
 /// why it is fetched rather than stored.
 pub fn token(account_id: Option<String>) -> Result<()> {
     let id = match account_id {
-        Some(id) => id,
+        // Accept either the GOA object id or the address: the config
+        // written by `setup` uses the id, and a person typing this by
+        // hand will reach for the address.
+        Some(want) => {
+            if want.starts_with("account_") {
+                want
+            } else {
+                let found = accounts()?;
+                let Some(hit) = found
+                    .iter()
+                    .find(|a| a.identity == want || a.imap_user == want)
+                else {
+                    bail!("no connected account matches {want:?}");
+                };
+                hit.id.clone()
+            }
+        }
         None => {
             let found = accounts()?;
             let Some(first) = found.first() else {
@@ -415,22 +498,26 @@ pub fn setup(app_password: Option<PathBuf>, maildir: Option<PathBuf>, force: boo
     let paths = Paths::new(&home, maildir);
 
     let found = accounts()?;
-    let Some(account) = found.first().cloned() else {
+    if found.is_empty() {
         bail!(
             "no online account with mail enabled.\n\
              Connect one in Settings under Online Accounts, then run this again."
         );
-    };
-    if found.len() > 1 {
-        // Being explicit rather than silently picking: a person with a
-        // work and a personal account would otherwise find out which we
-        // chose by reading their own mail.
-        println!(
-            "note: {} accounts have mail enabled; using {}",
-            found.len(),
-            account.identity
-        );
     }
+    // ALL of them, not the first. Picking one silently meant a person
+    // with a work account and a personal one discovered which we chose
+    // by reading their own mail; and with an app password, which is one
+    // account's credential, only that account is configured.
+    let selected: Vec<Account> = match &app_password {
+        Some(_) if found.len() > 1 => {
+            println!(
+                "note: an app password belongs to one account; using {}",
+                found[0].identity
+            );
+            vec![found[0].clone()]
+        }
+        _ => found.clone(),
+    };
 
     let credential = match app_password {
         Some(file) => {
@@ -476,11 +563,16 @@ pub fn setup(app_password: Option<PathBuf>, maildir: Option<PathBuf>, force: boo
     std::fs::create_dir_all(&paths.maildir)
         .with_context(|| format!("could not create {}", paths.maildir.display()))?;
 
-    let text = render_mbsyncrc(&account, &paths, &credential);
+    let text = render_mbsyncrc(&selected, &paths, &credential);
     std::fs::write(&paths.config, &text)
         .with_context(|| format!("could not write {}", paths.config.display()))?;
 
-    println!("account:  {}", account.identity);
+    for account in &selected {
+        let root = account_root(&paths.maildir, &account.identity, selected.len() > 1);
+        std::fs::create_dir_all(&root)
+            .with_context(|| format!("could not create {}", root.display()))?;
+        println!("account:  {}  ->  {}", account.identity, root.display());
+    }
     println!("config:   {}", paths.config.display());
     println!("maildir:  {}", paths.maildir.display());
     match enable_timer() {
@@ -568,7 +660,7 @@ mod tests {
         // `[Gmail]/Sent Mail` unquoted ends at the space, and mbsync
         // then syncs a folder called `[Gmail]/Sent`, which does not
         // exist — reporting success and copying nothing.
-        let text = render_mbsyncrc(&account(), &paths(), &Credential::OnlineAccount);
+        let text = render_mbsyncrc(&[account()], &paths(), &Credential::OnlineAccount);
         assert!(
             text.contains(r#"Far :lisa-remote:"[Gmail]/Sent Mail""#),
             "{text}"
@@ -581,7 +673,7 @@ mod tests {
         // The invariant worth a test: every channel refuses to expunge
         // and refuses to remove. A first sync release is the worst place
         // to discover that a filename bug propagates.
-        let text = render_mbsyncrc(&account(), &paths(), &Credential::OnlineAccount);
+        let text = render_mbsyncrc(&[account()], &paths(), &Credential::OnlineAccount);
         let channels = text.matches("Channel ").count() - 1; // minus the Group's list header
         assert!(channels >= 5, "expected the gmail folder set: {text}");
         assert_eq!(text.matches("Expunge None").count(), GMAIL_FOLDERS.len());
@@ -596,14 +688,20 @@ mod tests {
     fn all_mail_is_not_synced() {
         // It holds a copy of every message in every other folder:
         // syncing it doubles the disk and shows everything twice.
-        let text = render_mbsyncrc(&account(), &paths(), &Credential::OnlineAccount);
+        let text = render_mbsyncrc(&[account()], &paths(), &Credential::OnlineAccount);
         assert!(!text.contains("All Mail"), "{text}");
     }
 
     #[test]
     fn the_token_is_fetched_per_run_and_never_written_down() {
-        let text = render_mbsyncrc(&account(), &paths(), &Credential::OnlineAccount);
-        assert!(text.contains(r#"PassCmd "lisa mail token""#), "{text}");
+        let text = render_mbsyncrc(&[account()], &paths(), &Credential::OnlineAccount);
+        // Names WHICH account: with several connected, a helper that
+        // has to guess will eventually guess wrong and authenticate one
+        // mailbox with another's token.
+        assert!(
+            text.contains(r#"PassCmd "lisa mail token --account account_1785335038_0""#),
+            "{text}"
+        );
         assert!(text.contains("AuthMechs XOAUTH2"), "{text}");
         // An access token lasts about an hour. A config carrying one
         // would work exactly once and then look like a broken account.
@@ -618,7 +716,7 @@ mod tests {
         let credential = Credential::AppPassword {
             file: PathBuf::from("/home/lisa/.mail-password"),
         };
-        let text = render_mbsyncrc(&account(), &paths(), &credential);
+        let text = render_mbsyncrc(&[account()], &paths(), &credential);
         assert!(text.contains("AuthMechs LOGIN"), "{text}");
         assert!(
             text.contains(r#"PassCmd "cat /home/lisa/.mail-password""#),
@@ -631,12 +729,21 @@ mod tests {
     fn tls_follows_what_the_account_actually_said() {
         let mut a = account();
         assert!(
-            render_mbsyncrc(&a, &paths(), &Credential::OnlineAccount).contains("TLSType IMAPS")
+            render_mbsyncrc(
+                std::slice::from_ref(&a),
+                &paths(),
+                &Credential::OnlineAccount
+            )
+            .contains("TLSType IMAPS")
         );
         // ImapUseSsl=false means STARTTLS on 143 — asserting IMAPS there
         // would fail to connect at all.
         a.imap_ssl = false;
-        let text = render_mbsyncrc(&a, &paths(), &Credential::OnlineAccount);
+        let text = render_mbsyncrc(
+            std::slice::from_ref(&a),
+            &paths(),
+            &Credential::OnlineAccount,
+        );
         assert!(text.contains("TLSType STARTTLS"), "{text}");
         // `TLSType IMAPS`, not `IMAPS` — the substring also occurs in
         // `IMAPStore`, which made the first version of this assertion
@@ -648,12 +755,110 @@ mod tests {
     fn a_non_gmail_server_does_not_get_gmails_folder_names() {
         let mut a = account();
         a.imap_host = "imap.fastmail.com".into();
-        let text = render_mbsyncrc(&a, &paths(), &Credential::OnlineAccount);
+        let text = render_mbsyncrc(
+            std::slice::from_ref(&a),
+            &paths(),
+            &Credential::OnlineAccount,
+        );
         assert!(!text.contains("[Gmail]"), "{text}");
         assert!(text.contains(r#"Far :lisa-remote:"Sent""#), "{text}");
         // …and googlemail is gmail.
         a.imap_host = "imap.googlemail.com".into();
-        assert!(render_mbsyncrc(&a, &paths(), &Credential::OnlineAccount).contains("[Gmail]"));
+        assert!(
+            render_mbsyncrc(
+                std::slice::from_ref(&a),
+                &paths(),
+                &Credential::OnlineAccount
+            )
+            .contains("[Gmail]")
+        );
+    }
+
+    fn second() -> Account {
+        Account {
+            id: "account_1785447543_1".into(),
+            identity: "other@gmail.test".into(),
+            imap_host: "imap.gmail.com".into(),
+            imap_user: "other@gmail.test".into(),
+            imap_ssl: true,
+        }
+    }
+
+    #[test]
+    fn two_accounts_never_share_a_maildir() {
+        // The failure this prevents is unrecoverable by hand: two
+        // mailboxes syncing into one folder, with no way afterwards to
+        // tell which message came from which account.
+        let text = render_mbsyncrc(&[account(), second()], &paths(), &Credential::OnlineAccount);
+        assert!(
+            text.contains("Path /home/lisa/Mail/someone_at_example.test/"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Path /home/lisa/Mail/other_at_gmail.test/"),
+            "{text}"
+        );
+        // …and each fetches its own credential.
+        assert!(text.contains("--account account_1785335038_0"), "{text}");
+        assert!(text.contains("--account account_1785447543_1"), "{text}");
+    }
+
+    #[test]
+    fn one_account_keeps_the_flat_layout_it_already_has() {
+        // A single account must not be moved into a subdirectory: mail
+        // is already synced there, and silently relocating somebody's
+        // Maildir is not a migration, it is a disappearance.
+        let text = render_mbsyncrc(&[account()], &paths(), &Credential::OnlineAccount);
+        assert!(text.contains("Path /home/lisa/Mail/\n"), "{text}");
+        assert!(!text.contains("someone_at_example.test"), "{text}");
+        assert_eq!(
+            account_root(Path::new("/m"), "a@b.test", false),
+            PathBuf::from("/m")
+        );
+        assert_eq!(
+            account_root(Path::new("/m"), "a@b.test", true),
+            PathBuf::from("/m/a_at_b.test")
+        );
+    }
+
+    #[test]
+    fn every_channel_name_is_unique_across_accounts() {
+        // mbsync channels share one namespace. Two accounts both naming
+        // a channel `inbox` is a config that parses and syncs one
+        // mailbox twice.
+        let text = render_mbsyncrc(&[account(), second()], &paths(), &Credential::OnlineAccount);
+        let names: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("Channel "))
+            .collect();
+        let unique: std::collections::HashSet<&&str> = names.iter().collect();
+        // Each channel is declared once and listed once in the group.
+        assert_eq!(names.len(), unique.len() * 2, "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("someone_at_example.test-")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn an_address_becomes_a_name_a_person_can_recognise() {
+        // The Maildir is a directory somebody will open in a file
+        // manager one day.
+        assert_eq!(slug("you@example.com"), "you_at_example.com");
+        assert_eq!(slug("Odd Name+tag@x.test"), "Odd_Name_tag_at_x.test");
+        assert_eq!(slug("../../etc/passwd"), ".._.._etc_passwd");
+        assert_eq!(slug(""), "account");
+        // No separator survives, so a slug can never climb out of the
+        // Maildir root.
+        for s in ["a/b@c", "a\\b@c", "..", "a\0b"] {
+            let out = slug(s);
+            assert!(
+                !out.contains('/') && !out.contains('\\') && out != "..",
+                "{s} -> {out}"
+            );
+        }
     }
 
     #[test]
