@@ -266,7 +266,7 @@ package_lisa-shell() {
     # but two settings surfaces on one machine is how the wrong one gets
     # edited.
     cp -a shell/overlay-extension shell/launcher shell/desktop shell/ledger-app \
-        shell/assistant "$share/"
+        shell/assistant shell/consent "$share/"
     # Surfer (ADR-0037) and Mail: Lisa apps, riding the same GJS tree.
     # lisa-app resolves entries relative to $share, so "surfer/..." and
     # "mail/..." work.
@@ -291,6 +291,17 @@ package_lisa-shell() {
     # D-Bus activation for the headless overlay backend (§5.7.1).
     install -Dm644 shell/overlay-extension/backend/dev.lisaos.Overlay1.service \
         "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Overlay1.service"
+    # The consent surface (issue #145, ADR-0035 §4). agentd trusts
+    # whoever owns dev.lisaos.Consent1 to answer for the human, and
+    # refuses a Modal approval from the peer that made the request. Until
+    # this file exists on a device that check has nothing to point at:
+    # the name is unowned, every confirmation lands in the Absent branch,
+    # and the requester answers its own call. That is the availability
+    # fallback, not the safety property — and it is the third time a
+    # component has been built, packaged and left out of the image
+    # (lisa-portal was #153).
+    install -Dm644 shell/consent/dev.lisaos.Consent1.service \
+        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Consent1.service"
     # Ledger app launcher entry (§5.7.6).
     install -Dm644 shell/ledger-app/app.lisaos.LedgerApp.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.LedgerApp.desktop"

@@ -325,6 +325,23 @@ jobs:
             echo "      /usr/lib/lisa/persist-identity.sh is missing or not executable"
             fail=1
           }
+          # Every D-Bus name a daemon TRUSTS must have an activation file
+          # on the image, or the trust check silently has nothing to
+          # point at. agentd refuses a Modal approval from the peer that
+          # requested it and defers to whoever owns dev.lisaos.Consent1;
+          # with no activation file that name is unowned, every
+          # confirmation lands in the "no surface exists" branch, and the
+          # requester answers its own call. Nothing logs a problem —
+          # which is exactly how lisa-portal (#153) and this (#145)
+          # both shipped absent.
+          for svc in dev.lisaos.Consent1 dev.lisaos.Overlay1; do
+            [ -f "mnt-pull/usr/share/dbus-1/services/$svc.service" ] || {
+              echo "FAIL: no D-Bus activation file for $svc"
+              echo "      A trusted name with no owner is not a closed door;"
+              echo "      it is a check with nothing behind it."
+              fail=1
+            }
+          done
           # A desktop with Online Accounts and no Secret Service is worse
           # than one without Online Accounts: the account is added, the
           # panel says connected, and every consumer fails with "Failed to
