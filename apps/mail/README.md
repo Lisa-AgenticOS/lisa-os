@@ -54,6 +54,15 @@ $HOME/Mail/            # or $LISA_MAILDIR
 The consequence is honest: Mail shows what has been synced, and says so
 when there is nothing rather than pretending to be offline.
 
+`isync` is in the image, because "somebody else's job" only works if
+somebody else is on the disk — and an immutable root cannot install one
+later. Nothing wires it up yet: there is no `lisa mail setup`, no
+generated `mbsyncrc`, and no bridge from Settings → Online Accounts to
+mbsync's credentials. **A connected account does not put mail in the
+Maildir today.** Writing that bridge is issue #155, and it is blocked on
+#154 — the image ships no Secret Service, so GOA accepts an account it
+can never hand a token for.
+
 ## How it works
 
 | file | what |

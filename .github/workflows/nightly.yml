@@ -325,6 +325,39 @@ jobs:
             echo "      /usr/lib/lisa/persist-identity.sh is missing or not executable"
             fail=1
           }
+          # A desktop with Online Accounts and no Secret Service is worse
+          # than one without Online Accounts: the account is added, the
+          # panel says connected, and every consumer fails with "Failed to
+          # retrieve credentials from the keyring". That is what a
+          # connected Google account did on the field iMac on 2026-07-30.
+          #
+          # Implication, not presence — this job also builds the minimal
+          # image, where gdm is legitimately absent (same reasoning as
+          # check_enabled above).
+          if [ -e mnt-pull/usr/bin/gdm ]; then
+            [ -x mnt-pull/usr/bin/gnome-keyring-daemon ] || {
+              echo "FAIL: the image ships gdm but no Secret Service"
+              echo "      (gnome-keyring-daemon). Settings -> Online Accounts"
+              echo "      will accept an account it can never hand a token for."
+              fail=1
+            }
+            # Arch's gdm calls this from gdm-password AND gdm-autologin as
+            # `optional`, so a missing module fails silently at login and
+            # the keyring is simply never unlocked.
+            ls mnt-pull/usr/lib/security/pam_gnome_keyring.so >/dev/null 2>&1 || {
+              echo "FAIL: pam_gnome_keyring.so missing — PAM references it as"
+              echo "      optional, so the login keyring would never unlock."
+              fail=1
+            }
+            # The Mail app reads a Maildir and says so; mbsync is the
+            # thing that fills one. A README telling the user to run a
+            # syncer that is not on the disk is the same defect as
+            # documenting an unbuilt feature.
+            [ -x mnt-pull/usr/bin/mbsync ] || {
+              echo "FAIL: no mbsync — apps/mail has nothing to read from"
+              fail=1
+            }
+          fi
           sudo umount mnt-pull
           sudo losetup -d "$LOOP"
           [ "$fail" -eq 0 ] || exit 1
