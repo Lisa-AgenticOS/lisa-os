@@ -105,6 +105,36 @@ function listDir(path) {
     return out;
 }
 
+/// How many messages the list draws before you ask for more.
+///
+/// 50 is a screenful and a bit. The number that matters is not this one
+/// but the one it replaced: "all of them", which on a real inbox meant
+/// 3,758 file reads before the first pixel.
+const PAGE = 50;
+
+/// Bytes read per message when searching.
+///
+/// Headers are at the top of the file and a preview needs one paragraph.
+/// 16 KiB covers both with room to spare, and turns a full-folder search
+/// from "read every byte on disk" into "read the front of each file".
+const SEARCH_HEAD = 16384;
+
+/// Read at most `max` bytes from a file.
+///
+/// Whole-file reads are what made a real mailbox unusable: an HTML
+/// newsletter with an inline image is megabytes, and the list needs its
+/// first line.
+function readHead(path, max) {
+    try {
+        const stream = Gio.File.new_for_path(path).read(null);
+        const bytes = stream.read_bytes(max, null);
+        stream.close(null);
+        return new TextDecoder('utf-8').decode(bytes.get_data() ?? new Uint8Array());
+    } catch {
+        return '';
+    }
+}
+
 function readFile(path) {
     try {
         const [ok, bytes] = GLib.file_get_contents(path);
@@ -135,13 +165,14 @@ class Store {
         return [...known, ...rest];
     }
 
-    /// Message summaries for one folder, grouped and newest first.
+    /// The cheap half: what the filenames alone can tell us.
     ///
-    /// Headers are read for every message because the grouping needs
-    /// them; the body is read too, for the preview line. That is one
-    /// file read per message and it is what makes the list useful — a
-    /// list without previews is a list of subjects.
-    messages(folder) {
+    /// Opens nothing. Flags, delivery time and identity all live in the
+    /// Maildir name, so ordering a folder and counting its unread costs
+    /// one directory listing however large the folder is. A real inbox
+    /// is 3,758 messages — reading every one of them to draw a window
+    /// froze the app until it was killed.
+    index(folder) {
         const entries = [];
         for (const dir of ['cur', 'new']) {
             for (const e of listDir(`${this.root}/${folder}/${dir}`)) {
@@ -149,20 +180,71 @@ class Store {
                     entries.push({dir, name: e.name});
             }
         }
-        return listFolder(folder, entries).map((m) => {
-            const raw = readFile(messagePath(this.root, folder, m.dir, m.filename) ?? '');
-            const {headerText, body} = splitMessage(raw);
-            const headers = parseHeaders(headerText);
-            const from = parseAddress(headers.get('from'));
-            const full = {
-                ...m,
-                from,
-                subject: decodeSubject(headers.get('subject')),
-                date: headers.get('date'),
-                preview: previewOf(bodyOf(raw, body)),
-            };
-            return {...full, group: classify(full, headers)};
-        });
+        return listFolder(folder, entries);
+    }
+
+    /// The expensive half, for one message: headers, sender, preview.
+    ///
+    /// `head` bounds the read. Headers live at the top of the file and a
+    /// preview only needs the first paragraph, so a 4 MB message with a
+    /// base64 attachment costs the same as a short one. Opening the
+    /// message for real still reads all of it — see `message()`.
+    summary(folder, m, head = 0) {
+        const path = messagePath(this.root, folder, m.dir, m.filename) ?? '';
+        const raw = head > 0 ? readHead(path, head) : readFile(path);
+        const {headerText, body} = splitMessage(raw);
+        const headers = parseHeaders(headerText);
+        const from = parseAddress(headers.get('from'));
+        const full = {
+            ...m,
+            from,
+            subject: decodeSubject(headers.get('subject')),
+            date: headers.get('date'),
+            preview: previewOf(bodyOf(raw, body)),
+        };
+        return {...full, group: classify(full, headers)};
+    }
+
+    /// Message summaries for one folder, newest first, at most `limit`.
+    ///
+    /// Paged on purpose. The list is the first thing drawn and nobody
+    /// reads the four-thousandth row before the first.
+    messages(folder, limit = PAGE) {
+        return this.index(folder)
+            .slice(0, Math.max(0, limit))
+            .map((m) => this.summary(folder, m));
+    }
+
+    /// How many messages the folder holds, and how many are unread —
+    /// both from the index, so the sidebar tells the truth about the
+    /// whole folder while the list shows a page of it.
+    counts(folder) {
+        const index = this.index(folder);
+        return {total: index.length, unread: unreadCount(index)};
+    }
+
+    /// Search the WHOLE folder, not the page.
+    ///
+    /// A search that only looked at what had already been drawn would be
+    /// a filter wearing a search's clothes, and would answer "no
+    /// results" for a message sitting on disk. Every message is
+    /// considered; each costs a bounded header read rather than a whole
+    /// file.
+    search(folder, query, limit = 200) {
+        const q = String(query).toLowerCase().trim();
+        if (!q)
+            return [];
+        const out = [];
+        for (const m of this.index(folder)) {
+            const full = this.summary(folder, m, SEARCH_HEAD);
+            const hay = `${full.subject} ${full.from.name} ${full.from.address} ${full.preview}`;
+            if (hay.toLowerCase().includes(q)) {
+                out.push(full);
+                if (out.length >= limit)
+                    break;
+            }
+        }
+        return out;
     }
 
     /// One message, fully parsed.
@@ -210,6 +292,9 @@ function decodeSubject(value) {
 
 let store = null;
 let currentFolder = 'INBOX';
+/// How many of the current folder are drawn. Reset by loadFolder, grown
+/// by the "load more" row.
+let shownLimit = PAGE;
 let listBox = null;
 let readerTitle = null;
 let readerFrom = null;
@@ -307,15 +392,17 @@ function groupHeader(name, count) {
     return row;
 }
 
-function loadFolder(folder) {
+function loadFolder(folder, limit = PAGE) {
     currentFolder = folder;
+    shownLimit = limit;
     let child = listBox.get_first_child();
     while (child) {
         const next = child.get_next_sibling();
         listBox.remove(child);
         child = next;
     }
-    const messages = store.messages(folder);
+    const messages = store.messages(folder, limit);
+    const {total} = store.counts(folder);
     if (messages.length === 0) {
         const empty = new Gtk.ListBoxRow({selectable: false});
         empty.set_child(new Adw.StatusPage({
@@ -332,6 +419,23 @@ function loadFolder(folder) {
         listBox.append(groupHeader(group.name, group.items.length));
         for (const m of group.items)
             listBox.append(messageRow(m));
+    }
+
+    // …and a way to see the rest. It says how many are left rather than
+    // just "more", because "3,708 older" is the number that tells you
+    // whether to scroll or to search.
+    if (total > messages.length) {
+        const more = new Gtk.ListBoxRow({selectable: false});
+        const button = new Gtk.Button({
+            label: `Load ${Math.min(PAGE, total - messages.length)} more ` +
+                `(${total - messages.length} older)`,
+            margin_top: 8, margin_bottom: 8, margin_start: 12, margin_end: 12,
+            css_classes: ['flat'],
+        });
+        button.connect('clicked', () => loadFolder(folder, shownLimit + PAGE));
+        more._loadMore = true;
+        more.set_child(button);
+        listBox.append(more);
     }
 
     // Open the first message. Every mail client does this, and here it
@@ -486,7 +590,9 @@ function reloadFolders() {
             margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6,
         });
         box.append(new Gtk.Label({label: folder, xalign: 0, hexpand: true}));
-        const unread = unreadCount(store.messages(folder));
+        // From the index: the badge is about the folder, not about the
+        // page of it currently drawn.
+        const {unread} = store.counts(folder);
         if (unread > 0)
             box.append(new Gtk.Label({label: String(unread), css_classes: ['dim-label', 'caption']}));
         row.set_child(box);
@@ -539,17 +645,37 @@ app.connect('activate', () => {
     // test would have caught and one screenshot did.
     const listHeader = new Adw.HeaderBar();
     const search = new Gtk.SearchEntry({placeholder_text: 'Search', hexpand: true});
+    // Searches the WHOLE folder, not the page on screen. Filtering drawn
+    // rows would answer "no results" for a message that is on disk and
+    // simply had not been read yet — a filter wearing a search's
+    // clothes. Each candidate costs a bounded header read, so a folder
+    // of thousands is a pause, not a freeze.
     search.connect('search-changed', () => {
-        const q = search.text.toLowerCase().trim();
+        const q = search.text.trim();
+        if (!q) {
+            loadFolder(currentFolder, PAGE);
+            return;
+        }
         let child = listBox.get_first_child();
         while (child) {
-            if (child._message) {
-                const m = child._message;
-                const hay = `${m.subject} ${m.from.name} ${m.from.address} ${m.preview}`.toLowerCase();
-                child.set_visible(!q || hay.includes(q));
-            }
-            child = child.get_next_sibling();
+            const next = child.get_next_sibling();
+            listBox.remove(child);
+            child = next;
         }
+        const hits = store.search(currentFolder, q);
+        if (hits.length === 0) {
+            const none = new Gtk.ListBoxRow({selectable: false});
+            none.set_child(new Adw.StatusPage({
+                title: 'No matches',
+                description: `Nothing in ${currentFolder} matches ${JSON.stringify(q)}.`,
+                vexpand: true,
+            }));
+            listBox.append(none);
+            return;
+        }
+        listBox.append(groupHeader(`Results in ${currentFolder}`, hits.length));
+        for (const m of hits)
+            listBox.append(messageRow(m));
     });
     listHeader.set_title_widget(search);
     const menu = new Gio.Menu();
@@ -857,7 +983,13 @@ function searchMail({query = '', folder = '', limit = 20} = {}) {
     const folders = folder ? [String(folder)] : store.folders();
     const out = [];
     for (const f of folders) {
-        for (const m of store.messages(f)) {
+        // The index first, then a bounded read per candidate. Calling
+        // `messages()` here would either page the tool (a model asking
+        // about mail would be answered from the newest 50 and never
+        // told) or read every byte of a four-thousand-message folder
+        // while the caller waits.
+        for (const entry of store.index(f)) {
+            const m = store.summary(f, entry, SEARCH_HEAD);
             const hay = `${m.subject} ${m.from.name} ${m.from.address} ${m.preview}`.toLowerCase();
             if (q && !hay.includes(q))
                 continue;
