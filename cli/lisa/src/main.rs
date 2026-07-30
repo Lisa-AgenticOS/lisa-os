@@ -9,6 +9,7 @@
 mod agent;
 mod apps;
 mod bus_tools;
+mod doctor;
 mod guard;
 mod skills;
 mod terminal;
@@ -214,6 +215,24 @@ enum Command {
         /// Updates" button runs.
         #[arg(long)]
         check: bool,
+    },
+    /// Collect the state of this machine into one shareable report:
+    /// versions, services, storage, desktop, the Lisa units' warnings,
+    /// and the Ledger tail. Credentials are removed and prompt text is
+    /// withheld unless you ask for it.
+    Doctor {
+        /// Write to a file instead of stdout. Bare `--bundle` picks a
+        /// path in the temp directory and prints it.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        bundle: Option<PathBuf>,
+        /// Include Ledger prompt previews. They are the most useful
+        /// thing in a diagnostic and the most private — read the file
+        /// before sharing it.
+        #[arg(long)]
+        include_previews: bool,
+        /// How many journal lines per unit.
+        #[arg(long, default_value_t = 200)]
+        journal_lines: usize,
     },
     /// Update out-of-image payloads independently of the OS image
     /// (ADR-0020, ADR-0023): fetch, verify, and activate the newest shell
@@ -554,6 +573,11 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Install { target, from, yes } => install_cmd(&target, from, yes),
+        Command::Doctor {
+            bundle,
+            include_previews,
+            journal_lines,
+        } => doctor::run(bundle, include_previews, journal_lines),
         Command::Update { reboot, check } => {
             if check {
                 update_check_cmd()
@@ -1999,7 +2023,11 @@ fn running_image_version() -> Option<String> {
 /// Values are shell-quoted there — `IMAGE_VERSION="20260728.49"` — and an
 /// unstripped quote turns every version comparison into a mismatch, which
 /// would make this report "staged" forever.
-fn os_release_value(text: &str, key: &str) -> Option<String> {
+pub(crate) fn version_line() -> String {
+    format!("lisa {}", env!("CARGO_PKG_VERSION"))
+}
+
+pub(crate) fn os_release_value(text: &str, key: &str) -> Option<String> {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.starts_with('#'))

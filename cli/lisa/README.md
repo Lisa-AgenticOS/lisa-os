@@ -14,6 +14,47 @@ scaffolds a lisa_ui app and runs the loop against `flutter analyze`;
 the forge apps dir on /var and write the `.desktop` entry that puts it in
 the app grid.
 
+**`lisa doctor` — the state of this machine, in one command.**
+
+```
+lisa doctor                    # print the report
+lisa doctor --bundle           # write it to a file and say where
+lisa doctor --bundle report.txt
+lisa doctor --include-previews # add the Ledger's prompt text
+```
+
+Collects versions and boot slot, failed units, the state of every Lisa
+service, storage, the desktop session and its extensions, the Lisa units'
+journal at warning-and-worse, and the Ledger tail. On a machine that is
+not Lisa OS it says so per section rather than failing — `(systemctl is
+not installed here)` is a useful sentence.
+
+It exists because every bug on the reference hardware was diagnosed the
+same way: ssh in, run journalctl, run a probe, read a version. The fix
+was minutes; the finding out was the work, and it needed a shell on the
+machine. A log *viewer* helps whoever is sitting at it; this helps them
+hand the state to someone who is not.
+
+**What it will not include.** A bundle gets pasted into issues and chat
+windows, and it is assembled from exactly the places this OS works to
+keep private: the Ledger holds prompt previews, provider rows have held
+credentials in a URL (#109), journals hold whatever a daemon logged.
+
+So the collection is inverted from a normal log tool — nothing goes in
+unless it is known to be safe:
+
+- prompt previews are **withheld by default**, dropped rather than
+  scrubbed, and `--include-previews` says out loud what it is adding;
+- the journal is filtered to `warning` and worse, because info level is
+  where prompts and URLs live and it is not what a fault looks like;
+- every line passes the redactor: values of keys named like credentials,
+  known key shapes (`sk-`, `ghp_`, `AIza`, JWTs, …), userinfo inside a
+  URL, and `$HOME` → `~`;
+- the file is written `0600`.
+
+It is redacted, not anonymous. It still describes your machine, and the
+command says so when it writes one.
+
 **Agent Bus verbs (PLAN §5.4, ADR-0013):** `lisa tools` lists what apps
 registered; `lisa call` invokes one directly; `lisa do "<plain words>"`
 routes one utterance to exactly one tool call; `lisa undo` reverses the
