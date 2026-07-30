@@ -11,6 +11,7 @@ mod apps;
 mod bus_tools;
 mod doctor;
 mod guard;
+mod mail;
 mod skills;
 mod terminal;
 mod voice;
@@ -216,6 +217,13 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Join a connected mail account to the Maildir the Mail app reads
+    /// (issue #155). Lisa does not speak IMAP itself — this writes the
+    /// mbsync config and fetches the token mbsync authenticates with.
+    Mail {
+        #[command(subcommand)]
+        cmd: MailCmd,
+    },
     /// Collect the state of this machine into one shareable report:
     /// versions, services, storage, desktop, the Lisa units' warnings,
     /// and the Ledger tail. Credentials are removed and prompt text is
@@ -319,6 +327,37 @@ enum Command {
     Completions {
         /// Target shell (bash, zsh, fish, elvish, powershell).
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Subcommand)]
+enum MailCmd {
+    /// Discover the connected account and write the sync config.
+    Setup {
+        /// Authenticate with a provider-issued app password from this
+        /// file instead of an Online Accounts token. Needs no keyring
+        /// and no SASL plugin, and is the only option some providers
+        /// offer.
+        #[arg(long, value_name = "FILE")]
+        app_password: Option<PathBuf>,
+        /// Where the Maildir goes. Defaults to ~/Mail, which is where
+        /// the Mail app looks.
+        #[arg(long, value_name = "DIR")]
+        maildir: Option<PathBuf>,
+        /// Replace a config this command did not write.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Run one sync pass.
+    Sync,
+    /// What is present, what is missing, and which layer is blocking.
+    Status,
+    /// Print a fresh access token. This is what mbsync's PassCmd runs;
+    /// it writes a credential to stdout by design.
+    Token {
+        /// Which account, if more than one has mail enabled.
+        #[arg(long, value_name = "ID")]
+        account: Option<String>,
     },
 }
 
@@ -573,6 +612,16 @@ fn run() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Install { target, from, yes } => install_cmd(&target, from, yes),
+        Command::Mail { cmd } => match cmd {
+            MailCmd::Setup {
+                app_password,
+                maildir,
+                force,
+            } => mail::setup(app_password, maildir, force),
+            MailCmd::Sync => mail::sync(),
+            MailCmd::Status => mail::status(),
+            MailCmd::Token { account } => mail::token(account),
+        },
         Command::Doctor {
             bundle,
             include_previews,

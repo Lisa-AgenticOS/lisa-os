@@ -1,0 +1,892 @@
+// Mail — your mail, and the assistant's view of it (PLAN §5.3, §5.8).
+//
+// Three panes: folders, a grouped message list, and a reading pane. That
+// layout is what every mail client has converged on, and the grouped
+// middle pane is the part worth taking seriously — newsletters,
+// automated notifications and mail a person wrote are three different
+// reading modes, and mixing them is why inboxes feel like work.
+//
+// # What this is for
+//
+// Lisa's reason to have a mail app is not that the world needs another
+// one. It is that `mail` is the context source PLAN §5.3 cares most
+// about and the one nothing has ever fed: the ACL has had a `mail`
+// provenance since M3 with no source to put anything in it, and the
+// prompt-injection machinery escalates on mail provenance with no mail
+// to escalate on. This app is that source.
+//
+// So the Agent Bus tools are not an afterthought bolted on the side.
+// They are half the point, and everything they emit is tagged `mail`
+// (lib/mcp-protocol.js) — which is what makes "read my mail and then do
+// something privileged" ask first.
+//
+// # Sync is somebody else's job
+//
+// Mail reads a **Maildir**. It does not speak IMAP, and will not: an OS
+// whose defining constraint is egress control should not grow its own
+// network mail client when `mbsync`, `offlineimap` and `notmuch` are
+// mature and already write the format. See lib/maildir.js.
+
+imports.gi.versions.Gtk = '4.0';
+imports.gi.versions.Adw = '1';
+
+import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
+import Gtk from 'gi://Gtk';
+
+import {decodeWords, parseAddress, parseHeaders, readableBody, splitMessage} from './lib/rfc822.js';
+import {listFolder, messagePath, previewOf} from './lib/maildir.js';
+import {classify, grouped, unreadCount} from './lib/smart.js';
+import {actionsFor, flagChange, moveTo} from './lib/actions.js';
+import {McpServer} from './lib/mcp.js';
+import {
+    CONFIG_NAME, accountRows, parseConfig, resolveMaildir, serializeConfig,
+    storeSummary, syncStatus, validateMaildir,
+} from './lib/settings.js';
+
+const APP_ID = 'app.lisaos.Mail';
+
+function configPath() {
+    return GLib.build_filenamev([GLib.get_user_config_dir(), CONFIG_NAME]);
+}
+
+function loadConfig() {
+    return parseConfig(readFile(configPath()));
+}
+
+/// Write the config, and say so if it fails.
+///
+/// Returns a boolean rather than throwing: a settings page that cannot
+/// save is a thing the user needs told, not an exception in a log they
+/// will never read.
+function saveConfig(config) {
+    const path = configPath();
+    try {
+        const dir = Gio.File.new_for_path(path).get_parent();
+        if (dir && !dir.query_exists(null))
+            dir.make_directory_with_parents(null);
+        return GLib.file_set_contents(path, serializeConfig(config));
+    } catch (e) {
+        logError(e, 'mail: could not save settings');
+        return false;
+    }
+}
+
+/// Where the Maildir lives: `LISA_MAILDIR`, then the saved setting,
+/// then `~/Mail`. Which one won is carried along so the settings page
+/// can show a path *and* the reason it is that path.
+function maildirRoot(config = null) {
+    return resolveMaildir({
+        env: GLib.getenv('LISA_MAILDIR'),
+        config: config ?? loadConfig(),
+        home: GLib.get_home_dir(),
+    });
+}
+
+/// Folders, in the order a person thinks of them rather than
+/// alphabetically: the inbox, then what you sent, then the rest.
+const FOLDER_ORDER = ['INBOX', 'Sent', 'Drafts', 'Archive', 'Spam', 'Trash'];
+
+function listDir(path) {
+    const out = [];
+    let dir;
+    try {
+        dir = Gio.File.new_for_path(path).enumerate_children(
+            'standard::name,standard::type', Gio.FileQueryInfoFlags.NONE, null);
+    } catch {
+        return out;
+    }
+    let info;
+    while ((info = dir.next_file(null)) !== null)
+        out.push({name: info.get_name(), isDir: info.get_file_type() === Gio.FileType.DIRECTORY});
+    return out;
+}
+
+function readFile(path) {
+    try {
+        const [ok, bytes] = GLib.file_get_contents(path);
+        if (!ok)
+            return '';
+        return new TextDecoder('utf-8').decode(bytes);
+    } catch {
+        return '';
+    }
+}
+
+/// The mail store: a Maildir on disk, read on demand.
+///
+/// Deliberately not a cache or a database. A folder is a directory
+/// listing and a message is a file; the expensive thing (parsing a
+/// body) happens when a message is opened, not when a folder is.
+class Store {
+    constructor(root) {
+        this.root = root;
+    }
+
+    folders() {
+        const found = listDir(this.root)
+            .filter((e) => e.isDir && !e.name.startsWith('.'))
+            .map((e) => e.name);
+        const known = FOLDER_ORDER.filter((f) => found.includes(f));
+        const rest = found.filter((f) => !FOLDER_ORDER.includes(f)).sort();
+        return [...known, ...rest];
+    }
+
+    /// Message summaries for one folder, grouped and newest first.
+    ///
+    /// Headers are read for every message because the grouping needs
+    /// them; the body is read too, for the preview line. That is one
+    /// file read per message and it is what makes the list useful — a
+    /// list without previews is a list of subjects.
+    messages(folder) {
+        const entries = [];
+        for (const dir of ['cur', 'new']) {
+            for (const e of listDir(`${this.root}/${folder}/${dir}`)) {
+                if (!e.isDir)
+                    entries.push({dir, name: e.name});
+            }
+        }
+        return listFolder(folder, entries).map((m) => {
+            const raw = readFile(messagePath(this.root, folder, m.dir, m.filename) ?? '');
+            const {headerText, body} = splitMessage(raw);
+            const headers = parseHeaders(headerText);
+            const from = parseAddress(headers.get('from'));
+            const full = {
+                ...m,
+                from,
+                subject: decodeSubject(headers.get('subject')),
+                date: headers.get('date'),
+                preview: previewOf(bodyOf(raw, body)),
+            };
+            return {...full, group: classify(full, headers)};
+        });
+    }
+
+    /// One message, fully parsed.
+    message(folder, unique) {
+        for (const dir of ['cur', 'new']) {
+            for (const e of listDir(`${this.root}/${folder}/${dir}`)) {
+                if (!e.name.startsWith(unique))
+                    continue;
+                const path = messagePath(this.root, folder, dir, e.name);
+                if (!path)
+                    continue;
+                const raw = readFile(path);
+                const {headerText, body} = splitMessage(raw);
+                const headers = parseHeaders(headerText);
+                return {
+                    folder,
+                    id: `${folder}/${unique}`,
+                    from: parseAddress(headers.get('from')),
+                    to: headers.get('to'),
+                    subject: decodeSubject(headers.get('subject')),
+                    date: headers.get('date'),
+                    body: bodyOf(raw, body),
+                };
+            }
+        }
+        return null;
+    }
+}
+
+function bodyOf(raw, fallback) {
+    const text = readableBody(raw);
+    return text.trim() ? text : fallback;
+}
+
+/// A subject, decoded and never empty.
+///
+/// Written first as `parseAddress(value).address`, which produced the
+/// right string for the wrong reason — `parseAddress` decodes on the
+/// way in and returns the whole text when there is no `<…>` — and would
+/// have mangled any subject containing angle brackets. A subject is not
+/// an address.
+function decodeSubject(value) {
+    return decodeWords(value).trim() || '(no subject)';
+}
+
+let store = null;
+let currentFolder = 'INBOX';
+let listBox = null;
+let readerTitle = null;
+let readerFrom = null;
+let readerBody = null;
+let folderList = null;
+let readerHeader = null;
+let readerActions = null;
+let openMessage = null;
+
+const app = new Adw.Application({application_id: APP_ID});
+
+/// A window that fills most of the screen, within reason.
+///
+/// Clamped at the top so it does not become unusable on an ultrawide,
+/// and at the bottom so it stays a three-pane window on a laptop.
+function window_default_size() {
+    let w = 1600;
+    let h = 1000;
+    try {
+        const monitor = Gdk.Display.get_default()?.get_monitors()?.get_item(0);
+        const geo = monitor?.get_geometry();
+        if (geo) {
+            w = Math.max(1100, Math.min(2000, Math.round(geo.width * 0.8)));
+            h = Math.max(700, Math.min(1300, Math.round(geo.height * 0.85)));
+        }
+    } catch {
+        // No display yet, or a backend that will not say: the defaults
+        // above are a reasonable window on any of them.
+    }
+    return {width: w, height: h};
+}
+
+/// One row in the message list: sender, time, subject, preview.
+///
+/// Unread is carried by weight and a dot rather than colour alone —
+/// colour is the first thing lost to a theme or to a person who cannot
+/// distinguish it.
+function messageRow(msg) {
+    const row = new Gtk.ListBoxRow();
+    row._message = msg;
+    const box = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        margin_top: 8, margin_bottom: 8, margin_start: 12, margin_end: 12, spacing: 2,
+    });
+
+    const top = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL, spacing: 6});
+    if (!msg.seen) {
+        const dot = new Gtk.Label({label: '●'});
+        dot.add_css_class('accent');
+        top.append(dot);
+    }
+    const sender = new Gtk.Label({
+        label: msg.from.name || msg.from.address || '(unknown sender)',
+        xalign: 0, hexpand: true, ellipsize: 3,
+    });
+    sender.add_css_class(msg.seen ? 'dim-label' : 'heading');
+    top.append(sender);
+    top.append(new Gtk.Label({label: shortTime(msg.date), css_classes: ['dim-label', 'caption']}));
+    box.append(top);
+
+    const subject = new Gtk.Label({label: msg.subject, xalign: 0, ellipsize: 3});
+    if (!msg.seen)
+        subject.add_css_class('heading');
+    box.append(subject);
+
+    if (msg.preview) {
+        const preview = new Gtk.Label({
+            label: msg.preview, xalign: 0, ellipsize: 3, lines: 2, wrap: true,
+            css_classes: ['dim-label', 'caption'],
+        });
+        box.append(preview);
+    }
+    row.set_child(box);
+    return row;
+}
+
+function shortTime(date) {
+    if (!date)
+        return '';
+    const m = String(date).match(/(\d{1,2}):(\d{2})/);
+    return m ? `${m[1]}:${m[2]}` : String(date).split(' ').slice(1, 3).join(' ');
+}
+
+function groupHeader(name, count) {
+    const row = new Gtk.ListBoxRow({selectable: false, activatable: false});
+    const box = new Gtk.Box({
+        orientation: Gtk.Orientation.HORIZONTAL, spacing: 8,
+        margin_top: 14, margin_bottom: 4, margin_start: 12, margin_end: 12,
+    });
+    const label = new Gtk.Label({label: name, xalign: 0, hexpand: true});
+    label.add_css_class('heading');
+    box.append(label);
+    box.append(new Gtk.Label({label: String(count), css_classes: ['dim-label', 'caption']}));
+    row.set_child(box);
+    return row;
+}
+
+function loadFolder(folder) {
+    currentFolder = folder;
+    let child = listBox.get_first_child();
+    while (child) {
+        const next = child.get_next_sibling();
+        listBox.remove(child);
+        child = next;
+    }
+    const messages = store.messages(folder);
+    if (messages.length === 0) {
+        const empty = new Gtk.ListBoxRow({selectable: false});
+        empty.set_child(new Adw.StatusPage({
+            title: 'Nothing here',
+            description: `No mail in ${folder}. Mail reads a Maildir at ${store.root} — ` +
+                'sync one with mbsync or offlineimap and it will appear.',
+            vexpand: true,
+        }));
+        listBox.append(empty);
+        clearReader();
+        return;
+    }
+    for (const group of grouped(messages)) {
+        listBox.append(groupHeader(group.name, group.items.length));
+        for (const m of group.items)
+            listBox.append(messageRow(m));
+    }
+
+    // Open the first message. Every mail client does this, and here it
+    // is load-bearing rather than a nicety: the action buttons live in
+    // the reading pane's header, so a pane with nothing open is an app
+    // that appears to have no actions at all. That is exactly how this
+    // was reported — "still no icons" — and no amount of checking icon
+    // names would have found it.
+    //
+    // Opening does NOT mark the message read. `S` is set by the button,
+    // by a person deciding they have read it; a client that flips the
+    // flag because a pane happened to render it is a client that eats
+    // your unread count.
+    let row = listBox.get_first_child();
+    while (row && !row._message)
+        row = row.get_next_sibling();
+    if (row) {
+        listBox.select_row(row);
+        showMessage(row._message);
+    } else {
+        clearReader();
+    }
+}
+
+/// Empty the reading pane and take its toolbar away with it.
+///
+/// The toolbar goes too: buttons for a message that is no longer open
+/// would still act on it, and the first one clicked would rename a file
+/// the user cannot see.
+function clearReader() {
+    openMessage = null;
+    readerTitle.set_label('');
+    readerFrom.set_label('');
+    readerBody.buffer.set_text('', -1);
+    if (readerActions) {
+        readerHeader.remove(readerActions);
+        readerActions = null;
+    }
+}
+
+/// Rebuild the reading-pane toolbar for the open message.
+///
+/// Built from `actionsFor` rather than eight hand-written buttons: what
+/// each one does is then testable without a window, and the labels
+/// cannot drift from the state they describe.
+function buildToolbar(msg) {
+    if (readerActions) {
+        readerHeader.remove(readerActions);
+        readerActions = null;
+    }
+    readerActions = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL, spacing: 4});
+    readerActions.add_css_class('linked');
+    // The icon theme is not ours, and Adwaita has been retiring legacy
+    // names for several releases — `box-symbolic` was never in it at
+    // all. An icon name that does not resolve gives you a button with
+    // nothing in it, which is indistinguishable from no button. So ask
+    // first, and fall back to the label: an "Archive" button is worse
+    // than an icon and far better than a gap.
+    const icons = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
+    for (const action of actionsFor(msg, store.folders())) {
+        const known = action.icon && icons?.has_icon(action.icon);
+        const button = new Gtk.Button({
+            ...(known ? {icon_name: action.icon} : {label: action.label}),
+            tooltip_text: action.why ? `${action.label} — ${action.why}` : action.label,
+            sensitive: action.enabled !== false,
+        });
+        if (!known)
+            printerr(`mail: no icon ${JSON.stringify(action.icon)}, showing the label`);
+        if (action.active)
+            button.add_css_class('suggested-action');
+        button.connect('clicked', () => runAction(msg, action));
+        readerActions.append(button);
+    }
+    readerHeader.pack_start(readerActions);
+}
+
+/// Perform one action, then reload so the list reflects it.
+///
+/// Reloading the whole folder rather than patching the row: a rename
+/// changes the message's filename, which is its identity on disk, and
+/// a half-updated row that still remembers the old name is a row whose
+/// next action fails.
+function runAction(msg, action) {
+    try {
+        if (action.kind === 'flag') {
+            const change = flagChange(msg, action.flag, action.on);
+            if (change)
+                applyMove(msg.folder, change, msg.folder);
+        } else if (action.kind === 'move' && action.enabled !== false) {
+            const mv = moveTo(msg, action.folder);
+            if (mv)
+                applyMove(msg.folder, mv, mv.toFolder);
+        } else {
+            return;
+        }
+    } catch (e) {
+        logError(e, `mail: ${action.id} failed`);
+        return;
+    }
+    // Reload, which re-opens whatever is now at the top — the message
+    // after the one just filed. Clearing the pane instead would punish
+    // the user for acting: archive three messages and you would be
+    // staring at a blank pane three times.
+    loadFolder(currentFolder);
+}
+
+/// The rename itself. One `Gio.File.move`, no fallback copy: a copy
+/// that half-succeeds leaves the message in two folders, and a maildir
+/// with a duplicate is worse than one with a failed action.
+function applyMove(fromFolder, change, toFolder) {
+    const from = messagePath(store.root, fromFolder, change.fromDir, change.fromName);
+    const to = messagePath(store.root, toFolder, change.toDir, change.toName);
+    if (!from || !to)
+        throw new Error('refusing a path outside the maildir');
+    GLib.mkdir_with_parents(`${store.root}/${toFolder}/${change.toDir}`, 0o700);
+    Gio.File.new_for_path(from).move(
+        Gio.File.new_for_path(to), Gio.FileCopyFlags.NONE, null, null);
+}
+
+function showMessage(msg) {
+    openMessage = msg;
+    buildToolbar(msg);
+    const full = store.message(msg.folder, msg.unique) ?? msg;
+    readerTitle.set_label(full.subject ?? '');
+    // Both halves of the sender, always: a display name is
+    // attacker-controlled, and `"security@yourbank.com" <evil@x.test>`
+    // is a real shape. Showing the name alone is how that works.
+    const name = full.from?.name;
+    const addr = full.from?.address ?? '';
+    readerFrom.set_label(name ? `${name}  ·  ${addr}` : addr);
+    readerBody.buffer.set_text(full.body ?? '', -1);
+}
+
+/// Rebuild the folder sidebar from the current store.
+///
+/// Separate from `activate` because changing the Maildir in settings
+/// has to take effect without a restart — an app that needs relaunching
+/// to notice its own preference is one people stop trusting the
+/// preference of.
+function reloadFolders() {
+    let child = folderList.get_first_child();
+    while (child) {
+        const next = child.get_next_sibling();
+        folderList.remove(child);
+        child = next;
+    }
+    for (const folder of store.folders()) {
+        const row = new Gtk.ListBoxRow();
+        row._folder = folder;
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL, spacing: 8,
+            margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6,
+        });
+        box.append(new Gtk.Label({label: folder, xalign: 0, hexpand: true}));
+        const unread = unreadCount(store.messages(folder));
+        if (unread > 0)
+            box.append(new Gtk.Label({label: String(unread), css_classes: ['dim-label', 'caption']}));
+        row.set_child(box);
+        folderList.append(row);
+    }
+    const first = folderList.get_row_at_index(0);
+    if (first)
+        folderList.select_row(first);
+    else
+        loadFolder(currentFolder || 'INBOX');
+}
+
+app.connect('activate', () => {
+    const resolved = maildirRoot();
+    store = new Store(resolved.path);
+    store.source = resolved.source;
+
+    // Sized against the monitor rather than a fixed guess: 1280x820 is
+    // a dialog on the 4K panel this was first seen on. Three panes need
+    // room, and a mail window that opens smaller than its own content
+    // reads as a preview of an app.
+    const display = window_default_size();
+    const window = new Adw.ApplicationWindow({
+        application: app, title: 'Mail',
+        default_width: display.width, default_height: display.height,
+    });
+
+    // Pane 1: folders. Populated by reloadFolders() once the rest of
+    // the window exists — it selects a row, which loads a folder, which
+    // needs the list and reading panes to be there already.
+    folderList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
+    folderList.connect('row-selected', (_l, row) => {
+        if (row?._folder)
+            loadFolder(row._folder);
+    });
+
+    const sidebar = new Adw.ToolbarView();
+    sidebar.add_top_bar(new Adw.HeaderBar({title_widget: new Adw.WindowTitle({title: 'Mail'})}));
+    sidebar.set_content(new Gtk.ScrolledWindow({child: folderList, vexpand: true}));
+
+    // Pane 2: the grouped message list.
+    listBox = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
+    listBox.connect('row-activated', (_l, row) => {
+        if (row?._message)
+            showMessage(row._message);
+    });
+    const listPane = new Adw.ToolbarView();
+    // NOT show_title:false. That hides the title WIDGET too, so the
+    // search entry below was created, packed, and invisible — which no
+    // test would have caught and one screenshot did.
+    const listHeader = new Adw.HeaderBar();
+    const search = new Gtk.SearchEntry({placeholder_text: 'Search', hexpand: true});
+    search.connect('search-changed', () => {
+        const q = search.text.toLowerCase().trim();
+        let child = listBox.get_first_child();
+        while (child) {
+            if (child._message) {
+                const m = child._message;
+                const hay = `${m.subject} ${m.from.name} ${m.from.address} ${m.preview}`.toLowerCase();
+                child.set_visible(!q || hay.includes(q));
+            }
+            child = child.get_next_sibling();
+        }
+    });
+    listHeader.set_title_widget(search);
+    const menu = new Gio.Menu();
+    menu.append('Preferences', 'app.preferences');
+    menu.append('About Mail', 'app.about');
+    listHeader.pack_end(new Gtk.MenuButton({
+        icon_name: 'open-menu-symbolic', menu_model: menu, tooltip_text: 'Main menu',
+    }));
+    listPane.add_top_bar(listHeader);
+    listPane.set_content(new Gtk.ScrolledWindow({child: listBox, vexpand: true}));
+
+    // Pane 3: the reading pane.
+    readerTitle = new Gtk.Label({xalign: 0, wrap: true, css_classes: ['title-2']});
+    readerFrom = new Gtk.Label({xalign: 0, css_classes: ['dim-label']});
+    readerBody = new Gtk.TextView({
+        editable: false, cursor_visible: false, wrap_mode: Gtk.WrapMode.WORD_CHAR,
+        left_margin: 16, right_margin: 16, top_margin: 12, bottom_margin: 16,
+        monospace: false,
+    });
+    const readerBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL, spacing: 6,
+        margin_top: 16, margin_start: 16, margin_end: 16,
+    });
+    readerBox.append(readerTitle);
+    readerBox.append(readerFrom);
+    const readerScroll = new Gtk.ScrolledWindow({child: readerBody, vexpand: true});
+    readerBox.append(readerScroll);
+    const readerPane = new Adw.ToolbarView();
+    readerHeader = new Adw.HeaderBar();
+    readerHeader.set_title_widget(new Gtk.Label({label: '', visible: false}));
+    readerPane.add_top_bar(readerHeader);
+    readerPane.set_content(readerBox);
+
+    // Two nested split views: sidebar | (list | reader).
+    const inner = new Adw.OverlaySplitView({
+        sidebar: listPane, content: readerPane,
+        min_sidebar_width: 320, max_sidebar_width: 460, sidebar_width_fraction: 0.34,
+    });
+    const outer = new Adw.OverlaySplitView({
+        sidebar, content: inner,
+        min_sidebar_width: 200, max_sidebar_width: 280, sidebar_width_fraction: 0.18,
+    });
+    window.set_content(outer);
+    reloadFolders();
+
+    const preferences = new Gio.SimpleAction({name: 'preferences'});
+    preferences.connect('activate', () => openPreferences(window));
+    app.add_action(preferences);
+    app.set_accels_for_action('app.preferences', ['<Control>comma']);
+
+    const about = new Gio.SimpleAction({name: 'about'});
+    about.connect('activate', () => {
+        const dialog = new Adw.AboutDialog({
+            application_name: 'Mail', application_icon: APP_ID, version: '0.1',
+            comments: 'Reads a Maildir, and gives the assistant a view of it.',
+        });
+        dialog.present(window);
+    });
+    app.add_action(about);
+
+    // The Agent Bus surface. Started with the window and stopped with
+    // it: socket presence IS tool availability (mcp-bus defers socket
+    // activation), so a dead socket would be a tool that times out.
+    const mcp = new McpServer({
+        searchMail: (args) => searchMail(args),
+        readMessage: (args) => readMessage(args),
+    });
+    mcp.start();
+    window.connect('close-request', () => {
+        mcp.stop();
+        return false;
+    });
+
+    window.present();
+});
+
+// ---------------------------------------------------------------------
+// Settings — a diagnostic before it is a preference sheet.
+//
+// A user connects Google in Settings, opens Mail, and sees nothing.
+// Every layer is behaving exactly as designed and not one of them can
+// say so: GOA holds an account it cannot get a token for, the Maildir is
+// empty because nothing fills it, and an empty folder is the correct
+// thing to draw. The failure lives in the gaps between them, which is
+// where nothing is looking. This page looks there.
+// ---------------------------------------------------------------------
+
+/// Is there a Secret Service on the bus?
+///
+/// Asked because its absence is invisible everywhere else: Online
+/// Accounts will accept an account and then fail to hand out a token
+/// for it, with an error only the consumer ever sees (issue #154).
+///
+/// Both questions matter — a name with no owner may still be
+/// activatable, and a service that starts on demand is present as far
+/// as anything using it is concerned.
+function hasSecretService() {
+    try {
+        const bus = Gio.DBus.session;
+        const owned = bus.call_sync(
+            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+            'NameHasOwner', new GLib.Variant('(s)', ['org.freedesktop.secrets']),
+            new GLib.VariantType('(b)'), Gio.DBusCallFlags.NONE, 1000, null);
+        if (owned.deepUnpack()[0])
+            return true;
+        const names = bus.call_sync(
+            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+            'ListActivatableNames', null,
+            new GLib.VariantType('(as)'), Gio.DBusCallFlags.NONE, 1000, null);
+        return names.deepUnpack()[0].includes('org.freedesktop.secrets');
+    } catch (e) {
+        logError(e, 'mail: could not ask the bus about a secret service');
+        return false;
+    }
+}
+
+/// Connected accounts, as plain facts.
+///
+/// Loaded through a dynamic import so a system without the GOA typelib
+/// — a dev checkout on another distro, the minimal image — shows "no
+/// account connected" instead of failing to open the settings page. The
+/// page's whole job is to work on the machine that is broken.
+/// One property off a D-Bus proxy, unwrapped, or `null`.
+function cached(proxy, name) {
+    try {
+        return proxy?.get_cached_property(name)?.deepUnpack() ?? null;
+    } catch {
+        return null;
+    }
+}
+
+async function goaAccounts() {
+    let Goa;
+    try {
+        Goa = (await import('gi://Goa?version=1.0')).default;
+    } catch {
+        return [];
+    }
+    try {
+        const client = Goa.Client.new_sync(null);
+        return client.get_accounts().map((obj) => {
+            const account = obj.get_account();
+            const mail = obj.get_mail();
+            if (!account)
+                return null;
+            // Read off the D-Bus proxy, not through the GObject
+            // properties. GOA's generated proxies confuse gjs's
+            // property-accessor fast path, which warns per read: "Type
+            // GITypeInfo of property Goa.Account::provider-name does not
+            // match type GITypeInfo of first argument of setter
+            // complete_remove. Falling back to slow path". There are no
+            // get_provider_name()-style methods to use instead — the
+            // cached property is the interface.
+            return {
+                provider: cached(account, 'ProviderName'),
+                identity: cached(account, 'PresentationIdentity') || cached(account, 'Identity'),
+                imapUser: mail ? cached(mail, 'ImapUserName') : '',
+                // An account with no Mail interface at all is a calendar
+                // or contacts account; from here that is the same thing
+                // as mail being switched off.
+                mailDisabled: cached(account, 'MailDisabled') === true || !mail,
+            };
+        }).filter(Boolean);
+    } catch (e) {
+        logError(e, 'mail: could not read online accounts');
+        return [];
+    }
+}
+
+/// Open Settings at the Online Accounts panel.
+///
+/// Launched rather than reimplemented: adding an account is GNOME's
+/// job, involves a browser and an OAuth flow, and duplicating any part
+/// of that here would be a second place for it to be wrong.
+function openOnlineAccounts() {
+    try {
+        GLib.spawn_async(null, ['gnome-control-center', 'online-accounts'], null,
+            GLib.SpawnFlags.SEARCH_PATH, null);
+        return true;
+    } catch (e) {
+        logError(e, 'mail: could not open Settings');
+        return false;
+    }
+}
+
+function openPreferences(parent) {
+    const dialog = new Adw.PreferencesDialog({title: 'Mail Settings'});
+    const page = new Adw.PreferencesPage();
+    dialog.add(page);
+
+    // --- Where the mail is.
+    const location = new Adw.PreferencesGroup({
+        title: 'Maildir',
+        description: 'The folder Mail reads. Something else writes it — see below.',
+    });
+    const resolved = maildirRoot();
+    const pathRow = new Adw.EntryRow({title: 'Folder', text: resolved.path});
+    // An environment variable that a saved setting can override is a
+    // debugging trap, so when one is set the row says so and stops
+    // pretending to be editable.
+    if (resolved.source === 'env') {
+        pathRow.set_sensitive(false);
+        pathRow.set_title('Folder — set by LISA_MAILDIR');
+    }
+    location.add(pathRow);
+
+    const counts = {};
+    const folders = store.folders();
+    for (const f of folders)
+        counts[f] = store.messages(f).length;
+    location.add(new Adw.ActionRow({
+        title: 'On disk now',
+        subtitle: storeSummary(folders, counts),
+    }));
+    page.add(location);
+
+    // --- Why there is, or is not, mail arriving.
+    const sync = new Adw.PreferencesGroup({title: 'Syncing'});
+    const status = syncStatus({
+        mbsync: GLib.find_program_in_path('mbsync') !== null,
+        secretService: hasSecretService(),
+        accounts: [],
+    });
+    const statusRow = new Adw.ActionRow({title: status.title, subtitle: status.detail});
+    statusRow.add_prefix(new Gtk.Image({
+        icon_name: status.kind === 'ok'
+            ? 'emblem-ok-symbolic'
+            : 'dialog-warning-symbolic',
+    }));
+    sync.add(statusRow);
+    page.add(sync);
+
+    // --- Accounts, filled in once GOA answers.
+    const accountsGroup = new Adw.PreferencesGroup({
+        title: 'Accounts',
+        description: 'Connected in Settings, under Online Accounts.',
+    });
+    const openRow = new Adw.ActionRow({
+        title: 'Open Online Accounts', activatable: true,
+    });
+    openRow.add_suffix(new Gtk.Image({icon_name: 'go-next-symbolic'}));
+    openRow.connect('activated', () => openOnlineAccounts());
+    accountsGroup.add(openRow);
+    page.add(accountsGroup);
+
+    // GOA is read asynchronously so a slow or absent daemon cannot hold
+    // the dialog shut. The rows land when they land; the page is useful
+    // without them.
+    const added = [];
+    goaAccounts().then((accounts) => {
+        for (const row of added)
+            accountsGroup.remove(row);
+        added.length = 0;
+        for (const a of accountRows(accounts)) {
+            const row = new Adw.ActionRow({title: a.title, subtitle: a.subtitle});
+            if (!a.usable)
+                row.add_prefix(new Gtk.Image({icon_name: 'dialog-warning-symbolic'}));
+            accountsGroup.add(row);
+            added.push(row);
+        }
+        // The status depends on the accounts, so it is recomputed rather
+        // than left showing the answer from before they were known.
+        const next = syncStatus({
+            mbsync: GLib.find_program_in_path('mbsync') !== null,
+            secretService: hasSecretService(),
+            accounts,
+        });
+        statusRow.set_title(next.title);
+        statusRow.set_subtitle(next.detail);
+    }).catch((e) => logError(e, 'mail: could not list accounts'));
+
+    // Applied on close rather than per keystroke: a half-typed path is
+    // not a path, and rebuilding the folder list on every character
+    // would read every message in a folder that does not exist yet.
+    dialog.connect('closed', () => {
+        if (resolved.source === 'env')
+            return;
+        const check = validateMaildir(pathRow.text);
+        if (!check.ok) {
+            printerr(`mail: not saving that folder — ${check.reason}`);
+            return;
+        }
+        if (check.path === resolved.path)
+            return;
+        const config = loadConfig();
+        config.maildir = check.path;
+        if (!saveConfig(config))
+            return;
+        const next = maildirRoot(config);
+        store = new Store(next.path);
+        store.source = next.source;
+        reloadFolders();
+    });
+
+    dialog.present(parent);
+}
+
+/// `search_mail` — subjects, senders and previews across folders.
+///
+/// Returns summaries, never whole bodies: a search that dumped every
+/// matching message into the model's context would spend the window on
+/// the first query and hand over far more than was asked for.
+function searchMail({query = '', folder = '', limit = 20} = {}) {
+    const q = String(query).toLowerCase().trim();
+    const folders = folder ? [String(folder)] : store.folders();
+    const out = [];
+    for (const f of folders) {
+        for (const m of store.messages(f)) {
+            const hay = `${m.subject} ${m.from.name} ${m.from.address} ${m.preview}`.toLowerCase();
+            if (q && !hay.includes(q))
+                continue;
+            out.push({
+                id: m.id, folder: f, subject: m.subject,
+                from: m.from.address, from_name: m.from.name,
+                date: m.date, unread: !m.seen, group: m.group, preview: m.preview,
+            });
+            if (out.length >= Math.min(Number(limit) || 20, 50))
+                return {messages: out};
+        }
+    }
+    return {messages: out};
+}
+
+/// `read_message` — one message, by the id `search_mail` returned.
+function readMessage({id = ''} = {}) {
+    const [folder, ...rest] = String(id).split('/');
+    const unique = rest.join('/');
+    if (!folder || !unique)
+        return {error: 'id must be "<folder>/<message>" as returned by search_mail'};
+    const msg = store.message(folder, unique);
+    if (!msg)
+        return {error: `no message ${id}`};
+    return {
+        id: msg.id, folder: msg.folder, subject: msg.subject,
+        from: msg.from.address, from_name: msg.from.name, to: msg.to, date: msg.date,
+        body: msg.body,
+    };
+}
+
+app.run([imports.system.programInvocationName, ...ARGV]);

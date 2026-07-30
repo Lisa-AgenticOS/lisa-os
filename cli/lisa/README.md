@@ -14,6 +14,38 @@ scaffolds a lisa_ui app and runs the loop against `flutter analyze`;
 the forge apps dir on /var and write the `.desktop` entry that puts it in
 the app grid.
 
+**`lisa mail` — join a connected account to the Maildir the Mail app
+reads (issue #155).**
+
+```
+lisa mail status                              # which layer is blocking
+lisa mail setup                               # use the Online Accounts token
+lisa mail setup --app-password ~/.mail-pass   # or a provider app password
+lisa mail sync                                # one pass
+```
+
+Lisa does not speak IMAP and will not — `mbsync` does, and what was
+missing was the config joining it to the account GNOME already holds.
+`setup` reads the account off Online Accounts, writes
+`~/.config/lisa/mbsyncrc`, and enables a five-minute user timer. It never
+touches `~/.mbsyncrc`, and it refuses to replace a config it did not
+write.
+
+`lisa mail token` is what mbsync's `PassCmd` runs: it prints a fresh
+OAuth access token, because a token lasts about an hour and a config
+carrying one would work exactly once.
+
+Two credential paths, and the second exists for good reasons rather than
+as a fallback. **Online Accounts** needs a keyring (#154) and the XOAUTH2
+SASL mechanism (`os/packages/cyrus-sasl-xoauth2`) — that is the seamless
+path. **An app password** needs neither, works with stock isync, and is
+the only thing some providers offer.
+
+Nothing generated here can destroy mail on the server: every channel
+carries `Expunge None` and `Remove None`, so the worst a bug in this
+code can cost is flags. `[Gmail]/All Mail` is never synced — it holds a
+copy of every message in every other folder.
+
 **`lisa doctor` — the state of this machine, in one command.**
 
 ```
