@@ -1,0 +1,113 @@
+# gnome-online-accounts, built with Lisa's own Google OAuth client.
+#
+# WHY THIS EXISTS
+# The Google sign-in sheet says "Continue to GNOME", because the client
+# id is compiled into libgoa-backend and the stock one is GNOME's. An OS
+# that presents itself as Lisa OS should not ask for a person's mail in
+# somebody else's name — the consent screen is where a user decides
+# whether to trust us, and it is the one place the name has to be true.
+#
+# NO PATCH. Upstream exposes both values as meson options, so this is
+# stock GOA with two -D flags. Nothing is forked, and a version bump is
+# a pkgver bump.
+#
+# WHAT THE CLIENT SECRET IS WORTH
+# Nothing, and that is by design. This is an *installed* application:
+# the secret ships on every device, and anyone with the image has it.
+# Google's own guidance is that installed apps cannot keep a secret,
+# which is why the flow relies on PKCE. GNOME's is in their source tree
+# and I read it off the field iMac in one command:
+#
+#   strings /usr/lib/libgoa-backend-1.0.so.2.0.0 | grep googleusercontent
+#
+# So it is in this file rather than behind a CI secret. Hiding it would
+# buy no security and would mean nobody could reproduce this build.
+#
+# THE REDIRECT, AND THE THING TO WATCH
+# GOA does not use the loopback redirect a "Desktop app" client
+# registers. It builds the reverse-DNS of the client id
+# (src/goabackend/goagoogleprovider.c: "Use reverse-DNS of the client ID
+# with the below path"):
+#
+#   com.googleusercontent.apps.<id>:/oauth2redirect
+#
+# Google documents that custom-scheme redirect for iOS/macOS client
+# types; Desktop clients are documented for loopback. GNOME's client
+# evidently permits it, since GOA works everywhere. Ours is registered
+# as a Desktop client, and whether Google accepts the scheme for it can
+# only be established by signing in — the authorization endpoint returns
+# the same 302 to the sign-in page for a valid redirect and a nonsense
+# one, so it cannot be probed ahead of time. If sign-in fails with
+# redirect_uri_mismatch, register an iOS application type instead and
+# change _client_id here; nothing else moves.
+
+pkgname=gnome-online-accounts-lisa
+_pkgname=gnome-online-accounts
+# Tracks the version in the image. Keep in step with Arch's, so the
+# provides/conflicts below swap cleanly.
+pkgver=3.58.1
+pkgrel=1
+pkgdesc="GNOME Online Accounts, built with the Lisa OS OAuth client so the consent screen says Lisa OS"
+arch=(x86_64 aarch64)
+url="https://gitlab.gnome.org/GNOME/gnome-online-accounts"
+license=(LGPL-2.0-or-later)
+
+# Takes the stock name so the local repo's precedence installs this
+# instead of Arch's, exactly as gnome-control-center-lisa does.
+provides=("$_pkgname=$pkgver" "libgoa-1.0.so" "libgoa-backend-1.0.so")
+conflicts=("$_pkgname")
+
+depends=(glib2 gcr-4 json-glib libsecret libsoup3 rest webkitgtk-6.0 gtk4 libadwaita krb5)
+makedepends=(meson ninja gobject-introspection vala docbook-xsl git gtk-doc)
+
+# --- The Lisa OS client (Google Cloud project "lisaos", Desktop app).
+_client_id='591217354884-ac5v134vmfdl67kir276ko88d7nnd607.apps.googleusercontent.com'
+_client_secret='GOCSPX-PLACEHOLDER-REPLACE-BEFORE-BUILDING'
+
+source=("https://download.gnome.org/sources/$_pkgname/${pkgver%.*}/$_pkgname-$pkgver.tar.xz")
+# GNOME publishes this digest alongside the tarball
+# (…/3.58/gnome-online-accounts-3.58.1.sha256sum), so it is an upstream
+# checksum rather than one computed here — same reasoning as the kernel
+# tarball in lisa-audio-cs8409.
+sha256sums=('9ec1900cc51409c2067c07c828c10be06fe3bf68d2999bb72d7d5ed325ed9bbc')
+
+build() {
+  case "$_client_secret" in
+    *PLACEHOLDER*)
+      echo "" >&2
+      echo "!! gnome-online-accounts-lisa: _client_secret is still the placeholder." >&2
+      echo "!! Building with it produces an image whose Google sign-in fails at" >&2
+      echo "!! the token exchange — AFTER the user has typed their password and" >&2
+      echo "!! granted consent, which is the worst possible place to fail." >&2
+      echo "" >&2
+      return 1 ;;
+  esac
+
+  arch-meson "$_pkgname-$pkgver" build \
+    -D google_client_id="$_client_id" \
+    -D google_client_secret="$_client_secret" \
+    -D documentation=false
+  meson compile -C build
+}
+
+check() {
+  # The point of this package is one string. Assert it is in the binary
+  # and that GNOME's is not: a meson option that silently stopped
+  # existing would build a perfectly good GOA that still says
+  # "Continue to GNOME", and nothing else would notice.
+  local lib
+  lib=$(find build -name 'libgoa-backend-1.0.so*' -type f | head -1)
+  if ! strings "$lib" | grep -q "$_client_id"; then
+    echo "!! the Lisa client id is not in the built library" >&2
+    return 1
+  fi
+  if strings "$lib" | grep -q '44438659992-'; then
+    echo "!! GNOME's client id is still in the built library — the option did not take" >&2
+    return 1
+  fi
+  echo "  client id: Lisa OS (GNOME's is absent)"
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}
