@@ -1,5 +1,5 @@
 #!/usr/bin/env -S gjs -m
-// Browser — the web as an agent surface (ADR-0037, issue #146).
+// Surfer — the web as an agent surface (ADR-0037, issue #146).
 //
 // GJS + GTK4 + libadwaita + WebKit-6.0, the same stack as
 // shell/assistant. The engine is the webkitgtk-6.0 the image already
@@ -27,7 +27,13 @@ import {McpServer} from './lib/mcp.js';
 
 const HOME = 'https://duckduckgo.com';
 
-const app = new Adw.Application({application_id: 'app.lisaos.Browser'});
+/// Surfer's own version, which appears in the user agent. Bumped by
+/// hand: it is a product token, not a build number, and a site that
+/// reports "broken in Surfer/0.1" should be able to mean something by
+/// it.
+const VERSION = '0.1';
+
+const app = new Adw.Application({application_id: 'app.lisaos.Surfer'});
 let win = null;
 let session = null;
 let tabView = null;
@@ -45,8 +51,8 @@ let mcp = null;
 /// back out on restart.
 function networkSession() {
     if (session) return session;
-    const data = GLib.build_filenamev([GLib.get_user_data_dir(), 'lisa-browser']);
-    const cache = GLib.build_filenamev([GLib.get_user_cache_dir(), 'lisa-browser']);
+    const data = GLib.build_filenamev([GLib.get_user_data_dir(), 'lisa-surfer']);
+    const cache = GLib.build_filenamev([GLib.get_user_cache_dir(), 'lisa-surfer']);
     GLib.mkdir_with_parents(data, 0o700);
     GLib.mkdir_with_parents(cache, 0o700);
     session = new WebKit.NetworkSession({
@@ -64,6 +70,46 @@ function networkSession() {
     session.get_cookie_manager().set_accept_policy(
         WebKit.CookieAcceptPolicy.NO_THIRD_PARTY);
     return session;
+}
+
+/// The settings every WebView gets.
+///
+/// # The user agent, and why it is set at all
+///
+/// WebKitGTK's default announces itself as `Version/60.5 Safari/605.1.15`.
+/// There is no Safari 60.5 — the number tracks WebKitGTK's own release,
+/// not Safari's — and sites that branch on it read it as an unknown or
+/// ancient browser. YouTube was the report: the page loads and video will
+/// not play. Media Source Extensions are on and every codec is installed
+/// (checked on the device: vp9, vp8, av1, opus, h264, aac all present),
+/// so the engine could play it; it was never offered a stream it could
+/// use.
+///
+/// So the version becomes one that exists, and Surfer names itself at
+/// the end — the shape Epiphany uses. Everything before the product
+/// token is left exactly as WebKitGTK sends it: this is a real WebKit,
+/// and the one thing that was misleading was the number.
+///
+/// The token is a deliberate small risk. A site that allowlists known
+/// browsers may read it the way YouTube read `Version/60.5`; the trade
+/// is that a site can report a bug against us by name, and that we are
+/// not pretending to be something we are not. If it turns out to cost
+/// compatibility, dropping it is one line — and `LISA_SURFER_UA` makes
+/// that testable without a rebuild, which is also how the next "what
+/// does the site actually see" question gets answered.
+function viewSettings() {
+    const settings = new WebKit.Settings({
+        // Present tense, and true: this engine is WebKit.
+        user_agent: GLib.getenv('LISA_SURFER_UA') ||
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 ' +
+            `(KHTML, like Gecko) Version/18.3 Safari/605.1.15 Surfer/${VERSION}`,
+    });
+    // NOT enabling encrypted-media (EME). It defaults off, and turning it
+    // on without a Widevine CDM installed buys nothing except telling
+    // sites we support DRM we cannot actually play. When there is a
+    // reason to ship a CDM, that is its own decision with its own
+    // consequences — not a flag flipped in passing.
+    return settings;
 }
 
 function currentView() {
@@ -103,7 +149,10 @@ function attachTab(view, focus = true) {
     view.connect('create', (opener) => {
         // No network_session here on purpose: a related view inherits
         // the opener's session, and passing both is an error.
-        const popup = new WebKit.WebView({related_view: opener});
+        const popup = new WebKit.WebView({
+            related_view: opener,
+            settings: viewSettings(),
+        });
         // Attach only once WebKit says it is ready; attaching a view that
         // never becomes ready would leave an empty tab behind.
         popup.connect('ready-to-show', () => attachTab(popup, true));
@@ -119,7 +168,10 @@ function attachTab(view, focus = true) {
 
 /// A new tab we open ourselves, with a URL to load.
 function newTab(url = HOME, focus = true) {
-    const view = attachTab(new WebKit.WebView({network_session: networkSession()}), focus);
+    const view = attachTab(new WebKit.WebView({
+        network_session: networkSession(),
+        settings: viewSettings(),
+    }), focus);
     if (url) view.load_uri(url);
     return view;
 }
@@ -193,7 +245,7 @@ function screenshotCurrent() {
 function buildWindow() {
     win = new Adw.Window({
         application: app, // NOT optional — see the footgun note up top.
-        title: 'Browser',
+        title: 'Surfer',
         default_width: 1280,
         default_height: 860,
     });

@@ -173,9 +173,57 @@ pub const HOSTILE_QUERIES: &[&str] = &[
     "🔥budget",
 ];
 
+/// Every alias `provenance_for_scope` accepts, by the provenance it
+/// grants.
+///
+/// The suite used only the five canonical spellings, so **no case in
+/// 15,656 ever exercised an alias** — and a mutation making
+/// `files.read` also grant `mail` passed green (issue #115, M5). An
+/// alias is a separate arm of a match statement; an untested arm is an
+/// untested rule.
+pub const SCOPE_ALIASES: &[(&str, &str)] = &[
+    ("file", "documents.read"),
+    ("file", "files.read"),
+    ("file", "documents"),
+    ("file", "files"),
+    ("mail", "mail.read"),
+    ("mail", "mail"),
+    ("calendar", "calendar.read"),
+    ("calendar", "calendar"),
+    ("screen", "screen.read"),
+    ("screen", "screen"),
+    ("web", "web.read"),
+    ("web", "web"),
+];
+
+/// What a set of scopes SHOULD grant, computed from this crate's own
+/// table rather than from the code under test.
+///
+/// This is the fix that mattered (issue #115, M5). The gate used to ask
+/// `lisa_contextd::acl::allowed_provenance` what was permitted and then
+/// check the hits against that answer — so a mutation making
+/// `files.read` also grant `mail` moved the *expectation* alongside the
+/// behaviour, and returning mail chunks under a documents grant was
+/// green. The suite was checking the implementation against itself.
+///
+/// An oracle has to be independent or it is not an oracle. This one is
+/// a literal table: [`SCOPE_ALIASES`], written down here, changed by a
+/// person who means to change it.
+pub fn expected_provenance(scopes: &[&str]) -> std::collections::BTreeSet<String> {
+    scopes
+        .iter()
+        .flat_map(|s| {
+            SCOPE_ALIASES
+                .iter()
+                .filter(move |(_, alias)| alias == s)
+                .map(|(p, _)| (*p).to_string())
+        })
+        .collect()
+}
+
 /// Scope spellings, including the ones an ACL is most likely to get
 /// wrong: unknown, empty, duplicated, case-varied, whitespace-padded,
-/// and a known scope mixed with junk.
+/// a known scope mixed with junk, every alias, and **combinations**.
 pub fn scope_variants() -> Vec<Vec<String>> {
     let mut out: Vec<Vec<String>> = Vec::new();
     for (_, scope) in PROVENANCES {
@@ -186,6 +234,52 @@ pub fn scope_variants() -> Vec<Vec<String>> {
         out.push(vec![scope.to_string(), "totally.bogus".to_string()]);
         out.push(vec!["totally.bogus".to_string(), scope.to_string()]);
     }
+    // Every alias, alone and beside junk. Untested match arms were how
+    // M5 hid.
+    for (_, alias) in SCOPE_ALIASES {
+        out.push(vec![alias.to_string()]);
+        out.push(vec![alias.to_string(), "totally.bogus".to_string()]);
+    }
+    // MULTI-PROVENANCE GRANTS. There was exactly one attempt at this —
+    // `vec!["mail", "file"]` — and `file` is not a scope spelling
+    // (`files` is), so it silently degraded to `["mail"]` alone and the
+    // whole suite ran with at most one provenance allowed. A mutation
+    // that skipped filtering whenever more than one provenance was
+    // permitted therefore passed green (#115, M4).
+    //
+    // Every ordered pair, canonical and aliased, plus the full set.
+    for (_, a) in PROVENANCES {
+        for (_, b) in PROVENANCES {
+            if a != b {
+                out.push(vec![a.to_string(), b.to_string()]);
+            }
+        }
+    }
+    for (pa, alias_a) in SCOPE_ALIASES {
+        for (pb, alias_b) in SCOPE_ALIASES {
+            if pa != pb {
+                out.push(vec![alias_a.to_string(), alias_b.to_string()]);
+            }
+        }
+    }
+    // Three, and everything: the widest legitimate grant still filters.
+    out.push(
+        PROVENANCES
+            .iter()
+            .map(|(_, s)| s.to_string())
+            .collect::<Vec<_>>(),
+    );
+    out.push(vec![
+        "documents.read".into(),
+        "mail.read".into(),
+        "web.read".into(),
+    ]);
+    // …and the widest grant with junk in the middle.
+    out.push(vec![
+        "documents.read".into(),
+        "totally.bogus".into(),
+        "mail.read".into(),
+    ]);
     // Deny-by-default shapes.
     out.push(vec![]);
     out.push(vec!["".to_string()]);
@@ -194,7 +288,9 @@ pub fn scope_variants() -> Vec<Vec<String>> {
     out.push(vec!["all".to_string()]);
     out.push(vec!["admin".to_string()]);
     out.push(vec!["documents.write".to_string()]);
-    out.push(vec!["mail".to_string(), "file".to_string()]);
+    // `screen.once` grants nothing now (#112) — it is the portal's
+    // per-invocation scope, not a provenance-wide read.
+    out.push(vec!["screen.once".to_string()]);
     out
 }
 

@@ -22,7 +22,7 @@ const rJunk = await handleRequest(null, TOOLS);
 const rOldRpc = await handleRequest({jsonrpc: '1.0', id: 9}, TOOLS);
 
 test('initialize answers with server info', () => {
-    assertEq(rInit.result.serverInfo.name, 'app.lisaos.Browser');
+    assertEq(rInit.result.serverInfo.name, 'app.lisaos.Surfer');
 });
 
 test('the initialized notification gets NO reply', () => {
@@ -52,4 +52,4 @@ test('junk input is an invalid-request error, not a crash', () => {
     assertEq(rOldRpc.error.code, -32600);
 });
 
-finish('browser/mcp');
+finish('surfer/mcp');

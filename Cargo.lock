@@ -1294,7 +1294,11 @@ name = "lisa-acl-fuzz"
 version = "0.1.0"
 dependencies = [
  "lisa-contextd",
+ "lisa-ledger",
+ "serde_json",
  "tempfile",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]

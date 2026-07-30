@@ -314,6 +314,15 @@ jobs:
                    lisa-agentd
                    lisa-notes
                    lisa-remoted
+                   # The trust boundary itself (PLAN §5.5, ADR-0008).
+                   # Built and packaged since M2 and never listed here,
+                   # so it has never been on a device — found by the
+                   # first run of `lisa doctor`, which reported the unit
+                   # as "not running" because nothing had installed it.
+                   # §4 rule 1 says sandboxed apps never talk to the
+                   # daemons directly; the component that enforces that
+                   # cannot enforce it from a package repository.
+                   lisa-portal
                    # M3 context fabric: without it the Assistant reports
                    # "Context daemon unavailable" and conversations do
                    # not survive a restart (field-found on v30).

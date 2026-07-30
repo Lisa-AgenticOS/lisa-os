@@ -19,4 +19,4 @@ test('garbage from the page does not crash the shaper', () => {
     assertEq(r, {url: null, title: '', text: '', truncated: false, links: []});
 });
 
-finish('browser/extract');
+finish('surfer/extract');
