@@ -291,12 +291,50 @@ function loadFolder(folder) {
             vexpand: true,
         }));
         listBox.append(empty);
+        clearReader();
         return;
     }
     for (const group of grouped(messages)) {
         listBox.append(groupHeader(group.name, group.items.length));
         for (const m of group.items)
             listBox.append(messageRow(m));
+    }
+
+    // Open the first message. Every mail client does this, and here it
+    // is load-bearing rather than a nicety: the action buttons live in
+    // the reading pane's header, so a pane with nothing open is an app
+    // that appears to have no actions at all. That is exactly how this
+    // was reported — "still no icons" — and no amount of checking icon
+    // names would have found it.
+    //
+    // Opening does NOT mark the message read. `S` is set by the button,
+    // by a person deciding they have read it; a client that flips the
+    // flag because a pane happened to render it is a client that eats
+    // your unread count.
+    let row = listBox.get_first_child();
+    while (row && !row._message)
+        row = row.get_next_sibling();
+    if (row) {
+        listBox.select_row(row);
+        showMessage(row._message);
+    } else {
+        clearReader();
+    }
+}
+
+/// Empty the reading pane and take its toolbar away with it.
+///
+/// The toolbar goes too: buttons for a message that is no longer open
+/// would still act on it, and the first one clicked would rename a file
+/// the user cannot see.
+function clearReader() {
+    openMessage = null;
+    readerTitle.set_label('');
+    readerFrom.set_label('');
+    readerBody.buffer.set_text('', -1);
+    if (readerActions) {
+        readerHeader.remove(readerActions);
+        readerActions = null;
     }
 }
 
@@ -312,12 +350,22 @@ function buildToolbar(msg) {
     }
     readerActions = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL, spacing: 4});
     readerActions.add_css_class('linked');
+    // The icon theme is not ours, and Adwaita has been retiring legacy
+    // names for several releases — `box-symbolic` was never in it at
+    // all. An icon name that does not resolve gives you a button with
+    // nothing in it, which is indistinguishable from no button. So ask
+    // first, and fall back to the label: an "Archive" button is worse
+    // than an icon and far better than a gap.
+    const icons = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
     for (const action of actionsFor(msg, store.folders())) {
+        const known = action.icon && icons?.has_icon(action.icon);
         const button = new Gtk.Button({
-            icon_name: action.icon,
+            ...(known ? {icon_name: action.icon} : {label: action.label}),
             tooltip_text: action.why ? `${action.label} — ${action.why}` : action.label,
             sensitive: action.enabled !== false,
         });
+        if (!known)
+            printerr(`mail: no icon ${JSON.stringify(action.icon)}, showing the label`);
         if (action.active)
             button.add_css_class('suggested-action');
         button.connect('clicked', () => runAction(msg, action));
@@ -349,15 +397,11 @@ function runAction(msg, action) {
         logError(e, `mail: ${action.id} failed`);
         return;
     }
+    // Reload, which re-opens whatever is now at the top — the message
+    // after the one just filed. Clearing the pane instead would punish
+    // the user for acting: archive three messages and you would be
+    // staring at a blank pane three times.
     loadFolder(currentFolder);
-    openMessage = null;
-    readerTitle.set_label('');
-    readerFrom.set_label('');
-    readerBody.buffer.set_text('', -1);
-    if (readerActions) {
-        readerHeader.remove(readerActions);
-        readerActions = null;
-    }
 }
 
 /// The rename itself. One `Gio.File.move`, no fallback copy: a copy

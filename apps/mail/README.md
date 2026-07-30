@@ -66,7 +66,7 @@ when there is nothing rather than pretending to be offline.
 | `lib/mcp.js` | the socket |
 | `lisa-mail.js` | the window; thin over the above |
 
-`just shell-test` runs the pure half — 32 cases, on any dev host.
+`just shell-test` runs the pure half — 38 cases, on any dev host.
 
 ## The buttons
 
@@ -100,6 +100,20 @@ These are **UI actions only** — not Agent Bus tools. They are write-tier
 by nature, and write-tier tools should wait for the consent surface to
 be split from the model host (#145).
 
+**Opening a folder opens its first message**, and the buttons live in the
+reading pane's header. That coupling is the whole reason it works this
+way: a pane with nothing open is an app that appears to have no actions
+at all, which is exactly how the toolbar was first reported missing.
+Opening does *not* mark the message read — `S` is set by the button, by a
+person deciding they have read it.
+
+**A button whose icon does not resolve falls back to its label**, and
+says so on stderr. Adwaita has been retiring legacy icon names for
+several releases and `box-symbolic` — the obvious name for Archive — was
+never in it at all; mail clients that show an archive box ship their own
+copy. An unresolved name gives you an empty button, which is
+indistinguishable from no button.
+
 ## Extending it
 
 A new smart group is a branch in `classify` plus a name in `GROUPS`, and
@@ -116,10 +130,13 @@ offered tool, not just this app's (issue #147).
 
 ## Limits
 
-- **Read-only.** No reply, no compose, no flag changes, no delete. The
-  toolbar in a mail client implies all of those and none of them exist
-  yet; write-tier tools also need the consent surface split (#145)
-  before an agent should be able to reach them.
+- **No sending.** Reply, forward and compose need SMTP — credentials and
+  egress — and the buttons are shown disabled rather than hidden.
+- **No permanent deletion.** Trash is a move; nothing here expunges.
+- **Actions are the window's, not the agent's.** `search_mail` and
+  `read_message` are the only Agent Bus tools; pinning, archiving and
+  flag changes are write-tier and wait on the consent surface split
+  (#145).
 - **No threading.** Messages are listed individually. `References` and
   `In-Reply-To` are parsed and unused.
 - **No attachments.** MIME parts other than the readable body are

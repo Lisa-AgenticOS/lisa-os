@@ -88,4 +88,16 @@ test('the labels track the current state, so the button says what it will do', (
     assertEq(actionsFor(msg({flagged: false}), []).find((a) => a.id === 'pin').on, true);
 });
 
+test('every action can be drawn without its icon', () => {
+    // The icon theme is somebody else's, and it changes: `box-symbolic`
+    // was never in Adwaita, so the Archive button rendered as a gap on
+    // the first device that saw it. The window falls back to the label
+    // when a name does not resolve — which only works if there is
+    // always a label worth reading, so that is what is checked here.
+    for (const a of actionsFor(msg(), ['INBOX', 'Archive', 'Trash'])) {
+        assert(a.label && a.label.length > 2, `${a.id} has no usable label`);
+        assert(a.icon && /^[a-z0-9-]+-symbolic$/.test(a.icon), `${a.id} icon: ${a.icon}`);
+    }
+});
+
 finish('mail/actions');

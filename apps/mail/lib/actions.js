@@ -135,7 +135,12 @@ export function actionsFor(message, folders = []) {
         {
             id: 'archive',
             label: 'Archive',
-            icon: 'box-symbolic',
+            // NOT `box-symbolic`, and not `mail-archive-symbolic`
+            // either: neither is in Adwaita. Mail apps that show an
+            // archive box ship their own copy of it, which is why the
+            // name looks like it should exist. A folder with a down
+            // arrow does exist and means the same thing.
+            icon: 'folder-download-symbolic',
             kind: 'move',
             folder: 'Archive',
             enabled: folders.includes('Archive') && message.folder !== 'Archive',
