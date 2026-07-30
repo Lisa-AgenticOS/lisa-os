@@ -58,6 +58,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod memory;
+pub mod policy;
 pub mod session;
 pub mod skill;
 pub mod store;

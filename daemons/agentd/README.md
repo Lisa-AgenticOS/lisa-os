@@ -5,7 +5,9 @@ Spec: docs/PLAN.md §5.4. Milestone: M5. Design decisions: ADR-0009.
 Registry and client of app MCP servers; executes tool calls under
 **bus-enforced** confirmation tiers (read/write/destructive) with
 provenance escalation and an undo journal. The guardrail prompt
-(`prompts/system-policy.md`) mirrors Appendix C; the injection suite
+(`libs/harness-core/prompts/system-policy.md`, compiled in as
+`harness_core::policy` — agentd hosts no model and builds no prompt,
+which is why it never belonged here, issue #58) mirrors Appendix C; the injection suite
 (`tests/injection-suite`) gates merges.
 
 ## What this crate implements (M5 first slice)
