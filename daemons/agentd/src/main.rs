@@ -77,6 +77,13 @@ async fn main() -> anyhow::Result<()> {
         for (path, reason) in &report.skipped {
             warn!(path = %path.display(), reason, "manifest skipped");
         }
+        // Loud, and naming the app and tool. The failure this replaces
+        // was a 503 from the inference engine that named nobody, on a
+        // device where the culprit was an unrelated app's schema
+        // (#147).
+        for (app, what) in &report.adjusted {
+            warn!(app, what, "manifest adjusted at load");
+        }
     }
     info!(apps = registry.len(), "registry ready");
 

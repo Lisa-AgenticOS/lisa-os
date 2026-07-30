@@ -423,7 +423,7 @@ impl AgentBus {
         })?;
 
         match resolution.confirmation {
-            Confirmation::Silent => Ok(self.execute(call_id, &req, &decl, start_ref)),
+            Confirmation::Silent => Ok(self.execute(call_id, &req, &decl, &resolution, start_ref)),
             confirmation => {
                 let spec = json!({
                     "call_id": call_id,
@@ -604,7 +604,13 @@ impl AgentBus {
             ref_id: Some(pending.start_ref),
             ..Default::default()
         })?;
-        Ok(self.execute(call_id, &pending.req, &pending.decl, pending.start_ref))
+        Ok(self.execute(
+            call_id,
+            &pending.req,
+            &pending.decl,
+            &pending.resolution,
+            pending.start_ref,
+        ))
     }
 
     /// Revert the last agent action (`lisa undo`, PLAN §5.4). The
@@ -706,11 +712,42 @@ impl AgentBus {
     /// Dispatch an approved (or silent-tier) call, journal privileged
     /// results, and close the Ledger trace. Ledger append failures here
     /// cannot un-happen the action, so they are not fatal to the caller.
-    fn execute(&self, call_id: u64, req: &CallRequest, decl: &ToolDecl, start_ref: i64) -> Outcome {
+    /// Dispatch, and record what was done.
+    ///
+    /// `resolution` rather than just `decl` (issue #98). The journal
+    /// used to key off `decl.tier` — the **declared** tier, from the
+    /// manifest — while consent keyed off `resolution.effective`, the
+    /// tier the bus actually enforced after provenance escalation. So a
+    /// call the bus judged write-tier, *asked the user about*, got
+    /// consent for and dispatched, executed with no journal entry and
+    /// could not be undone.
+    ///
+    /// That is exactly backwards. Escalation exists because an untrusted
+    /// trigger chain means the declared tier cannot be trusted to
+    /// describe the consequences (§5.10, Appendix C, CLAUDE.md rule 6);
+    /// applying that distrust to consent and then discarding it for
+    /// reversibility leaves the calls most likely to have been steered
+    /// by hostile content as the ones with no compensation recorded.
+    /// Worse, `lisa undo` then reached *past* the escalated call to an
+    /// older action — the user approves a chip and undoes something
+    /// else.
+    ///
+    /// The trigger is now the effective tier, plus anything the user was
+    /// asked about at all: "we asked a person" is a better reason to
+    /// record something than the app's own label for it.
+    fn execute(
+        &self,
+        call_id: u64,
+        req: &CallRequest,
+        decl: &ToolDecl,
+        resolution: &Resolution,
+        start_ref: i64,
+    ) -> Outcome {
         match self.dispatcher.dispatch(&req.app_id, &req.tool, &req.args) {
             Ok(result) => {
                 let mut notes: Vec<String> = Vec::new();
-                if decl.tier.is_privileged() {
+                let asked_a_person = resolution.confirmation != Confirmation::Silent;
+                if resolution.effective.is_privileged() || asked_a_person {
                     let undo = decl.undo.as_ref().and_then(|u| {
                         match journal::resolve_undo(u, &req.args, &result) {
                             Ok(args) => Some((u.tool.clone(), args)),
@@ -721,7 +758,20 @@ impl AgentBus {
                         }
                     });
                     if decl.undo.is_none() {
+                        // A read-tier tool has no manifest-declared
+                        // inverse (`manifest.rs` forbids `undo` on read
+                        // tools), so an escalated read journals as
+                        // not-undoable. That is the honest answer, and
+                        // it is what stops `undo` skipping past it to
+                        // something older.
                         notes.push("tool declares no undo".to_string());
+                    }
+                    if resolution.escalated {
+                        notes.push(format!(
+                            "journaled at the effective tier {} (declared {})",
+                            resolution.effective.as_str(),
+                            resolution.declared.as_str()
+                        ));
                     }
                     if let Err(e) = self.journal.record(journal::NewRecord {
                         ledger_ref: start_ref,
@@ -1578,6 +1628,71 @@ mod tests {
             kinds.last().unwrap(),
             &("tool.deny".to_string(), "denied".to_string())
         );
+    }
+
+    /// Issue #98, as filed. The bus judged this call write-tier because
+    /// its trigger chain carries mail-provenance content, asked the
+    /// user, took consent and dispatched — and journaled nothing,
+    /// because the *declared* tier was `read`.
+    ///
+    /// Two consequences: the calls most likely to have been steered by
+    /// hostile content were the ones with no compensation recorded, and
+    /// `lisa undo` reached past the escalated call to an older action —
+    /// the user approves a chip and something else gets reverted.
+    #[test]
+    fn an_escalated_read_is_journaled_so_undo_cannot_skip_past_it() {
+        let f = fixture();
+        let caller = lisa_peer::PeerId::Direct;
+
+        // An older, genuinely undoable write the user made earlier.
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(call(
+                "org.gnome.Calendar",
+                "add_event",
+                json!({"title": "earlier", "start": "2026-07-30T09:00:00Z"}),
+                user(),
+            ))
+            .unwrap()
+        else {
+            panic!("a write should ask");
+        };
+        f.bus
+            .confirm(call_id, true, &Answerer::alone(caller.clone()))
+            .unwrap();
+
+        // Now the escalated read.
+        let outcome = f
+            .bus
+            .request(call(
+                "org.gnome.Calendar",
+                "list_events",
+                json!({}),
+                vec![Provenance::User, Provenance::Mail],
+            ))
+            .unwrap();
+        let Outcome::AwaitingConfirmation {
+            call_id,
+            confirmation,
+            ..
+        } = outcome
+        else {
+            panic!("an untrusted chain must escalate a read into a question");
+        };
+        assert_eq!(confirmation, Confirmation::Chip, "the bus asked a person");
+        f.bus
+            .confirm(call_id, true, &Answerer::alone(caller.clone()))
+            .unwrap();
+
+        // The escalated call is the most recent journal entry, so undo
+        // lands on IT — not on the note from before.
+        match f.bus.undo("host", &caller).unwrap() {
+            UndoReport::NotUndoable { app_id, tool } => {
+                assert_eq!(app_id, "org.gnome.Calendar");
+                assert_eq!(tool, "list_events");
+            }
+            other => panic!("undo skipped past the escalated call — it reverted {other:?} instead"),
+        }
     }
 
     #[test]
