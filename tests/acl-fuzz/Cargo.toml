@@ -7,6 +7,10 @@ repository.workspace = true
 
 [dependencies]
 lisa-contextd = { version = "0.1.0", path = "../../daemons/contextd" }
+lisa-ledger = { version = "0.1.0", path = "../../libs/lisa-ledger" }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net"] }
+zbus = { version = "5.18.0", features = ["p2p", "tokio"], default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"
