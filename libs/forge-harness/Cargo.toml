@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+harness-core = { version = "0.1.0", path = "../harness-core" }
 blake3 = "1.8.5"
 lisa-guard = { path = "../lisa-guard" }
 lisa-ledger = { version = "0.1.0", path = "../lisa-ledger" }

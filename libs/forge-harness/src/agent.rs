@@ -186,6 +186,17 @@ pub struct AgentConfig {
     /// invariant. There is no `Default` for this struct for the same
     /// reason: constructing one requires deciding where the record goes.
     pub ledger: Arc<Ledger>,
+    /// Skills active for this run.
+    ///
+    /// A skill's `tools:` frontmatter is an allowlist, and until now it
+    /// was parsed and never consulted: `allows_tool()` had no callers
+    /// outside its own unit tests (#57). A skill declaring
+    /// `tools: [read_file, grep]` got the whole tool set, while the
+    /// skill format documented the restriction as enforced.
+    ///
+    /// Empty means no restriction — the loop is running without a skill,
+    /// not under an empty one.
+    pub skills: Vec<harness_core::Skill>,
     /// What the model is told it IS.
     ///
     /// This used to be a constant, and the constant said "you are the
@@ -220,6 +231,7 @@ impl AgentConfig {
             ledger,
             system_prompt: FORGE_SYSTEM_PROMPT.to_string(),
             prior_turns: Vec::new(),
+            skills: Vec::new(),
         }
     }
 }
@@ -508,17 +520,36 @@ pub fn forge_agent_with_tools(
                 // append aborts the run rather than acting unobserved.
                 let call_ref = ledger_start(&config.ledger, task, &call)?;
 
-                let outcome = match dispatch(providers, &call.name) {
-                    Some(p) => p.execute(&call),
-                    None => ToolOutcome::err(format!(
-                        "unknown tool `{}`; available: {}",
+                let outcome = if !harness_core::Skill::allowed_by(&config.skills, &call.name) {
+                    // Refused as tool OUTPUT, not as an error that ends
+                    // the run: the model gets told why and can choose
+                    // another tool, which is the behaviour that makes an
+                    // allowlist a constraint rather than a wall.
+                    ToolOutcome::err(format!(
+                        "tool `{}` is not permitted by the active skill; allowed: {}",
                         call.name,
-                        specs
+                        config
+                            .skills
                             .iter()
-                            .map(|s| s.name.as_str())
+                            .filter_map(|s| s.tools.as_ref())
+                            .flatten()
+                            .map(String::as_str)
                             .collect::<Vec<_>>()
                             .join(", ")
-                    )),
+                    ))
+                } else {
+                    match dispatch(providers, &call.name) {
+                        Some(p) => p.execute(&call),
+                        None => ToolOutcome::err(format!(
+                            "unknown tool `{}`; available: {}",
+                            call.name,
+                            specs
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )),
+                    }
                 };
                 ledger_finish(&config.ledger, call_ref, &call, &outcome)?;
                 observe(AgentEvent::CallResult {
@@ -786,6 +817,85 @@ mod tests {
             statuses.iter().any(|s| s == "failed"),
             "an ordinary error should still be `failed`: {statuses:?}"
         );
+    }
+
+    /// Issue #57: `tools:` was parsed and never consulted, so a skill
+    /// declaring what it needs got everything anyway — the restriction
+    /// was documentation. This is the test that makes it a restriction.
+    #[test]
+    fn a_skills_allowlist_actually_narrows_what_the_loop_will_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.txt"), "hello").unwrap();
+
+        let reader = harness_core::Skill::declared("reader", Some(vec!["read_file".into()]));
+
+        let mut backend = ScriptedBackend::new(vec![
+            // Permitted by the allowlist.
+            AgentAction::Call(ToolCall {
+                id: "1".into(),
+                name: "read_file".into(),
+                args: serde_json::json!({"path": "a.txt"}),
+            }),
+            // Not permitted — and this is the call that used to run.
+            AgentAction::Call(ToolCall {
+                id: "2".into(),
+                name: "write_file".into(),
+                args: serde_json::json!({"path": "b.txt", "content": "nope"}),
+            }),
+            AgentAction::Done("done".into()),
+        ]);
+        let config = AgentConfig {
+            verifier: Verifier::None,
+            skills: vec![reader],
+            ..AgentConfig::new(scratch_ledger(dir.path()))
+        };
+        forge_agent("read then write", &project, &mut backend, &config).unwrap();
+
+        // The refusal is what the file system says, not what a log says:
+        // the write must not have happened.
+        assert!(
+            !project.join("b.txt").exists(),
+            "write_file ran despite not being in the skill's allowlist"
+        );
+        assert!(project.join("a.txt").exists());
+    }
+
+    /// Several skills active: the narrowest wins.
+    #[test]
+    fn skills_intersect_rather_than_widen_each_other() {
+        let scoped = harness_core::Skill::declared;
+        let reader = scoped("reader", Some(vec!["read_file".into()]));
+        let open = scoped("open", None);
+        let writer = scoped("writer", Some(vec!["write_file".into()]));
+
+        // No skills: no restriction. The loop is running without a
+        // skill, not under an empty one.
+        assert!(harness_core::Skill::allowed_by(&[], "anything"));
+
+        // An unrestricted skill must not widen a restricted one —
+        // union semantics would make an allowlist something any other
+        // skill can switch off.
+        assert!(harness_core::Skill::allowed_by(
+            std::slice::from_ref(&reader),
+            "read_file"
+        ));
+        assert!(!harness_core::Skill::allowed_by(
+            &[reader.clone(), open.clone()],
+            "write_file"
+        ));
+
+        // Two disjoint allowlists permit nothing, which is the honest
+        // answer: neither skill claims to need the other's tools.
+        assert!(!harness_core::Skill::allowed_by(
+            &[reader.clone(), writer.clone()],
+            "read_file"
+        ));
+        assert!(!harness_core::Skill::allowed_by(
+            &[reader, writer],
+            "write_file"
+        ));
     }
 
     /// Issue #54: the loop that edits your files unattended used to

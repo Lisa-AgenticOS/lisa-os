@@ -686,6 +686,7 @@ name = "forge-harness"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "harness-core",
  "lisa-guard",
  "lisa-ledger",
  "serde",

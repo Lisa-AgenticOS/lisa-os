@@ -105,6 +105,38 @@ impl Skill {
         }
     }
 
+    /// A skill declared in code rather than discovered on disk.
+    ///
+    /// Discovery is how skills normally arrive, but the allowlist is now
+    /// enforced by the agent loop (#57) and a caller needs to be able to
+    /// state one without writing a file — as does any test of the thing
+    /// doing the enforcing. `path` is informational here; nothing reads
+    /// a body that was never loaded from disk.
+    pub fn declared(name: &str, tools: Option<Vec<String>>) -> Self {
+        Self {
+            name: name.to_string(),
+            description: String::new(),
+            tools,
+            path: PathBuf::new(),
+            body_offset: 0,
+        }
+    }
+
+    /// Do the active skills, together, permit `tool`?
+    ///
+    /// **Intersection, not union.** A skill that declares
+    /// `tools: [read_file]` is saying what it needs, and a second skill
+    /// being active is not a reason to widen the first one — union
+    /// semantics would mean activating any unrestricted skill silently
+    /// restores the full tool set, which is an allowlist that anything
+    /// can switch off.
+    ///
+    /// No active skills means no restriction: the loop is running
+    /// without a skill, not under an empty one.
+    pub fn allowed_by(skills: &[Skill], tool: &str) -> bool {
+        skills.iter().all(|s| s.allows_tool(tool))
+    }
+
     /// Token-overlap relevance of this skill to [`tokenize`]d query
     /// tokens: a name-token hit weighs 3, a description hit 1 (the
     /// registry.rs / agent.js weights).
