@@ -229,6 +229,75 @@ export function readableBody(raw) {
     return bodyOfPart(parseHeaders(headerText), body);
 }
 
+/// Both halves of a message body: the HTML as sent, and readable text.
+///
+/// `readableBody` flattens HTML to text, which is right for a model and
+/// wrong for a person — a real newsletter arrives as a table of images
+/// and reads, flattened, like a ransom note. So the window gets `html`
+/// to render and `text` to fall back on, and the Agent Bus tools keep
+/// using the flattened form: a model should be handed prose, not markup
+/// it has to parse and which can carry instructions in an attribute.
+///
+/// `html` is `null` when the message has no HTML part. It is returned
+/// **undoctored** — sanitising by string surgery here would be a false
+/// promise, because the thing that makes rendering safe is the renderer
+/// being told not to run scripts and not to fetch remote resources, not
+/// a regex that thinks it can outwit an HTML parser.
+export function renderableBody(raw) {
+    const {headerText, body} = splitMessage(raw);
+    const headers = parseHeaders(headerText);
+    const parts = collectParts(headers, body);
+    const plain = parts.find((p) => p.type.startsWith('text/plain') && p.text.trim());
+    const html = parts.find((p) => p.type.startsWith('text/html') && p.text.trim());
+    const fallback = parts.find((p) => p.text?.trim());
+    return {
+        html: html ? html.text : null,
+        text: plain
+            ? plain.text
+            : html
+                ? htmlToText(html.text)
+                : (fallback ? fallback.text : ''),
+    };
+}
+
+/// Flatten a message into its leaf parts, decoded.
+///
+/// Same walk as `bodyOfPart`, but it keeps every leaf instead of
+/// choosing one, because the caller wants plain AND html rather than
+/// whichever ranks higher.
+function collectParts(headers, body, depth = 0) {
+    const ctype = headers.get('content-type');
+    const boundary = ctype.match(/boundary\s*=\s*"?([^";]+)"?/i)?.[1];
+    if (boundary && depth < 4) {
+        const out = [];
+        for (const part of body.split(new RegExp(`--${escapeRe(boundary)}(?:--)?\\r?\\n?`))) {
+            if (!part.trim())
+                continue;
+            const {headerText: ph, body: pb} = splitMessage(part);
+            if (!ph.includes(':'))
+                continue;
+            const sub = parseHeaders(ph);
+            out.push(...collectParts(sub, pb, depth + 1));
+        }
+        return out;
+    }
+    return [{
+        type: ctype.toLowerCase(),
+        text: decodePart(headers, body),
+    }];
+}
+
+/// One leaf part, transfer-decoded and charset-decoded. No flattening.
+function decodePart(headers, body) {
+    const enc = headers.get('content-transfer-encoding').toLowerCase();
+    if (enc === 'base64')
+        return decodeBytes(base64Bytes(body), charsetOf(headers));
+    if (enc === 'quoted-printable')
+        return decodeBytes(
+            quotedPrintableBytes(body.replace(/=\r?\n/g, '')), charsetOf(headers));
+    return body;
+}
+
 function bodyOfPart(headers, body, depth = 0) {
     const ctype = headers.get('content-type');
     const boundary = ctype.match(/boundary\s*=\s*"?([^";]+)"?/i)?.[1];

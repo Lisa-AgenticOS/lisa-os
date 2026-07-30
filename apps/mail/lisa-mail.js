@@ -37,15 +37,32 @@ import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
-import {decodeWords, parseAddress, parseHeaders, readableBody, splitMessage} from './lib/rfc822.js';
+import {
+    decodeWords, parseAddress, parseHeaders, readableBody, renderableBody, splitMessage,
+} from './lib/rfc822.js';
 import {listFolder, messagePath, previewOf} from './lib/maildir.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
 import {actionsFor, flagChange, moveTo} from './lib/actions.js';
 import {McpServer} from './lib/mcp.js';
+
 import {
     CONFIG_NAME, accountRows, parseConfig, resolveMaildir, serializeConfig,
     storeSummary, syncStatus, validateMaildir,
 } from './lib/settings.js';
+
+/// WebKit, if this system has it.
+///
+/// Loaded dynamically because the app has to open on a machine without
+/// it — a dev checkout on another distro, the minimal image — where the
+/// right behaviour is plain text, not a stack trace. `null` means the
+/// reading pane stays a TextView, which is what it was before HTML
+/// rendering existed and is a perfectly good mail reader.
+let WebKit = null;
+try {
+    WebKit = (await import('gi://WebKit?version=6.0')).default;
+} catch {
+    // No WebKit here. readerHtml stays null and the TextView is used.
+}
 
 const APP_ID = 'app.lisaos.Mail';
 
@@ -267,6 +284,9 @@ class Store {
                     subject: decodeSubject(headers.get('subject')),
                     date: headers.get('date'),
                     body: bodyOf(raw, body),
+                    // The HTML as sent, for the window. Tools never see
+                    // this: a model is handed `body`, which is prose.
+                    html: renderableBody(raw).html,
                 };
             }
         }
@@ -301,6 +321,14 @@ let readerFrom = null;
 let readerBody = null;
 let folderList = null;
 let readerHeader = null;
+let readerStack = null;
+let readerHtml = null;
+/// Remote loads are refused unless the person asked for this message.
+/// Reset on every open: consent is per message, not a mode you leave on.
+let allowRemote = false;
+let remoteBanner = null;
+/// The message currently open, so the banner can re-render it.
+let openMessageFull = null;
 let readerActions = null;
 let openMessage = null;
 
@@ -470,6 +498,9 @@ function clearReader() {
     readerTitle.set_label('');
     readerFrom.set_label('');
     readerBody.buffer.set_text('', -1);
+    allowRemote = false;
+    if (readerStack)
+        readerStack.set_visible_child_name('text');
     if (readerActions) {
         readerHeader.remove(readerActions);
         readerActions = null;
@@ -481,6 +512,118 @@ function clearReader() {
 /// Built from `actionsFor` rather than eight hand-written buttons: what
 /// each one does is then testable without a window, and the labels
 /// cannot drift from the state they describe.
+/// A WebView that renders mail and does nothing else.
+///
+/// The safety here is the renderer's configuration, not the markup —
+/// sanitising HTML with string surgery is a promise you cannot keep
+/// against a real parser. Two settings carry it:
+///
+/// **JavaScript is off.** Mail is a document, not a program. Nothing in
+/// a message has any business executing, and leaving it on would put an
+/// attacker-controlled script in the same process as somebody's inbox.
+///
+/// **Remote loads are refused.** A remote image is a read receipt the
+/// sender never asked permission for: fetching it tells them the
+/// message was opened, when, and from which address. Every mail client
+/// blocks these by default and the ones that did not were rightly
+/// shamed into it. `data:` URIs are allowed because the bytes are
+/// already in the message, and `cid:` because that is how a message
+/// refers to its own attached parts.
+/// Put a message body on screen, in whichever renderer suits it.
+///
+/// HTML when the message has an HTML part and this system has WebKit;
+/// text otherwise. The text path is not a degraded mode — most personal
+/// mail is plain, and it reads better as text than as a document.
+/// Does this HTML reach for anything off this machine?
+///
+/// Only worth asking so the "show images" offer appears on messages
+/// that would actually change — a banner on a message with nothing
+/// remote in it teaches people to click banners.
+function hasRemoteContent(html) {
+    return /(?:src|background|href)\s*=\s*["']?https?:/i.test(String(html ?? '')) ||
+        /url\(\s*["']?https?:/i.test(String(html ?? ''));
+}
+
+function renderBody(full) {
+    const rich = readerHtml && full.html;
+    if (!rich) {
+        readerBody.buffer.set_text(full.body ?? '', -1);
+        readerStack?.set_visible_child_name('text');
+        return;
+    }
+    readerHtml.load_html(htmlDocument(full.html), null);
+    readerStack.set_visible_child_name('html');
+    remoteBanner?.set_revealed(!allowRemote && hasRemoteContent(full.html));
+}
+
+function buildWebView() {
+    const settings = new WebKit.Settings({
+        enable_javascript: false,
+        enable_javascript_markup: false,
+        enable_webgl: false,
+        enable_media: false,
+        enable_html5_database: false,
+        enable_html5_local_storage: false,
+        enable_developer_extras: false,
+    });
+    const view = new WebKit.WebView({settings, vexpand: true});
+
+    view.connect('decide-policy', (_v, decision, type) => {
+        if (type === WebKit.PolicyDecisionType.NAVIGATION_ACTION) {
+            const uri = decision.get_navigation_action()?.get_request()?.get_uri() ?? '';
+            // The initial load of the message itself is the only
+            // navigation allowed to proceed in place.
+            if (uri.startsWith('about:') || uri === '' || uri.startsWith('data:'))
+                return false;
+            // A clicked link opens in the browser, where a person can
+            // see where they are going. It never navigates this view:
+            // a reading pane that can be steered elsewhere is a phishing
+            // surface wearing a mail client.
+            decision.ignore();
+            try {
+                Gtk.show_uri(null, uri, Gdk.CURRENT_TIME);
+            } catch (e) {
+                logError(e, 'mail: could not open link');
+            }
+            return true;
+        }
+        if (type === WebKit.PolicyDecisionType.RESPONSE) {
+            const uri = decision.get_request()?.get_uri() ?? '';
+            const local = uri.startsWith('data:') || uri.startsWith('cid:') ||
+                uri.startsWith('about:');
+            if (!local && !allowRemote) {
+                decision.ignore();
+                return true;
+            }
+        }
+        return false;
+    });
+    return view;
+}
+
+/// Wrap a message body so it renders like mail rather than like a
+/// document dumped in a browser.
+///
+/// The base tag is `about:blank` on purpose: a relative URL in a message
+/// then resolves to nothing instead of to something on this machine.
+function htmlDocument(body) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<base href="about:blank">` +
+        `<meta name="referrer" content="no-referrer">` +
+        `<style>
+          html { -webkit-text-size-adjust: 100%; }
+          body { font-family: system-ui, sans-serif; font-size: 14px; line-height: 1.5;
+                 margin: 16px; word-wrap: break-word; }
+          img, table { max-width: 100% !important; height: auto; }
+          pre { white-space: pre-wrap; }
+          a { color: #3584e4; }
+          @media (prefers-color-scheme: dark) {
+            body { background: transparent; color: #deddda; }
+            a { color: #78aeed; }
+          }
+        </style></head><body>${body}</body></html>`;
+}
+
 function buildToolbar(msg) {
     if (readerActions) {
         readerHeader.remove(readerActions);
@@ -566,7 +709,11 @@ function showMessage(msg) {
     const name = full.from?.name;
     const addr = full.from?.address ?? '';
     readerFrom.set_label(name ? `${name}  ·  ${addr}` : addr);
-    readerBody.buffer.set_text(full.body ?? '', -1);
+    // Consent is per message: opening a different one must not inherit
+    // the last one's permission to phone home.
+    allowRemote = false;
+    openMessageFull = full;
+    renderBody(full);
 }
 
 /// Rebuild the folder sidebar from the current store.
@@ -702,7 +849,32 @@ app.connect('activate', () => {
     readerBox.append(readerTitle);
     readerBox.append(readerFrom);
     const readerScroll = new Gtk.ScrolledWindow({child: readerBody, vexpand: true});
-    readerBox.append(readerScroll);
+
+    // Two ways to show a body, chosen per message: the TextView for
+    // plain mail and as the fallback everywhere, a WebView for HTML.
+    // Says what is being withheld and offers to stop withholding it —
+    // for this message only. Adw.Banner is the shape GNOME uses for
+    // exactly this: a thing the app did on your behalf, with the undo.
+    remoteBanner = new Adw.Banner({
+        title: 'Images in this message are on someone else\u2019s server',
+        button_label: 'Show images',
+        revealed: false,
+    });
+    remoteBanner.connect('button-clicked', () => {
+        allowRemote = true;
+        remoteBanner.set_revealed(false);
+        if (openMessageFull)
+            renderBody(openMessageFull);
+    });
+    readerBox.append(remoteBanner);
+
+    readerStack = new Gtk.Stack({vexpand: true});
+    readerStack.add_named(readerScroll, 'text');
+    if (WebKit) {
+        readerHtml = buildWebView();
+        readerStack.add_named(readerHtml, 'html');
+    }
+    readerBox.append(readerStack);
     const readerPane = new Adw.ToolbarView();
     readerHeader = new Adw.HeaderBar();
     readerHeader.set_title_widget(new Gtk.Label({label: '', visible: false}));

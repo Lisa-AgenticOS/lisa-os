@@ -1,7 +1,8 @@
 // Parsing untrusted mail: the tests are mostly about not being fooled.
 import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
 import {
-    decodeWords, htmlToText, parseAddress, parseHeaders, readableBody, splitMessage,
+    decodeWords, htmlToText, parseAddress, parseHeaders, readableBody, renderableBody,
+    splitMessage,
 } from '../lib/rfc822.js';
 
 test('headers unfold, so a long subject is not truncated mid-word', () => {
@@ -114,6 +115,53 @@ test('CRLF and LF mix, because two tools wrote the same maildir', () => {
     const {headerText, body} = splitMessage(raw);
     assertEq(parseHeaders(headerText).get('subject'), 'mixed');
     assertEq(body.trim(), 'body here');
+});
+
+
+test('a message keeps its HTML for the window and its text for the model', () => {
+    // The same message has to serve two readers. A person needs the
+    // newsletter to look like a newsletter; a model needs prose, not
+    // markup carrying instructions in an alt attribute.
+    const msg = [
+        'From: a@b.test', 'MIME-Version: 1.0',
+        'Content-Type: multipart/alternative; boundary="X"', '',
+        '--X', 'Content-Type: text/plain', '', 'Plain version.', '',
+        '--X', 'Content-Type: text/html', '', '<p>Rich <b>version</b>.</p>', '',
+        '--X--', '',
+    ].join('\r\n');
+    const {html, text} = renderableBody(msg);
+    assert(html.includes('<b>version</b>'), html);
+    assertEq(text.trim(), 'Plain version.');
+});
+
+test('an html-only message still yields readable text', () => {
+    const msg = ['From: a@b.test', 'Content-Type: text/html', '', '<p>Hi <b>there</b></p>'].join('\r\n');
+    const {html, text} = renderableBody(msg);
+    assert(html.includes('<b>there</b>'), html);
+    // …flattened for the model, with no tags left in it.
+    assert(!text.includes('<'), text);
+    assert(text.includes('there'), text);
+});
+
+test('a plain-text message offers no html at all', () => {
+    // null, not an empty string: the window decides which widget to use
+    // on this, and "" would send it down the HTML path with nothing in it.
+    const msg = ['From: a@b.test', 'Content-Type: text/plain', '', 'Just words.'].join('\r\n');
+    const {html, text} = renderableBody(msg);
+    assertEq(html, null);
+    assertEq(text.trim(), 'Just words.');
+});
+
+test('a quoted-printable html part is decoded before it is rendered', () => {
+    // Undecoded, this renders as literal =3D and =20 across the page.
+    const msg = [
+        'From: a@b.test', 'Content-Type: text/html; charset=utf-8',
+        'Content-Transfer-Encoding: quoted-printable', '',
+        '<a href=3D"https://x.test">link=20here</a>',
+    ].join('\r\n');
+    const {html} = renderableBody(msg);
+    assert(html.includes('href="https://x.test"'), html);
+    assert(html.includes('link here'), html);
 });
 
 finish('mail/rfc822');
