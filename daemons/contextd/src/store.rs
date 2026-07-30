@@ -13,6 +13,23 @@ pub enum StoreError {
     Db(#[from] rusqlite::Error),
     #[error("context store io: {0}")]
     Io(#[from] std::io::Error),
+    #[error(
+        "{0:?} is not a provenance this store knows — a document written \
+         under an unknown tag is readable by no scope at all, which looks \
+         like an empty index rather than a mistake"
+    )]
+    UnknownProvenance(String),
+    // NOT a field called `source`: thiserror reads that name as the
+    // error's cause and demands it implement Error.
+    #[error(
+        "{doc_source:?} is already indexed as {existing:?}; refusing to \
+         relabel it {new:?}"
+    )]
+    ProvenanceConflict {
+        doc_source: String,
+        existing: String,
+        new: String,
+    },
 }
 
 pub struct ContextStore {

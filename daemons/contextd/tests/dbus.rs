@@ -15,6 +15,7 @@ struct Fixture {
     _server: zbus::Connection,
     client: zbus::Connection,
     ledger: Arc<lisa_ledger::Ledger>,
+    store: Arc<ContextStore>,
 }
 
 /// Store with mixed-provenance documents (the ACL boundary's test bed)
@@ -46,7 +47,7 @@ async fn fixture() -> Fixture {
         .p2p()
         .serve_at(
             "/dev/lisaos/Context1",
-            Context1::new(store, Arc::clone(&ledger)),
+            Context1::new(Arc::clone(&store), Arc::clone(&ledger)),
         )
         .unwrap()
         .build();
@@ -58,6 +59,7 @@ async fn fixture() -> Fixture {
         _dir: dir,
         _server: server,
         client,
+        store,
         ledger,
     }
 }
@@ -100,46 +102,111 @@ async fn ping_reports_the_daemon() {
     assert!(pong.starts_with("lisa-contextd "), "{pong}");
 }
 
+/// Issue #100. This test used to read `assert_eq!(hits.len(), 2, "both
+/// provenances match unscoped")` — it pinned the bug as the contract.
+/// Omitting one dictionary key returned mail and screen chunks to any
+/// peer on the session bus.
+///
+/// A p2p caller cannot be identified, so it is not the user's own
+/// tooling, so it gets the scoped path with the scopes it asked for —
+/// here, none.
 #[tokio::test]
-async fn search_returns_hits_and_ledgers_first() {
+async fn a_search_with_no_scopes_returns_nothing_and_is_still_ledgered() {
     let f = fixture().await;
     let p = proxy(&f.client).await;
 
     let hits = search(&p, "budget revenue forecast", HashMap::new()).await;
-    assert_eq!(hits.len(), 2, "both provenances match unscoped: {hits:?}");
-    for h in &hits {
-        assert!(h["source"].is_string() && h["provenance"].is_string());
-        assert!(h["snippet"].is_string() && h["score"].is_number());
-    }
+    assert!(
+        hits.is_empty(),
+        "an unscoped search read the index anyway: {hits:?}"
+    );
 
-    // The retrieval is ledgered — query hash, not text (PLAN §5.3).
+    // Still a retrieval, still ledgered — query hash, not text (§5.3).
     assert_eq!(f.ledger.count().unwrap(), 1);
     let entry = &f.ledger.tail(1).unwrap()[0];
-    assert_eq!(entry.kind, "context.search");
+    assert_eq!(entry.kind, "context.search.scoped");
     assert_eq!(
         entry.input_hash,
         blake3::hash(b"budget revenue forecast")
             .to_hex()
             .to_string()
     );
+    // And it names who asked and with what, which §5.3 asks for and the
+    // old `app_id: "host"` could not provide.
+    assert!(entry.app_id.starts_with("host:"), "{:?}", entry.app_id);
+    assert!(entry.detail.contains("scopes"), "{:?}", entry.detail);
 
     // A zero-hit search is still a retrieval — still ledgered.
     assert!(search(&p, "xylophone", HashMap::new()).await.is_empty());
     assert_eq!(f.ledger.count().unwrap(), 2);
 }
 
+/// The shape of a hit is still the contract — asserted where hits
+/// actually come back.
 #[tokio::test]
-async fn limit_and_hybrid_options_are_honored() {
+async fn scoped_hits_carry_source_provenance_snippet_and_score() {
     let f = fixture().await;
     let p = proxy(&f.client).await;
+    let mut opts = HashMap::new();
+    opts.insert(
+        "scopes".to_string(),
+        owned(zbus::zvariant::Value::from(vec!["documents.read"])),
+    );
+    let hits = search(&p, "budget revenue forecast", opts).await;
+    assert!(!hits.is_empty());
+    for h in &hits {
+        assert!(h["source"].is_string() && h["provenance"].is_string());
+        assert!(h["snippet"].is_string() && h["score"].is_number());
+        assert_eq!(h["provenance"], "file");
+    }
+}
 
-    let opts = HashMap::from([("limit".to_string(), owned(1u32.into()))]);
+/// `limit` and `hybrid` are ranking options and must survive the ACL —
+/// an app that asked for the better ranking and silently got the worse
+/// one would have no way to tell.
+#[tokio::test]
+async fn limit_and_hybrid_options_are_honored_within_scope() {
+    let f = fixture().await;
+    let p = proxy(&f.client).await;
+    let docs = || {
+        owned(zbus::zvariant::Value::from(vec![
+            "documents.read",
+            "mail.read",
+        ]))
+    };
+
+    let opts = HashMap::from([
+        ("limit".to_string(), owned(1u32.into())),
+        ("scopes".to_string(), docs()),
+    ]);
     assert_eq!(search(&p, "budget", opts).await.len(), 1);
 
-    let opts = HashMap::from([("hybrid".to_string(), owned(true.into()))]);
+    let opts = HashMap::from([
+        ("hybrid".to_string(), owned(true.into())),
+        ("scopes".to_string(), docs()),
+    ]);
     let hits = search(&p, "budget forecast", opts).await;
     assert!(!hits.is_empty(), "hybrid degrades to lexical sans vectors");
-    assert_eq!(f.ledger.tail(1).unwrap()[0].kind, "context.search.hybrid");
+    assert_eq!(
+        f.ledger.tail(1).unwrap()[0].kind,
+        "context.search.scoped.hybrid"
+    );
+
+    // And the ACL still holds under the hybrid ranking: a disallowed
+    // chunk must not be rerankable into the answer.
+    let opts = HashMap::from([
+        ("hybrid".to_string(), owned(true.into())),
+        (
+            "scopes".to_string(),
+            owned(zbus::zvariant::Value::from(vec!["documents.read"])),
+        ),
+    ]);
+    let hits = search(&p, "budget revenue forecast", opts).await;
+    assert!(!hits.is_empty());
+    assert!(
+        hits.iter().all(|h| h["provenance"] == "file"),
+        "hybrid reranked a mail chunk into a documents-only read: {hits:?}"
+    );
 }
 
 #[tokio::test]
@@ -181,44 +248,77 @@ async fn scoped_search_enforces_the_acl_at_the_bus() {
     assert_eq!(f.ledger.tail(1).unwrap()[0].kind, "context.search.scoped");
 }
 
+/// Issue #101. This test used to be the demonstration: one connection
+/// wrote, read and wiped two different namespaces by naming them. The
+/// assistant persists whole session transcripts in its namespace, so
+/// `MemoryList("app.lisaos.Assistant")` was a transcript dump, and
+/// `MemoryWipe` on it was destruction.
+///
+/// A caller may now only name its own namespace. A p2p peer cannot be
+/// identified, so its namespace is `host:unknown` — a real namespace,
+/// shared by every unidentifiable caller, not a pass.
 #[tokio::test]
-async fn memory_roundtrip_is_namespace_isolated_and_wipe_is_total() {
+async fn a_caller_cannot_touch_another_apps_namespace() {
     let f = fixture().await;
     let p = proxy(&f.client).await;
 
-    for (app, val) in [("org.app.a", "dark"), ("org.app.b", "light")] {
-        p.call_method("MemorySet", &(app, "theme", val))
-            .await
-            .unwrap();
+    for verb in ["MemoryGet", "MemoryList", "MemoryWipe"] {
+        let call = match verb {
+            "MemoryGet" => {
+                p.call_method(verb, &("app.lisaos.Assistant", "sessions"))
+                    .await
+            }
+            _ => p.call_method(verb, &("app.lisaos.Assistant",)).await,
+        };
+        assert!(call.is_err(), "{verb} reached another app's namespace");
     }
+    assert!(
+        p.call_method("MemorySet", &("app.lisaos.Assistant", "k", "v"))
+            .await
+            .is_err(),
+        "MemorySet wrote into another app's namespace"
+    );
+}
 
-    let get = |app: &'static str, key: &'static str| {
+/// The namespace still works — for the caller's own. An empty `app`
+/// argument means "mine", which is what an app should send.
+#[tokio::test]
+async fn memory_roundtrip_in_the_callers_own_namespace_and_wipe_is_total() {
+    let f = fixture().await;
+    let p = proxy(&f.client).await;
+
+    p.call_method("MemorySet", &("", "theme", "dark"))
+        .await
+        .unwrap();
+    let get = |key: &'static str| {
         let p = p.clone();
         async move {
-            p.call_method("MemoryGet", &(app, key))
+            p.call_method("MemoryGet", &("", key))
                 .await
                 .map(|r| r.body().deserialize::<(String,)>().unwrap().0)
         }
     };
-    assert_eq!(get("org.app.a", "theme").await.unwrap(), "dark");
-    assert_eq!(get("org.app.b", "theme").await.unwrap(), "light");
-    assert!(
-        get("org.app.a", "missing").await.is_err(),
-        "missing key errors"
-    );
+    assert_eq!(get("theme").await.unwrap(), "dark");
+    assert!(get("missing").await.is_err(), "missing key errors");
 
-    let reply = p.call_method("MemoryList", &("org.app.a",)).await.unwrap();
+    let reply = p.call_method("MemoryList", &("",)).await.unwrap();
     let (json,): (String,) = reply.body().deserialize().unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&json).unwrap(),
         serde_json::json!({"theme": "dark"})
     );
 
-    // Wipe app a; app b must be untouched (zero residual rows, §5.3).
-    p.call_method("MemoryWipe", &("org.app.a",)).await.unwrap();
-    assert!(get("org.app.a", "theme").await.is_err(), "wiped");
-    let reply = p.call_method("MemoryList", &("org.app.a",)).await.unwrap();
+    // Another namespace, written directly, must survive our wipe (zero
+    // residual rows for us, nothing touched for them — §5.3).
+    f.store.memory_set("org.app.b", "theme", "light").unwrap();
+    p.call_method("MemoryWipe", &("",)).await.unwrap();
+    assert!(get("theme").await.is_err(), "wiped");
+    let reply = p.call_method("MemoryList", &("",)).await.unwrap();
     let (json,): (String,) = reply.body().deserialize().unwrap();
     assert_eq!(json, "{}");
-    assert_eq!(get("org.app.b", "theme").await.unwrap(), "light");
+    assert_eq!(
+        f.store.memory_get("org.app.b", "theme").unwrap().as_deref(),
+        Some("light"),
+        "a wipe crossed into another namespace"
+    );
 }

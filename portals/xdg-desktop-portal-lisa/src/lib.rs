@@ -19,7 +19,7 @@
 //! guarded by a comment; session objects trusted whoever held a path
 //! anyone could guess. So caller identity comes from the transport now
 //! (`lisa_peer`, ADR-0033), and the things that depend on it —
-//! [`identity`], `lisa_peer::manager`, session ownership in [`portal`] — take it
+//! `lisa_peer::app`, `lisa_peer::manager`, session ownership in [`portal`] — take it
 //! as an argument rather than deriving it from the message.
 //!
 //! Who may *manage* grants is `lisa_peer::manager` — shared with
@@ -35,7 +35,6 @@
 
 pub mod consent;
 pub mod grants;
-pub mod identity;
 pub mod portal;
 pub mod quota;
 pub mod upstream;

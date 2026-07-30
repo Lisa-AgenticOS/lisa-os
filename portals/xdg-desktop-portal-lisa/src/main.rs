@@ -5,9 +5,9 @@
 //! (fail-closed when absent), grants and ledger on disk.
 
 use clap::Parser;
+use lisa_peer::app::ProcResolver;
 use lisa_portal::consent::{ConsentUi, DbusConsentUi, StaticConsent};
 use lisa_portal::grants::GrantStore;
-use lisa_portal::identity::ProcResolver;
 use lisa_portal::portal::{self, PortalState};
 use lisa_portal::quota::QuotaConfig;
 use lisa_portal::upstream::{InferenceUpstream, ZbusUpstream, stub::StubUpstream};

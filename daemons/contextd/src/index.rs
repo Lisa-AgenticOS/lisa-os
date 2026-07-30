@@ -22,6 +22,12 @@ pub struct IndexReport {
     pub indexed: usize,
     pub skipped_unchanged: usize,
     pub chunks: usize,
+    /// Paths that are already indexed under a non-`file` provenance —
+    /// a mail or screen document whose source id happens to be a path
+    /// inside the walked tree (issue #104). Named, not just counted:
+    /// "the walker declined to touch your Maildir" is something the
+    /// person running it should be able to read.
+    pub skipped_foreign: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -100,21 +106,58 @@ impl ContextStore {
             let source = path.to_string_lossy().into_owned();
 
             let conn = self.conn.lock().expect("context lock");
-            let existing: Option<(i64, String)> = conn
+            let existing: Option<(i64, String, String)> = conn
                 .query_row(
-                    "SELECT id, content_hash FROM documents WHERE source = ?1",
+                    "SELECT id, content_hash, provenance FROM documents WHERE source = ?1",
                     [&source],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .ok();
-            if let Some((_, ref old_hash)) = existing
+            // A foreign row is skipped whether or not its content
+            // happens to match — otherwise the hash decides the label,
+            // which is the instability described below.
+            if let Some((_, _, ref old_provenance)) = existing
+                && old_provenance != "file"
+            {
+                report.skipped_foreign.push(source.clone());
+                continue;
+            }
+            if let Some((_, ref old_hash, _)) = existing
                 && *old_hash == hash
             {
                 report.skipped_unchanged += 1;
                 continue;
             }
-            if let Some((doc_id, _)) = existing {
+            if let Some((doc_id, _, ref old_provenance)) = existing {
+                // Never relabel somebody else's document (issue #104).
+                //
+                // This keyed only on `source`, and then re-inserted with
+                // a hardcoded `'file'`. The natural source id for the
+                // planned mail plugin *is* a filesystem path — notmuch
+                // and Maildir messages are files, under $HOME, inside
+                // exactly the tree this walker covers — so a mail
+                // document silently became `file` provenance and
+                // `documents.read` could read it.
+                //
+                // Worse, it was content-dependent: if the bytes on disk
+                // happened to hash equal to the stored hash the
+                // skipped_unchanged branch above kept the old label. The
+                // same corpus classified differently depending on
+                // whether a plugin's extracted text matched the file's.
+                //
+                // Skipped rather than fatal: one such collision must not
+                // abort the walk over an entire home directory. It is
+                // counted and named so it is visible.
+                if old_provenance != "file" {
+                    report.skipped_foreign.push(source.clone());
+                    continue;
+                }
                 conn.execute("DELETE FROM chunks WHERE doc_id = ?1", [doc_id])?;
+                // The third table — missed here while `add_document`
+                // deleted all three (issue #105). Every reindex left the
+                // old embeddings behind: residual content that survives
+                // a "reindex", and a table that grows without bound.
+                conn.execute("DELETE FROM chunk_vectors WHERE doc_id = ?1", [doc_id])?;
                 conn.execute("DELETE FROM documents WHERE id = ?1", [doc_id])?;
             }
             conn.execute(
@@ -213,5 +256,143 @@ mod tests {
         assert_eq!(r3.indexed, 1);
         assert!(store.search("alpaca", 3).unwrap().is_empty(), "stale chunk");
         assert!(!store.search("zebra", 3).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod reindex_tests {
+    use crate::store::ContextStore;
+
+    /// Issue #104, as filed. A plugin's source id is a filesystem path
+    /// inside the tree the walker covers — an exported message, a web
+    /// or screen cache file — so the document was relabelled `file` on
+    /// the next index and `documents.read` could read it.
+    ///
+    /// The extension matters: `index_dir` only looks at TEXT_EXTENSIONS,
+    /// so a bare Maildir name (`1234.M567P890.host:2,S`) is skipped
+    /// before provenance is ever considered. Written first with a
+    /// `.mail` suffix, which passed with the fix reverted — the walker
+    /// had simply never reached it. `.txt` is a path the walker really
+    /// does take.
+    #[test]
+    fn indexing_never_relabels_a_foreign_document_as_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(db.path().join("ctx.db")).unwrap();
+
+        // A message exported to a text file inside the indexed tree.
+        let path = dir.path().join("cur").join("1234.txt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "mail-ish secret content sauce").unwrap();
+        let source = path.to_string_lossy().into_owned();
+        store
+            .add_document(&source, "mail", "mail-ish secret content sauce")
+            .unwrap();
+        assert!(
+            store
+                .search_scoped("sauce", &["documents.read"], 50)
+                .unwrap()
+                .is_empty(),
+            "precondition: documents.read cannot read mail"
+        );
+
+        let report = store.index_dir(dir.path()).unwrap();
+
+        assert!(
+            store
+                .search_scoped("sauce", &["documents.read"], 50)
+                .unwrap()
+                .is_empty(),
+            "the mail document was relabelled and is now documents.read-readable"
+        );
+        assert_eq!(
+            store
+                .search_scoped("sauce", &["mail.read"], 50)
+                .unwrap()
+                .len(),
+            1,
+            "the mail document should still be readable as mail"
+        );
+        assert_eq!(
+            report.skipped_foreign,
+            vec![source],
+            "the skip should be named, not silent"
+        );
+    }
+
+    /// The same, when the bytes on disk happen to match what the plugin
+    /// stored. This was the unstable half: an equal hash took the
+    /// skipped_unchanged branch and kept the old label, so the same
+    /// corpus classified differently depending on the file's contents.
+    /// Both paths must reach the same answer.
+    #[test]
+    fn the_decision_does_not_depend_on_whether_the_bytes_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(db.path().join("ctx.db")).unwrap();
+        let path = dir.path().join("note.txt");
+
+        // Case A: stored text differs from the file's.
+        std::fs::write(&path, "on-disk text").unwrap();
+        let source = path.to_string_lossy().into_owned();
+        store
+            .add_document(&source, "mail", "different text")
+            .unwrap();
+        store.index_dir(dir.path()).unwrap();
+        let a = store
+            .search_scoped("text", &["mail.read"], 50)
+            .unwrap()
+            .len();
+
+        // Case B: identical.
+        let db2 = tempfile::tempdir().unwrap();
+        let store2 = ContextStore::open(db2.path().join("ctx.db")).unwrap();
+        store2
+            .add_document(&source, "mail", "on-disk text")
+            .unwrap();
+        store2.index_dir(dir.path()).unwrap();
+        let b = store2
+            .search_scoped("text", &["mail.read"], 50)
+            .unwrap()
+            .len();
+
+        assert_eq!(a, b, "provenance depended on whether the content matched");
+        assert_eq!(a, 1, "the document should have stayed mail in both cases");
+    }
+
+    /// Issue #105: `index_dir` deleted chunks and documents but not
+    /// `chunk_vectors`, so every reindex left the previous embeddings
+    /// behind — residual content that survives a reindex, in a table
+    /// that grows without bound.
+    #[test]
+    fn reindexing_leaves_no_orphaned_vectors() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(db.path().join("ctx.db")).unwrap();
+        let path = dir.path().join("note.txt");
+
+        let orphans = |s: &ContextStore| -> i64 {
+            let conn = s.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM chunk_vectors v
+                 WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = v.doc_id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        for i in 0..4 {
+            std::fs::write(&path, format!("revision {i} of the note")).unwrap();
+            store.index_dir(dir.path()).unwrap();
+            store
+                .embed_pending(&crate::embed::HashEmbedder::default())
+                .unwrap();
+        }
+        assert_eq!(
+            orphans(&store),
+            0,
+            "reindexing left orphaned vectors behind"
+        );
     }
 }

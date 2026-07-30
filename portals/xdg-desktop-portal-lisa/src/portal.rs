@@ -22,10 +22,10 @@
 use crate::SCOPE_INFERENCE;
 use crate::consent::{Authorization, ConsentUi, PromptPolicy, authorize, needs_prompt};
 use crate::grants::{GrantAction, GrantStore};
-use crate::identity::{AppIdentity, IdentityResolver};
 use crate::quota::{QuotaBook, QuotaConfig, QuotaExceeded, day_key, estimate_tokens};
 use crate::upstream::{InferenceUpstream, UpstreamSession};
 use lisa_ledger::{Event as LedgerEvent, Ledger, preview_of};
+use lisa_peer::app::{AppIdentity, IdentityResolver};
 use lisa_peer::manager::{may_manage, resolve_managers};
 use lisa_peer::{Owner, Peer, PeerId};
 use std::collections::HashMap;
