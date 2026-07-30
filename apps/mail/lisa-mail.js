@@ -31,6 +31,7 @@ imports.gi.versions.Gtk = '4.0';
 imports.gi.versions.Adw = '1';
 
 import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
@@ -39,6 +40,7 @@ import Gtk from 'gi://Gtk';
 import {decodeWords, parseAddress, parseHeaders, readableBody, splitMessage} from './lib/rfc822.js';
 import {listFolder, messagePath, previewOf} from './lib/maildir.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
+import {actionsFor, flagChange, moveTo} from './lib/actions.js';
 import {McpServer} from './lib/mcp.js';
 
 const APP_ID = 'app.lisaos.Mail';
@@ -179,8 +181,32 @@ let readerTitle = null;
 let readerFrom = null;
 let readerBody = null;
 let folderList = null;
+let readerHeader = null;
+let readerActions = null;
+let openMessage = null;
 
 const app = new Adw.Application({application_id: APP_ID});
+
+/// A window that fills most of the screen, within reason.
+///
+/// Clamped at the top so it does not become unusable on an ultrawide,
+/// and at the bottom so it stays a three-pane window on a laptop.
+function window_default_size() {
+    let w = 1600;
+    let h = 1000;
+    try {
+        const monitor = Gdk.Display.get_default()?.get_monitors()?.get_item(0);
+        const geo = monitor?.get_geometry();
+        if (geo) {
+            w = Math.max(1100, Math.min(2000, Math.round(geo.width * 0.8)));
+            h = Math.max(700, Math.min(1300, Math.round(geo.height * 0.85)));
+        }
+    } catch {
+        // No display yet, or a backend that will not say: the defaults
+        // above are a reasonable window on any of them.
+    }
+    return {width: w, height: h};
+}
 
 /// One row in the message list: sender, time, subject, preview.
 ///
@@ -274,7 +300,82 @@ function loadFolder(folder) {
     }
 }
 
+/// Rebuild the reading-pane toolbar for the open message.
+///
+/// Built from `actionsFor` rather than eight hand-written buttons: what
+/// each one does is then testable without a window, and the labels
+/// cannot drift from the state they describe.
+function buildToolbar(msg) {
+    if (readerActions) {
+        readerHeader.remove(readerActions);
+        readerActions = null;
+    }
+    readerActions = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL, spacing: 4});
+    readerActions.add_css_class('linked');
+    for (const action of actionsFor(msg, store.folders())) {
+        const button = new Gtk.Button({
+            icon_name: action.icon,
+            tooltip_text: action.why ? `${action.label} — ${action.why}` : action.label,
+            sensitive: action.enabled !== false,
+        });
+        if (action.active)
+            button.add_css_class('suggested-action');
+        button.connect('clicked', () => runAction(msg, action));
+        readerActions.append(button);
+    }
+    readerHeader.pack_start(readerActions);
+}
+
+/// Perform one action, then reload so the list reflects it.
+///
+/// Reloading the whole folder rather than patching the row: a rename
+/// changes the message's filename, which is its identity on disk, and
+/// a half-updated row that still remembers the old name is a row whose
+/// next action fails.
+function runAction(msg, action) {
+    try {
+        if (action.kind === 'flag') {
+            const change = flagChange(msg, action.flag, action.on);
+            if (change)
+                applyMove(msg.folder, change, msg.folder);
+        } else if (action.kind === 'move' && action.enabled !== false) {
+            const mv = moveTo(msg, action.folder);
+            if (mv)
+                applyMove(msg.folder, mv, mv.toFolder);
+        } else {
+            return;
+        }
+    } catch (e) {
+        logError(e, `mail: ${action.id} failed`);
+        return;
+    }
+    loadFolder(currentFolder);
+    openMessage = null;
+    readerTitle.set_label('');
+    readerFrom.set_label('');
+    readerBody.buffer.set_text('', -1);
+    if (readerActions) {
+        readerHeader.remove(readerActions);
+        readerActions = null;
+    }
+}
+
+/// The rename itself. One `Gio.File.move`, no fallback copy: a copy
+/// that half-succeeds leaves the message in two folders, and a maildir
+/// with a duplicate is worse than one with a failed action.
+function applyMove(fromFolder, change, toFolder) {
+    const from = messagePath(store.root, fromFolder, change.fromDir, change.fromName);
+    const to = messagePath(store.root, toFolder, change.toDir, change.toName);
+    if (!from || !to)
+        throw new Error('refusing a path outside the maildir');
+    GLib.mkdir_with_parents(`${store.root}/${toFolder}/${change.toDir}`, 0o700);
+    Gio.File.new_for_path(from).move(
+        Gio.File.new_for_path(to), Gio.FileCopyFlags.NONE, null, null);
+}
+
 function showMessage(msg) {
+    openMessage = msg;
+    buildToolbar(msg);
     const full = store.message(msg.folder, msg.unique) ?? msg;
     readerTitle.set_label(full.subject ?? '');
     // Both halves of the sender, always: a display name is
@@ -289,8 +390,14 @@ function showMessage(msg) {
 app.connect('activate', () => {
     store = new Store(maildirRoot());
 
+    // Sized against the monitor rather than a fixed guess: 1280x820 is
+    // a dialog on the 4K panel this was first seen on. Three panes need
+    // room, and a mail window that opens smaller than its own content
+    // reads as a preview of an app.
+    const display = window_default_size();
     const window = new Adw.ApplicationWindow({
-        application: app, title: 'Mail', default_width: 1280, default_height: 820,
+        application: app, title: 'Mail',
+        default_width: display.width, default_height: display.height,
     });
 
     // Pane 1: folders.
@@ -325,7 +432,10 @@ app.connect('activate', () => {
             showMessage(row._message);
     });
     const listPane = new Adw.ToolbarView();
-    const listHeader = new Adw.HeaderBar({show_title: false});
+    // NOT show_title:false. That hides the title WIDGET too, so the
+    // search entry below was created, packed, and invisible — which no
+    // test would have caught and one screenshot did.
+    const listHeader = new Adw.HeaderBar();
     const search = new Gtk.SearchEntry({placeholder_text: 'Search', hexpand: true});
     search.connect('search-changed', () => {
         const q = search.text.toLowerCase().trim();
@@ -360,7 +470,9 @@ app.connect('activate', () => {
     const readerScroll = new Gtk.ScrolledWindow({child: readerBody, vexpand: true});
     readerBox.append(readerScroll);
     const readerPane = new Adw.ToolbarView();
-    readerPane.add_top_bar(new Adw.HeaderBar({show_title: false}));
+    readerHeader = new Adw.HeaderBar();
+    readerHeader.set_title_widget(new Gtk.Label({label: '', visible: false}));
+    readerPane.add_top_bar(readerHeader);
     readerPane.set_content(readerBox);
 
     // Two nested split views: sidebar | (list | reader).

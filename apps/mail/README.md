@@ -61,11 +61,44 @@ when there is nothing rather than pretending to be offline.
 | `lib/rfc822.js` | headers, encoded words, addresses, readable body. Pure, total — malformed input yields something empty, never an exception |
 | `lib/maildir.js` | filename flags, listing, ids, path containment, previews |
 | `lib/smart.js` | which pile a message goes in |
+| `lib/actions.js` | what the buttons do, as arithmetic on filenames |
 | `lib/mcp-protocol.js` | JSON-RPC + the provenance tag. Pure |
 | `lib/mcp.js` | the socket |
 | `lisa-mail.js` | the window; thin over the above |
 
-`just shell-test` runs the pure half — 23 cases, on any dev host.
+`just shell-test` runs the pure half — 32 cases, on any dev host.
+
+## The buttons
+
+A Maildir action is a rename, so `lib/actions.js` computes the new path
+and the window performs it. Three things that are easy to get wrong and
+are therefore tested rather than assumed:
+
+- **Flags are written in ASCII order.** Clients disagree about plenty;
+  they agree about this, and unsorted flags make other clients mis-sort
+  the same Maildir.
+- **Acting on a message in `new/` moves it to `cur/`.** That is what the
+  two directories mean. Skipping it leaves read mail looking unread to
+  everything else sharing the Maildir.
+- **A move lands in `cur/`, never `new/`.** Filing a message into another
+  folder's `new/` makes it unread again and, on a synced Maildir,
+  notifies about a message you just filed.
+
+**Trash is a move to the Trash folder, and the button says "Move to
+Trash".** Maildir's `T` flag means "deleted", but what actually destroys
+a message is a separate expunge — a bin icon that destroys immediately
+is not a button, it is a trap.
+
+**Reply and Forward are shown, disabled, and say why on hover.** Sending
+needs SMTP: credentials and egress, a different class of thing from
+renaming a file, and one that belongs behind the same scrutiny as any
+other egress here. A mail app with no reply button reads as unfinished;
+one whose reply button does nothing reads as broken. Saying why is
+neither.
+
+These are **UI actions only** — not Agent Bus tools. They are write-tier
+by nature, and write-tier tools should wait for the consent surface to
+be split from the model host (#145).
 
 ## Extending it
 
