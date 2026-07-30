@@ -92,7 +92,7 @@ pub fn outcome_for(disposition: &str, detail: &str, label: &str) -> ToolOutcome 
 
 /// Pure: does an executed call's detail JSON say its content came from
 /// the web? The browser's MCP server tags every result it emits
-/// (`apps/browser/lib/mcp-protocol.js`); agentd passes the tool result
+/// (`apps/surfer/lib/mcp-protocol.js`); agentd passes the tool result
 /// through in `detail.result`.
 ///
 /// Only the well-formed spelling counts — a page that *contains* the

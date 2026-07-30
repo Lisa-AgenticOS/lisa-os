@@ -221,3 +221,32 @@ a URL bar, one tab, and exactly two Read-tier tools — `read_page` and
 `get_selection` — with everything they return tagged untrusted. No
 writes, no clicking, no credentials. If that slice cannot be made to feel
 right, none of the rest is worth building.
+
+## Amendment (2026-07-30): the browser is called Surfer
+
+Shipped as "Browser" with app id `app.lisaos.Browser`, on the reasoning
+that the OS's own browser is generic the way Files and Terminal are.
+
+Two things changed that:
+
+1. **A generic name has nothing to say in a user agent.** The first real
+   compatibility bug — YouTube would not play — was WebKitGTK announcing
+   `Version/60.5 Safari/605.1.15`. There is no Safari 60.5; the number
+   tracks WebKitGTK's release. Fixing that means writing a user agent,
+   and a user agent wants a product token. "Browser/0.1" says nothing a
+   site could act on.
+
+2. **Generic names collide.** `app.lisaos.Browser` is the id, the
+   `.desktop` name, the MCP manifest and the tool prefix the agent sees.
+   A name that is also the category is a name that will be ambiguous in
+   every one of those places.
+
+So: **Surfer**, `app.lisaos.Surfer`, and a user agent ending
+`Safari/605.1.15 Surfer/0.1`.
+
+The token is a small deliberate risk — a site that allowlists known
+browsers could read it the way YouTube read `Version/60.5`. The trade is
+that a bug can be reported against us by name and that we are not
+pretending to be something we are not. `LISA_SURFER_UA` overrides the
+whole string, so testing that trade needs no rebuild.
+

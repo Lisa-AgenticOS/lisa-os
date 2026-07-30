@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Browser
+Name=Surfer
 Comment=The web, visible to your assistant
-Exec=lisa-app browser/lisa-browser.js %u
+Exec=lisa-app surfer/lisa-surfer.js %u
 Icon=web-browser-symbolic
 Terminal=false
 Categories=Network;WebBrowser;GTK;

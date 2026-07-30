@@ -1,7 +1,7 @@
 #!/usr/bin/env -S gjs -m
 // Phase 0 spike for ADR-0037 / issue #146 — throwaway.
 //
-// The entire Browser plan rests on one assumption: that GJS can drive
+// The entire Surfer plan rests on one assumption: that GJS can drive
 // WebKit-6.0 through GObject introspection well enough to build on. That
 // is cheap to test and expensive to be wrong about, so it is tested
 // first and alone.
@@ -21,7 +21,7 @@
 //      at startup, which is the sandbox working, not a fault.
 //
 // Run on the device:
-//     gjs -m apps/browser/spike/webkit-spike.js https://lisaos.dev
+//     gjs -m apps/surfer/spike/webkit-spike.js https://lisaos.dev
 //
 // Delete this file once Phase 1 exists. It is a probe, not a foundation.
 
@@ -38,7 +38,7 @@ const record = (q, ok, detail) => {
 };
 
 Adw.init();
-const app = new Adw.Application({application_id: 'dev.lisaos.BrowserSpike'});
+const app = new Adw.Application({application_id: 'dev.lisaos.SurferSpike'});
 
 app.connect('activate', () => {
     let view;
@@ -56,7 +56,7 @@ app.connect('activate', () => {
     record('Q3 sandbox is unconditional in WebKit 6.0', true, 'no toggle in the API');
 
     const win = new Adw.Window({
-        title: 'Lisa Browser spike',
+        title: 'Surfer spike',
         default_width: 1024,
         default_height: 720,
     });

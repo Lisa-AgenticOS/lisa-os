@@ -2,7 +2,7 @@
 // socket so it can be tested under node, which cannot load gi:// —
 // and so the provenance tag lives in a module with no I/O in it.
 
-export const APP_ID = 'app.lisaos.Browser';
+export const APP_ID = 'app.lisaos.Surfer';
 
 /// Pure: one decoded JSON-RPC request → the reply object (or null for a
 /// notification). `tools` maps name → async handler. Split from the

@@ -1,19 +1,19 @@
-# apps/browser — Browser
+# apps/surfer — Surfer
 
 Spec: `docs/adr/0037-the-browser-is-a-lisa-app.md`, plan issue #146.
 GJS + GTK4 + libadwaita + WebKit-6.0 (the engine the image already
-ships). App id `app.lisaos.Browser`.
+ships). App id `app.lisaos.Surfer`.
 
 ## What it does
 
 A browser whose current tab the assistant can see. Three read-tier
 tools on the Agent Bus — `read_page`, `get_selection`, `screenshot` —
 served over the MCP socket while a window is open, declared in
-`app.lisaos.Browser.json`.
+`app.lisaos.Surfer.json`.
 
 ## How it works
 
-- `lisa-browser.js` — Adw.TabView owns per-tab WebViews; header bar,
+- `lisa-surfer.js` — Adw.TabView owns per-tab WebViews; header bar,
   URL entry, Ctrl+T/W/L. **Every window sets `application: app`** — an
   unattached Adw.Window parks WebKit loads at progress 0.1 forever with
   no error anywhere (found in Phase 0, the hard way).

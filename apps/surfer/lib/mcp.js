@@ -10,7 +10,7 @@ function socketDir() {
     return rt ? `${rt}/lisa/mcp` : '/run/lisa/mcp';
 }
 
-/// The socket server. Owns <runtime>/lisa/mcp/app.lisaos.Browser.sock
+/// The socket server. Owns <runtime>/lisa/mcp/app.lisaos.Surfer.sock
 /// for exactly as long as the app runs — mcp-bus defers socket
 /// activation, so socket presence IS tool availability, and stop()
 /// removes it rather than leaving a dead socket that times out callers.
@@ -24,7 +24,7 @@ export class McpServer {
                 const shot = await handlers.screenshotCurrent();
                 // PNG bytes → a file the caller can open; raw bytes do not
                 // survive JSON and a base64 blob blows the transcript.
-                const dir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'lisa-browser']);
+                const dir = GLib.build_filenamev([GLib.get_user_cache_dir(), 'lisa-surfer']);
                 GLib.mkdir_with_parents(dir, 0o700);
                 const path = GLib.build_filenamev([dir, `shot-${Date.now()}.png`]);
                 GLib.file_set_contents(path, shot.png);
@@ -45,11 +45,11 @@ export class McpServer {
             Gio.UnixSocketAddress.new(this._path),
             Gio.SocketType.STREAM, Gio.SocketProtocol.DEFAULT, null);
         this._service.connect('incoming', (_s, conn) => {
-            this._serve(conn).catch(e => logError(e, 'lisa-browser mcp'));
+            this._serve(conn).catch(e => logError(e, 'lisa-surfer mcp'));
             return true;
         });
         this._service.start();
-        log(`lisa-browser: agent tools on ${this._path}`);
+        log(`lisa-surfer: agent tools on ${this._path}`);
     }
 
     stop() {
