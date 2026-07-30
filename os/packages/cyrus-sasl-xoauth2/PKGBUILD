@@ -1,0 +1,137 @@
+# cyrus-sasl-xoauth2 — the SASL mechanism that lets mbsync authenticate
+# to Gmail with an OAuth token instead of a password (issue #155).
+#
+# WHY THIS EXISTS
+# Connecting Google in Settings gives GNOME Online Accounts an OAuth2
+# token, and mbsync is the syncer that turns IMAP into the Maildir the
+# Mail app reads. The two cannot talk. isync speaks OAuth only through
+# SASL's XOAUTH2 mechanism, and Cyrus SASL 2.1.28 — what Arch ships —
+# has no such plugin: /usr/lib/sasl2 contains anonymous, crammd5,
+# digestmd5, login, ntlm, plain, sasldb and scram, and nothing else.
+# There is no OAUTHBEARER either. Verified on the field iMac, not
+# assumed.
+#
+# Arch does not package it (there is an open packaging issue,
+# gitlab.archlinux.org/archlinux/packaging/packages/isync/-/work_items/3)
+# and the AUR is not a dependency this OS is allowed to take — install,
+# update and recovery may not rest on infrastructure we do not control
+# (ADR-0034). An immutable root also cannot install one later. So it is
+# built here, from a pinned commit, like every other out-of-tree piece.
+#
+# ON PINNING A STALE UPSTREAM
+# Last upstream commit is 2021-08-10 and that is fine, unusually. XOAUTH2
+# is not a protocol that evolves: the client sends
+# `user=<addr>^Aauth=Bearer <token>^A^A`, base64'd, and that is the whole
+# mechanism — frozen by Google's spec, not by this repository. The code
+# is a few hundred lines of C implementing exactly that. A stale pin here
+# is a stable pin, not a rotting one. What WOULD matter is a security
+# fix, so the pin is explicit and greppable rather than a moving branch.
+#
+# If Arch ever ships this, delete this directory and name the official
+# package in mkosi.conf instead — same name, so nothing else changes.
+
+pkgname=cyrus-sasl-xoauth2
+# No upstream releases exist; the date is the pinned commit's.
+pkgver=0.2.20210810
+pkgrel=1
+pkgdesc="XOAUTH2 mechanism plugin for Cyrus SASL — OAuth2 bearer tokens for IMAP/SMTP clients"
+arch=(x86_64 aarch64)
+url="https://github.com/moriyoshi/cyrus-sasl-xoauth2"
+license=(MIT)
+
+# moriyoshi/cyrus-sasl-xoauth2 master @ 2021-08-10, "Merge pull request
+# #8 from dirkmueller/master". Verified present via the GitHub API on
+# 2026-07-30; the repository is public, MIT, and not archived.
+_commit=36aabca54fd65c8fa7a707cb4936751599967904
+
+depends=(libsasl)
+makedepends=(git autoconf automake libtool pkgconf gcc)
+# No separate debug package: this is one small shared object, and the
+# release lane copies whatever lands in the build directory.
+options=(!debug)
+
+source=("git+${url}.git#commit=${_commit}"
+        "listmech-check.c")
+# SKIP is correct for a commit-pinned git source: the commit hash IS the
+# integrity check, and a b2sum computed here would only restate it. The
+# local file is in this repository and reviewed with it.
+b2sums=('SKIP'
+        'SKIP')
+
+prepare() {
+  cd "$srcdir/$pkgname"
+  ./autogen.sh
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  # No --with-plugindir: the default is $libdir/sasl2, which with
+  # --prefix=/usr and Arch's libdir is /usr/lib/sasl2 — the one directory
+  # libsasl scans. package() asserts that rather than trusting it,
+  # because a plugin installed one directory over is not a broken
+  # plugin, it is an invisible one: mbsync would report "unsupported
+  # authentication mechanism" and nothing would say why.
+  ./configure --prefix=/usr
+  make
+}
+
+check() {
+  # Does libsasl actually LOAD it? A .so in the right directory is not
+  # the same claim: the failure this guards against is mbsync reporting
+  # "unsupported authentication mechanism" while the file sits there
+  # looking installed.
+  #
+  # SASL_PATH points libsasl at the freshly built plugin, so this runs
+  # before anything is installed anywhere. The check is a comparison,
+  # not an assertion — the mechanism list is taken with the plugin
+  # hidden and again with it visible, because a probe that reports
+  # "found" without ever having reported "not found" has proved nothing.
+  # It reported EXTERNAL and ANONYMOUS only, from BOTH runs, until the
+  # probe learned to supply credential callbacks: libsasl does not offer
+  # a mechanism it cannot feed, so a missing callback looks exactly like
+  # a missing plugin.
+  cd "$srcdir"
+  gcc listmech-check.c -lsasl2 -o listmech-check
+
+  local without with
+  without=$(SASL_PATH=/nonexistent ./listmech-check || true)
+  with=$(SASL_PATH="$srcdir/$pkgname/.libs" ./listmech-check || true)
+  echo "  without the plugin: $without"
+  echo "  with the plugin:    $with"
+
+  case "$without" in
+    *XOAUTH2*)
+      echo "!! the control run already offers XOAUTH2 — this check proves nothing" >&2
+      return 1 ;;
+  esac
+  case "$with" in
+    *XOAUTH2*) : ;;
+    *)
+      echo "!! libsasl did not load the built plugin. It is not enough for" >&2
+      echo "!! libxoauth2.so to exist; mbsync asks libsasl what mechanisms" >&2
+      echo "!! it has, and an unloaded plugin is an absent one." >&2
+      return 1 ;;
+  esac
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  make DESTDIR="$pkgdir" install
+  install -Dm644 COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+
+  # Upstream's libtool install also drops a .la file, which pacman
+  # flags and nothing on a modern system reads.
+  rm -f "$pkgdir/usr/lib/sasl2/"*.la
+
+  if [ ! -f "$pkgdir/usr/lib/sasl2/libxoauth2.so" ]; then
+    echo "" >&2
+    echo "!! cyrus-sasl-xoauth2: no libxoauth2.so in /usr/lib/sasl2." >&2
+    echo "!! Built where? ->" >&2
+    find "$pkgdir" -name 'libxoauth2*' >&2 || true
+    echo "!! A SASL plugin outside the scanned directory is invisible:" >&2
+    echo "!! mbsync would say the mechanism is unsupported and no log" >&2
+    echo "!! anywhere would mention this package." >&2
+    echo "" >&2
+    return 1
+  fi
+}

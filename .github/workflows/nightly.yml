@@ -357,6 +357,19 @@ jobs:
               echo "FAIL: no mbsync — apps/mail has nothing to read from"
               fail=1
             }
+            # mbsync speaks OAuth only through this. Cyrus SASL ships no
+            # XOAUTH2 and no OAUTHBEARER, so without it a connected Google
+            # account and an installed syncer still cannot authenticate —
+            # every other link in the chain present and the mail still not
+            # arriving. Only meaningful on the release image, which is
+            # where os/packages/ lands.
+            if [ -x mnt-pull/usr/bin/mbsync ] &&
+               ! ls mnt-pull/usr/lib/sasl2/libxoauth2.so >/dev/null 2>&1; then
+              echo "FAIL: mbsync is installed but SASL has no XOAUTH2 mechanism"
+              echo "      (os/packages/cyrus-sasl-xoauth2). Gmail cannot be"
+              echo "      authenticated with an Online Accounts token."
+              fail=1
+            fi
           fi
           sudo umount mnt-pull
           sudo losetup -d "$LOOP"

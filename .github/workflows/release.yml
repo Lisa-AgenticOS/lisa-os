@@ -257,6 +257,21 @@ jobs:
               # The glob picks up both.
               sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg -d --nocheck --noconfirm"
               cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
+              # The XOAUTH2 SASL mechanism (issue #155). Cyrus SASL 2.1.28
+              # ships anonymous/crammd5/digestmd5/login/ntlm/plain/sasldb/
+              # scram and nothing else, so mbsync cannot authenticate to
+              # Gmail with the token Online Accounts holds. Arch does not
+              # package it and the AUR is not a dependency this OS takes
+              # (ADR-0034).
+              #
+              # NOT --nocheck, unlike everything else here: this package's
+              # check() asks libsasl which mechanisms it actually loads,
+              # with and without the plugin. A .so in the right directory
+              # is not the same claim as a mechanism that works, and the
+              # failure mode is mbsync saying "unsupported authentication
+              # mechanism" while the file sits there looking installed.
+              sudo -u builder bash -c "cd /build/os/packages/cyrus-sasl-xoauth2 && makepkg -s --noconfirm"
+              cp /build/os/packages/cyrus-sasl-xoauth2/cyrus-sasl-xoauth2-*.pkg.tar.* /build/repo-out/
               # Our forked gnome-control-center: stock 50.3 + the native
               # Intelligence panel (ADR-0012). -s installs its makedepends;
               # it takes the gnome-control-center name so the local repo
@@ -327,6 +342,13 @@ jobs:
                    # "Context daemon unavailable" and conversations do
                    # not survive a restart (field-found on v30).
                    lisa-contextd
+                   # The other half of mail sync (issue #155). isync and
+                   # gnome-keyring come from Arch and are named in
+                   # os/mkosi/mkosi.conf; this is the piece neither Arch
+                   # nor upstream Cyrus SASL provides, without which a
+                   # connected Google account and an installed mbsync
+                   # still cannot talk to each other.
+                   cyrus-sasl-xoauth2
                    llama.cpp
                    # The .desktop entry, icons and /usr/bin/zen-browser
                    # resolver. ~10 KiB, and it stays here forever: it is
