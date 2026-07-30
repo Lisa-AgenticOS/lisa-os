@@ -19,11 +19,18 @@
 use lisa_contextd::ContextStore;
 
 /// Every provenance the ACL knows, with a scope that grants it.
+///
+/// `screen` is `screen.read`, not `screen.once` (issue #112):
+/// `screen.once` is the portal's *per-invocation* scope and no longer
+/// grants a provenance-wide read, so a suite that used it would be
+/// asserting against a scope that grants nothing. The gate's own
+/// non-vacuity floor caught the change, which is the floor doing its
+/// job.
 pub const PROVENANCES: &[(&str, &str)] = &[
     ("file", "documents.read"),
     ("mail", "mail.read"),
     ("calendar", "calendar.read"),
-    ("screen", "screen.once"),
+    ("screen", "screen.read"),
     ("web", "web.read"),
 ];
 

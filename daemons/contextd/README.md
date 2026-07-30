@@ -58,6 +58,54 @@ on first call. First consumer: the assistant overlay backend's
 [my stuff] retrieval (`shell/overlay-extension/backend/lisa-overlayd.js`,
 with a CLI shell-out fallback). Tested over zbus p2p in `tests/dbus.rs`.
 
+## Who is asking
+
+Both halves of `dev.lisaos.Context1` used to take the caller's word.
+
+**Memory namespaces** (#101) were a method argument with no check, so any
+peer on the session bus could read another app's durable memory — the
+assistant stores whole session transcripts there — or wipe it. The app id
+now comes from the caller (`lisa_peer::app`); an `app` argument may only
+*match* it, and an empty one means "mine". Naming somebody else's
+namespace works only for an allowlisted program, which is how
+`lisa memory --app X` stays possible.
+
+**Search** (#100) picked its path from a caller-supplied option: `scopes`
+present meant the ACL, absent meant *every provenance, unfiltered*. The
+ACL was a request, not a boundary — and the one shipping consumer, the
+overlay's [my stuff], omitted the key. Now absence means the same as an
+empty list: nothing. An unscoped read is available only to the user's own
+tooling, because `lisa context search` is a person looking at their own
+index and a guardrail between a person and their own machine is the wrong
+guardrail (ADR-0030).
+
+Retrieval entries name the app, its identity kind, and the effective
+scopes — §5.3 asks for that and the old `app_id: "host"` could not
+provide it.
+
+### Scopes and provenance
+
+`screen.once` grants **nothing** here (#112). It is the portal's
+per-invocation scope — one "share this window" — and mapping it to the
+whole `screen` provenance turned that single consent into a durable read
+of every capture ever indexed, over the most sensitive class in the
+store, in a system that explicitly refuses to build a Recall (§5.7.4). A
+durable historical read would need its own scope name so a consent dialog
+could say so; none is invented until something needs one.
+
+Writes are validated against the known provenance set. An unknown tag
+used to be accepted and then readable by no scope at all, which looks
+exactly like an empty index rather than a typo.
+
+`index_dir` refuses to touch a source already indexed under a non-`file`
+provenance (#104) and names what it skipped. It used to key on the path
+alone and re-insert with a hardcoded `'file'`, so a plugin whose source
+id is a path inside the walked tree — an exported message, a web or
+screen cache file — was silently relabelled and became
+`documents.read`-readable. That was content-dependent too: an unchanged
+hash took the skip branch and kept the old label, so the same corpus
+classified differently depending on whether the bytes matched.
+
 ## Left for M3 completion
 
 Live sources + watchers (file/mail/calendar ingestion daemons),

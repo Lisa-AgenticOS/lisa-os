@@ -7,8 +7,8 @@
 //! denied, never silently allowed.
 
 use crate::grants::{Effective, GrantAction};
-use crate::identity::AppIdentity;
 use futures::future::BoxFuture;
+use lisa_peer::app::AppIdentity;
 
 /// What the user answered in the consent dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

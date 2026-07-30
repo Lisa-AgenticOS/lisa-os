@@ -8,15 +8,48 @@
 use crate::index::Hit;
 use crate::store::{ContextStore, StoreError};
 
+/// Every provenance tag the store recognises.
+///
+/// A write with anything else is refused (issue #104). It used to be
+/// accepted and then silently unreadable — every scope returned zero
+/// hits for a document tagged `"File"` or `"clipboard"` — so a plugin
+/// with a typo produced an invisible index rather than an error, and
+/// nothing distinguished "indexed nothing" from "indexed into a tag
+/// no scope can reach".
+pub const PROVENANCE: [&str; 5] = ["file", "mail", "calendar", "screen", "web"];
+
+/// Whether `provenance` is one the ACL can reason about.
+pub fn is_known_provenance(provenance: &str) -> bool {
+    PROVENANCE.contains(&provenance)
+}
+
 /// Map a granted portal scope to the provenance tags it may read. Both
 /// the portal scope names (`documents.read`) and their CLI short forms
 /// (`documents`) resolve; an unknown scope grants nothing.
+///
+/// # `screen.once` is not here (issue #112)
+///
+/// It is the portal's *per-invocation* screen scope — PLAN §5.7.4:
+/// screen context is on request only, with consent per capture and a
+/// visible indicator while active. Mapping it to the whole `screen`
+/// provenance turned one "share this window" into a durable read of
+/// every capture ever pinned, which is a strictly wider grant than the
+/// consent given, over the most sensitive class in the store — and
+/// §5.7.4 explicitly refuses to build a Recall.
+///
+/// So it grants nothing here. A capability for the frames of the
+/// current invocation is a different mechanism (a capture id in the
+/// filter), and a durable historical read deserves its own scope name
+/// so a consent dialog can say so — `screen.history`, which does not
+/// exist yet and should not be invented before something needs it
+/// (rule 8).
 pub fn provenance_for_scope(scope: &str) -> &'static [&'static str] {
     match scope {
         "documents.read" | "files.read" | "documents" | "files" => &["file"],
         "mail.read" | "mail" => &["mail"],
         "calendar.read" | "calendar" => &["calendar"],
-        "screen.once" | "screen.read" | "screen" => &["screen"],
+        // NOT "screen.once" — see above.
+        "screen.read" | "screen" => &["screen"],
         "web.read" | "web" => &["web"],
         _ => &[],
     }
@@ -42,6 +75,9 @@ impl ContextStore {
         provenance: &str,
         content: &str,
     ) -> Result<(), StoreError> {
+        if !is_known_provenance(provenance) {
+            return Err(StoreError::UnknownProvenance(provenance.to_string()));
+        }
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let conn = self.conn.lock().expect("context lock");
         // Replace any prior version of this source.
@@ -120,6 +156,7 @@ impl ContextStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::StoreError;
 
     fn mixed_store() -> (tempfile::TempDir, ContextStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -146,6 +183,65 @@ mod tests {
             )
             .unwrap();
         (dir, store)
+    }
+
+    /// Issue #104's second half: a document written under a tag no
+    /// scope maps to is readable by nobody, which looks exactly like an
+    /// empty index. A typo in a plugin should be an error, not an
+    /// invisible corpus.
+    #[test]
+    fn an_unknown_provenance_is_refused_rather_than_silently_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        for bad in ["", "File", "clipboard", "files", "SCREEN"] {
+            assert!(
+                matches!(
+                    store.add_document("s", bad, "content"),
+                    Err(StoreError::UnknownProvenance(_))
+                ),
+                "{bad:?} was accepted"
+            );
+        }
+        for good in PROVENANCE {
+            store
+                .add_document(&format!("s-{good}"), good, "content")
+                .unwrap_or_else(|e| panic!("{good} was refused: {e}"));
+        }
+    }
+
+    /// Issue #112. `screen.once` is the portal's per-invocation scope —
+    /// one "share this window". It used to map to the whole `screen`
+    /// provenance, so that single consent read every capture ever
+    /// pinned into the index.
+    #[test]
+    fn screen_once_does_not_grant_the_whole_capture_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        store
+            .add_document("cap-1", "screen", "a password on somebody screen")
+            .unwrap();
+        store
+            .add_document("cap-2", "screen", "another screen with a password")
+            .unwrap();
+
+        assert!(
+            store
+                .search_scoped("password", &["screen.once"], 10)
+                .unwrap()
+                .is_empty(),
+            "screen.once read the capture history"
+        );
+        assert!(provenance_for_scope("screen.once").is_empty());
+
+        // The durable scope still works — this is a narrowing of one
+        // scope, not the removal of screen retrieval.
+        assert_eq!(
+            store
+                .search_scoped("password", &["screen.read"], 10)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

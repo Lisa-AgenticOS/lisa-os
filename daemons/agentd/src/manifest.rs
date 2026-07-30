@@ -92,6 +92,69 @@ pub struct ToolDecl {
     /// corrected.
     #[serde(skip)]
     pub tier_raised_from: Option<Tier>,
+    /// Schema keys removed at load because they break grammar
+    /// compilation (issue #147). Not deserialized, for the same reason
+    /// as `tier_raised_from`.
+    #[serde(skip)]
+    pub stripped_bounds: Vec<String>,
+}
+
+/// The largest string-length bound that survives into the grammar.
+///
+/// Empirical: on the reference iMac, `maxLength: 200` compiled and
+/// `maxLength: 4000` did not. Set well below the last known-good value
+/// rather than at it — the real limit depends on the engine's grammar
+/// expansion, not on anything we control, and the cost of being
+/// conservative is losing a sampling hint.
+const MAX_GRAMMAR_LENGTH: u64 = 256;
+
+/// Walk a schema, removing length bounds too large to compile.
+///
+/// Recursive because a schema is a tree: the bound that broke the
+/// device was on a property, and `items`, `$defs`, `anyOf` and friends
+/// can nest arbitrarily. Missing one would reintroduce exactly the
+/// failure this exists to prevent, so this walks every object value
+/// rather than a list of known keys.
+fn strip_large_bounds(schema: &mut Value, stripped: &mut Vec<String>) {
+    strip_at(schema, "", stripped);
+}
+
+fn strip_at(schema: &mut Value, path: &str, stripped: &mut Vec<String>) {
+    match schema {
+        Value::Object(map) => {
+            for key in ["maxLength", "minLength"] {
+                let too_big = map
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|n| n > MAX_GRAMMAR_LENGTH);
+                if too_big {
+                    map.remove(key);
+                    stripped.push(if path.is_empty() {
+                        key.to_string()
+                    } else {
+                        format!("{path}.{key}")
+                    });
+                }
+            }
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for k in keys {
+                let child_path = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                if let Some(v) = map.get_mut(&k) {
+                    strip_at(v, &child_path, stripped);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (i, v) in items.iter_mut().enumerate() {
+                strip_at(v, &format!("{path}[{i}]"), stripped);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The app-provided inverse call: `tool` in the same manifest, args
@@ -116,8 +179,48 @@ impl Manifest {
     pub fn from_json(json: &str) -> Result<Manifest, ManifestError> {
         let mut m: Manifest = serde_json::from_str(json)?;
         m.apply_tier_floor();
+        m.sanitize_schemas();
         m.validate()?;
         Ok(m)
+    }
+
+    /// Remove schema constructs that break grammar compilation for the
+    /// engine that has to constrain sampling against them (issue #147).
+    ///
+    /// llama.cpp compiles the JSON Schemas of **all** offered tools into
+    /// one GBNF grammar. If any single one fails, the whole request is
+    /// rejected — `failed to parse grammar`, surfaced as a 503 — and
+    /// every tool becomes unavailable, including the ones that were
+    /// fine. Bisected on the reference iMac: a `maxLength: 4000` on one
+    /// notes tool was why the assistant reported it could not see the
+    /// browser. The error named neither the tool nor the app.
+    ///
+    /// A large `maxLength` expands to a repetition rule with that many
+    /// alternatives, which the parser will not take. 200 compiled, 4000
+    /// did not; the bound below is empirical from that bisect, not a
+    /// number from any specification, and it is deliberately well under
+    /// the last value observed to work.
+    ///
+    /// Stripped rather than rejected. The tool keeps working and the
+    /// only thing lost is a *sampling* constraint that was never
+    /// enforceable anyway — the tool still validates its own input. A
+    /// dropped tool would be a working app silently losing a feature.
+    /// What is stripped is recorded so it can be logged, because
+    /// quietly rewriting somebody's manifest is how an app author ends
+    /// up debugging the wrong thing.
+    pub fn sanitize_schemas(&mut self) {
+        for tool in &mut self.tools {
+            strip_large_bounds(&mut tool.input_schema, &mut tool.stripped_bounds);
+        }
+    }
+
+    /// Tools whose schema was rewritten, and what was removed.
+    pub fn stripped_bounds(&self) -> Vec<(&str, &[String])> {
+        self.tools
+            .iter()
+            .filter(|t| !t.stripped_bounds.is_empty())
+            .map(|t| (t.name.as_str(), t.stripped_bounds.as_slice()))
+            .collect()
     }
 
     /// Raise any tool whose declared tier is below what its own name
@@ -558,5 +661,116 @@ mod tests {
             "array item type"
         );
         assert!(validate_args(&schema, &json!("not an object")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    fn manifest_with_schema(schema: serde_json::Value) -> Manifest {
+        let json = serde_json::json!({
+            "lisa_manifest": 1,
+            "app_id": "app.lisaos.notes",
+            "mcp": { "transport": "unix", "activatable": true },
+            "tools": [{
+                "name": "search_notes",
+                "tier": "read",
+                "description": "Search notes",
+                "input_schema": schema
+            }]
+        })
+        .to_string();
+        Manifest::from_json(&json).unwrap()
+    }
+
+    /// Issue #147, as found on the device: one app's `maxLength: 4000`
+    /// made llama.cpp reject the grammar for EVERY offered tool, and
+    /// the symptom was "the assistant cannot see Browser".
+    #[test]
+    fn a_bound_too_large_to_compile_is_dropped_and_reported() {
+        let m = manifest_with_schema(serde_json::json!({
+            "type": "object",
+            "required": ["query"],
+            "properties": { "query": {"type": "string", "maxLength": 4000} }
+        }));
+        let schema = &m.tools[0].input_schema;
+        assert!(
+            schema["properties"]["query"].get("maxLength").is_none(),
+            "the bound survived: {schema}"
+        );
+        // The rest of the schema is untouched — this strips one key, it
+        // does not rewrite the tool.
+        assert_eq!(schema["properties"]["query"]["type"], "string");
+        assert_eq!(schema["required"][0], "query");
+        assert_eq!(
+            m.stripped_bounds(),
+            vec![(
+                "search_notes",
+                &["properties.query.maxLength".to_string()][..]
+            )]
+        );
+    }
+
+    /// Small bounds are useful and compile fine. A fix that stripped
+    /// every bound would be throwing away working schema for nothing.
+    #[test]
+    fn a_bound_that_compiles_is_left_alone() {
+        let m = manifest_with_schema(serde_json::json!({
+            "type": "object",
+            "properties": { "query": {"type": "string", "maxLength": 200, "minLength": 1} }
+        }));
+        let q = &m.tools[0].input_schema["properties"]["query"];
+        assert_eq!(q["maxLength"], 200);
+        assert_eq!(q["minLength"], 1);
+        assert!(m.stripped_bounds().is_empty());
+    }
+
+    /// A schema is a tree, and the bound that broke the device was on a
+    /// property. Missing a nesting construct would reintroduce exactly
+    /// the failure this exists to prevent.
+    #[test]
+    fn bounds_are_found_wherever_they_nest() {
+        let m = manifest_with_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 9000}
+                },
+                "either": {
+                    "anyOf": [
+                        {"type": "string", "minLength": 5000},
+                        {"type": "object", "properties": {
+                            "deep": {"type": "string", "maxLength": 8000}
+                        }}
+                    ]
+                }
+            }
+        }));
+        let json = m.tools[0].input_schema.to_string();
+        assert!(!json.contains("9000"), "array items bound survived: {json}");
+        assert!(
+            !json.contains("5000"),
+            "anyOf branch bound survived: {json}"
+        );
+        assert!(
+            !json.contains("8000"),
+            "nested object bound survived: {json}"
+        );
+        assert_eq!(m.stripped_bounds()[0].1.len(), 3);
+    }
+
+    /// A tool with an awkward schema keeps working. Dropping it would
+    /// turn "one sampling hint lost" into "a working app silently lost
+    /// a feature", which is the same blast radius in a smaller box.
+    #[test]
+    fn the_tool_itself_survives() {
+        let m = manifest_with_schema(serde_json::json!({
+            "type": "object",
+            "properties": { "query": {"type": "string", "maxLength": 4000} }
+        }));
+        assert_eq!(m.tools.len(), 1);
+        assert_eq!(m.tools[0].name, "search_notes");
     }
 }

@@ -1,5 +1,15 @@
-//! Per-app identity (`docs/PLAN.md` §5.5, ADR-0033): who is on the
-//! other end of the bus connection?
+//! Which *app* is calling (`docs/PLAN.md` §5.5, ADR-0033).
+//!
+//! [`crate::PeerId`] answers "same caller as before" and
+//! [`crate::manager`] answers "may this program manage things". This
+//! answers the third question: which installed application is on the
+//! other end, so a grant, a quota or a memory namespace can be keyed to
+//! it.
+//!
+//! Lives here rather than in the portal because it has three consumers:
+//! the portal (grants and quotas), `contextd` (memory namespaces and
+//! retrieval scopes, #101/#100), and anything that comes next. ADR-0033
+//! rejected re-deriving identity per surface.
 //!
 //! - **Flatpak (strong):** the sandbox mounts `/.flatpak-info` read-only
 //!   inside the app's mount namespace; the portal reads it through
@@ -19,7 +29,7 @@
 //!
 //! `/proc/<pid>/exe` is a kernel-maintained symlink to the inode that was
 //! actually executed, resolved through the broker's **pidfd** so the pid
-//! cannot be recycled underneath us (`lisa_peer::exe_of_peer`).
+//! cannot be recycled underneath us (`crate::exe_of_peer`).
 //!
 //! # Why the whole path, not the basename
 //!
@@ -39,7 +49,7 @@
 //! Parsing is pure and unit-tested everywhere; only the thin `/proc`
 //! reads are Linux-at-runtime.
 
-use lisa_peer::Peer;
+use crate::Peer;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -275,7 +285,7 @@ impl ProcResolver {
     /// testable against a fake `/proc` tree.
     ///
     /// `exe` is supplied by the caller rather than read here: on a real
-    /// system it comes from `lisa_peer::exe_of_peer`, which resolves the
+    /// system it comes from `crate::exe_of_peer`, which resolves the
     /// pidfd, and a second independent read would be a second chance to
     /// get the wrong process.
     pub fn identity_of(&self, pid: u32, exe: Option<&Path>) -> AppIdentity {
@@ -306,10 +316,10 @@ impl IdentityResolver for ProcResolver {
         // is the peer's own word for it.
         #[cfg(unix)]
         {
-            let Ok(pid) = lisa_peer::pid_of_peer(peer) else {
+            let Ok(pid) = crate::pid_of_peer(peer) else {
                 return AppIdentity::unknown();
             };
-            let exe = lisa_peer::exe_of_peer(peer).ok();
+            let exe = crate::exe_of_peer(peer).ok();
             self.identity_of(pid, exe.as_deref())
         }
         #[cfg(not(unix))]
@@ -496,7 +506,7 @@ mod tests {
         // No pidfd: nothing about this caller can be established, and
         // guessing from its pid is what #136 removed.
         let peer = Peer::without_process_fd(
-            lisa_peer::PeerId::Bus(":1.7".into()),
+            crate::PeerId::Bus(":1.7".into()),
             Some(0),
             Some(std::process::id()),
         );

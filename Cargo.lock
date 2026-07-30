@@ -1325,6 +1325,7 @@ dependencies = [
  "blake3",
  "clap",
  "lisa-ledger",
+ "lisa-peer",
  "rusqlite",
  "serde",
  "serde_json",

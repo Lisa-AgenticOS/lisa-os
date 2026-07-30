@@ -32,6 +32,7 @@
 //! Most of the filed issues are fixed by the first, which is why it is
 //! usable without a message broker.
 
+pub mod app;
 mod credentials;
 mod identity;
 pub mod manager;

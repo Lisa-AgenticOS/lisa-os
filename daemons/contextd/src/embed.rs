@@ -127,6 +127,34 @@ impl ContextStore {
     ) -> Result<Vec<Hit>, StoreError> {
         // Pull a generous lexical candidate set to rerank.
         let candidates = self.search(query, limit.max(20) * 3)?;
+        self.rerank(query, candidates, embedder, limit)
+    }
+
+    /// The same blend, over an ACL-filtered candidate set.
+    ///
+    /// Hybrid is a *ranking* choice and the ACL is a *visibility*
+    /// choice; coupling them meant an app that asked for both got
+    /// whichever the code happened to branch on. Reranking the scoped
+    /// candidates keeps them orthogonal — a disallowed chunk is never a
+    /// candidate, so it cannot be reranked into the answer either.
+    pub fn search_hybrid_scoped(
+        &self,
+        query: &str,
+        scopes: &[&str],
+        embedder: &dyn Embedder,
+        limit: usize,
+    ) -> Result<Vec<Hit>, StoreError> {
+        let candidates = self.search_scoped(query, scopes, limit.max(20) * 3)?;
+        self.rerank(query, candidates, embedder, limit)
+    }
+
+    fn rerank(
+        &self,
+        query: &str,
+        candidates: Vec<Hit>,
+        embedder: &dyn Embedder,
+        limit: usize,
+    ) -> Result<Vec<Hit>, StoreError> {
         if candidates.is_empty() {
             return Ok(candidates);
         }

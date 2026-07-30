@@ -53,6 +53,15 @@ const AGENT_ACTOR = 'overlay';
 const AGENT_PROVENANCE = ['user']; // typed prompts: a trusted chain (rule 6)
 const CONTEXT_HITS = 3;
 
+/// What [my stuff] is allowed to retrieve.
+///
+/// Deliberately just the user's own documents. contextd's ACL maps this
+/// to `file` provenance and nothing else, so a mail or screen chunk can
+/// never reach the model through this surface — which is what PLAN §5.3
+/// promises and what issue #100 found unenforced, because this caller
+/// sent no scopes at all and absent meant everything.
+const CONTEXT_SCOPES = ['documents.read'];
+
 // The per-user inferenced companion's OpenAI-compat endpoint (it owns :7778;
 // the hardened system daemon on :7777 can't reach the session's broker
 // socket). The multi-turn chat lane routes here so the model's chat template
@@ -454,9 +463,23 @@ class OverlayService {
     // the daemon isn't reachable (not packaged / not running), fall
     // back to the `lisa context search` shell-out this backend always
     // used — that path is ledgered by the CLI — so nothing regresses.
+    //
+    // The scopes are explicit (issue #100). This call used to send only
+    // `limit`, and an absent `scopes` key meant *every provenance, no
+    // filter* — so [my stuff] mixed mail, screen captures, web and
+    // calendar chunks into the model's envelope regardless of any
+    // grant. PLAN §5.3's "an app granted 'my documents' never receives
+    // a mail chunk" was implemented and unused, by its one consumer.
+    //
+    // `documents.read` is what this surface is for: the user's own
+    // files. Mail and screen are deliberately absent — when there is a
+    // consent path that can grant them per app, they can be asked for.
     async _searchContext(query, cancellable) {
         try {
-            const options = {limit: GLib.Variant.new_uint32(CONTEXT_HITS)};
+            const options = {
+                limit: GLib.Variant.new_uint32(CONTEXT_HITS),
+                scopes: GLib.Variant.new_strv(CONTEXT_SCOPES),
+            };
             const reply = await this._connection.call(
                 CONTEXT_BUS, CONTEXT_PATH, CONTEXT_IFACE, 'Search',
                 new GLib.Variant('(sa{sv})', [query, options]),
@@ -475,8 +498,11 @@ class OverlayService {
 
     async _searchContextCli(query, cancellable) {
         try {
+            // Same scopes as the D-Bus path: the fallback must not be
+            // the wider door (issue #100).
             const argv = [this._lisaCli(), 'context', 'search', query,
-                '--limit', String(CONTEXT_HITS)];
+                '--limit', String(CONTEXT_HITS),
+                ...CONTEXT_SCOPES.flatMap(s => ['--scope', s])];
             const proc = Gio.Subprocess.new(argv,
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
             const [stdout] = await proc.communicate_utf8_async(null, cancellable);

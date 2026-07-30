@@ -42,9 +42,9 @@
 //! that matters — `LISA_REQUIRE_PIDFD=1` makes its absence a failure,
 //! and CI runs one job on a base new enough to hold it.
 
+use lisa_peer::app::{AppIdentity, StaticIdentity};
 use lisa_portal::consent::StaticConsent;
 use lisa_portal::grants::{Effective, GrantStore};
-use lisa_portal::identity::{AppIdentity, StaticIdentity};
 use lisa_portal::portal::{PORTAL_BUS_NAME, PORTAL_PATH, PortalState, serve_on_builder};
 use lisa_portal::quota::QuotaConfig;
 use lisa_portal::upstream::stub::StubUpstream;

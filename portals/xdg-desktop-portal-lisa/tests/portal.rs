@@ -5,9 +5,9 @@
 //! items that need a real desktop (Flatpak sandbox, consent dialog
 //! pixels) are exercised on Linux systems.
 
+use lisa_peer::app::{AppIdentity, StaticIdentity};
 use lisa_portal::consent::{ConsentUi, StaticConsent};
 use lisa_portal::grants::{Effective, GrantAction, GrantStore};
-use lisa_portal::identity::{AppIdentity, StaticIdentity};
 use lisa_portal::portal::{PORTAL_PATH, PortalState, serve_on_builder};
 use lisa_portal::quota::QuotaConfig;
 use lisa_portal::upstream::stub::StubUpstream;

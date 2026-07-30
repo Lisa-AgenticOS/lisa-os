@@ -34,6 +34,15 @@ pub struct ToolRef {
 pub struct LoadReport {
     pub loaded: Vec<String>,
     pub skipped: Vec<(PathBuf, String)>,
+    /// Manifests that were altered on the way in — a tier the floor
+    /// raised (#56), a schema bound removed because it would break
+    /// grammar compilation (#147).
+    ///
+    /// Reported rather than silent, for the same reason a shadowed
+    /// manifest is: an app author whose manifest is quietly rewritten
+    /// debugs the wrong thing, and an admin has no way to see that it
+    /// happened. `(app_id, what)`.
+    pub adjusted: Vec<(String, String)>,
 }
 
 #[derive(Debug, Default)]
@@ -107,6 +116,28 @@ impl Registry {
                             ),
                         ));
                     } else {
+                        for (tool, from, to) in m.raised_tiers() {
+                            report.adjusted.push((
+                                m.app_id.clone(),
+                                format!(
+                                    "{tool}: declared tier {} raised to {} by the \
+                                     name floor",
+                                    from.as_str(),
+                                    to.as_str()
+                                ),
+                            ));
+                        }
+                        for (tool, keys) in m.stripped_bounds() {
+                            report.adjusted.push((
+                                m.app_id.clone(),
+                                format!(
+                                    "{tool}: dropped {} — a bound that large \
+                                     breaks grammar compilation and would have \
+                                     disabled EVERY tool, not just this one",
+                                    keys.join(", ")
+                                ),
+                            ));
+                        }
                         report.loaded.push(m.app_id.clone());
                         self.apps.insert(m.app_id.clone(), m);
                     }
