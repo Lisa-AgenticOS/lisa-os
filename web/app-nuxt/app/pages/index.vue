@@ -41,31 +41,25 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
 
     <header class="hero">
       <span class="eyebrow">AI-native Linux · runs on your hardware</span>
-      <h1>A computer that shows its work.</h1>
-      <p class="lede">Lisa OS builds intelligence into the system, running <b>locally, by default</b>. Nothing leaves your machine without your say-so — and every model call, every file it reads, every action it takes is written to a record you can read.</p>
+      <!-- The app name is in the H1 verbatim, and the purpose is in the
+           first paragraph. Google's OAuth review flagged both: the name
+           on the consent screen is "Lisa OS" while the H1 was a tagline,
+           and the explanation of what the app does sat below a large
+           graphic where a reviewer scanning the top never reached it. -->
+      <h1>Lisa OS — a computer that shows its work.</h1>
+      <p class="lede">
+        <b>Lisa OS</b> is a free, open-source Linux distribution you install on
+        your own computer. It runs AI models locally, and it includes
+        <b>Lisa Mail</b> — a desktop mail client that downloads your mail onto
+        your own disk so you can read, search and organise it, including
+        offline. Connect a Google account and your mail travels from Google to
+        your machine directly; we operate no server in between.
+      </p>
       <div class="row">
         <a class="btn solid lg" :href="releases">Download Lisa OS</a>
         <a class="btn line lg" :href="docs">Read the docs</a>
       </div>
     </header>
-
-    <div id="ledger" class="stmt" role="img" aria-label="A Lisa Ledger statement: local calls stay on the machine; one remote call is flagged as leaving.">
-      <div class="head">
-        <span class="l">Ledger · session statement</span>
-        <span class="r">Thu 09:41 · 128 events today</span>
-      </div>
-      <div class="wide"><table>
-        <tbody>
-          <tr><td class="t">09:41:22</td><td class="kind">inference.generate</td><td>qwen3-0.6b</td><td class="local">on this machine</td><td class="num">420 tok</td></tr>
-          <tr><td class="t">09:41:22</td><td class="kind">context.search</td><td>~/notes</td><td class="local">on this machine</td><td class="num">3 hits</td></tr>
-          <tr class="egress"><td class="t">09:44:07</td><td class="kind">remote.generate</td><td>claude ↗</td><td class="leaves">LEAVES · consented</td><td class="num">1,240 tok</td></tr>
-          <tr><td class="t">09:44:09</td><td class="kind">remote.complete</td><td>claude</td><td class="local">ok</td><td class="num">—</td></tr>
-          <tr><td class="t">09:52:10</td><td class="kind">inference.embed</td><td>qwen3-0.6b</td><td class="local">on this machine</td><td class="num">1,024-dim</td></tr>
-        </tbody>
-      </table></div>
-      <div class="foot">Append-only · enforced by the system · the <span class="amber">amber row</span> is the only thing that left your hardware, and only because you allowed it.</div>
-    </div>
-    <p class="caption">This is real: the Ledger gates every model call before it runs. No entry, no action.</p>
 
     <!-- What this application is and what it does with the data it asks
          for. Google's OAuth review rejected the page for not explaining
@@ -121,6 +115,24 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
         </div>
       </div>
     </section>
+
+    <div id="ledger" class="stmt" role="img" aria-label="A Lisa Ledger statement: local calls stay on the machine; one remote call is flagged as leaving.">
+      <div class="head">
+        <span class="l">Ledger · session statement</span>
+        <span class="r">Thu 09:41 · 128 events today</span>
+      </div>
+      <div class="wide"><table>
+        <tbody>
+          <tr><td class="t">09:41:22</td><td class="kind">inference.generate</td><td>qwen3-0.6b</td><td class="local">on this machine</td><td class="num">420 tok</td></tr>
+          <tr><td class="t">09:41:22</td><td class="kind">context.search</td><td>~/notes</td><td class="local">on this machine</td><td class="num">3 hits</td></tr>
+          <tr class="egress"><td class="t">09:44:07</td><td class="kind">remote.generate</td><td>claude ↗</td><td class="leaves">LEAVES · consented</td><td class="num">1,240 tok</td></tr>
+          <tr><td class="t">09:44:09</td><td class="kind">remote.complete</td><td>claude</td><td class="local">ok</td><td class="num">—</td></tr>
+          <tr><td class="t">09:52:10</td><td class="kind">inference.embed</td><td>qwen3-0.6b</td><td class="local">on this machine</td><td class="num">1,024-dim</td></tr>
+        </tbody>
+      </table></div>
+      <div class="foot">Append-only · enforced by the system · the <span class="amber">amber row</span> is the only thing that left your hardware, and only because you allowed it.</div>
+    </div>
+    <p class="caption">This is real: the Ledger gates every model call before it runs. No entry, no action.</p>
 
     <section id="why" class="sec">
       <div class="lead-2">
