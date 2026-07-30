@@ -1,0 +1,29 @@
+# When mail gets fetched.
+#
+# Deliberately NOT enabled by default. `lisa mail setup` enables it,
+# because until a config exists this timer would wake every few minutes
+# to run a command that immediately exits saying there is nothing to do
+# — and on a machine whose owner never wanted mail sync, that is a
+# recurring failure in their journal for a feature they did not ask for.
+[Unit]
+Description=Fetch mail periodically
+
+[Timer]
+# Not at boot: the session has just started, Online Accounts may not
+# have its token yet, and the first thing a person sees should not be a
+# disk-thrashing sync.
+OnStartupSec=3min
+# Five minutes is what a person means by "my mail arrives". IMAP IDLE
+# would be better and is what `mbsync` cannot do; a push path is a
+# different design (see apps/mail/README.md "Limits").
+OnUnitActiveSec=5min
+# The sync is idempotent and skipping one costs at most a few minutes of
+# freshness, so a missed window is not worth catching up on — a laptop
+# opened after a week should not run seven days of backlogged timers.
+Persistent=false
+# Without this every device on a network hits the provider at the same
+# offset from its own boot; the jitter is free politeness.
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

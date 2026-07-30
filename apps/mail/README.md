@@ -56,12 +56,28 @@ when there is nothing rather than pretending to be offline.
 
 `isync` is in the image, because "somebody else's job" only works if
 somebody else is on the disk — and an immutable root cannot install one
-later. Nothing wires it up yet: there is no `lisa mail setup`, no
-generated `mbsyncrc`, and no bridge from Settings → Online Accounts to
-mbsync's credentials. **A connected account does not put mail in the
-Maildir today.** Writing that bridge is issue #155, and it is blocked on
-#154 — the image ships no Secret Service, so GOA accepts an account it
-can never hand a token for.
+later. `lisa mail setup` writes the config that joins it to the account
+GNOME Online Accounts already holds:
+
+```
+lisa mail status     # which layer is blocking, if any
+lisa mail setup      # write ~/.config/lisa/mbsyncrc, enable the timer
+lisa mail sync       # one pass now
+```
+
+Four things have to be present, and `status` names the first one that is
+not: **mbsync**, the **XOAUTH2 SASL mechanism**
+(`os/packages/cyrus-sasl-xoauth2` — Cyrus SASL ships none), a
+**credential store** (#154), and a **connected account**. Any of them
+missing and mail does not arrive; only the first one missing is worth
+telling you about.
+
+An app password works instead of all of that except mbsync:
+`lisa mail setup --app-password ~/.mail-password`. Some providers offer
+nothing else, and it needs neither keyring nor SASL plugin.
+
+**Nothing in the generated config can destroy mail on the server** —
+every channel carries `Expunge None` and `Remove None`.
 
 ## How it works
 

@@ -1,0 +1,32 @@
+# One pass of the mail syncer (issue #155).
+#
+# A USER unit, not a system one. Mail is the user's, the Maildir is under
+# their home, and the OAuth token comes from their session's Online
+# Accounts — a system service would have no session to ask and no
+# business reading their mail.
+#
+# Does nothing until `lisa mail setup` has run: with no config the
+# command exits non-zero and says so, which is why this is Type=oneshot
+# with no restart. A device where nobody set up mail should not retry
+# forever.
+[Unit]
+Description=Sync mail into the Maildir
+Documentation=man:mbsync(1)
+# Nothing to sync without a network, and failing loudly every boot on a
+# laptop that woke up on a train is noise, not information.
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/lisa mail sync
+# Sync is not urgent and competes with whatever the person is actually
+# doing; a full first pull can be thousands of messages.
+Nice=10
+IOSchedulingClass=idle
+# It talks to one IMAP host and writes one directory. It has no reason
+# to reach anything else on this machine.
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

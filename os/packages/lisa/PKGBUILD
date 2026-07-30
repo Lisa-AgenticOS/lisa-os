@@ -192,6 +192,16 @@ package_lisa-cli() {
         "$pkgdir/usr/lib/systemd/system/lisa-apps-sync.service"
     install -Dm644 os/packages/lisa/lisa-apps-sync.timer \
         "$pkgdir/usr/lib/systemd/system/lisa-apps-sync.timer"
+    # Mail sync (issue #155). USER units: the Maildir is under $HOME and
+    # the OAuth token comes from the user session's Online Accounts, so
+    # a system service would have neither. Shipped disabled and enabled
+    # by `lisa mail setup` — a timer that fires every five minutes to
+    # report "no config" is a recurring failure for a feature its owner
+    # never asked for.
+    install -Dm644 os/packages/lisa/lisa-mail-sync.service \
+        "$pkgdir/usr/lib/systemd/user/lisa-mail-sync.service"
+    install -Dm644 os/packages/lisa/lisa-mail-sync.timer \
+        "$pkgdir/usr/lib/systemd/user/lisa-mail-sync.timer"
     # Terminal integration (PLAN §5.8): opt-in shell hooks for
     # `lisa explain` / `lisa suggest` (Ctrl+G review gate). All logic is
     # in the CLI; these only wire keys and prompts (CLAUDE.md rule 4).

@@ -264,8 +264,8 @@ jobs:
               # package it and the AUR is not a dependency this OS takes
               # (ADR-0034).
               #
-              # NOT --nocheck, unlike everything else here: this package's
-              # check() asks libsasl which mechanisms it actually loads,
+              # NOT --nocheck, unlike everything else here: the check()
+              # in this PKGBUILD asks libsasl which mechanisms it loads,
               # with and without the plugin. A .so in the right directory
               # is not the same claim as a mechanism that works, and the
               # failure mode is mbsync saying "unsupported authentication
