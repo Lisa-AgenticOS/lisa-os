@@ -327,6 +327,7 @@ let readerHtml = null;
 /// Reset on every open: consent is per message, not a mode you leave on.
 let allowRemote = false;
 let remoteBanner = null;
+let accountRow = null;
 /// The message currently open, so the banner can re-render it.
 let openMessageFull = null;
 let readerActions = null;
@@ -624,6 +625,28 @@ function htmlDocument(body) {
         </style></head><body>${body}</body></html>`;
 }
 
+/// Which account this Maildir holds mail for.
+///
+/// Read from the sync config `lisa mail setup` wrote, not from Online
+/// Accounts. That is the more truthful source: GOA lists every account
+/// connected to the desktop, while this Maildir contains the mail of
+/// exactly one of them, and naming a different one would be worse than
+/// naming none. It is also synchronous, which the async GOA lookup was
+/// not — called during `activate` its promise never settled, because
+/// nothing was spinning the main loop yet.
+///
+/// Returns null when there is no config, and the header stays "Mail".
+function accountLabel() {
+    const path = GLib.build_filenamev([GLib.get_user_config_dir(), 'lisa', 'mbsyncrc']);
+    const text = readFile(path);
+    for (const line of text.split('\n')) {
+        const m = line.match(/^\s*User\s+(.+?)\s*$/);
+        if (m)
+            return m[1];
+    }
+    return null;
+}
+
 function buildToolbar(msg) {
     if (readerActions) {
         readerHeader.remove(readerActions);
@@ -729,6 +752,8 @@ function reloadFolders() {
         folderList.remove(child);
         child = next;
     }
+    if (accountRow)
+        folderList.append(accountRow);
     for (const folder of store.folders()) {
         const row = new Gtk.ListBoxRow();
         row._folder = folder;
@@ -771,13 +796,42 @@ app.connect('activate', () => {
     // the window exists — it selects a row, which loads a folder, which
     // needs the list and reading panes to be there already.
     folderList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
+    // Filled in once Online Accounts answers; hidden until then so the
+    // sidebar never shows an empty slot where a name should be.
+    accountRow = new Gtk.ListBoxRow({selectable: false, activatable: false, visible: false});
     folderList.connect('row-selected', (_l, row) => {
         if (row?._folder)
             loadFolder(row._folder);
     });
 
     const sidebar = new Adw.ToolbarView();
-    sidebar.add_top_bar(new Adw.HeaderBar({title_widget: new Adw.WindowTitle({title: 'Mail'})}));
+    // The account, not just "Mail". With mail from a real account on
+    // screen, a sidebar that never names it leaves you guessing whose
+    // inbox you are reading — and with two accounts connected, guessing
+    // wrongly.
+    const sidebarTitle = new Adw.WindowTitle({title: 'Mail'});
+    sidebar.add_top_bar(new Adw.HeaderBar({title_widget: sidebarTitle}));
+    const who = accountLabel();
+    if (who) {
+        sidebarTitle.set_subtitle(who);
+        // …and in the list itself. A header subtitle is easy to miss and
+        // AdwWindowTitle hides it at narrow widths; the account is the
+        // answer to "whose mail am I looking at", so it goes where the
+        // folders are. Spark makes the account a first-class row for the
+        // same reason (issue #67 has the full nested layout).
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL, spacing: 8,
+            margin_top: 10, margin_bottom: 4, margin_start: 6, margin_end: 6,
+        });
+        const dot = new Gtk.Label({label: '\u25cf'});
+        dot.add_css_class('accent');
+        box.append(dot);
+        const label = new Gtk.Label({label: who, xalign: 0, hexpand: true, ellipsize: 3});
+        label.add_css_class('heading');
+        box.append(label);
+        accountRow.set_child(box);
+        accountRow.set_visible(true);
+    }
     sidebar.set_content(new Gtk.ScrolledWindow({child: folderList, vexpand: true}));
 
     // Pane 2: the grouped message list.
