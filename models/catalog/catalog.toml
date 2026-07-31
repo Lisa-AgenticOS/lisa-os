@@ -157,12 +157,35 @@ min_ram_gb = 2
 notes = "English TTS, ~75 MiB, 22.05 kHz, 904 speakers (defaults to 0). Verified 2026-07-31: synthesized a non-silent RIFF/WAVE through the packaged piper. Dataset LibriTTS-R (openslr.org/141), CC BY 4.0 — attribution required."
 
 [[model]]
+# Wake word (§5.7.5, ADR-0011). DELIBERATELY UNPINNED.
+#
+# openWakeWord publishes alexa, hey_jarvis, hey_mycroft, hey_rhasspy,
+# timer and weather — and no "Hey Lisa" (checked 2026-07-31; none on
+# HuggingFace either). The phrase this OS wants has to be trained, with
+# openWakeWord's synthetic-data pipeline, which generates its samples
+# using piper. Pinning one of the others would put a competitor's wake
+# word in a product called Lisa; inventing a URL for a model that does
+# not exist is rule 8. So it stays unpinned and push-to-talk stays the
+# only activation, which is what PLAN §5.7.5 calls the default anyway.
 id = "openwakeword"
 task = "wake-word"
 tiers = [0, 1, 2, 3, 4]
 license = "Apache-2.0"
 engine = "onnx"
 min_ram_gb = 1
+
+[[model]]
+# Voice activity detection for the ambient loop (ADR-0011 stage 3).
+# Published by openWakeWord upstream alongside its wake words, Apache
+# licensed, ~1.8 MiB. Unpinned until stage 3 is actually built —
+# a hash here would claim a decision that has not been made.
+id = "silero-vad"
+task = "vad"
+tiers = [0, 1, 2, 3, 4]
+license = "MIT"
+engine = "onnx"
+min_ram_gb = 1
+notes = "Ready-made VAD, so the ambient loop needs no hand-written DSP. Not yet used: stage 3 is not started." 
 
 [[model]]
 id = "qwen2.5-coder-7b-q4"

@@ -47,7 +47,17 @@ completed utterance was addressed to Lisa** — grammar-constrained to
 `{addressed, confidence, intent}` (guided generation, §5.6). Speaking
 *near* Lisa is not speaking *to* Lisa; the classifier is what tells them
 apart. Wake-word mode (openWakeWord, **"Hey Lisa"**) is the shipping default
-(owner-confirmed 2026-07-23) — reliable, low-power, and privacy-obvious;
+(owner-confirmed 2026-07-23) — **but no such model exists yet
+(checked 2026-07-31).** openWakeWord publishes exactly `alexa`,
+`hey_jarvis`, `hey_mycroft`, `hey_rhasspy`, `timer` and `weather`; there
+is no "Hey Lisa" and none on HuggingFace. It has to be TRAINED, via
+openWakeWord's synthetic-data pipeline — which generates its samples
+with piper, so packaging piper turned out to be a prerequisite for the
+wake word as well as for speech out. Until that model exists and its
+false-accept rate is measured, **push-to-talk is the only activation**,
+which is also what PLAN §5.7.5 calls the default. Shipping somebody
+else's wake word ("Hey Jarvis") in a product called Lisa is not a
+substitute, and neither is claiming a phrase that does not work — reliable, low-power, and privacy-obvious;
 the wake-word-*free* addressed-intent classifier is **Phase 2**, enabled
 once its false-accept rate is measured acceptable on real hardware. The
 classifier is built now (`liblisa::tasks::addressed_intent`) and also
