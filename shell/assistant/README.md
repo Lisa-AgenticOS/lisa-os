@@ -102,7 +102,7 @@ silence — and because rule 10 asks every component to say what it does
 - **No tools.** The Assistant talks; it cannot act. It has no Agent Bus
   client, so it cannot read a file, search your notes, or send a
   message — the tool families exist (`lisa tools`, the Mail and Surfer
-  MCP surfaces) and this window is not wired to them. That is issue #59
+  MCP surfaces) and this window is not wired to them. That is issue #157
   / ADR-0025: one agent loop, shared with the harness, rather than a
   second one grown here. Until then "summarise my mail" is answered from
   the model's imagination, not your mail.

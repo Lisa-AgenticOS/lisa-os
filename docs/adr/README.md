@@ -4,6 +4,59 @@ Any deviation from `docs/PLAN.md` — a dead library, a changed API, a
 superseded model, a better idea — gets an ADR *before* the code changes.
 Never silently improvise (PLAN §0.4).
 
+## What is actually built
+
+An ADR records a decision, not a delivery. "Accepted" says we chose
+something; it says nothing about whether it exists, and 36 of the 37
+records below carry no status line at all — so this question could not
+be answered by reading them, which is why the table exists.
+
+Read it as: **what would a person find on a device today.**
+
+| ADR | Built? | What is missing, and where it is tracked |
+|---|---|---|
+| 0001 immutable base | yes | — |
+| 0002 rust/zbus/axum | yes | — |
+| 0003 two-track delivery | yes | Track I ships; Track L installs onto stock Arch |
+| 0004 flutter lane | partial | SDK is fetched on demand, not on the image (#37) |
+| 0005 GPL-2.0 | yes | — |
+| 0006 monorepo | yes | — |
+| 0007 fcitx5 addon | yes | — |
+| 0008 portal standalone | yes | Installed since v20260730.55 (#153) |
+| 0009 agent bus core | yes | — |
+| 0010 remote providers | yes | PKCE state fixed (#110); needs a live sign-in to confirm |
+| 0011 ambient assistant | **no** | No `voiced`, no wake word, no push-to-talk. PLAN §5.7.5 |
+| 0012 control-center panel | yes | — |
+| 0013 harness intents | partial | Sessions/Memory/Skills done. Soul partial; Crons, Hands, Background tasks, Self-improvement not started |
+| 0014 lisa_ui fork | yes | — |
+| 0015 assistant app | partial | Chat only — no tools, no memory across conversations (#157) |
+| 0016 reverse-DNS naming | yes | — |
+| 0017 plymouth in initrd | yes | Splash→desktop handoff still gaps (#26) |
+| 0018 /var pinned PARTUUID | yes | — |
+| 0019 dedicated /home | yes | — |
+| 0020 app update channel | yes | — |
+| 0021 aarch64 lane | partial | Container-verified; no published image |
+| 0022 rescue boot path | partial | Phase 1 (ESP self-repair) done; user-survivable rescue open (#23) |
+| 0023 slim core, /var grows | partial | Zen migration incomplete (#89) |
+| 0024 CS8409 codec | partial | Packaged; speakers still silent on the reference iMac (#44) |
+| 0025 one agent loop | **no** | The Assistant is not on it (#157) |
+| 0026 native DRM in initrd | yes | — |
+| 0027 flutter on device | partial | (#37, #48) |
+| 0028 initrd overlay | yes | — |
+| 0029 hard guardrails | partial | Phases 1–2 done; Landlock confinement open (#53); `lisa suggest` still emits a shell string (#88) |
+| 0030 guardrail boundary | yes | The principle now has teeth: #145 and #55 both closed against it |
+| 0031 server mode | **no** | No `serverd`, no `lisa serve` |
+| 0032 construct/lisa contract | yes | harness-core is the shared level |
+| 0033 identity from transport | partial | portal, contextd, remoted, agentd done; sweep for remaining callers unfinished |
+| 0034 user-scope dev tooling | **no** | `lisa dev` not built (#130) |
+| 0035 desktop is a prompt | partial | §4 consent split done (#145); §2 prompt-in-the-dock not started |
+| 0036 assistant acts on its own | **no** | Depends on 0025 |
+| 0037 browser is a Lisa app | partial | Surfer ships; write tools and the agent surface open (#146) |
+
+Four decisions have **no** implementation at all — 0011, 0025, 0031,
+0036 — and two of those (0025, 0036) are the ones that make this an
+agentic OS rather than a Linux distribution with a chat window.
+
 ## Process
 
 1. Copy the template below to `NNNN-short-slug.md` (next free number).
