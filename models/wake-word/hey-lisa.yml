@@ -1,0 +1,46 @@
+# openWakeWord training config for "Hey Lisa" (ADR-0011, PLAN §5.7.5).
+#
+# Derived from upstream examples/custom_model.yml. Only the fields that
+# differ from upstream defaults carry comments — the rest are upstream's
+# tuned values and are deliberately not second-guessed.
+model_name: "hey_lisa"
+target_phrase:
+  - "hey lisa"
+# Phrases close enough to trigger a naive model. "Hey Liza"/"Hey Lisbon"
+# are the obvious near-misses; "Alexa" is here because a wake word that
+# also fires on the neighbour's smart speaker is worse than useless.
+custom_negative_phrases:
+  - "hey liza"
+  - "hey lisbon"
+  - "hey licence"
+  - "hey elisa"
+  - "lisa"
+  - "alexa"
+n_samples: 10000
+n_samples_val: 2000
+tts_batch_size: 50
+augmentation_batch_size: 16
+piper_sample_generator_path: "./piper-sample-generator"
+output_dir: "./hey_lisa_model"
+rir_paths:
+  - "./mit_rirs"
+background_paths:
+  - "./background_clips"
+background_paths_duplication_rate:
+  - 1
+false_positive_validation_data_path: "./validation_set_features.npy"
+augmentation_rounds: 1
+feature_data_files:
+  "ACAV100M_sample": "./openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+model_type: "dnn"
+layer_size: 32
+steps: 50000
+max_negative_weight: 1500
+# The number that decides whether this ships. A wake word that fires
+# unprompted is the single fastest way to lose trust in an always-on
+# assistant, so the bar is set before training rather than after.
+target_false_positives_per_hour: 0.2
