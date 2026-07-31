@@ -139,6 +139,29 @@ impl fmt::Display for AppIdentity {
     }
 }
 
+/// Does this executable sit where a Flatpak-spawned binary would?
+///
+/// Inside the sandbox, `bwrap` presents the application at `/app` and
+/// the runtime at `/usr`; the paths a host process runs from —
+/// `/usr/bin`, `/usr/local`, a home directory — are not what a
+/// sandboxed app's `/proc/<pid>/exe` resolves to from OUTSIDE, which is
+/// the deleted-or-relocated form under the Flatpak install tree.
+///
+/// This is a corroboration, not an authentication: the point is that a
+/// process fabricating `.flatpak-info` in its own namespace does not
+/// also get to change what the kernel reports it executed (#149). A
+/// false negative costs a real app its sandbox identity and gives it
+/// the host one, which is the safe direction — fewer grants, not more.
+fn looks_flatpak_spawned(exe: &Path) -> bool {
+    let p = exe.to_string_lossy();
+    p.starts_with("/app/")
+        || p.contains("/flatpak/app/")
+        || p.contains("/flatpak/runtime/")
+        // bwrap re-execs from the runtime; a sandboxed process seen from
+        // the host often reports a path that no longer exists.
+        || p.ends_with(" (deleted)")
+}
+
 /// Parse the `[Application] name=` key out of a `.flatpak-info` file
 /// (INI; see flatpak-metadata(5)).
 pub fn parse_flatpak_info(contents: &str) -> Option<String> {
@@ -290,9 +313,32 @@ impl ProcResolver {
     /// get the wrong process.
     pub fn identity_of(&self, pid: u32, exe: Option<&Path>) -> AppIdentity {
         let proc_pid = self.proc_root.join(pid.to_string());
-        // Flatpak first: the sandbox cannot remove its own marker.
+        // Flatpak first — but corroborated, not believed (#149).
+        //
+        // `.flatpak-info` is read through /proc/<pid>/root, which shows
+        // the process's OWN mount view. For a real sandboxed app that is
+        // exactly right: it cannot remove or edit its marker from
+        // inside. For a host process it is a free identity, and the PoC
+        // on the reference iMac is four lines of shell: unshare -Umr,
+        // pivot_root into a tmpfs, write whatever marker you like, and
+        // /proc/<pid>/root/.flatpak-info says you are
+        // org.gnome.Calculator.
+        //
+        // The exe is the anchor. /proc/<pid>/exe is a kernel symlink to
+        // the inode that was executed, and a mount namespace does not
+        // change what it reports — in the PoC it still said
+        // /usr/bin/sleep while the marker claimed a sandboxed app. So
+        // the two sources disagree precisely in the case that matters,
+        // and a marker is only honoured when the executable is where a
+        // Flatpak-spawned binary actually lives.
+        // A marker that is NOT corroborated falls through to the exe
+        // path: the process is a host process, which is what the kernel
+        // says it is. Falling through rather than refusing means a
+        // legitimate program with an unusual layout still gets its real
+        // identity instead of an error.
         if let Ok(info) = std::fs::read_to_string(proc_pid.join("root/.flatpak-info"))
             && let Some(app_id) = parse_flatpak_info(&info)
+            && exe.is_none_or(looks_flatpak_spawned)
         {
             return AppIdentity::flatpak(app_id);
         }
@@ -514,6 +560,65 @@ mod tests {
         assert_eq!(resolver.identify(&peer), AppIdentity::unknown());
     }
 
+    /// Issue #149, reproduced on hardware before it was fixed: an
+    /// unprivileged process creates a user + mount namespace,
+    /// pivot_roots into a tmpfs it controls, and writes its own
+    /// `.flatpak-info`. `/proc/<pid>/root` shows the process's OWN mount
+    /// view, so the portal read the fabricated marker and would have
+    /// handed it that app's grants, quota and Ledger attribution.
+    ///
+    /// This test is the PoC in miniature: a marker claiming a sandbox,
+    /// and an executable that is plainly a host binary.
+    #[test]
+    fn a_fabricated_sandbox_marker_does_not_grant_a_sandbox_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let spoofed = root.path().join("303/root");
+        std::fs::create_dir_all(&spoofed).unwrap();
+        std::fs::write(
+            spoofed.join(".flatpak-info"),
+            "[Application]\nname=org.gnome.Calculator\n",
+        )
+        .unwrap();
+
+        let resolver = ProcResolver::with_parts(root.path(), Vec::new());
+        // /proc/<pid>/exe is a kernel symlink to the inode that was
+        // executed; a mount namespace does not change it. In the real
+        // PoC it said /usr/bin/sleep while the marker claimed an app.
+        let got = resolver.identity_of(303, Some(Path::new("/usr/bin/sleep")));
+        assert_ne!(
+            got,
+            AppIdentity::flatpak("org.gnome.Calculator"),
+            "a host process fabricated a sandbox identity"
+        );
+        // It gets what it actually is, rather than being refused: a
+        // legitimate program with an unusual layout still works.
+        assert_eq!(got, AppIdentity::unattributed(Path::new("/usr/bin/sleep")));
+    }
+
+    #[test]
+    fn the_shapes_a_real_sandboxed_binary_reports_are_accepted() {
+        // False negatives cost a real app its sandbox identity and give
+        // it the host one — fewer grants, not more — but they are still
+        // wrong, so the paths bwrap actually produces are covered.
+        for exe in [
+            "/app/bin/calculator",
+            "/var/lib/flatpak/app/org.gnome.Calculator/current/active/files/bin/calc",
+            "/var/lib/flatpak/runtime/org.gnome.Platform/x86_64/47/active/files/bin/sh",
+            "/usr/bin/thing (deleted)",
+        ] {
+            assert!(
+                looks_flatpak_spawned(Path::new(exe)),
+                "should be treated as sandbox-spawned: {exe}"
+            );
+        }
+        for exe in ["/usr/bin/sleep", "/usr/local/bin/x", "/home/lisa/a.out"] {
+            assert!(
+                !looks_flatpak_spawned(Path::new(exe)),
+                "host binary should not corroborate a marker: {exe}"
+            );
+        }
+    }
+
     #[test]
     fn flatpak_wins_over_the_executable_and_a_missing_exe_is_unknown() {
         let root = tempfile::tempdir().unwrap();
@@ -526,9 +631,16 @@ mod tests {
         .unwrap();
 
         let resolver = ProcResolver::with_parts(root.path(), Vec::new());
-        // Sandbox marker present: the executable is not even consulted.
+        // Marker plus a Flatpak-shaped executable: the sandbox identity.
         assert_eq!(
-            resolver.identity_of(101, Some(Path::new("/usr/bin/anything"))),
+            resolver.identity_of(101, Some(Path::new("/app/bin/sandboxed"))),
+            AppIdentity::flatpak("org.example.Sandboxed")
+        );
+        // Marker with no executable to check it against: honoured, since
+        // there is nothing to contradict it and refusing would break a
+        // caller that cannot supply one.
+        assert_eq!(
+            resolver.identity_of(101, None),
             AppIdentity::flatpak("org.example.Sandboxed")
         );
         // No marker and no executable: unknown, never a name.
