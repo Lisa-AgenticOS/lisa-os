@@ -57,23 +57,19 @@ pub fn transcribe(audio: &Path, model: &Path) -> anyhow::Result<String> {
 /// Speak text locally: piper on the image, `say` on a macOS dev host.
 pub fn say(text: &str) -> anyhow::Result<()> {
     if which("piper") {
-        // piper reads text on stdin, writes raw audio; pipe to aplay.
-        let piper = Command::new("piper")
-            .args([
-                "--model",
-                "/usr/share/lisa/voices/en_US.onnx",
-                "--output-raw",
-            ])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn();
-        if let Ok(mut child) = piper {
-            use std::io::Write;
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
+        match piper_voice() {
+            Some(voice) => return say_with_piper(text, &voice),
+            None => {
+                // piper is installed but has nothing to speak with.
+                // Falling silently through to the print branch would
+                // read as "no TTS on this machine", which is a
+                // different problem with a different fix.
+                eprintln!(
+                    "piper is installed but no voice is: run \
+                     `lisa models get piper-libritts-r-medium-en-us`, \
+                     or set LISA_PIPER_VOICE"
+                );
             }
-            let _ = child.wait();
-            return Ok(());
         }
     }
     if which("say") {
@@ -83,6 +79,130 @@ pub fn say(text: &str) -> anyhow::Result<()> {
     // No TTS available: print so the loop still completes.
     println!("[tts unavailable] {text}");
     Ok(())
+}
+
+/// Resolve a piper voice: `$LISA_PIPER_VOICE`, else the store ref the
+/// catalog installs. Mirrors `whisper_model` — same store, same shape.
+///
+/// The `.onnx.json` beside it is not named here on purpose: piper's own
+/// default for `--config` is the model path plus `.json`, and
+/// `lisa models get` installs the config as `<id>.json` for exactly that
+/// reason. One naming convention, agreed in two places.
+pub fn piper_voice() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("LISA_PIPER_VOICE") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+        return None;
+    }
+    let refs = std::env::var_os("HOME")
+        .map(PathBuf::from)?
+        .join(".local/share/lisa/models/refs");
+    // The catalog id first, then a plain `voice` alias for anyone who
+    // installed one by hand with `lisa models add`.
+    for name in ["piper-libritts-r-medium-en-us", "voice"] {
+        let p = refs.join(name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Synthesize with piper and play the result.
+///
+/// Written this way after three defects in the previous version, all of
+/// which produced a confident silence rather than an error:
+///
+///   - the voice path was `/usr/share/lisa/voices/en_US.onnx`, which
+///     nothing in the image or the model store ever creates;
+///   - `--output-raw` is not a piper flag (the CLI takes `-f -`), so the
+///     31 bytes it emitted were a usage message, not audio;
+///   - the child's stdout was captured and dropped, and every failure
+///     path returned `Ok(())`, so a totally broken TTS reported success.
+///
+/// So: write a real WAV to a temp file, check it is a WAV, then play it,
+/// and return an error whenever any of that does not happen.
+fn say_with_piper(text: &str, voice: &Path) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let wav = std::env::temp_dir().join(format!("lisa-say-{}.wav", std::process::id()));
+    let mut child = Command::new("piper")
+        .arg("--model")
+        .arg(voice)
+        .arg("--output_file")
+        .arg(&wav)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("spawning piper")?;
+    child
+        .stdin
+        .take()
+        .context("piper stdin")?
+        .write_all(text.as_bytes())
+        .context("writing text to piper")?;
+    let out = child.wait_with_output().context("waiting for piper")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&wav);
+        bail!(
+            "piper failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+
+    // A zero-byte or non-RIFF file means piper "succeeded" without
+    // producing audio. Playing it would be silence with no explanation.
+    let header = std::fs::read(&wav)
+        .with_context(|| format!("piper reported success but wrote no {}", wav.display()))?;
+    if !is_wav(&header) {
+        let _ = std::fs::remove_file(&wav);
+        bail!(
+            "piper produced {} bytes and not a WAV — the voice or its \
+             .onnx.json is probably wrong",
+            header.len()
+        );
+    }
+
+    let played = play(&wav);
+    let _ = std::fs::remove_file(&wav);
+    played
+}
+
+/// Is this actually a RIFF/WAVE file with room for a header?
+///
+/// The guard that turns "piper exited 0 and the speakers stayed quiet"
+/// into an error somebody can act on. 44 bytes is the canonical header
+/// length, so anything shorter cannot carry one whatever its magic says.
+fn is_wav(bytes: &[u8]) -> bool {
+    bytes.len() >= 44 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE"
+}
+
+/// Play a WAV. pw-play is native on the image's PipeWire stack; aplay is
+/// the ALSA fallback that `alsa-utils` guarantees (it is in the image so
+/// sound can be proved below PipeWire — see ADR-0024/issue #44, where
+/// every session-level indicator was green and the speakers were mute).
+fn play(wav: &Path) -> anyhow::Result<()> {
+    for player in ["pw-play", "paplay", "aplay", "afplay"] {
+        if !which(player) {
+            continue;
+        }
+        let st = Command::new(player)
+            .arg(wav)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .with_context(|| format!("running {player}"))?;
+        if st.success() {
+            return Ok(());
+        }
+        // A player that exists and fails is worth reporting rather than
+        // silently trying the next one, but not worth giving up over.
+        eprintln!("{player} could not play the reply; trying another");
+    }
+    bail!("no working audio player (tried pw-play, paplay, aplay, afplay)")
 }
 
 fn which(bin: &str) -> bool {
@@ -181,5 +301,40 @@ mod tests {
         );
         assert_eq!(wake_word("I think we should order pizza tonight"), None);
         assert_eq!(wake_word("the mona lisa is a painting"), None);
+    }
+
+    /// The previous `say` reported success while producing no sound at
+    /// all: it passed a flag piper does not have, captured the 31-byte
+    /// usage message it got back, threw it away, and returned Ok. This
+    /// is the check that makes that outcome an error instead.
+    #[test]
+    fn only_a_real_wav_counts_as_speech() {
+        let mut wav = Vec::from(*b"RIFF\0\0\0\0WAVE");
+        wav.resize(44, 0);
+        assert!(is_wav(&wav), "a minimal RIFF/WAVE header is speech");
+
+        // The exact failure that shipped: a short usage message.
+        assert!(!is_wav(b"Usage: piper [options]\n"));
+        assert!(!is_wav(b""));
+        // Right magic, truncated before the header ends — piper dying
+        // mid-write must not read as success.
+        assert!(!is_wav(b"RIFF\0\0\0\0WAVE"));
+        // A file of the right length that is not audio at all.
+        assert!(!is_wav(&[0u8; 64]));
+        // RIFF, but not WAVE (e.g. an AVI container).
+        let mut avi = Vec::from(*b"RIFF\0\0\0\0AVI ");
+        avi.resize(44, 0);
+        assert!(!is_wav(&avi));
+    }
+
+    /// An explicitly-set voice that does not exist must resolve to
+    /// nothing, so the caller says "no voice installed" rather than
+    /// handing piper a path it will fail on in its own words.
+    #[test]
+    fn an_absent_explicit_voice_is_not_a_voice() {
+        // SAFETY: single-threaded test; no other thread reads the env.
+        unsafe { std::env::set_var("LISA_PIPER_VOICE", "/nonexistent/voice.onnx") };
+        assert_eq!(piper_voice(), None);
+        unsafe { std::env::remove_var("LISA_PIPER_VOICE") };
     }
 }

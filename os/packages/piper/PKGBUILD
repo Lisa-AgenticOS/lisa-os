@@ -82,7 +82,7 @@ source=("git+https://github.com/OHF-Voice/piper1-gpl.git#tag=${pkgver}"
 # file, so its hash is meaningful and is checked.
 b2sums=('SKIP'
         'SKIP'
-        '3f63244d75053195df4ac2c511beb3ab5582f564ec4496695e16bc5dac0e2f338d1a9d602fc5de01685c84e4218915519b3374cd7e3060a6f2343d0f35fac82e')
+        '3ebecd9f9cef1c73ce9d39790bbe007ec268cdc339ffc2553c26bc2ea44774201eed8642a1596e23e6f37c9bdc54211201fa4dcf2565bbd3c210bf5a9ffb0b5f')
 
 prepare() {
   cd "$srcdir/$_pkgname"
@@ -100,10 +100,19 @@ build() {
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DESPEAKNG_GIT_REPOSITORY="$srcdir/espeak-ng" \
     -DESPEAKNG_GIT_TAG="$_espeakng_commit" \
+    -DPIPER_ESPEAKNG_DATA_DIR=/usr/share/piper/espeak-ng-data \
     -DCMAKE_INSTALL_RPATH=/usr/lib \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
   # ESPEAKNG_GIT_REPOSITORY points at the clone makepkg already fetched,
   # so ExternalProject copies from disk rather than the network.
+  #
+  # PIPER_ESPEAKNG_DATA_DIR fixes a second build-tree leak, one that
+  # survives a perfect RPATH. piper looks for espeak-ng-data beside its
+  # own executable; on an installed system that is /usr/bin, where it
+  # rightly does not exist. espeak-ng then falls back to its OWN
+  # compile-time data path -- which is inside this build directory -- so
+  # `piper` on a device fails with "Error processing file
+  # '/home/builder/.../phontab'". Observed, not theorised.
   #
   # The RPATH pair is not boilerplate. Without it cmake writes a RUNPATH
   # pointing into the build directory, so the binary resolves libpiper.so

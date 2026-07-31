@@ -1,6 +1,8 @@
+diff --git a/libpiper/CMakeLists.txt b/libpiper/CMakeLists.txt
+index 846a633..ccb6be5 100644
 --- a/libpiper/CMakeLists.txt
 +++ b/libpiper/CMakeLists.txt
-@@ -35,9 +35,23 @@
+@@ -35,9 +35,23 @@ else()
      set(UCD_STATIC_LIB ${UCD_TOOLS_DIR}/${UCD_CONFIG_SUBDIR}libucd.a)
  endif()
  
@@ -26,18 +28,11 @@
      PREFIX ${ESPEAKNG_BUILD_DIR}
      CMAKE_ARGS
          -DCMAKE_INSTALL_PREFIX=${ESPEAKNG_INSTALL_DIR}
-@@ -66,66 +80,14 @@
+@@ -66,65 +80,13 @@ include_directories(
  )
  
  # ---- onnxruntime ---
-+# Lisa: system onnxruntime (Arch: onnxruntime-cpu). Upstream fetches a
-+# Microsoft release tarball with file(DOWNLOAD) and no hash check, then
-+# ships its whole lib/ directory. Unlike espeak-ng above, the packaged
-+# onnxruntime is a straight substitute -- no API gap.
-+find_library(ONNXRUNTIME_LIB NAMES onnxruntime REQUIRED)
-+find_path(ONNXRUNTIME_INCLUDE_DIR NAMES onnxruntime_cxx_api.h
-+          PATH_SUFFIXES onnxruntime REQUIRED)
- 
+-
 -# Look for onnxruntime files in <root>/lib
 -if(NOT DEFINED ONNXRUNTIME_DIR)
 -    if(NOT DEFINED ONNXRUNTIME_VERSION)
@@ -96,11 +91,17 @@
 -        file(ARCHIVE_EXTRACT INPUT "download/${ONNXRUNTIME_FILENAME}" DESTINATION "${CMAKE_CURRENT_LIST_DIR}/lib")
 -    endif()
 -endif()
--
++# Lisa: system onnxruntime (Arch: onnxruntime-cpu). Upstream fetches a
++# Microsoft release tarball with file(DOWNLOAD) and no hash check, then
++# ships its whole lib/ directory. Unlike espeak-ng above, the packaged
++# onnxruntime is a straight substitute -- no API gap.
++find_library(ONNXRUNTIME_LIB NAMES onnxruntime REQUIRED)
++find_path(ONNXRUNTIME_INCLUDE_DIR NAMES onnxruntime_cxx_api.h
++          PATH_SUFFIXES onnxruntime REQUIRED)
+ 
  # ---- libpiper ---
  
- add_library(piper SHARED
-@@ -135,16 +97,13 @@
+@@ -135,16 +97,13 @@ add_library(piper SHARED
  add_dependencies(piper espeak_ng_external)
  target_include_directories(piper PUBLIC
      ${ESPEAKNG_INSTALL_DIR}/include
@@ -119,7 +120,7 @@
  )
  
  # ---- piper exe ---
-@@ -175,20 +134,13 @@
+@@ -175,19 +134,12 @@ install(
      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
  )
  
@@ -127,13 +128,7 @@
 -    DIRECTORY ${ONNXRUNTIME_DIR}/lib/
 -    DESTINATION ${CMAKE_INSTALL_LIBDIR}
 -)
-+# Lisa: upstream installs ${ONNXRUNTIME_DIR}/lib/ wholesale, which now
-+# resolves to the system /usr/lib -- it would copy the host into the
-+# package. espeak-ng-data is likewise installed by the Arch package()
-+# function, into a private directory: it must match the statically
-+# linked espeak-ng commit above, so it cannot be shared with the
-+# distro's /usr/share/espeak-ng-data and must not collide with it.
- 
+-
 -# Copy espeak-ng-data
 -set(ESPEAKNG_DATA_SRC ${CMAKE_BINARY_DIR}/espeak_ng-install/share/espeak-ng-data)
 -set(ESPEAKNG_DATA_DST ${CMAKE_INSTALL_PREFIX}/espeak-ng-data)
@@ -142,7 +137,56 @@
 -    DIRECTORY ${ESPEAKNG_DATA_SRC}
 -    DESTINATION ${CMAKE_INSTALL_PREFIX}
 -)
--
++# Lisa: upstream installs ${ONNXRUNTIME_DIR}/lib/ wholesale, which now
++# resolves to the system /usr/lib -- it would copy the host into the
++# package. espeak-ng-data is likewise installed by the Arch package()
++# function, into a private directory: it must match the statically
++# linked espeak-ng commit above, so it cannot be shared with the
++# distro's /usr/share/espeak-ng-data and must not collide with it.
+ 
  # ----------------
  # Testing
- # ----------------
+diff --git a/libpiper/src/main/CMakeLists.txt b/libpiper/src/main/CMakeLists.txt
+index f585ea1..a1f53f6 100644
+--- a/libpiper/src/main/CMakeLists.txt
++++ b/libpiper/src/main/CMakeLists.txt
+@@ -24,6 +24,14 @@ target_link_libraries(main_utils PRIVATE piper)
+ 
+ target_link_libraries(piper_exe PRIVATE piper main_utils)
+ 
++# Lisa: where to look for espeak-ng-data when nothing sits beside the
++# executable. Unset in a plain source build, so upstream behaviour is
++# unchanged; the Arch package points it at /usr/share/piper.
++if(PIPER_ESPEAKNG_DATA_DIR)
++  target_compile_definitions(piper_exe
++    PRIVATE PIPER_ESPEAKNG_DATA_DIR="${PIPER_ESPEAKNG_DATA_DIR}")
++endif()
++
+ install(
+   TARGETS piper_exe
+   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+diff --git a/libpiper/src/main/main.cpp b/libpiper/src/main/main.cpp
+index 5fd4228..92335bb 100644
+--- a/libpiper/src/main/main.cpp
++++ b/libpiper/src/main/main.cpp
+@@ -77,6 +77,20 @@ int main(int argc, char *argv[]) {
+           std::filesystem::absolute(
+               exePath.parent_path().append("espeak-ng-data"))
+               .string();
++#ifdef PIPER_ESPEAKNG_DATA_DIR
++      // Lisa: on an installed system nothing sits next to the executable
++      // -- /usr/bin/espeak-ng-data does not and should not exist. When
++      // that guess misses, espeak-ng falls back to ITS compile-time
++      // PATH_ESPEAK_DATA, which points inside the directory this was
++      // built in, and the failure reads "Error processing file
++      // '/home/<builder>/.../espeak-ng-data/phontab'" on a user's
++      // machine. Same class of bug as an RPATH into the build tree: it
++      // works everywhere the build happens to still exist.
++      if (!std::filesystem::exists(*runConfig.eSpeakDataPath)) {
++        runConfig.eSpeakDataPath =
++            std::filesystem::path(PIPER_ESPEAKNG_DATA_DIR);
++      }
++#endif
+     }
+   auto startTime = chrono::steady_clock::now();
+   piper = piper_create(runConfig.modelPath.string().c_str(),
