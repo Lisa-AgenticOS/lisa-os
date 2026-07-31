@@ -34,11 +34,28 @@ WORK="${LISA_WW_WORK:-$HOME/.cache/lisa/wake-word}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$HERE/hey-lisa.yml"
 
+# Which stage to run: generate | augment | train | all (default).
+#
+# Split because the stages want different machines. Generating 10,000
+# samples is VITS inference and takes a GPU well — piper-sample-generator
+# uses MPS when it is there. Training is a small classifier over
+# precomputed features and is happy on any CPU, but it needs the 16 GiB
+# corpus and 10 GiB of noise nearby. So: generate on the fast machine,
+# rsync the clips, train where the disk is.
+STEP="${1:-all}"
+case "$STEP" in
+    generate|augment|train|all) ;;
+    *) echo "usage: $(basename "$0") [generate|augment|train|all]" >&2; exit 2 ;;
+esac
+# Only the stages that consume the big corpora should insist on them.
+wants_corpora=0
+[ "$STEP" = "augment" ] || [ "$STEP" = "train" ] || [ "$STEP" = "all" ] && wants_corpora=1
+
 # Pinned so a rerun trains the same thing. openWakeWord's training code
 # moves; an unpinned clone means the model you ship and the model you
 # reproduce are different models.
 OWW_COMMIT="${LISA_OWW_COMMIT:-main}"
-PSG_RELEASE="v2.0.0"
+PSG_RELEASE="v1.0.0"
 
 log() { printf '\n=== %s\n' "$*"; }
 
@@ -110,14 +127,34 @@ if [ ! -f .deps-installed ]; then
         onnx onnxruntime tqdm 'scipy<1.15' scikit-learn pyyaml huggingface_hub \
         speechbrain audiomentations torch-audiomentations acoustics \
         pronouncing mutagen
-    # webrtcvad is deliberately NOT here. It was added on the assumption
-    # that a wake-word trainer needs a VAD; openWakeWord imports it
-    # nowhere — its vad.py runs Silero through onnxruntime. The
-    # assumption cost real time: webrtcvad is a C extension with no
-    # wheel, so it is the one package here that needs a compiler, and
-    # Lisa OS has an immutable root with no cc on it. A dependency
-    # nothing imports turned a machine with 100 GiB free into a machine
-    # that could not train at all.
+
+    # webrtcvad is needed ONLY by the `generate` stage, and this is the
+    # sharpest reason the stages are split across machines.
+    #
+    # openWakeWord itself never imports it — its vad.py runs Silero
+    # through onnxruntime. But dscripka's generate_samples.py does, and
+    # webrtcvad is a C extension with no wheel: it must be compiled. Lisa
+    # OS has an immutable root with no cc on it, so the iMac can train
+    # but cannot generate, whatever its disk. That is not a limitation to
+    # work around — it is the reason `generate` belongs on a development
+    # machine and `augment`/`train` belong where the corpora are.
+    #
+    # setuptools<81 because webrtcvad imports pkg_resources, which
+    # setuptools removed in 81. Unpinned, the import fails with
+    # "No module named 'pkg_resources'" and nothing points at setuptools.
+    if [ "$STEP" = generate ] || [ "$STEP" = all ]; then
+        # espeak-phonemizer turns the target phrase into phonemes for
+        # the VITS model. It binds libespeak-ng through ctypes, so the
+        # library has to exist on the machine (brew install espeak-ng /
+        # pacman -S espeak-ng) — the pip package alone imports and then
+        # fails at first use.
+        uv pip install --python "$PY" 'setuptools<81' webrtcvad espeak-phonemizer || {
+            echo "!! could not build webrtcvad — this machine has no C compiler." >&2
+            echo "   Run '$(basename "$0") generate' on a dev machine, rsync" >&2
+            echo "   the clips over, and continue with 'augment' here." >&2
+            exit 1
+        }
+    fi
     touch .deps-installed
 fi
 
@@ -126,18 +163,36 @@ fi
 ( cd openWakeWord && git checkout -q "$OWW_COMMIT" )
 uv pip install --python "$PY" -e ./openWakeWord >/dev/null
 
+# dscripka's FORK, not rhasspy's upstream. openWakeWord's train.py does
+# `from generate_samples import generate_samples` after putting this
+# directory on sys.path, and rhasspy restructured at v2.0.0 into a
+# piper_sample_generator/ package with no such module at the root. The
+# fork keeps the flat layout train.py was written against.
+#
+# The symptom is a bare "No module named 'generate_samples'", which
+# reads like a missing dependency and is really a repository that moved.
 [ -d piper-sample-generator ] || {
-    log "cloning piper-sample-generator"
-    git clone https://github.com/rhasspy/piper-sample-generator.git
+    log "cloning piper-sample-generator (dscripka fork)"
+    git clone https://github.com/dscripka/piper-sample-generator.git
 }
-# The generator checkpoint: en_US-libritts_r-medium, 904 speakers — the
-# same voice models/catalog pins for TTS, which is not a coincidence.
-# openWakeWord and this OS independently chose it for the same reason.
-if [ ! -f piper-sample-generator/models/en_US-libritts_r-medium.pt ]; then
-    log "fetching the multi-speaker generator checkpoint (~200 MiB)"
+# en-us-libritts-high, from rhasspy's v1.0.0 release — the file name and
+# the release BOTH matter. train.py calls generate_samples() without a
+# model argument, so the fork's compiled-in default path is what gets
+# opened, and that default is models/en-us-libritts-high.pt. Handing it
+# v2.0.0's en_US-libritts_r-medium.pt (which is what openWakeWord's
+# notebook wgets, for its own different call path) produces a
+# FileNotFoundError naming a file nobody asked for. The fork's README is
+# the authority here, not the notebook.
+#
+# Same family and same reasoning as the voice this OS pins for speech
+# out — multi-speaker LibriTTS, so ten thousand samples sound like ten
+# thousand people — but a different checkpoint, so do not "tidy" the two
+# into one.
+if [ ! -f piper-sample-generator/models/en-us-libritts-high.pt ]; then
+    log "fetching the multi-speaker generator checkpoint (243 MiB)"
     mkdir -p piper-sample-generator/models
-    curl -fL --retry 3 -o piper-sample-generator/models/en_US-libritts_r-medium.pt \
-        "https://github.com/rhasspy/piper-sample-generator/releases/download/${PSG_RELEASE}/en_US-libritts_r-medium.pt"
+    curl -fL --retry 3 -o piper-sample-generator/models/en-us-libritts-high.pt \
+        "https://github.com/rhasspy/piper-sample-generator/releases/download/${PSG_RELEASE}/en-us-libritts-high.pt"
 fi
 
 # --- corpora --------------------------------------------------------
@@ -149,12 +204,17 @@ fetch() {  # url dest description
     log "downloading $3"
     curl -fL --retry 3 -C - -o "$2" "$1"
 }
+if [ "$wants_corpora" = 1 ]; then
 fetch "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/validation_set_features.npy" \
       "validation_set_features.npy" "false-positive validation features (~180 MiB)"
 fetch "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/openwakeword_features_ACAV100M_2000_hrs_16bit.npy" \
       "openwakeword_features_ACAV100M_2000_hrs_16bit.npy" "ACAV100M negative features (16 GiB — the long one)"
+fi
 
-if [ ! -d mit_rirs ]; then
+# Emptiness, not existence. The generate stage creates an empty mit_rirs
+# as a placeholder for train.py's module-level scan, so a bare -d test
+# would skip this download and augment against nothing.
+if [ "$wants_corpora" = 1 ] && { [ ! -d mit_rirs ] || [ -z "$(ls -A mit_rirs 2>/dev/null)" ]; }; then
     log "room impulse responses (MIT survey, 270 files)"
     # Fetched as plain files rather than through the `datasets` library.
     #
@@ -206,7 +266,7 @@ TRAIN="$WORK/openWakeWord/openwakeword/train.py"
 # CC BY 4.0 so it can be named here without a licence question, and it
 # needs no parquet reader or audio decoder — the dependency that has
 # already broken this script twice.
-if [ ! -d background_clips ] || [ -z "$(ls -A background_clips 2>/dev/null)" ]; then
+if [ "$wants_corpora" = 1 ] && { [ ! -d background_clips ] || [ -z "$(ls -A background_clips 2>/dev/null)" ]; }; then
     if [ ! -f musan.tar.gz ]; then
         log "background noise: MUSAN (10.3 GiB, CC BY 4.0 — the long one)"
         curl -fL --retry 3 -C - -o musan.tar.gz "https://openslr.org/resources/17/musan.tar.gz"
@@ -226,14 +286,27 @@ if [ ! -d background_clips ] || [ -z "$(ls -A background_clips 2>/dev/null)" ]; 
     fi
 fi
 
-log "generating positive + adversarial samples (hours; piper does the talking)"
-"$PY" "$TRAIN" --training_config ./hey-lisa.yml --generate_clips
+if [ "$STEP" = generate ] || [ "$STEP" = all ]; then
+    # train.py resolves background_paths and rir_paths at module level,
+    # before it looks at which stage was asked for — so --generate_clips
+    # dies on a missing ./background_clips it will never read. Empty
+    # placeholders satisfy the scan without pretending to be corpora;
+    # the augment stage builds the real ones, and refuses if they are
+    # still empty when it actually needs them.
+    mkdir -p background_clips mit_rirs
+    log "generating positive + adversarial samples (piper does the talking)"
+    "$PY" "$TRAIN" --training_config ./hey-lisa.yml --generate_clips
+fi
 
-log "augmenting and computing features"
-"$PY" "$TRAIN" --training_config ./hey-lisa.yml --augment_clips
+if [ "$STEP" = augment ] || [ "$STEP" = all ]; then
+    log "augmenting and computing features"
+    "$PY" "$TRAIN" --training_config ./hey-lisa.yml --augment_clips
+fi
 
-log "training the classifier"
-"$PY" "$TRAIN" --training_config ./hey-lisa.yml --train_model
+if [ "$STEP" = train ] || [ "$STEP" = all ]; then
+    log "training the classifier"
+    "$PY" "$TRAIN" --training_config ./hey-lisa.yml --train_model
+fi
 
 log "done — model in $WORK/hey_lisa_model"
 ls -la "$WORK/hey_lisa_model" 2>/dev/null || true
