@@ -406,9 +406,16 @@ enum AmbientCmd {
         )]
         url: String,
     },
-    /// Full loop on one audio file: transcribe → classify → answer → say.
+    /// Full loop: transcribe → classify → answer → say. Reads an audio
+    /// file, or the microphone when none is given.
     Once {
-        audio: PathBuf,
+        /// Audio file. Omit to record from the microphone instead —
+        /// the loop was file-only until `lisa listen` existed, which
+        /// meant the one thing it is for could not be demonstrated.
+        audio: Option<PathBuf>,
+        /// Recording ceiling when reading from the microphone.
+        #[arg(long, default_value_t = 15)]
+        seconds: u32,
         #[arg(long)]
         model: Option<PathBuf>,
         #[arg(
@@ -1776,13 +1783,17 @@ fn ambient_cmd(cmd: AmbientCmd) -> anyhow::Result<()> {
         }
         AmbientCmd::Once {
             audio,
+            seconds,
             model,
             url,
             speak,
             classify,
         } => {
             let m = voice::whisper_model(model)?;
-            let transcript = voice::transcribe(&audio, &m)?;
+            let transcript = match audio {
+                Some(path) => voice::transcribe(&path, &m)?,
+                None => voice::listen(seconds, &m, None)?,
+            };
             println!("heard:  {transcript}");
             // Default: "Hey Lisa" wake word (reliable). --classify uses
             // the Phase-2 addressed-intent model gate.

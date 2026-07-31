@@ -21,7 +21,8 @@ lisa listen                       # record from the mic, print the transcript
 lisa listen --seconds 30 --keep /tmp/q.wav
 lisa transcribe recording.wav     # transcribe a file instead
 lisa say "the build is green"     # speak it
-lisa ambient once recording.wav --speak   # transcribe → classify → answer → say
+lisa ambient once --speak         # the whole loop, from the mic
+lisa ambient once recording.wav --speak   # or from a file
 ```
 
 `listen` is push-to-talk without a key to hold: it records at 16 kHz mono
@@ -36,8 +37,7 @@ and whisper transcribed it back word for word.
 
 **Limits.** There is no wake word and no always-on capture — `listen`
 records only while you run it, which is the whole design until `voiced`
-lands. `lisa ambient` still needs an audio file for the loop; it is not
-wired to `listen` yet. TTS needs a voice installed
+lands. TTS needs a voice installed
 (`lisa models get piper-libritts-r-medium-en-us`) and STT a whisper model
 (`lisa models get whisper-base-en`); both verbs say so, with the command
 to run, rather than failing quietly. **piper is not in the ARM image** —
