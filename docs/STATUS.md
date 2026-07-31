@@ -437,9 +437,16 @@ Pantheon. Feeds the M4 shell ADR.
   push-to-talk holds a key in the shell via `dev.lisaos.Voice1`. Every
   transcription is ledgered as `voice.transcribe`.
   Verified as a round trip in a container with the build trees deleted —
-  piper says a sentence, whisper hears it back word for word — but **no
-  one has held the key on the iMac**: the engines reach a device with the
-  next release. ARM gets speech in and not out (no onnxruntime on Arch
+  piper says a sentence, whisper hears it back word for word.
+  **Both halves are also proven on the reference iMac18,2 (2026-07-31)**,
+  by shuttling audio rather than waiting for a release: a recording made
+  by the iMac's own microphone (CS8409/CS42L83, the ADR-0024 codec) went
+  through the packaged whisper and came back "Hello? Can you hear me?",
+  and a sentence synthesized by the packaged piper played out of the
+  iMac's speakers and was heard. Mic gain is sane (100%, +12 dB, 0.01%
+  full-scale samples). What is still **untried on hardware is the key
+  itself**: push-to-talk needs the two packages installed, so it waits
+  for the next release. ARM gets speech in and not out (no onnxruntime on Arch
   Linux ARM). The ambient loop (VAD, ring buffer, hard mute, wake word)
   is ADR-0011 stage 3 and has not started; nothing in the repo records
   unprompted.

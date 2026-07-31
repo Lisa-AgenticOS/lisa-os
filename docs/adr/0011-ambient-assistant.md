@@ -114,7 +114,13 @@ speech without re-triggering the wake word.
    (`os/packages/`), a redistributable voice is pinned (LibriTTS-R,
    CC BY 4.0 — the obvious choices were a licence form or
    non-commercial), and the chain is verified as a round trip: piper
-   says a sentence, whisper transcribes it back word for word.
+   says a sentence, whisper transcribes it back word for word — and
+   both halves were then proven on the reference iMac itself
+   (2026-07-31): its own microphone through the packaged whisper, and
+   the packaged piper out of its own speakers. That mattered because
+   this machine is exactly where "enumerated" and "works" came apart
+   before (issue #44, ADR-0024): the speakers were mute while every
+   session-level indicator was green, so neither device was assumed.
 2. **Addressed-intent classifier (done):** guided-generation module +
    eval fixtures.
 2a. **Push-to-talk — done 2026-07-31, and not in the original plan.**
