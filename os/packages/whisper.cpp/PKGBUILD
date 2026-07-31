@@ -1,0 +1,115 @@
+# whisper.cpp — speech to text on the device (PLAN §5.7.5, ADR-0011).
+#
+# WHY THIS EXISTS
+# `lisa transcribe` and the ambient loop have been written and verified
+# since 2026-07-23, driven from an audio file. None of it can run on a
+# device, because no ASR engine is installed: `whisper-cli` and
+# `whisper-server` are absent, and whisper.cpp is not in Arch's repos.
+# So voice on Lisa is not degraded today, it is missing — the thinking
+# half of the loop exists with nothing to feed it.
+#
+# Same reasoning as llama.cpp next door, and the same shape: an
+# immutable root cannot install an engine later, so it is built here and
+# named in the image.
+#
+# WHAT IS BUILT, AND WHAT IS NOT
+# `whisper-cli` for one-shot transcription (`lisa transcribe`) and
+# `whisper-server` for the daemon path the capture loop will use. Not
+# the full example set: whisper.cpp ships a dozen demos — stream, talk,
+# bench, wasm — that would be shipped and never run.
+#
+# NO GPU BACKEND. The reference device is an iMac18,2 with a Radeon Pro
+# 560; whisper.cpp's ROCm path does not cover it, and CoreML/CUDA are
+# not this hardware. CPU is what runs, so CPU is what is built, and
+# `whisper-base-en` is 141 MiB for exactly this reason.
+
+pkgname=whisper.cpp
+# Upstream tags releases; v1.9.1 is 2026-06-19.
+pkgver=v1.9.1
+pkgrel=1
+pkgdesc="OpenAI Whisper inference in C/C++ — the ASR engine behind lisa transcribe (§5.7.5)"
+arch=(x86_64 aarch64)
+url="https://github.com/ggml-org/whisper.cpp"
+license=(MIT)
+
+depends=(gcc-libs glibc)
+makedepends=(cmake git)
+options=(!debug)
+
+source=("git+https://github.com/ggml-org/whisper.cpp.git#tag=${pkgver}")
+# SKIP is right for a tag-pinned git source: the tag IS the identity,
+# and a b2sum computed here would only restate it.
+b2sums=('SKIP')
+
+build() {
+  cd "$srcdir"
+  cmake -B build -S whisper.cpp \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DBUILD_SHARED_LIBS=ON \
+    -DWHISPER_BUILD_TESTS=OFF \
+    -DWHISPER_BUILD_EXAMPLES=ON \
+    -DWHISPER_BUILD_SERVER=ON \
+    -DGGML_NATIVE=OFF \
+    -DCMAKE_INSTALL_RPATH=/usr/lib \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+  # GGML_NATIVE=OFF matters: ON bakes -march=native, and this package is
+  # built on a CI runner and run on an iMac. A binary tuned for the
+  # builder's CPU either crashes with SIGILL on the target or silently
+  # depends on the runner fleet never changing.
+  #
+  # The RPATH pair matters just as much and is less obvious. By default
+  # cmake writes a RUNPATH pointing at the BUILD directory, so the
+  # binaries resolve libwhisper.so from /home/builder/src/build/bin —
+  # which works on the builder, works in any test that runs before the
+  # build tree is deleted, and fails on every real device with "cannot
+  # open shared object file". Observed, not guessed: the first version
+  # of this package passed a run test for exactly that reason.
+  cmake --build build --config Release -j"$(nproc)" --target whisper-cli whisper-server
+}
+
+check() {
+  # It runs. A build that produces an unrunnable binary is the failure
+  # that costs a whole release cycle to notice, because nothing else in
+  # the image exercises it.
+  #
+  # LD_LIBRARY_PATH is required here and its absence is not a smell: the
+  # binaries are built with an install RPATH of /usr/lib (see build()),
+  # so in the build tree they cannot find libwhisper.so by design. This
+  # line is what that decision costs, and it is the cheaper half of the
+  # trade — the alternative is a binary that runs here and nowhere else.
+  LD_LIBRARY_PATH="$srcdir/build/bin" "$srcdir/build/bin/whisper-cli" --help >/dev/null
+}
+
+package() {
+  cd "$srcdir"
+  install -Dm755 build/bin/whisper-cli "$pkgdir/usr/bin/whisper-cli"
+  install -Dm755 build/bin/whisper-server "$pkgdir/usr/bin/whisper-server"
+  # The shared ggml/whisper libraries the two binaries link against.
+  # Installed by basename in a loop: `install -D <file> <dir>/` treats
+  # the destination as a FILE, so the first version silently shipped no
+  # libraries at all while the package still looked complete.
+  find build -name 'lib*.so*' -type f | while read -r lib; do
+    install -Dm755 "$lib" "$pkgdir/usr/lib/$(basename "$lib")"
+  done
+  # The soname symlinks (libwhisper.so.1 -> libwhisper.so.1.9.1) are what
+  # the binaries actually name in DT_NEEDED, and they are symlinks, so
+  # the -type f loop above skips every one of them. Omitting them is not
+  # obviously broken: pacman runs ldconfig, which regenerates them from
+  # DT_SONAME, so the binaries run and the package looks fine. They are
+  # then unowned files — absent until a hook happens to fire, and left
+  # behind on removal. A package ships its own links.
+  find build \( -name 'lib*.so' -o -name 'lib*.so.*' \) -type l | while read -r link; do
+    cp -a "$link" "$pkgdir/usr/lib/$(basename "$link")"
+  done
+  # A package whose binaries cannot find their libraries is worse than a
+  # failed build, because it fails on the user's machine instead of
+  # here.
+  if [ ! -e "$pkgdir/usr/lib/libwhisper.so" ] && \
+     ! ls "$pkgdir"/usr/lib/libwhisper.so.* >/dev/null 2>&1; then
+    echo "!! whisper.cpp: no libwhisper.so in the package" >&2
+    find build -name 'lib*.so*' >&2 || true
+    return 1
+  fi
+  install -Dm644 whisper.cpp/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

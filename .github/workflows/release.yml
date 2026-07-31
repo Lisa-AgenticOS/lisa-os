@@ -106,7 +106,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci-cache/pkgs
-          key: pkgs-v1-${{ runner.os }}-${{ steps.week.outputs.w }}-${{ hashFiles('os/packages/llama.cpp/PKGBUILD', 'os/packages/gnome-control-center-lisa/PKGBUILD') }}
+          # EVERY PKGBUILD reachable through use_cached must be hashed
+          # here. A package that is cached but not keyed keeps serving the
+          # previous binary after its recipe changes, so the fix you just
+          # made is not in the image and nothing says so — which is how
+          # whisper.cpp would have gone on shipping a build-tree RUNPATH
+          # after that bug was fixed. Adding a use_cached call without
+          # adding its PKGBUILD here is a silent regression.
+          key: pkgs-v2-${{ runner.os }}-${{ steps.week.outputs.w }}-${{ hashFiles('os/packages/llama.cpp/PKGBUILD', 'os/packages/gnome-control-center-lisa/PKGBUILD', 'os/packages/whisper.cpp/PKGBUILD', 'os/packages/piper/PKGBUILD', 'os/packages/piper/pinned-deps-no-network.patch') }}
       - name: Build Lisa packages + versioned image (Arch container)
         run: |
           VER="${{ steps.ver.outputs.ver }}"
@@ -257,6 +264,34 @@ jobs:
               # The glob picks up both.
               sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg -d --nocheck --noconfirm"
               cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
+              # Voice: the two engines PLAN §5.7.5 needs, neither of which
+              # Arch packages. Until these exist on a device, `lisa
+              # transcribe` and the spoken reply are code with nothing to
+              # run — voice is not degraded, it is absent.
+              #
+              # NOT --nocheck, deliberately, for the same reason as the
+              # SASL plugin below: the check() function in both PKGBUILDs
+              # EXECUTE the built binary. the first version of whisper.cpp
+              # passed a naive run test while carrying a RUNPATH into the
+              # build tree — it resolved its libraries out of
+              # /home/builder and would have failed on every real machine.
+              # A binary that starts on the builder is not the claim worth
+              # testing; the claim is that it starts anywhere.
+              if ! use_cached whisper.cpp; then
+                sudo -u builder bash -c "cd /build/os/packages/whisper.cpp && makepkg --skippgpcheck --noconfirm"
+                cp /build/os/packages/whisper.cpp/whisper.cpp-*.pkg.tar.* /build/repo-out/
+                cache_built "/build/os/packages/whisper.cpp/whisper.cpp-*.pkg.tar.*"
+              fi
+              # piper (TTS) — the OHF-Voice engine, NOT the same-named
+              # gaming-mouse GUI in the Arch repos. -s installs onnxruntime,
+              # which it links against; espeak-ng is pinned in its own
+              # source=() because piper needs an API no espeak-ng release
+              # has (see the PKGBUILD header).
+              if ! use_cached piper; then
+                sudo -u builder bash -c "cd /build/os/packages/piper && makepkg -s --skippgpcheck --noconfirm"
+                cp /build/os/packages/piper/piper-*.pkg.tar.* /build/repo-out/
+                cache_built "/build/os/packages/piper/piper-*.pkg.tar.*"
+              fi
               # The XOAUTH2 SASL mechanism (issue #155). Cyrus SASL 2.1.28
               # ships anonymous/crammd5/digestmd5/login/ntlm/plain/sasldb/
               # scram and nothing else, so mbsync cannot authenticate to
@@ -350,6 +385,11 @@ jobs:
                    # still cannot talk to each other.
                    cyrus-sasl-xoauth2
                    llama.cpp
+                   # Voice (PLAN §5.7.5): the ear and the mouth. Neither
+                   # is in Arch — see the build steps above. piper pulls
+                   # onnxruntime from Arch as a normal dependency.
+                   whisper.cpp
+                   piper
                    # The .desktop entry, icons and /usr/bin/zen-browser
                    # resolver. ~10 KiB, and it stays here forever: it is
                    # what keeps the browser launchable no matter which side

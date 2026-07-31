@@ -33,6 +33,33 @@ another kernel does not load at all, so drift has to be loud. Re-pinning
 and the on-hardware verification procedure are in its README — CI can
 prove it compiles, only a human can prove it makes sound.
 
+`whisper.cpp/` and `piper/` are the two halves of voice (PLAN §5.7.5,
+ADR-0011): the ASR engine behind `lisa transcribe` and the TTS engine
+behind a spoken reply. Neither is in Arch, so before these existed the
+voice code had nothing to run — the loop was written and unrunnable.
+Both are built from source with `GGML_NATIVE`-style portability flags and
+**neither is built `--nocheck`**: their `check()` functions execute the
+binary they just produced. That is not ceremony. whisper.cpp's first
+version linked its libraries through a `RUNPATH` pointing into
+`/home/builder/...`; it passed a run test on the builder and would have
+failed on every device with "cannot open shared object file". Both
+PKGBUILDs now set an install RPATH, ship their own soname symlinks
+rather than relying on `ldconfig` to synthesise unowned ones, and assert
+in `package()` that the libraries are actually in the package.
+
+`piper` is **not** the `piper` in Arch's repos — that name belongs to a
+gaming-mouse configuration GUI. This is `OHF-Voice/piper1-gpl`, and it
+is built as `libpiper` (C++ shared library + CLI) rather than the
+upstream Python package, so the image needs no Python or onnxruntime
+wheel. It takes onnxruntime from Arch, but **vendors espeak-ng at a
+pinned commit**: piper calls `espeak_TextToPhonemesWithTerminator()`,
+which exists in no espeak-ng release (verified absent at tag 1.52.0, the
+version Arch ships). Upstream's CMake fetches both mid-build with no hash
+check; the patch here moves that pin into `source=()` where makepkg
+fetches it and a reader can see it. **piper is excluded from the ARM
+image**: Arch Linux ARM has no onnxruntime, so aarch64 gets speech in
+and no speech out — stated in `aarch64-image.yml` rather than faked.
+
 Build a local repo with `os/repo-tools/build-packages.sh`. The hosted,
 signed repo lands in M1; `lisa-modeld.service` lands with the M1 daemon
 loop.

@@ -88,6 +88,23 @@ jobs:
               # PKGBUILD for why GGML_NATIVE=OFF needs no ARM flags.
               sudo -u builder bash -c "cd /build/os/packages/llama.cpp && makepkg --nocheck --skippgpcheck --noconfirm"
               cp /build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.* /build/repo-out/
+              # whisper.cpp (ASR, PLAN §5.7.5). Same story as llama.cpp:
+              # GGML_NATIVE=OFF, so no per-arch cmake delta. NOT --nocheck
+              # — its check() runs the binary, which is what caught the
+              # build-tree RUNPATH that made the x86_64 package pass a
+              # naive test while being unusable on a real machine.
+              sudo -u builder bash -c "cd /build/os/packages/whisper.cpp && makepkg --skippgpcheck --noconfirm"
+              cp /build/os/packages/whisper.cpp/whisper.cpp-*.pkg.tar.* /build/repo-out/
+              #
+              # piper (TTS) IS DELIBERATELY ABSENT FROM THE ARM IMAGE.
+              # It links onnxruntime, which Arch Linux ARM does not
+              # package — checked, with a control: `pacman -Si cmake`
+              # resolves in the same container where `onnxruntime` and
+              # `onnxruntime-cpu` do not. Building it here would fail at
+              # dependency resolution, and stubbing it would be faking an
+              # architecture (os/packages/README.md, CLAUDE.md rule 8).
+              # So aarch64 gets speech IN and no speech OUT until an ARM
+              # onnxruntime exists. Restore this in one line when it does.
               # Zen browser — repackage the upstream aarch64 release
               # tarball. Upstream publishes zen.linux-aarch64.tar.xz next
               # to the x86_64 one and the PKGBUILD pins its verified
@@ -127,6 +144,7 @@ jobs:
               # below; this loop only catches a wholesale build failure.
               for p in lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-agentd \
                        lisa-notes lisa-remoted lisa-contextd llama.cpp \
+                       whisper.cpp \
                        zen-browser zen-browser-launcher \
                        gnome-control-center; do
                 ls /build/pkgs/"$p"-*.pkg.tar.* 2>/dev/null | grep -qv -- "-debug-" \
@@ -156,6 +174,9 @@ jobs:
                    lisa-remoted
                    lisa-contextd
                    llama.cpp
+                   # Voice in, but not out: see the piper note in the
+                   # package build step above.
+                   whisper.cpp
                    # Permanent: the .desktop, icons and the
                    # /usr/bin/zen-browser resolver (ADR-0023 phase 1).
                    zen-browser-launcher

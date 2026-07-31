@@ -1,0 +1,170 @@
+# piper — text to speech on the device (PLAN §5.7.5, ADR-0011).
+#
+# WHY THIS EXISTS
+# whisper.cpp next door gives Lisa an ear. This gives it a voice: the
+# reply half of the loop, and the half a person actually notices is
+# missing. Neither engine is in Arch's repos, so both are built here and
+# named in the image — an immutable root cannot install one later.
+#
+# NOT THE `piper` IN THE ARCH REPOS. That name belongs to a configuration
+# GUI for gaming mice (libratbag), unrelated in every way except
+# spelling. The TTS engine is OHF-Voice/piper1-gpl, formerly
+# rhasspy/piper. Anyone who "just installs piper" on this machine gets
+# the mouse tool; hence this package, and hence this note.
+#
+# WHAT IS BUILT: libpiper, NOT THE PYTHON PACKAGE
+# Upstream's headline artifact is a Python package (scikit-build,
+# onnxruntime-python, a compiled espeakbridge module). The same tree
+# carries `libpiper/`: the same synthesis code as a plain C++ shared
+# library plus a CLI. That is what is packaged. An immutable image with
+# a system Python it does not otherwise need, pinned to whatever
+# onnxruntime wheel matches, is a dependency knot for no gain — the
+# daemon path (§5.7.5) wants a binary it can exec, which is exactly
+# what `libpiper` produces.
+#
+# WHY espeak-ng IS VENDORED AND onnxruntime IS NOT
+# Both are fetched by upstream's CMake mid-build, which a package may not
+# do (rule 8). onnxruntime is simply taken from Arch instead. espeak-ng
+# cannot be: piper calls `espeak_TextToPhonemesWithTerminator()`, which
+# exists on upstream's pinned commit and in no espeak-ng release —
+# verified absent at tag 1.52.0, which is what Arch ships. So the commit
+# is pinned HERE, in source=(), where makepkg fetches and checksums it
+# and a reader can see which commit it is, instead of inside a CMake
+# script that reaches out to the network on its own.
+#
+# It is linked statically and its voice data installed privately under
+# /usr/share/piper — deliberately NOT /usr/share/espeak-ng-data, which
+# belongs to Arch's espeak-ng package and holds data for a different
+# version of the library.
+#
+# NO GPU BACKEND, for the same reason as whisper.cpp: the reference
+# iMac18,2's Radeon Pro 560 is not covered by onnxruntime's ROCm build.
+# CPU is what runs, so CPU is what is built (Arch's onnxruntime-cpu).
+#
+# arch=() SAYS aarch64, BUT THE ARM IMAGE DOES NOT SHIP THIS PACKAGE.
+# The recipe is architecture-clean and upstream onnxruntime publishes
+# aarch64 builds, so the arch line is honest about the recipe. What is
+# missing is the dependency: Arch Linux ARM packages neither onnxruntime
+# nor onnxruntime-cpu — checked in the ARM container with a control, in
+# which `pacman -Si cmake` resolves and both onnxruntime names do not.
+# So aarch64-image.yml builds whisper.cpp and deliberately skips this,
+# and the ARM image has speech in and no speech out. That exclusion is
+# written down there rather than faked here (CLAUDE.md rule 8); when an
+# ARM onnxruntime appears, the ARM lane needs one line, not a new recipe.
+
+pkgname=piper
+_pkgname=piper1-gpl
+# Upstream tags releases; v1.6.0 is the current tag.
+pkgver=v1.6.0
+pkgrel=1
+# The espeak-ng commit upstream's CMakeLists pins. Kept identical on
+# purpose: this package changes WHERE the source comes from, not WHICH
+# source. Re-derive it from libpiper/CMakeLists.txt when bumping pkgver.
+_espeakng_commit=212928b394a96e8fd2096616bfd54e17845c48f6
+pkgdesc="Piper neural text-to-speech — the TTS engine behind Lisa's spoken replies (§5.7.5)"
+arch=(x86_64 aarch64)
+url="https://github.com/OHF-Voice/piper1-gpl"
+# GPL-3.0-or-later: upstream relicensed from MIT at the 1.x rewrite,
+# which is what the "-gpl" in the repository name records.
+license=(GPL-3.0-or-later)
+
+# espeak-ng is NOT a depends: it is linked statically from the pinned
+# commit above, for the API reason in the header.
+depends=(onnxruntime gcc-libs glibc)
+makedepends=(cmake git)
+options=(!debug)
+
+source=("git+https://github.com/OHF-Voice/piper1-gpl.git#tag=${pkgver}"
+        "espeak-ng::git+https://github.com/espeak-ng/espeak-ng.git#commit=${_espeakng_commit}"
+        "pinned-deps-no-network.patch")
+# SKIP for the two git sources: the tag and the commit ARE the identity,
+# and a b2sum computed here would only restate them. The patch is a local
+# file, so its hash is meaningful and is checked.
+b2sums=('SKIP'
+        'SKIP'
+        '3f63244d75053195df4ac2c511beb3ab5582f564ec4496695e16bc5dac0e2f338d1a9d602fc5de01685c84e4218915519b3374cd7e3060a6f2343d0f35fac82e')
+
+prepare() {
+  cd "$srcdir/$_pkgname"
+  # If this stops applying, upstream has changed how libpiper finds its
+  # dependencies, and the answer is to re-derive the patch — not to drop
+  # it and let the build fetch espeak-ng and an onnxruntime tarball off
+  # the network mid-package. Failing loudly here is the point.
+  patch -p1 < "$srcdir/pinned-deps-no-network.patch"
+}
+
+build() {
+  cd "$srcdir/$_pkgname/libpiper"
+  cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DESPEAKNG_GIT_REPOSITORY="$srcdir/espeak-ng" \
+    -DESPEAKNG_GIT_TAG="$_espeakng_commit" \
+    -DCMAKE_INSTALL_RPATH=/usr/lib \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+  # ESPEAKNG_GIT_REPOSITORY points at the clone makepkg already fetched,
+  # so ExternalProject copies from disk rather than the network.
+  #
+  # The RPATH pair is not boilerplate. Without it cmake writes a RUNPATH
+  # pointing into the build directory, so the binary resolves libpiper.so
+  # from /home/builder/... — which works here, works in any check() that
+  # runs before the build tree is deleted, and fails on every device with
+  # "cannot open shared object file". whisper.cpp shipped that bug first;
+  # this package was written knowing it.
+  cmake --build build --config Release -j"$(nproc)"
+}
+
+check() {
+  cd "$srcdir/$_pkgname/libpiper"
+  # LD_LIBRARY_PATH is required here precisely BECAUSE of the install
+  # RPATH above: in the build tree the binary cannot find libpiper.so by
+  # design. Running it at all is the point — a package whose binary does
+  # not start is the failure that costs a release cycle to notice.
+  local out
+  out=$(LD_LIBRARY_PATH="$PWD/build" ./build/src/main/piper_exe 2>&1 || true)
+  # Invoked with no model it must complain about the missing arguments.
+  # Asserting on the text rather than the exit status: a binary that
+  # failed to load its libraries also "exits non-zero", and that is the
+  # failure this is here to catch.
+  if [ -z "$out" ]; then
+    echo "!! piper: binary produced no output at all — did it load?" >&2
+    return 1
+  fi
+  case "$out" in
+    *"cannot open shared object"*|*"error while loading"*)
+      echo "!! piper: binary could not load its libraries: $out" >&2
+      return 1 ;;
+  esac
+}
+
+package() {
+  cd "$srcdir/$_pkgname/libpiper"
+
+  # Upstream names the target piper_exe so it does not collide with the
+  # library target; the command people type is `piper`.
+  install -Dm755 build/src/main/piper_exe "$pkgdir/usr/bin/piper"
+
+  install -Dm755 build/libpiper.so "$pkgdir/usr/lib/libpiper.so"
+  install -Dm644 include/piper.h "$pkgdir/usr/include/piper.h"
+
+  # The phoneme data for the espeak-ng that is statically linked in.
+  # Private path on purpose: /usr/share/espeak-ng-data is owned by Arch's
+  # espeak-ng package and carries data for a different version.
+  install -d "$pkgdir/usr/share/piper"
+  cp -a build/espeak_ng-install/share/espeak-ng-data \
+        "$pkgdir/usr/share/piper/espeak-ng-data"
+
+  install -Dm644 "$srcdir/$_pkgname/COPYING" \
+    "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+
+  # A package whose binary cannot find its library, or whose engine has
+  # no phoneme data, is worse than a failed build: it fails on the user's
+  # machine instead of here.
+  local missing=
+  [ -e "$pkgdir/usr/lib/libpiper.so" ] || missing="$missing libpiper.so"
+  [ -e "$pkgdir/usr/share/piper/espeak-ng-data/phontab" ] || missing="$missing espeak-ng-data"
+  if [ -n "$missing" ]; then
+    echo "!! piper: package is missing:$missing" >&2
+    return 1
+  fi
+}
