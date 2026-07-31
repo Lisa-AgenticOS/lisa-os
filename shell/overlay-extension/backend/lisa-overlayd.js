@@ -572,11 +572,28 @@ const loop = new GLib.MainLoop(null, false);
 // its own text field should not have to hold an overlay query open to
 // do it. Losing this name is not fatal to the overlay — voice stops
 // working, the assistant does not.
+// Held at module scope, and that is load-bearing rather than tidy.
+//
+// GJS garbage-collects a service object that nothing references, and
+// collecting it UNEXPORTS its D-Bus object while the bus name — owned
+// separately by bus_own_name — stays claimed. The result is the worst
+// possible shape of failure: `busctl list` shows dev.lisaos.Voice1
+// owned and healthy, and every call to it returns "Object does not
+// exist at path /dev/lisaos/Voice1".
+//
+// OverlayService below survives without this only by accident: its
+// constructor calls signal_subscribe with a closure capturing `this`,
+// so the connection holds it alive. VoiceService subscribes to nothing,
+// so it had no such anchor. Anyone writing the third service here
+// should not have to discover that by reading the second one.
+let voiceService = null;
 Gio.bus_own_name(
     Gio.BusType.SESSION,
     VOICE_BUS_NAME,
     Gio.BusNameOwnerFlags.NONE,
-    connection => new VoiceService(connection),
+    connection => {
+        voiceService = new VoiceService(connection);
+    },
     () => log(`lisa-overlayd: owning ${VOICE_BUS_NAME}`),
     () => logError(new Error(`lost ${VOICE_BUS_NAME} — push-to-talk is off`)));
 
