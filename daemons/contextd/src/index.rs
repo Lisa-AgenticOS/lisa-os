@@ -70,6 +70,44 @@ pub fn chunk_text(text: &str) -> Vec<String> {
     chunks
 }
 
+/// Turn arbitrary user text into a query FTS5 will accept.
+///
+/// `MATCH` takes FTS5's own query language, not a bare string, so
+/// punctuation in ordinary prose is a *syntax error* rather than
+/// something to search for. Both of these failed against the live index:
+///
+/// ```text
+/// "can you hear me?"  →  fts5: syntax error near "?"
+/// "what's new"        →  fts5: syntax error near "'"
+/// ```
+///
+/// Which meant retrieval was broken for very nearly every real question
+/// — and silently, because the overlay logs "Context1 unavailable" and
+/// answers without context. Voice made it constant: a transcript almost
+/// always ends in a question mark.
+///
+/// Each word becomes a quoted FTS5 string, so its contents are literal
+/// and no character can be read as an operator. Space between terms is
+/// FTS5's implicit AND, which is what a multi-word query should mean.
+///
+/// Returns None when nothing survives (input was all punctuation) —
+/// searching for an empty MATCH is itself an error, and the honest
+/// answer to "???" is no hits rather than a failure.
+pub fn fts5_query(raw: &str) -> Option<String> {
+    let terms: Vec<String> = raw
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|t| !t.is_empty())
+        // A double quote inside a quoted FTS5 string is escaped by
+        // doubling it. Tokens cannot contain one after the split above,
+        // but this stays correct if the split ever loosens.
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    Some(terms.join(" "))
+}
+
 impl ContextStore {
     /// Index every text-like file under `root`. Returns what changed.
     pub fn index_dir(&self, root: &Path) -> Result<IndexReport, StoreError> {
@@ -180,6 +218,11 @@ impl ContextStore {
 
     /// Lexical retrieval (FTS5 bm25), best first, with provenance.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>, StoreError> {
+        let Some(query) = fts5_query(query) else {
+            // Nothing searchable in the input; no hits is the answer.
+            return Ok(Vec::new());
+        };
+        let query = query.as_str();
         let conn = self.conn.lock().expect("context lock");
         let mut stmt = conn.prepare(
             "SELECT d.source, d.provenance,
@@ -203,6 +246,43 @@ impl ContextStore {
 
 #[cfg(test)]
 mod tests {
+
+    /// The strings that broke retrieval on the reference iMac. Both were
+    /// ordinary things to say, and both produced an FTS5 syntax error
+    /// that the overlay reported as "Context1 unavailable" — so the
+    /// assistant answered with no context and nobody knew why.
+    #[test]
+    fn ordinary_prose_is_not_an_fts5_syntax_error() {
+        // Verbatim from the device.
+        assert_eq!(
+            fts5_query("can you hear me?").unwrap(),
+            "\"can\" \"you\" \"hear\" \"me\""
+        );
+        assert_eq!(fts5_query("what's new").unwrap(), "\"what\" \"s\" \"new\"");
+        // FTS5 operators must be neutralised, not honoured: a user typing
+        // OR or NEAR means the words, not the operators.
+        for raw in ["a OR b", "x NEAR y", "foo*", "col:val", "-neg", "(paren)"] {
+            let q = fts5_query(raw).unwrap();
+            assert!(q.starts_with('"'), "{raw} -> {q}");
+            // Every term quoted means no bare operator survives.
+            for term in q.split(' ') {
+                assert!(term.starts_with('"') && term.ends_with('"'), "{raw} -> {q}");
+            }
+        }
+    }
+
+    /// An empty MATCH is itself a syntax error, so a query with nothing
+    /// searchable in it must not reach SQLite at all.
+    #[test]
+    fn a_query_with_no_words_returns_nothing_rather_than_failing() {
+        assert!(fts5_query("???").is_none());
+        assert!(fts5_query("").is_none());
+        assert!(fts5_query("   ").is_none());
+        assert!(fts5_query("!@#$%^&*()").is_none());
+        // ...but a single real word still works.
+        assert_eq!(fts5_query("hello!").unwrap(), "\"hello\"");
+    }
+
     use super::*;
 
     #[test]

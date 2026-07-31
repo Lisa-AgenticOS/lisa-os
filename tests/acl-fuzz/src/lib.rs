@@ -304,10 +304,22 @@ pub fn cases() -> Vec<(String, Vec<String>)> {
     // one provenance. These are the cases most likely to put a
     // disallowed chunk at the top of the ranking, because the shared half
     // matches everything and the unique half matches exactly one place.
+    //
+    // There used to be an `{a} OR {t}` variant here as well. It is gone
+    // because contextd now sanitises queries into quoted FTS5 terms —
+    // ordinary prose was a syntax error ("can you hear me?" and "what's
+    // new" both failed against the live index), so operators no longer
+    // survive into MATCH at all. `a OR t` now searches for the literal
+    // word "OR" and matches nothing, which made half this corpus vacuous
+    // while still counting as coverage.
+    //
+    // The operator family is NOT lost: HOSTILE_QUERIES carries OR, NOT,
+    // NEAR, prefix, column-filter and SQL-injection shapes, and their
+    // value is now the opposite of what it was — they must come back
+    // neutralised rather than honoured.
     for a in COLLIDING_TERMS.iter() {
         for (t, _) in PROVENANCE_UNIQUE_TERMS {
             queries.push(format!("{a} {t}"));
-            queries.push(format!("{a} OR {t}"));
         }
     }
 

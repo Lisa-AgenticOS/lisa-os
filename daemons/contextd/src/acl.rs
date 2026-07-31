@@ -131,9 +131,14 @@ impl ContextStore {
              WHERE chunks MATCH ? AND d.provenance IN ({placeholders})
              ORDER BY bm25(chunks) LIMIT ?"
         );
+        // Same sanitising as the unscoped path: a question mark in the
+        // user's prose is an FTS5 syntax error, not a search term.
+        let Some(safe) = crate::index::fts5_query(query) else {
+            return Ok(Vec::new());
+        };
         let conn = self.conn.lock().expect("context lock");
         let mut stmt = conn.prepare(&sql)?;
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.to_string())];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(safe)];
         for a in &allowed {
             params.push(Box::new(a.to_string()));
         }
