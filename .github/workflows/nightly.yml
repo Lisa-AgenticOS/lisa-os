@@ -334,14 +334,23 @@ jobs:
           # requester answers its own call. Nothing logs a problem —
           # which is exactly how lisa-portal (#153) and this (#145)
           # both shipped absent.
-          for svc in dev.lisaos.Consent1 dev.lisaos.Overlay1; do
-            [ -f "mnt-pull/usr/share/dbus-1/services/$svc.service" ] || {
-              echo "FAIL: no D-Bus activation file for $svc"
-              echo "      A trusted name with no owner is not a closed door;"
-              echo "      it is a check with nothing behind it."
-              fail=1
-            }
-          done
+          #
+          # Implication, not presence — this job also builds the MINIMAL
+          # image, which ships no lisa package at all (the release lane
+          # adds it via 50-release.conf). Asserting the files outright
+          # would fail a perfectly good minimal image, which is the same
+          # mistake in the opposite direction: a check that cries wolf
+          # gets disabled, and then it is not a check.
+          if [ -d mnt-pull/usr/share/lisa/shell ]; then
+            for svc in dev.lisaos.Consent1 dev.lisaos.Overlay1; do
+              [ -f "mnt-pull/usr/share/dbus-1/services/$svc.service" ] || {
+                echo "FAIL: no D-Bus activation file for $svc"
+                echo "      A trusted name with no owner is not a closed door;"
+                echo "      it is a check with nothing behind it."
+                fail=1
+              }
+            done
+          fi
           # A desktop with Online Accounts and no Secret Service is worse
           # than one without Online Accounts: the account is added, the
           # panel says connected, and every consumer fails with "Failed to
