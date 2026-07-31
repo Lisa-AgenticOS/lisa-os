@@ -330,6 +330,7 @@ export default class LisaOverlayExtension extends Extension {
         this._proxy = null;
         this._overlay = null;
         this._grab = null;
+        this._outsideClickId = 0;
         // Push-to-talk state (§5.7.5). 0 means "not recording", which
         // is also what a session id can never be.
         this._voiceProxy = null;
@@ -671,6 +672,38 @@ export default class LisaOverlayExtension extends Extension {
         this._grab = Main.pushModal(this._overlay, {
             actionMode: Shell.ActionMode.NORMAL,
         });
+        // The modal grab is what lets the entry receive keystrokes while
+        // an app window is focused — but it also eats every pointer event
+        // on the screen, so with the layer open the dock was simply dead
+        // and the mouse had no way to dismiss anything. A click outside
+        // the layer therefore means "dismiss", the way it does for Siri.
+        //
+        // The listener sits on the overlay, not the stage, and decides
+        // by coordinates, not by event target. Both halves are forced by
+        // how Clutter grabs deliver events: the propagation chain is
+        // truncated at the grab actor (a stage handler never fires —
+        // verified on the device, not guessed), and a press outside the
+        // grabbed tree is retargeted INTO it, arriving here with its
+        // screen coordinates as the only remaining evidence of where it
+        // really landed.
+        this._outsideClickId = this._overlay.connect('captured-event', (actor, event) => {
+            const type = event.type();
+            if (type !== Clutter.EventType.BUTTON_PRESS &&
+                type !== Clutter.EventType.TOUCH_BEGIN)
+                return Clutter.EVENT_PROPAGATE;
+            const [x, y] = event.get_coords();
+            const [ax, ay] = this._overlay.get_transformed_position();
+            const [aw, ah] = this._overlay.get_transformed_size();
+            if (x < ax || x > ax + aw || y < ay || y > ay + ah) {
+                this._hide();
+                // Consumed, not forwarded: the press that dismisses the
+                // layer must not also activate whatever sat under it —
+                // a dock icon launching an app because you closed Lisa
+                // would read as a misclick, not a feature.
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
         this._keyPressId = this._overlay.connect('key-press-event', (actor, event) => {
             if (event.get_key_symbol() === Clutter.KEY_Escape) {
                 // Listening first: closing the layer while the recording
@@ -697,6 +730,10 @@ export default class LisaOverlayExtension extends Extension {
         // and leave a recording running is an open microphone with no
         // indicator, which is the one outcome this feature may not have.
         this._cancelListening();
+        if (this._outsideClickId) {
+            this._overlay.disconnect(this._outsideClickId);
+            this._outsideClickId = 0;
+        }
         if (this._keyPressId) {
             this._overlay.disconnect(this._keyPressId);
             this._keyPressId = 0;
