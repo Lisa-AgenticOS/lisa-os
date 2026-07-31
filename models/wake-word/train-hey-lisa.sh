@@ -52,9 +52,17 @@ need_gib=30
 # silent. Exactly the shape of bug this repo keeps finding.
 mkdir -p "$WORK"
 avail_gib=$(df -g "$WORK" | tail -1 | awk '{print $4}') || avail_gib=""
-if [ -n "${avail_gib:-}" ] && [ "$avail_gib" -lt "$need_gib" ]; then
-    echo "!! need ~${need_gib} GiB free, have ${avail_gib} GiB at $WORK" >&2
-    echo "   (the ACAV100M feature file is 16 GiB by itself)" >&2
+# Subtract what is already cached. The 30 GiB figure is the FRESH-run
+# cost; on a resume most of it is on disk, and comparing the full figure
+# against remaining free space refuses to continue a run that is three
+# quarters done. That is not hypothetical — it happened here, right
+# after the 16 GiB download finally succeeded.
+cached_gib=$(du -sk "$WORK" 2>/dev/null | awk '{printf "%d", $1/1024/1024}') || cached_gib=0
+still_gib=$(( need_gib - ${cached_gib:-0} ))
+[ "$still_gib" -lt 5 ] && still_gib=5   # always keep working headroom
+if [ -n "${avail_gib:-}" ] && [ "$avail_gib" -lt "$still_gib" ]; then
+    echo "!! need ~${still_gib} GiB more free, have ${avail_gib} GiB at $WORK" >&2
+    echo "   (${cached_gib:-0} GiB already cached; a fresh run needs ~${need_gib})" >&2
     exit 1
 fi
 command -v uv >/dev/null || { echo "!! uv is required (https://docs.astral.sh/uv/)" >&2; exit 1; }
@@ -74,10 +82,22 @@ PY="$WORK/.venv/bin/python"
 
 if [ ! -f .deps-installed ]; then
     log "installing torch and the openWakeWord training stack"
+    # Every pin here was found by a run dying on it, hours in. They are
+    # listed with the reason so the next person does not rediscover them
+    # one failure at a time:
+    #
+    #   scipy<1.15   — `acoustics` imports scipy.special.sph_harm, which
+    #                  scipy removed. Without the pin, `import acoustics`
+    #                  fails and openwakeword.data cannot load at all.
+    #   pronouncing, torch-audiomentations, acoustics
+    #                — imported by openwakeword/data.py but absent from
+    #                  its install_requires, so `pip install -e` leaves
+    #                  them out and training dies at the first import.
     uv pip install --python "$PY" \
         torch torchaudio torchinfo torchmetrics \
-        onnx onnxruntime tqdm scipy scikit-learn pyyaml datasets \
-        speechbrain audiomentations acoustics webrtcvad mutagen
+        onnx onnxruntime tqdm 'scipy<1.15' scikit-learn pyyaml huggingface_hub \
+        speechbrain audiomentations torch-audiomentations acoustics \
+        pronouncing webrtcvad mutagen
     touch .deps-installed
 fi
 
@@ -115,33 +135,77 @@ fetch "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolv
       "openwakeword_features_ACAV100M_2000_hrs_16bit.npy" "ACAV100M negative features (16 GiB — the long one)"
 
 if [ ! -d mit_rirs ]; then
-    log "room impulse responses (MIT survey)"
-    "$PY" - <<'PY'
-import os, scipy.io.wavfile, numpy as np
-from datasets import load_dataset
+    log "room impulse responses (MIT survey, 270 files)"
+    # Fetched as plain files rather than through the `datasets` library.
+    #
+    # That repository is 270 ordinary 16 kHz wavs under 16khz/, so a
+    # dataset loader buys nothing here and costs a great deal: datasets 5
+    # decodes audio via torchcodec, which wants FFmpeg, while releases
+    # before 3 use pa.PyExtensionType, which pyarrow removed in v15. Both
+    # failure modes were hit in turn — each one AFTER the 16 GiB download
+    # had already succeeded. A fragile dependency in the middle of a
+    # multi-hour job is worth deleting rather than pinning around.
+    "$PY" - <<'RIRPY'
+import glob, os, shutil
+from huggingface_hub import snapshot_download
+d = snapshot_download(
+    repo_id="davidscripka/MIT_environmental_impulse_responses",
+    repo_type="dataset", allow_patterns="16khz/*.wav")
 os.makedirs("mit_rirs", exist_ok=True)
-ds = load_dataset("davidscripka/MIT_environmental_impulse_responses", split="train", streaming=True)
-for row in ds:
-    a = row["audio"]
-    scipy.io.wavfile.write(
-        os.path.join("mit_rirs", row["audio"]["path"].split("/")[-1]),
-        16000, (a["array"] * 32767).astype(np.int16))
-print("  RIRs written")
-PY
+n = 0
+for w in glob.glob(os.path.join(d, "16khz", "*.wav")):
+    shutil.copy(w, os.path.join("mit_rirs", os.path.basename(w)))
+    n += 1
+print(f"  {n} impulse responses")
+if n == 0:
+    # Silently having no RIRs makes augmentation a no-op and yields a
+    # model that only works in a quiet room, with nothing to explain it.
+    raise SystemExit("no impulse responses downloaded")
+RIRPY
 fi
 
 # --- train ----------------------------------------------------------
 cp "$CONFIG" ./hey-lisa.yml
-cd openWakeWord
+
+# Run from $WORK, NOT from inside openWakeWord. train.py resolves every
+# path in the config with os.path.abspath(), i.e. against the working
+# directory — so `cd openWakeWord` silently repoints
+# piper_sample_generator_path, mit_rirs, background_paths and the two
+# .npy corpora at a directory none of them are in. The first symptom is
+# a bare "No module named 'generate_samples'", which reads like a
+# missing dependency rather than a wrong cwd.
+TRAIN="$WORK/openWakeWord/openwakeword/train.py"
+
+# Background audio is not optional. Without it the model is trained on
+# speech in silence and learns "Hey Lisa in a quiet room", which is not
+# where anybody uses a computer — and the way that fails is a wake word
+# that works on the developer's desk and nowhere else. Refuse rather
+# than quietly train something weaker than the config claims.
+if [ ! -d background_clips ] || [ -z "$(ls -A background_clips 2>/dev/null)" ]; then
+    cat >&2 <<'MSG'
+!! background_clips/ is empty — refusing to train.
+
+   The config asks for background noise to augment against. Populate it
+   with a few thousand short 16 kHz clips (the upstream notebook uses
+   AudioSet and FMA; any broad noise/speech corpus works), then re-run.
+   Roughly 5-10 GiB, and this machine currently has less headroom than
+   that once the 16 GiB feature file is accounted for.
+
+   Training without it is possible by setting augmentation_rounds: 0 in
+   hey-lisa.yml, but that model will not survive a real room, so it is a
+   deliberate choice rather than a default.
+MSG
+    exit 1
+fi
 
 log "generating positive + adversarial samples (hours; piper does the talking)"
-"$PY" openwakeword/train.py --training_config ../hey-lisa.yml --generate_clips
+"$PY" "$TRAIN" --training_config ./hey-lisa.yml --generate_clips
 
 log "augmenting and computing features"
-"$PY" openwakeword/train.py --training_config ../hey-lisa.yml --augment_clips
+"$PY" "$TRAIN" --training_config ./hey-lisa.yml --augment_clips
 
 log "training the classifier"
-"$PY" openwakeword/train.py --training_config ../hey-lisa.yml --train_model
+"$PY" "$TRAIN" --training_config ./hey-lisa.yml --train_model
 
 log "done — model in $WORK/hey_lisa_model"
 ls -la "$WORK/hey_lisa_model" 2>/dev/null || true
