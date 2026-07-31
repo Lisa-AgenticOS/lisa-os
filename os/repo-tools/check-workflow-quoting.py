@@ -31,25 +31,63 @@ EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
 
 
 def run_blocks(path):
-    """Yield (first_line_number, dedented_script) for each `run: |`."""
+    """Yield (first_line_number, script) for every `run:` entry.
+
+    The first version matched exactly `run: |` — one style, one space.
+    Single-line entries, folded scalars (`run: >`), `|+`, and a second
+    space all skipped silently, and every miss landed inside the same
+    "ok (N run blocks)" success line. About twenty single-line entries
+    were shipping unchecked. So: every scalar style is handled, and the
+    caller asserts the count.
+    """
     lines = path.read_text().split("\n")
     i = 0
     while i < len(lines):
-        m = re.match(r"^(\s*)run: \|-?\s*$", lines[i])
+        m = re.match(r"^(\s*)(?:-\s+)?run:\s*(.*?)\s*$", lines[i])
         if not m:
             i += 1
             continue
-        indent = len(m.group(1))
+        indent, rest = len(m.group(1)), m.group(2)
+        block = re.match(r"^([|>])[+-]?\s*(?:#.*)?$", rest)
+        if not block:
+            # Single-line scalar. Unwrap the two YAML quoting styles
+            # (their escapes differ); a plain scalar passes through.
+            script = rest
+            if len(script) >= 2 and script[0] == script[-1] == "'":
+                script = script[1:-1].replace("''", "'")
+            elif len(script) >= 2 and script[0] == script[-1] == '"':
+                script = script[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+            if script:
+                yield i + 1, script
+            i += 1
+            continue
+        style = block.group(1)
         start = i + 1
-        body = []
-        j = start
+        body, j, content_indent = [], start, None
         while j < len(lines):
             line = lines[j]
-            if line.strip() and (len(line) - len(line.lstrip())) <= indent:
-                break
-            body.append(line[indent + 2:] if len(line) > indent else "")
+            if line.strip():
+                this_indent = len(line) - len(line.lstrip())
+                if this_indent <= indent:
+                    break
+                if content_indent is None:
+                    # YAML fixes the block's indent from its first
+                    # non-empty line — hardcoding indent+2 mis-sliced
+                    # any block indented deeper.
+                    content_indent = this_indent
+                body.append(line[content_indent:])
+            else:
+                body.append("")
             j += 1
-        yield start + 1, "\n".join(body)
+        if style == ">":
+            # Folding joins the lines with spaces (blank line = real
+            # newline) — hand bash what the shell will actually get.
+            script = "\n".join(
+                " ".join(p.split("\n")) for p in "\n".join(body).split("\n\n")
+            )
+        else:
+            script = "\n".join(body)
+        yield start + 1, script
         i = j
 
 
@@ -60,7 +98,7 @@ def main():
 
     failures = 0
     checked = 0
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in sorted(list(WORKFLOWS.glob("*.yml")) + list(WORKFLOWS.glob("*.yaml"))):
         for line_no, script in run_blocks(path):
             checked += 1
             proc = subprocess.run(
@@ -78,7 +116,14 @@ def main():
               "usual cause —\nwrite \"prepare() in the PKGBUILD\" rather than "
               "\"the PKGBUILD's prepare()\".", file=sys.stderr)
         return 1
-    print(f"workflow shell syntax: ok ({checked} run blocks)")
+    if checked == 0:
+        # Workflows exist but nothing matched: the extractor is broken,
+        # and "ok (0 run blocks)" would be the silent no-op this script
+        # exists to prevent.
+        print("workflow shell syntax: matched no run entries at all — "
+              "the extractor is broken, not the workflows clean", file=sys.stderr)
+        return 1
+    print(f"workflow shell syntax: ok ({checked} run entries)")
     return 0
 
 

@@ -134,10 +134,18 @@ fn ledger_activation(audio: &Path, text: &str) {
         output_tokens: 0,
         duration_ms: 0,
     };
-    if let Ok(l) = lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path())
-        && let Err(e) = l.append(&event)
-    {
-        eprintln!("warning: could not ledger this transcription: {e}");
+    // Both failure modes of the same guarantee (ADR-0011: every
+    // activation is in the Ledger) get the same warning. The first
+    // version warned on a failed append but said nothing when the
+    // Ledger would not even OPEN — the likelier failure, and the
+    // silent one.
+    match lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path()) {
+        Ok(l) => {
+            if let Err(e) = l.append(&event) {
+                eprintln!("warning: could not ledger this transcription: {e}");
+            }
+        }
+        Err(e) => eprintln!("warning: could not open the Ledger to record this transcription: {e}"),
     }
 }
 
@@ -487,9 +495,14 @@ pub fn classify_addressed(transcript: &str, url: &str) -> anyhow::Result<Address
     if let Some(err) = json["error"]["message"].as_str() {
         bail!("inference error: {err}");
     }
+    // A reply with no content is a broken endpoint, not a verdict.
+    // Defaulting it to "{}" made every structural drift in the response
+    // parse as addressed=false — the ambient loop would drop every
+    // utterance while looking like the classifier confidently deciding
+    // "not for me".
     let content = json["choices"][0]["message"]["content"]
         .as_str()
-        .unwrap_or("{}");
+        .ok_or_else(|| anyhow::anyhow!("no content in classifier response: {json}"))?;
     let v: serde_json::Value =
         serde_json::from_str(content).with_context(|| format!("classifier output: {content}"))?;
     Ok(Addressed {
@@ -514,9 +527,12 @@ pub fn answer(prompt: &str, url: &str) -> anyhow::Result<String> {
     if let Some(err) = json["error"]["message"].as_str() {
         bail!("inference error: {err}");
     }
+    // Same rule as classify_addressed: absent content is an error, not
+    // an empty answer — a say("") that "succeeds" with nothing to say
+    // is indistinguishable from working.
     Ok(json["choices"][0]["message"]["content"]
         .as_str()
-        .unwrap_or_default()
+        .ok_or_else(|| anyhow::anyhow!("no content in model response: {json}"))?
         .trim()
         .to_string())
 }

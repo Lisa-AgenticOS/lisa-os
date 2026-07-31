@@ -2,12 +2,22 @@
 //!
 //! Retrieval that flat lexical search can't do: embed each chunk, embed
 //! the query, and rank by a blend of BM25 (lexical) and cosine (vector).
-//! Embedding is pluggable via [`Embedder`] — the daemon backs it with a
-//! background-QoS call to `lisa-inferenced` (`/v1/embeddings`, loopback,
-//! not egress); tests use a deterministic bag-of-words embedder. Vectors
-//! persist in `chunk_vectors`; ranking is brute-force cosine over the
-//! FTS5-prefiltered candidate set (sqlite-vec is the later optimization
-//! at >5M chunks, PLAN §13).
+//! Embedding is pluggable via [`Embedder`].
+//!
+//! WHAT ACTUALLY EMBEDS TODAY: [`HashEmbedder`], everywhere — the
+//! daemon's D-Bus paths and the CLI both construct it directly. The
+//! model-backed embedder (a background-QoS call to `lisa-inferenced`'s
+//! `/v1/embeddings`, loopback, not egress) is the DESIGN and does not
+//! exist yet (#163); the one real `/v1/embeddings` call in the tree is
+//! the standalone `lisa embed` verb, which feeds nothing here. An
+//! earlier version of this header described that wiring as current
+//! behavior, which is this repo's most repeated defect (CLAUDE.md
+//! rule 10) — hybrid=true returned hits in a different order and
+//! nothing could tell there was no semantic model behind it.
+//!
+//! Vectors persist in `chunk_vectors`; ranking is brute-force cosine
+//! over the FTS5-prefiltered candidate set (sqlite-vec is the later
+//! optimization at >5M chunks, PLAN §13).
 
 use crate::index::Hit;
 use crate::store::{ContextStore, StoreError};

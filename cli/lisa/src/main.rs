@@ -2700,12 +2700,11 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
             // Every retrieval is ledgered (PLAN §5.3) — query hash, not text.
             let ledger = lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path())?;
             ledger.append(&lisa_ledger::Event {
-                kind: if !scope.is_empty() {
-                    "context.search.scoped"
-                } else if hybrid {
-                    "context.search.hybrid"
-                } else {
-                    "context.search"
+                kind: match (!scope.is_empty(), hybrid) {
+                    (true, true) => "context.search.hybrid_scoped",
+                    (true, false) => "context.search.scoped",
+                    (false, true) => "context.search.hybrid",
+                    (false, false) => "context.search",
                 }
                 .into(),
                 app_id: "host".into(),
@@ -2713,7 +2712,21 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
                 status: "ok".into(),
                 ..Default::default()
             })?;
-            let hits = if !scope.is_empty() {
+            // Scope and hybrid are orthogonal — visibility vs ranking —
+            // and the daemon's D-Bus path already learned this the hard
+            // way (see search_hybrid_scoped's doc comment). The first
+            // version of THIS branch had the same bug: --scope silently
+            // won over --hybrid, so the caller got the worse ranking,
+            // an "ok" exit, and a ledger row that erased the request.
+            let hits = if !scope.is_empty() && hybrid {
+                let scopes: Vec<&str> = scope.iter().map(String::as_str).collect();
+                store.search_hybrid_scoped(
+                    &query,
+                    &scopes,
+                    &lisa_contextd::embed::HashEmbedder::default(),
+                    limit,
+                )?
+            } else if !scope.is_empty() {
                 let scopes: Vec<&str> = scope.iter().map(String::as_str).collect();
                 store.search_scoped(&query, &scopes, limit)?
             } else if hybrid {

@@ -28,7 +28,6 @@ this class.** Units that never do kernel-side identification may keep
 them, but each needs a justification in ALLOWED below.
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -70,22 +69,69 @@ ALLOWED = {
     # Ownership checks in harnessd are broker-name based (Owner), never
     # /proc-based; its confinement is load-bearing for ADR-0029.
     "lisa-harnessd.service",
+    # A timer-driven client: it calls GNOME Online Accounts and writes
+    # the user's maildir, and never identifies a peer — nothing
+    # connects TO it. Its sandbox is real hardening at zero identity
+    # cost. (This unit is also why the check reads install
+    # destinations: its WantedBy lives in the .timer, and the first
+    # version of the check never saw it.)
+    "lisa-mail-sync.service",
 }
 
-USER_UNIT_MARKERS = re.compile(
-    r"^WantedBy=(default\.target|graphical-session\.target)", re.M
-)
+def user_unit_sources(root: Path) -> set:
+    """Unit files installed under systemd/user, by reading the installers.
+
+    The first version of this check classified a unit as per-user by
+    grepping its own text for WantedBy=default.target — which misses
+    every timer-activated and D-Bus-activated user unit, because their
+    activation lives in the .timer file or in BusName=, not in
+    [Install]. lisa-mail-sync.service shipped three class options
+    through exactly that gap while the check printed nothing. The
+    ground truth is not what a unit says about itself but where the
+    build installs it, so that is what is read: every PKGBUILD install
+    line whose destination contains systemd/user (joining backslash
+    continuations first — install lines wrap), plus anything sitting in
+    a mkosi.extra systemd/user tree.
+    """
+    sources = set()
+    for pkgbuild in (root / "os" / "packages").rglob("PKGBUILD"):
+        text = pkgbuild.read_text().replace("\\\n", " ")
+        for line in text.splitlines():
+            if "systemd/user/" not in line:
+                continue
+            for tok in line.split():
+                tok = tok.strip("\"'")
+                if not tok.endswith(".service") or tok.startswith("$"):
+                    continue
+                # Resolve to a real repo file, or skip: destination
+                # paths and enable-symlink targets share basenames with
+                # UNRELATED units (the user unit installs renamed as
+                # lisa-remoted.service — the name of the system-scope
+                # unit next to it), so a basename match would flag the
+                # wrong file.
+                src = root / tok
+                if src.is_file():
+                    sources.add(src.resolve())
+    for extra in (root / "os").rglob("mkosi.extra/usr/lib/systemd/user/*.service"):
+        sources.add(extra.resolve())
+    return sources
 
 
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
+    user_units = user_unit_sources(root)
+    if not user_units:
+        # A matched-nothing sweep must fail, not pass: an installer
+        # refactor that moves the install lines would otherwise turn
+        # this check into a green no-op — the defect class it polices.
+        print("check-user-units: found no per-user units at all — the "
+              "installer scan is broken, not the tree clean", file=sys.stderr)
+        return 1
     bad = []
-    for unit in sorted((root / "os" / "packages").rglob("*.service")):
-        text = unit.read_text()
-        if not USER_UNIT_MARKERS.search(text):
-            continue  # system unit, or not installed into a session
+    for unit in sorted(user_units):
         if unit.name in ALLOWED:
             continue
+        text = unit.read_text()
         for line_no, line in enumerate(text.splitlines(), 1):
             opt = line.split("=", 1)[0].strip()
             if opt in CLASS and not line.lstrip().startswith("#"):
