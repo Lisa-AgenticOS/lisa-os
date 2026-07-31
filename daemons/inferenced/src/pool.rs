@@ -109,6 +109,8 @@ impl ModelPool {
             requested.to_string()
         };
         let mut state = self.inner.lock().await;
+        #[allow(unused_mut)]
+        let mut name = name;
 
         if let Some(engine) = state.engines.get(&name) {
             let engine = Arc::clone(engine);
@@ -117,10 +119,43 @@ impl ModelPool {
             return Ok(engine);
         }
 
-        // The model must exist in the store (or be the default, whose
-        // path was validated at startup).
+        // The default is no longer validated at startup, because the
+        // store may be empty then and full ten minutes later (#143). So
+        // it is checked here like any other name, and an empty store
+        // gets a sentence a person can act on rather than a
+        // llama-server spawned onto a path that does not exist.
+        // The default was chosen at startup, and on a machine that booted
+        // with an empty store that name is a placeholder (#143). Rather
+        // than fail — or spawn llama-server onto a path that does not
+        // exist — fall back to whatever IS in the store now. This is the
+        // whole fix: a model downloaded after boot becomes servable
+        // without anything being restarted.
         let path = if name == self.default_model {
-            self.refs_dir.join(&name)
+            let candidate = self.refs_dir.join(&name);
+            if candidate.exists() {
+                candidate
+            } else if let Some(found) = first_in_store(&self.refs_dir) {
+                info!(
+                    stale = %self.default_model,
+                    using = %found,
+                    "configured default is not in the store; serving what is"
+                );
+                let p = self.refs_dir.join(&found);
+                name = found;
+                if let Some(engine) = state.engines.get(&name) {
+                    let engine = Arc::clone(engine);
+                    state.lru.retain(|n| n != &name);
+                    state.lru.push(name);
+                    return Ok(engine);
+                }
+                p
+            } else {
+                return Err(EngineError::Unavailable(
+                    "no model installed yet — download one in Settings, or run \
+                     `lisa models pull <name>`. Nothing needs restarting."
+                        .to_string(),
+                ));
+            }
         } else {
             let candidate = self.refs_dir.join(&name);
             if !candidate.exists() {
@@ -147,6 +182,21 @@ impl ModelPool {
         state.lru.push(name);
         Ok(engine)
     }
+}
+
+/// The first model actually present in the store, alphabetically.
+///
+/// Used when the configured default is not there — which is the normal
+/// state of a machine that booted with an empty store and has since
+/// downloaded something (#143).
+fn first_in_store(dir: &std::path::Path) -> Option<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names.into_iter().next()
 }
 
 impl EngineProvider for ModelPool {
@@ -207,6 +257,11 @@ mod tests {
     }
 
     fn test_pool(dir: &std::path::Path, cap: usize) -> (Arc<AtomicUsize>, ModelPool) {
+        // The default has to be IN the store now: an empty store is no
+        // longer a startup-validated special case, because a store that
+        // is empty at boot and full after a download is the normal way a
+        // fresh machine behaves (#143).
+        std::fs::write(dir.join("default-model"), b"gguf").unwrap();
         let alive = Arc::new(AtomicUsize::new(0));
         let spawned = Arc::clone(&alive);
         let pool = ModelPool::new(
@@ -263,6 +318,60 @@ mod tests {
         }
         // All aliases hit the one default model — a single spawn.
         assert_eq!(alive.load(Ordering::SeqCst), 1);
+    }
+
+    /// Issue #143: a machine booted with an empty store decided, once and
+    /// for ever, that there were no models. gemma-3-1b-it-q8 installed
+    /// cleanly, `lisa models list` showed it, and /v1/models kept serving
+    /// `lisa-system-stub` until somebody ran `systemctl restart
+    /// lisa-inferenced` by hand.
+    #[tokio::test]
+    async fn a_model_downloaded_after_startup_becomes_servable() {
+        let dir = tempfile::tempdir().unwrap();
+        let alive = Arc::new(AtomicUsize::new(0));
+        let spawned = Arc::clone(&alive);
+        // The default this pool was built with does not exist — exactly
+        // what `llama_refs_and_default` produces on an empty store.
+        let pool = ModelPool::new(
+            "lisa-system".into(),
+            dir.path().to_path_buf(),
+            2,
+            Box::new(move |_n, _p, _port| {
+                spawned.fetch_add(1, Ordering::SeqCst);
+                Ok(Arc::new(MockEngine {
+                    alive: Arc::clone(&spawned),
+                }))
+            }),
+        );
+
+        // Before the download: a refusal that tells the person what to
+        // do, and explicitly that nothing needs restarting.
+        let msg = match pool.resolve(None).await {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("an empty store must not resolve to an engine"),
+        };
+        assert!(msg.contains("no model installed"), "{msg}");
+        assert!(msg.contains("Nothing needs restarting"), "{msg}");
+        assert_eq!(
+            alive.load(Ordering::SeqCst),
+            0,
+            "must not spawn a doomed child"
+        );
+
+        // The download lands. Nothing else happens — no restart, no
+        // signal, no rescan call.
+        std::fs::write(dir.path().join("gemma-3-1b-it-q8"), b"gguf").unwrap();
+
+        // …and the very next request serves it.
+        assert!(
+            pool.resolve(None).await.is_ok(),
+            "a downloaded model must be servable"
+        );
+        assert_eq!(alive.load(Ordering::SeqCst), 1);
+        assert!(
+            pool.known_models()
+                .contains(&"gemma-3-1b-it-q8".to_string())
+        );
     }
 
     #[tokio::test]

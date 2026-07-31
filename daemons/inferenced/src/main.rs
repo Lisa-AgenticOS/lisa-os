@@ -78,13 +78,25 @@ async fn main() -> anyhow::Result<()> {
     // llama-server on PATH (the Track-L layer ships no engine; a fresh image
     // boots with an empty store). This keeps `lisa ask` a working round-trip
     // until a model is downloaded and the daemon restarts to pick it up.
+    // The engine binary and a configured store are startup facts — a
+    // llama-server does not appear on PATH while we run. Whether the
+    // store CONTAINS anything is not: that changes the moment somebody
+    // finishes a download (#143).
+    //
+    // So the emptiness of the store is deliberately NOT part of this
+    // condition. It used to be, and the effect was a daemon that had
+    // decided, once and for ever, that there were no models — a fresh
+    // image booted, the person downloaded gemma-3-1b-it-q8, `lisa models
+    // list` showed it, and /v1/models kept answering `lisa-system-stub`
+    // until someone ran `systemctl restart lisa-inferenced` by hand.
+    // The journal said so, at boot, hours before the download.
+    //
+    // ModelPool::known_models already re-reads the directory on every
+    // call, so an empty store that later fills is handled for free —
+    // provided we take this branch at all.
     let llama_ready = cfg.engine == EngineKind::Llama
-        && match llama_refs_and_default(&cfg.llama) {
-            Ok((ref dir, _)) => {
-                config::first_model_in(dir).is_some() && binary_on_path(&cfg.llama.server_bin)
-            }
-            Err(_) => false,
-        };
+        && llama_refs_and_default(&cfg.llama).is_ok()
+        && binary_on_path(&cfg.llama.server_bin);
 
     let (engines, model_name, engine_kind): (Arc<dyn EngineProvider>, String, String) =
         if llama_ready {
