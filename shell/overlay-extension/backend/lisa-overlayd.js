@@ -36,6 +36,8 @@ import {buildEnvelope, parseContextHits, contextHitsFromJson,
     classifyAffordances} from '../lib/envelope.js';
 import {buildMessages, chatRequestBody, parseSseLine, isRemoteModel, utf8Complete}
     from '../lib/chat.js';
+import {VoiceService} from './voice-service.js';
+import {VOICE_BUS_NAME} from '../lib/iface.js';
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH}
     from '../lib/iface.js';
 
@@ -70,6 +72,7 @@ const INFERENCED_URL =
     GLib.getenv('LISA_INFERENCED_URL') ?? 'http://127.0.0.1:7778';
 
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
+Gio._promisify(Gio.Subprocess.prototype, 'wait_async');
 Gio._promisify(Gio.InputStream.prototype, 'read_bytes_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
 Gio._promisify(Soup.Session.prototype, 'send_async');
@@ -562,6 +565,21 @@ class OverlayService {
 }
 
 const loop = new GLib.MainLoop(null, false);
+
+// dev.lisaos.Voice1 — push-to-talk capture (§5.7.5). A SECOND bus name
+// on the same process rather than a method on Overlay1: capture has
+// nothing to do with a query, and a surface that wants to dictate into
+// its own text field should not have to hold an overlay query open to
+// do it. Losing this name is not fatal to the overlay — voice stops
+// working, the assistant does not.
+Gio.bus_own_name(
+    Gio.BusType.SESSION,
+    VOICE_BUS_NAME,
+    Gio.BusNameOwnerFlags.NONE,
+    connection => new VoiceService(connection),
+    () => log(`lisa-overlayd: owning ${VOICE_BUS_NAME}`),
+    () => logError(new Error(`lost ${VOICE_BUS_NAME} — push-to-talk is off`)));
+
 Gio.bus_own_name(
     Gio.BusType.SESSION,
     OVERLAY_BUS_NAME,

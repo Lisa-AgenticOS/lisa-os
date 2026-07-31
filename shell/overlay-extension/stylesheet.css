@@ -111,3 +111,24 @@
     background-color: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.75);
 }
+
+/* Push-to-talk indicator (PLAN §5.7.5).
+ *
+ * On screen for exactly as long as the microphone is open. This is the
+ * only signal a person gets that a recording is running, so it is
+ * deliberately not subtle: an open microphone nobody can see is the
+ * worst thing this feature could ship. */
+.lisa-listening {
+    background-color: rgba(20, 20, 20, 0.92);
+    border: 2px solid #e66100;   /* the same orange the egress badge uses */
+    border-radius: 20px;
+    padding: 8px 18px;
+    spacing: 10px;
+    color: #ffffff;
+    font-weight: bold;
+}
+
+.lisa-listening-icon {
+    icon-size: 18px;
+    color: #e66100;
+}

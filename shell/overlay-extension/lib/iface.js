@@ -79,6 +79,57 @@ export const OVERLAY_IFACE_XML = `
 export const OVERLAY_BUS_NAME = 'dev.lisaos.Overlay1';
 export const OVERLAY_OBJECT_PATH = '/dev/lisaos/Overlay1';
 
+// dev.lisaos.Voice1 — push-to-talk capture (PLAN §5.7.5).
+//
+// This lives on the BACKEND, not the extension, for one hard reason:
+// recording and transcription are a subprocess and a ~1s whisper run,
+// and anything that blocks in the extension blocks the compositor —
+// every window on the machine stops redrawing while Lisa listens. The
+// extension therefore only holds the key and paints the indicator.
+//
+// Start/Stop rather than a duration, because push-to-talk is defined by
+// the key: you speak for as long as you hold it. `lisa listen` takes a
+// ceiling instead, which is the right shape for a terminal and the
+// wrong one for a key.
+//
+// Transcribed carries the text rather than the audio path: the audio is
+// deleted as soon as it has been transcribed, and a surface that never
+// receives a path cannot accidentally keep one.
+export const VOICE_IFACE_XML = `
+<node>
+  <interface name="dev.lisaos.Voice1">
+    <method name="StartListening">
+      <arg type="t" name="session_id" direction="out"/>
+    </method>
+    <method name="StopListening">
+      <arg type="t" name="session_id" direction="in"/>
+    </method>
+    <method name="Cancel">
+      <arg type="t" name="session_id" direction="in"/>
+    </method>
+    <method name="GetState">
+      <arg type="a{sv}" name="state" direction="out"/>
+    </method>
+    <signal name="ListeningStarted">
+      <arg type="t" name="session_id"/>
+    </signal>
+    <signal name="Transcribing">
+      <arg type="t" name="session_id"/>
+    </signal>
+    <signal name="Transcribed">
+      <arg type="t" name="session_id"/>
+      <arg type="s" name="text"/>
+    </signal>
+    <signal name="Failed">
+      <arg type="t" name="session_id"/>
+      <arg type="s" name="reason"/>
+    </signal>
+  </interface>
+</node>`;
+
+export const VOICE_BUS_NAME = 'dev.lisaos.Voice1';
+export const VOICE_OBJECT_PATH = '/dev/lisaos/Voice1';
+
 // dev.lisaos.Overlay1.UI — UI-control surface owned by a *frontend*
 // (the GNOME Shell extension here; the wlr-layer-shell client can own
 // the same name). Lets other shell surfaces summon the overlay with a

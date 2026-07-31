@@ -54,6 +54,33 @@ backend interface.
 - `tests/` — unit tests for `lib/` (`just shell-test`; runs under gjs,
   node, or macOS jsc).
 
+- `backend/voice-service.js` — push-to-talk capture (§5.7.5). Owns
+  `dev.lisaos.Voice1` on the **same process** as Overlay1 (a second bus
+  name, and its own activation file — activation is per-name):
+  `StartListening() → session_id`, `StopListening(id)`, `Cancel(id)`,
+  `GetState`; signals `ListeningStarted`, `Transcribing`,
+  `Transcribed(id, text)`, `Failed(id, reason)`. It spawns the recorder
+  (`pw-record`/`parecord`/`arecord`, 16 kHz mono) and shells out to
+  `lisa transcribe`, so the whisper model is resolved in exactly one
+  place. **It is in the backend and not the extension because an
+  extension runs inside the compositor**: waiting on whisper there would
+  freeze every window on the machine while Lisa thought.
+  `lib/voice.js` holds the decidable parts — recorder argv, transcript
+  cleaning, and the one-at-a-time state machine — and is unit-tested.
+
+  The audio is deleted as soon as it is transcribed, and `Transcribed`
+  carries text rather than a path, so no surface is ever handed a
+  recording it could keep. A recording is capped at 120 s: a key-release
+  lost to a compositor restart would otherwise leave the microphone open
+  until the session ended, with nothing reporting it.
+
+  **Nothing is captured unless the key is held.** There is no wake word,
+  no timer and no always-on capture; the microphone opens on
+  `StartListening` and closes on `StopListening`, both driven by a key a
+  person is physically holding, and an indicator is on screen for
+  exactly that long. An ambient loop is a different design with a
+  different consent story (ADR-0011) and needs its own ADR first.
+
 ## Status
 
 Working first pass: backend + GNOME frontend wired end-to-end against
@@ -64,6 +91,13 @@ chain execute silently and render their result; write/destructive park
 for chip/modal consent per the tier table). [this window] waits on
 §5.7.4 screen context (M6); [selection] waits on §5.7.3 layer 3; both
 are reported `unavailable` in Started meta.
+
+**Push-to-talk (§5.7.5) is wired but has not run on hardware.** The
+logic is unit-tested and the JS parses, but no one has held the key on
+the reference iMac — the two engines it needs (`whisper.cpp`, `piper`)
+were only just packaged and reach a device with the next release. Until
+then this is code that should work, which is not the same claim as code
+that does.
 
 Known gaps (Agent1 surface, reported — not worked around): no signal
 when a pending confirmation is answered elsewhere or expires, so a

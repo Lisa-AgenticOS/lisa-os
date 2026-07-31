@@ -299,6 +299,12 @@ package_lisa-shell() {
     # D-Bus activation for the headless overlay backend (§5.7.1).
     install -Dm644 shell/overlay-extension/backend/dev.lisaos.Overlay1.service \
         "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Overlay1.service"
+    # Push-to-talk capture (§5.7.5). The same process owns this name,
+    # but activation is per-name: without this file the first key press
+    # finds nobody on dev.lisaos.Voice1, and voice appears to work only
+    # when something else started the backend first.
+    install -Dm644 shell/overlay-extension/backend/dev.lisaos.Voice1.service \
+        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Voice1.service"
     # The consent surface (issue #145, ADR-0035 §4). agentd trusts
     # whoever owns dev.lisaos.Consent1 to answer for the human, and
     # refuses a Modal approval from the peer that made the request. Until

@@ -1,0 +1,10 @@
+# D-Bus activation for push-to-talk capture (PLAN §5.7.5).
+#
+# Same executable as dev.lisaos.Overlay1: one process owns both names.
+# It still needs its own file, because activation is per-NAME — without
+# it the first key press finds nobody on dev.lisaos.Voice1 and voice
+# only works when something else happened to start the backend first,
+# which is the kind of bug that reproduces for nobody.
+[D-BUS Service]
+Name=dev.lisaos.Voice1
+Exec=/usr/bin/lisa-app overlay-extension/backend/lisa-overlayd.js

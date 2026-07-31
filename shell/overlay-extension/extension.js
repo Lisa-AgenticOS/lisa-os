@@ -32,10 +32,12 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {consentView} from './lib/agent.js';
 import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH,
-    OVERLAY_UI_IFACE_XML, OVERLAY_UI_BUS_NAME, OVERLAY_UI_OBJECT_PATH}
+    OVERLAY_UI_IFACE_XML, OVERLAY_UI_BUS_NAME, OVERLAY_UI_OBJECT_PATH,
+    VOICE_IFACE_XML, VOICE_BUS_NAME, VOICE_OBJECT_PATH}
     from './lib/iface.js';
 
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
+const VoiceProxy = Gio.DBusProxy.makeProxyWrapper(VOICE_IFACE_XML);
 
 const CHIPS = [
     // [id, label, hint] — window/selection ship in later layers
@@ -316,6 +318,14 @@ export default class LisaOverlayExtension extends Extension {
         this._proxy = null;
         this._overlay = null;
         this._grab = null;
+        // Push-to-talk state (§5.7.5). 0 means "not recording", which
+        // is also what a session id can never be.
+        this._voiceProxy = null;
+        this._voiceSignals = null;
+        this._talkSession = 0;
+        this._talkWatch = 0;
+        this._talkKey = 0;
+        this._listenOsd = null;
 
         Main.wm.addKeybinding(
             'toggle-overlay',
@@ -332,6 +342,17 @@ export default class LisaOverlayExtension extends Extension {
             Meta.KeyBindingFlags.NONE,
             Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
             () => this._openAssistant());
+
+        // Push-to-talk (§5.7.5). IGNORE_AUTOREPEAT matters: holding a
+        // key repeats it, and without this every repeat would fire the
+        // handler and try to start a second recording on the same
+        // microphone.
+        Main.wm.addKeybinding(
+            'push-to-talk',
+            this._settings,
+            Meta.KeyBindingFlags.IGNORE_AUTOREPEAT,
+            Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+            () => this._startTalking());
 
         // UI-control surface (dev.lisaos.Overlay1.UI): other shell
         // surfaces — the §5.7.2 launcher's "Ask Lisa" lane — summon
@@ -352,6 +373,14 @@ export default class LisaOverlayExtension extends Extension {
     disable() {
         Main.wm.removeKeybinding('toggle-overlay');
         Main.wm.removeKeybinding('open-assistant');
+        Main.wm.removeKeybinding('push-to-talk');
+        this._stopTalking();
+        if (this._voiceSignals && this._voiceProxy) {
+            for (const id of this._voiceSignals)
+                this._voiceProxy.disconnectSignal(id);
+        }
+        this._voiceSignals = null;
+        this._voiceProxy = null;
         if (this._uiOwnerId) {
             Gio.bus_unown_name(this._uiOwnerId);
             this._uiOwnerId = 0;
@@ -372,6 +401,132 @@ export default class LisaOverlayExtension extends Extension {
                 Gio.DBus.session, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH);
         }
         return this._proxy;
+    }
+
+    // ---- push-to-talk (§5.7.5) ----
+    //
+    // `addKeybinding` fires on press and never tells us about release,
+    // so on its own it can only build a TOGGLE: press to start, press
+    // to stop. That is a different gesture with a different failure —
+    // walking away from a machine that is still recording — so the
+    // release is picked up separately, by watching stage events for the
+    // key going up while a recording is running.
+    //
+    // The watcher is installed only for the duration of a recording.
+    // A permanent capture handler on the stage sees every keystroke on
+    // the system, which is not a thing to leave running for a feature
+    // that is idle almost always.
+
+    _voiceProxy_() {
+        if (!this._voiceProxy) {
+            this._voiceProxy = new VoiceProxy(
+                Gio.DBus.session, VOICE_BUS_NAME, VOICE_OBJECT_PATH);
+            this._voiceSignals = [
+                this._voiceProxy.connectSignal('Transcribed',
+                    (p, sender, [id, text]) => this._onTranscribed(id, text)),
+                this._voiceProxy.connectSignal('Failed',
+                    (p, sender, [id, reason]) => this._onVoiceFailed(id, reason)),
+            ];
+        }
+        return this._voiceProxy;
+    }
+
+    _startTalking() {
+        if (this._talkSession)
+            return;
+        let id;
+        try {
+            id = this._voiceProxy_().StartListeningSync()[0];
+        } catch (e) {
+            // The common causes are actionable and worth naming: no
+            // recorder installed, or the backend could not start one.
+            Main.notify('Lisa', `Cannot listen: ${e.message}`);
+            return;
+        }
+        this._talkSession = id;
+        this._showListening();
+
+        // Watch for the key coming back up. The event is consumed only
+        // when it is OUR key: swallowing anything else would eat
+        // keystrokes for every other application while Lisa listens.
+        const event = Clutter.get_current_event();
+        this._talkKey = event ? event.get_key_symbol() : 0;
+        this._talkWatch = global.stage.connect('captured-event', (actor, ev) => {
+            if (ev.type() !== Clutter.EventType.KEY_RELEASE)
+                return Clutter.EVENT_PROPAGATE;
+            if (this._talkKey && ev.get_key_symbol() !== this._talkKey)
+                return Clutter.EVENT_PROPAGATE;
+            this._stopTalking();
+            return Clutter.EVENT_PROPAGATE;
+        });
+    }
+
+    _stopTalking() {
+        if (this._talkWatch) {
+            global.stage.disconnect(this._talkWatch);
+            this._talkWatch = 0;
+        }
+        const id = this._talkSession;
+        this._talkSession = 0;
+        this._talkKey = 0;
+        this._hideListening();
+        if (!id)
+            return;
+        try {
+            this._voiceProxy_().StopListeningSync(id);
+        } catch (e) {
+            logError(e, 'push-to-talk: could not stop the recording');
+        }
+    }
+
+    _onTranscribed(id, text) {
+        this._hideListening();
+        if (!text) {
+            // Silence is not a question. Saying so beats summoning an
+            // empty overlay, which reads as the key not having worked.
+            Main.notify('Lisa', 'Did not catch that.');
+            return;
+        }
+        // Straight into the overlay with the text already submitted —
+        // the same handoff the launcher's "Ask Lisa" lane performs.
+        this._summon(text, {});
+    }
+
+    _onVoiceFailed(id, reason) {
+        this._hideListening();
+        Main.notify('Lisa', `Voice: ${reason}`);
+    }
+
+    // A recording that is running must be visible. An invisible open
+    // microphone is the single worst thing this feature could ship.
+    _showListening() {
+        if (this._listenOsd)
+            return;
+        this._listenOsd = new St.BoxLayout({
+            style_class: 'lisa-listening',
+            vertical: false,
+            reactive: false,
+        });
+        this._listenOsd.add_child(new St.Icon({
+            icon_name: 'audio-input-microphone-symbolic',
+            style_class: 'lisa-listening-icon',
+        }));
+        this._listenOsd.add_child(new St.Label({
+            text: 'Listening…',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        Main.layoutManager.addTopChrome(this._listenOsd);
+        const mon = Main.layoutManager.primaryMonitor;
+        this._listenOsd.set_position(
+            mon.x + Math.floor((mon.width - this._listenOsd.width) / 2),
+            mon.y + Math.floor(mon.height * 0.8));
+    }
+
+    _hideListening() {
+        if (this._listenOsd) {
+            this._listenOsd.destroy();
+            this._listenOsd = null;
+        }
     }
 
     // Open the persistent chat window, or raise it if already running

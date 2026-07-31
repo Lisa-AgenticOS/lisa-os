@@ -19,5 +19,14 @@
       GNOME's app grid, so this defaults to Super+C — rebindable in
       Settings.</description>
     </key>
+    <key name="push-to-talk" type="as">
+      <default><![CDATA[['<Shift><Super>v']]]></default>
+      <summary>Hold to talk to Lisa</summary>
+      <description>Records while held; on release the speech is
+      transcribed locally and handed to the assistant overlay. Nothing is
+      captured unless this key is down — there is no wake word and no
+      always-on listening. Shift+Super+V because V is not taken by GNOME
+      and sits next to the space bar the overlay already uses.</description>
+    </key>
   </schema>
 </schemalist>
