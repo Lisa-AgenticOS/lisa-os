@@ -29,7 +29,7 @@ Read it as: **what would a person find on a device today.**
 | 0012 control-center panel | yes | — |
 | 0013 harness intents | partial | Sessions/Memory/Skills done. Soul partial; Crons, Hands, Background tasks, Self-improvement not started |
 | 0014 lisa_ui fork | yes | — |
-| 0015 assistant app | partial | Chat only — no tools, no memory across conversations (#157) |
+| 0015 assistant app | partial | Read-tier tools work via Harness1; no write tier, no memory across conversations (#157) |
 | 0016 reverse-DNS naming | yes | — |
 | 0017 plymouth in initrd | yes | Splash→desktop handoff still gaps (#26) |
 | 0018 /var pinned PARTUUID | yes | — |
@@ -39,7 +39,7 @@ Read it as: **what would a person find on a device today.**
 | 0022 rescue boot path | partial | Phase 1 (ESP self-repair) done; user-survivable rescue open (#23) |
 | 0023 slim core, /var grows | partial | Zen migration incomplete (#89) |
 | 0024 CS8409 codec | partial | Packaged; speakers still silent on the reference iMac (#44) |
-| 0025 one agent loop | **no** | The Assistant is not on it (#157) |
+| 0025 one agent loop | yes | The Assistant runs on `dev.lisaos.Harness1`, which reaches the Agent Bus through `bus-tools` — one loop, as the ADR asks |
 | 0026 native DRM in initrd | yes | — |
 | 0027 flutter on device | partial | (#37, #48) |
 | 0028 initrd overlay | yes | — |
@@ -53,9 +53,14 @@ Read it as: **what would a person find on a device today.**
 | 0036 assistant acts on its own | **no** | Depends on 0025 |
 | 0037 browser is a Lisa app | partial | Surfer ships; write tools and the agent surface open (#146) |
 
-Four decisions have **no** implementation at all — 0011, 0025, 0031,
-0036 — and two of those (0025, 0036) are the ones that make this an
-agentic OS rather than a Linux distribution with a chat window.
+Three decisions have **no** implementation at all — 0011, 0031, 0036.
+
+An earlier version of this table listed 0025 among them, which was
+wrong: the Assistant is on the harness and calls Agent Bus tools. The
+error came from grepping the window for `Agent1` and finding tooltips,
+rather than following `RunSync` to `dev.lisaos.Harness1`. A table of
+what is built is worth less than nothing if its entries are inferred
+from a grep, so entries here are expected to name the evidence.
 
 ## Process
 

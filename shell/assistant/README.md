@@ -99,19 +99,18 @@ Written down because the alternative is a reader inferring them from
 silence — and because rule 10 asks every component to say what it does
 *not* do.
 
-- **No tools.** The Assistant talks; it cannot act. It has no Agent Bus
-  client, so it cannot read a file, search your notes, or send a
-  message — the tool families exist (`lisa tools`, the Mail and Surfer
-  MCP surfaces) and this window is not wired to them. That is issue #157
-  / ADR-0025: one agent loop, shared with the harness, rather than a
-  second one grown here. Until then "summarise my mail" is answered from
-  the model's imagination, not your mail.
+- **Read-tier tools only.** The Assistant runs on `dev.lisaos.Harness1`,
+  which reaches the Agent Bus through `bus-tools`, so it can search your
+  mail and notes and read a page — and each call is narrated as its own
+  line (`_onTool`), because what the model DID and what it SAID should
+  not read the same. It cannot send, file or delete: write-tier parks
+  for confirmation, and the consent surface that answers those became a
+  separate process only recently (#145). Write tier is now defensible
+  and not yet wired.
 - **No memory across conversations.** Sessions persist (the same layout
   harness-core's `SessionStore` uses), so a conversation survives a
   restart — but nothing is recalled *between* them. harness-core's
   `Memory` exists and this window does not use it.
-- **No skills.** `harness-core` routes skills deterministically and the
-  Assistant asks for none, so a reply is whatever the base model knows.
 - **Markdown renders; the model's other output shapes do not.** Tables
   become their raw pipes, and images are not fetched — Pango markup has
   no block model, which `lib/markdown.js` says more about.
@@ -121,8 +120,13 @@ silence — and because rule 10 asks every component to say what it does
   partial: the persona is a caller-supplied string, with no profiles,
   tiers, or delegation.
 
-The honest summary: this is a good chat window on top of a real
-inference stack, and it is **not** yet the agent the rest of the system
-is built to support. The gap is deliberate and tracked, not forgotten —
-write-tier tools were also gated on the consent surface split (#145,
-closed), which was the thing that had to land first.
+The honest summary: this is a chat window that can *look things up* and
+cannot yet *act*. The remaining gap is write tier, and it was gated on
+the consent surface becoming a separate process (#145, closed) — which
+is the thing that had to land first, and now has.
+
+An earlier draft of this section said the window had no Agent Bus client
+at all. That was wrong: it was written from grepping this file for
+`Agent1`, which finds only tooltips, without following
+`_harness.RunSync` to `dev.lisaos.Harness1` and from there to
+`bus-tools`. Checking the running daemon is what corrected it.
