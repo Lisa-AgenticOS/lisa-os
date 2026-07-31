@@ -51,7 +51,11 @@ need_gib=30
 # line — with df's stderr sent to /dev/null, the failure was completely
 # silent. Exactly the shape of bug this repo keeps finding.
 mkdir -p "$WORK"
-avail_gib=$(df -g "$WORK" | tail -1 | awk '{print $4}') || avail_gib=""
+# `df -Pk`, not `df -g`. -g is a BSD/macOS spelling that GNU coreutils
+# rejects outright ("df: invalid option -- 'g'"), so the first version of
+# this line worked on the laptop it was written on and died on the first
+# line on Linux — which is where this is actually meant to run.
+avail_gib=$(df -Pk "$WORK" | tail -1 | awk '{printf "%d", $4/1024/1024}') || avail_gib=""
 # Subtract what is already cached. The 30 GiB figure is the FRESH-run
 # cost; on a resume most of it is on disk, and comparing the full figure
 # against remaining free space refuses to continue a run that is three
@@ -179,23 +183,31 @@ TRAIN="$WORK/openWakeWord/openwakeword/train.py"
 # Background audio is not optional. Without it the model is trained on
 # speech in silence and learns "Hey Lisa in a quiet room", which is not
 # where anybody uses a computer — and the way that fails is a wake word
-# that works on the developer's desk and nowhere else. Refuse rather
-# than quietly train something weaker than the config claims.
+# that works on the developer's desk and nowhere else.
+#
+# MUSAN rather than the notebook's AudioSet/FMA: it exists for exactly
+# this job (music, noise and speech, already 16 kHz plain wavs), it is
+# CC BY 4.0 so it can be named here without a licence question, and it
+# needs no parquet reader or audio decoder — the dependency that has
+# already broken this script twice.
 if [ ! -d background_clips ] || [ -z "$(ls -A background_clips 2>/dev/null)" ]; then
-    cat >&2 <<'MSG'
-!! background_clips/ is empty — refusing to train.
-
-   The config asks for background noise to augment against. Populate it
-   with a few thousand short 16 kHz clips (the upstream notebook uses
-   AudioSet and FMA; any broad noise/speech corpus works), then re-run.
-   Roughly 5-10 GiB, and this machine currently has less headroom than
-   that once the 16 GiB feature file is accounted for.
-
-   Training without it is possible by setting augmentation_rounds: 0 in
-   hey-lisa.yml, but that model will not survive a real room, so it is a
-   deliberate choice rather than a default.
-MSG
-    exit 1
+    if [ ! -f musan.tar.gz ]; then
+        log "background noise: MUSAN (10.3 GiB, CC BY 4.0 — the long one)"
+        curl -fL --retry 3 -C - -o musan.tar.gz "https://openslr.org/resources/17/musan.tar.gz"
+    fi
+    [ -d musan ] || { log "extracting MUSAN"; tar xf musan.tar.gz; }
+    log "collecting background clips"
+    mkdir -p background_clips
+    # Flattened with symlinks: MUSAN nests three levels deep, and a flat
+    # directory is safe whatever globbing the augmentation does. Symlinks
+    # rather than copies so this costs no second 10 GiB.
+    find musan -name '*.wav' -type f -exec ln -sf "$PWD/{}" background_clips/ \; 2>/dev/null || true
+    n=$(ls -A background_clips 2>/dev/null | wc -l | tr -d ' ')
+    echo "  $n background clips"
+    if [ "$n" -lt 100 ]; then
+        echo "!! only $n background clips — augmentation would be nearly a no-op" >&2
+        exit 1
+    fi
 fi
 
 log "generating positive + adversarial samples (hours; piper does the talking)"
