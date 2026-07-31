@@ -20,16 +20,53 @@ pub fn whisper_model(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     if let Some(p) = std::env::var_os("LISA_WHISPER_MODEL") {
         return Ok(PathBuf::from(p));
     }
-    let store_ref = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|h| h.join(".local/share/lisa/models/refs/whisper"))
-        .filter(|p| p.exists());
-    store_ref.ok_or_else(|| {
+    ref_starting_with("whisper").ok_or_else(|| {
         anyhow::anyhow!(
             "no whisper model — pass --model, set LISA_WHISPER_MODEL, or \
              `lisa models get whisper-base-en`"
         )
     })
+}
+
+/// Find an installed model ref whose name starts with `prefix`.
+///
+/// Uses `default_store_root()` — the same resolution `lisa models` itself
+/// uses — rather than a hand-written path. The first version of this
+/// looked only in `$HOME/.local/share/lisa/models/refs` for a ref called
+/// exactly `whisper`, and on the reference device the store is
+/// `/var/lib/lisa-models` and the ref is `whisper-base-en`. Wrong root
+/// AND wrong name: every voice verb reported "no whisper model" with the
+/// model sitting right there, freshly installed.
+///
+/// Prefix rather than an exact name because the catalog id is what gets
+/// installed, and there are several (`whisper-base-en`, `whisper-small`,
+/// `whisper-large-v3-turbo`). A bare `whisper`/`voice` alias, which
+/// somebody may have created with `lisa models add`, still wins.
+fn ref_starting_with(prefix: &str) -> Option<PathBuf> {
+    let refs = crate::default_store_root().join("refs");
+    // An explicit alias beats catalog ids: it is what a person chose.
+    let alias = refs.join(prefix);
+    if alias.exists() {
+        return Some(alias);
+    }
+    let mut hits: Vec<PathBuf> = std::fs::read_dir(&refs)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            // `.json` is a piper voice's config, never the model itself —
+            // handing piper the config as its --model is a confusing
+            // failure deep inside onnxruntime.
+            p.extension().is_none_or(|x| x != "json")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(prefix))
+        })
+        .collect();
+    // Deterministic: two installed whisper models must not resolve
+    // differently run to run depending on readdir order.
+    hits.sort();
+    hits.into_iter().next()
 }
 
 /// Transcribe an audio file with whisper.cpp. Returns the plain text.
@@ -236,18 +273,10 @@ pub fn piper_voice() -> Option<PathBuf> {
         }
         return None;
     }
-    let refs = std::env::var_os("HOME")
-        .map(PathBuf::from)?
-        .join(".local/share/lisa/models/refs");
-    // The catalog id first, then a plain `voice` alias for anyone who
-    // installed one by hand with `lisa models add`.
-    for name in ["piper-libritts-r-medium-en-us", "voice"] {
-        let p = refs.join(name);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
+    // A hand-made `voice` alias wins; otherwise any installed piper
+    // voice. Same store resolution as `lisa models` — see
+    // ref_starting_with for why that matters.
+    ref_starting_with("voice").or_else(|| ref_starting_with("piper"))
 }
 
 /// Synthesize with piper and play the result.
