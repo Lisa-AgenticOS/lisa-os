@@ -51,12 +51,25 @@ build() {
     -DWHISPER_BUILD_EXAMPLES=ON \
     -DWHISPER_BUILD_SERVER=ON \
     -DGGML_NATIVE=OFF \
+    -DGGML_BACKEND_DL=ON \
+    -DGGML_CPU_ALL_VARIANTS=ON \
     -DCMAKE_INSTALL_RPATH=/usr/lib \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
   # GGML_NATIVE=OFF matters: ON bakes -march=native, and this package is
   # built on a CI runner and run on an iMac. A binary tuned for the
   # builder's CPU either crashes with SIGILL on the target or silently
   # depends on the runner fleet never changing.
+  #
+  # But OFF alone is not enough, and shipping it that way cost real
+  # usability (#162). It does not merely skip native TUNING — it drops
+  # to a baseline with no AVX2, FMA or F16C, on hardware that has all
+  # three. Measured on the reference iMac (i5-7500): 18.5 SECONDS to
+  # transcribe 4 seconds of audio. Push-to-talk was unusable, and the
+  # cause looked like a slow CPU rather than a build flag.
+  #
+  # BACKEND_DL + CPU_ALL_VARIANTS is the way to have both: every CPU
+  # variant is built as a separate shared backend and the best one is
+  # selected at load. No baked -march, and AVX2 where it exists.
   #
   # The RPATH pair matters just as much and is less obvious. By default
   # cmake writes a RUNPATH pointing at the BUILD directory, so the
@@ -65,7 +78,18 @@ build() {
   # build tree is deleted, and fails on every real device with "cannot
   # open shared object file". Observed, not guessed: the first version
   # of this package passed a run test for exactly that reason.
-  cmake --build build --config Release -j"$(nproc)" --target whisper-cli whisper-server
+  # Bounded parallelism, not $(nproc). CPU_ALL_VARIANTS compiles roughly
+  # ten backends, and the sapphirerapids one carries AMX kernels whose
+  # translation units are memory-hungry enough that a full-width build
+  # gets cc1plus OOM-killed:
+  #
+  #   c++: fatal error: Killed signal terminated program cc1plus
+  #   [ggml-cpu-sapphirerapids.dir/ggml-cpu/amx/mmq.cpp.o] Error 1
+  #
+  # Observed, not feared. Half the cores (at least 2) keeps peak RSS
+  # inside a CI runner while still using the machine.
+  local jobs=$(( $(nproc) / 2 )); [ "$jobs" -lt 2 ] && jobs=2
+  cmake --build build --config Release -j"$jobs" --target whisper-cli whisper-server
 }
 
 check() {
@@ -111,5 +135,18 @@ package() {
     find build -name 'lib*.so*' >&2 || true
     return 1
   fi
+  # The CPU variants are dlopened at runtime, so a package that ships
+  # none still RUNS — it just falls back to the baseline and is five
+  # times slower, which is precisely the failure #162 was. Silence there
+  # is indistinguishable from success, so it is asserted instead.
+  local variants
+  variants=$(ls "$pkgdir"/usr/lib/libggml-cpu-*.so 2>/dev/null | wc -l)
+  if [ "$variants" -lt 2 ]; then
+    echo "!! whisper.cpp: only $variants CPU backend(s) packaged — runtime" >&2
+    echo "   dispatch would fall back to the no-AVX2 baseline (#162)" >&2
+    find build -name 'libggml-cpu*' >&2 || true
+    return 1
+  fi
+  echo ">> whisper.cpp: $variants CPU backends packaged for runtime dispatch"
   install -Dm644 whisper.cpp/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
