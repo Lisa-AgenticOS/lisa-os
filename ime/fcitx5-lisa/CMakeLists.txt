@@ -23,6 +23,24 @@ target_link_libraries(lisa Fcitx5::Core Fcitx5::Utils Fcitx5::Module::DBus
                       Threads::Threads)
 set_target_properties(lisa PROPERTIES PREFIX "")
 
+# Fcitx5::Module::DBus exports only the innermost directory
+# (.../Fcitx5/Module/fcitx-module/dbus), so the canonical include that
+# fcitx5's own addons use — <fcitx-module/dbus/dbus_public.h> — does not
+# resolve from it. Add the Module root, derived from the imported target
+# rather than hardcoded, because distributions disagree about the prefix.
+#
+# This is not hypothetical tidying: without it the build fails with a
+# bare "fcitx-module/dbus/dbus_public.h: No such file or directory"
+# against Arch's fcitx5 5.1.21. It went unnoticed because the CI job
+# that compiles this addon is path-filtered to ime/**, so it does not
+# run when only fcitx5 moves underneath us.
+get_target_property(_lisa_dbus_inc Fcitx5::Module::DBus
+                    INTERFACE_INCLUDE_DIRECTORIES)
+if(_lisa_dbus_inc)
+    get_filename_component(_lisa_module_root "${_lisa_dbus_inc}/../.." ABSOLUTE)
+    target_include_directories(lisa PRIVATE "${_lisa_module_root}")
+endif()
+
 configure_file(lisa-addon.conf.in lisa-addon.conf @ONLY)
 
 install(TARGETS lisa DESTINATION "${CMAKE_INSTALL_LIBDIR}/fcitx5")

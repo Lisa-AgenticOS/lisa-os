@@ -193,6 +193,14 @@ private:
     // dbus addon (an optional dependency — no bus, no gesture). The
     // async call never blocks input processing; the slot just keeps
     // the pending call alive and is dropped on the next summon.
+    // Declared BEFORE summonOverlay(), which calls it, and that order is
+    // load-bearing rather than stylistic. The macro defines dbus() with
+    // a deduced (auto) return type, and return-type deduction is not
+    // deferred for member-function bodies the way name lookup is — a
+    // call that appears earlier in the class fails to compile with
+    // "use of 'auto ...dbus()' before deduction of 'auto'".
+    FCITX_ADDON_DEPENDENCY_LOADER(dbus, instance_->addonManager());
+
     void summonOverlay() {
         auto *dbusAddon = dbus();
         if (!dbusAddon)
@@ -212,7 +220,6 @@ private:
             [](fcitx::dbus::Message & /*reply*/) { return true; });
     }
 
-    FCITX_ADDON_DEPENDENCY_LOADER(dbus, instance_->addonManager());
 
     fcitx::Instance *instance_;
     LisaConfig config_;

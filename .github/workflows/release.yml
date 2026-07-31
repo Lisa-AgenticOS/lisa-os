@@ -132,6 +132,9 @@ jobs:
               chmod 777 /srcdest
               # glib2: lisa-shell makedepends (build-packages.sh runs
               # makepkg without -s, so makedepends must be preinstalled).
+              # fcitx5: lisa-ime makedepends (Fcitx5Core/Utils headers +
+              # the Fcitx5ModuleDBus cmake config). Same reason as glib2
+              # above — makepkg runs without -s.
               # cmake: the llama.cpp engine build. devtools: arch-meson,
               # used by the forked gnome-control-center PKGBUILD.
               # linux-headers (+ bc, which base-devel lacks): the CS8409
@@ -383,6 +386,11 @@ jobs:
                    # nor upstream Cyrus SASL provides, without which a
                    # connected Google account and an installed mbsync
                    # still cannot talk to each other.
+                   # Writing tools + the double-tap-Shift summon
+                   # (§5.7.3 layer 2). Both were written months ago and
+                   # have never run on a device, because nothing built
+                   # the addon.
+                   lisa-ime
                    cyrus-sasl-xoauth2
                    llama.cpp
                    # Voice (PLAN §5.7.5): the ear and the mouth. Neither

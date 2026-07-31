@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Lisa input method
+Comment=Writing tools and the double-tap-Shift assistant summon (PLAN §5.7.3)
+# -d daemonises; without it the session waits on the process.
+Exec=fcitx5 -d --replace
+# GNOME already autostarts ibus-daemon. Both running means whichever
+# grabbed the toolkit first wins, non-deterministically — so this is
+# ordered after and takes over via --replace.
+X-GNOME-Autostart-Phase=Applications
+X-GNOME-Autostart-Delay=2
+NoDisplay=true

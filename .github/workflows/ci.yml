@@ -53,6 +53,9 @@ jobs:
               - '.github/workflows/ci.yml'
             ime:
               - 'ime/**'
+              # The addon is packaged as lisa-ime out of this PKGBUILD,
+              # so a change there can break the build just as easily.
+              - 'os/packages/lisa/PKGBUILD'
               - '.github/workflows/ci.yml'
             gnome_panel:
               - 'os/packages/gnome-control-center-lisa/**'
@@ -152,12 +155,13 @@ jobs:
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
             pacman -Sy --noconfirm --needed base-devel cmake fcitx5 >/dev/null
-            # The dbus module headers (fcitx-module/dbus/dbus_public.h)
-            # moved out of the fcitx5 package into the addon package;
-            # without it this build fails with a bare 'No such file'.
-            pacman -Sy --noconfirm --needed fcitx5-qt fcitx5-configtool >/dev/null 2>&1 || true
-            pacman -Fy >/dev/null 2>&1 || true
-            pacman -F fcitx-module/dbus/dbus_public.h 2>/dev/null | head -3 || true
+            # fcitx5 DOES ship fcitx-module/dbus/dbus_public.h, at
+            # /usr/include/Fcitx5/Module/fcitx-module/dbus/. The earlier
+            # guesswork here (installing fcitx5-qt/fcitx5-configtool with
+            # || true, on a hunch the header had moved to another
+            # package) was looking in the wrong place: the header was
+            # present all along and the include path was wrong. The fix
+            # is in ime/fcitx5-lisa/CMakeLists.txt.
             cmake -S /src/ime/fcitx5-lisa -B /tmp/build
             cmake --build /tmp/build
             cd /tmp/build && ctest --output-on-failure'

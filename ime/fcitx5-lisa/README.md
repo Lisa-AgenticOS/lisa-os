@@ -54,11 +54,41 @@ Config: `DoubleShiftSummon` (bool, default **True**) in the addon's
 fcitx configuration (`conf/lisa.conf`, or fcitx5-configtool →
 Addons → Lisa Writing Tools) turns the gesture off.
 
+## Packaging
+
+Built as **`lisa-ime`**, an output of the `lisa` split PKGBUILD
+(`os/packages/lisa/`) — same tarball and version as the rest of Lisa, so
+the addon cannot drift from the daemon it talks to. It ships
+`/usr/lib/fcitx5/lisa.so` and the addon registration, plus two things
+without which the addon is present and inert:
+
+- `/etc/profile.d/lisa-ime.sh` — `GTK_IM_MODULE`/`QT_IM_MODULE`/
+  `XMODIFIERS`. GNOME defaults to IBus, so without these fcitx5 runs,
+  the addon loads, and not one key ever reaches it. (GTK4 Wayland apps
+  negotiate text-input-v3 with mutter and ignore these; the variables
+  are for GTK3, Qt and XWayland, which is most of what people run.)
+- `/etc/xdg/autostart/fcitx5-lisa.desktop` — starts fcitx5 with the
+  session, ordered after GNOME's own ibus-daemon and taking over with
+  `--replace`.
+
 ## Status
 
 Working first pass of layer 2's proofread action, plus the
-double-tap-Shift overlay summon. Growing on this skeleton: the
-floating compose panel (rewrite/tone menu, "continue
+double-tap-Shift overlay summon. **Neither has ever run on a device**:
+until 2026-07-31 nothing built the addon, so it existed only as source
+and unit tests. It is now packaged and in the image lane, and still
+unverified on hardware.
+
+It also did not compile. Arch's fcitx5 exports only the innermost
+include directory from `Fcitx5::Module::DBus`, so the canonical
+`<fcitx-module/dbus/dbus_public.h>` could not resolve, and the
+`FCITX_ADDON_DEPENDENCY_LOADER` macro sat below the method that calls
+it, which C++ rejects for a deduced return type. Both are fixed. The CI
+job that compiles this was path-filtered to `ime/**`, so an upstream
+move underneath us produced no signal at all — the filter now watches
+the PKGBUILD too.
+
+Growing on this skeleton: the floating compose panel (rewrite/tone menu, "continue
 writing"), dictation as an input mode (§5.7.5), and the §5.7.3
 acceptance run (gedit / VS Code / Discord / xterm round-trips < 2 s on
 reference-16GB) — which needs the Linux desktop rig (the iMac). The

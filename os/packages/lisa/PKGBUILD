@@ -5,7 +5,7 @@
 # the hosted repo (M1) ships signed packages instead (PLAN §5.10).
 
 pkgbase=lisa
-pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-portal lisa-agentd lisa-contextd lisa-notes lisa-remoted)
+pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-ime lisa-portal lisa-agentd lisa-contextd lisa-notes lisa-remoted)
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Lisa OS AI layer: local inference as a system service"
@@ -13,7 +13,10 @@ arch=(x86_64 aarch64)
 url="https://github.com/Lisa-AgenticOS/lisa-os"
 license=(GPL-2.0-only)
 # glib2: glib-compile-schemas for the lisa-shell extension schema.
-makedepends=(cargo glib2)
+# cmake + fcitx5: the lisa-ime addon (§5.7.3 layer 2, ADR-0007). fcitx5
+# supplies Fcitx5Core/Fcitx5Utils and the Fcitx5ModuleDBus cmake config
+# the double-tap-Shift summon links against.
+makedepends=(cargo glib2 cmake fcitx5)
 # makepkg's default lto option injects -flto into ring's C objects, which
 # ld.lld cannot resolve at link time (cross-language LTO breakage).
 options=(!lto)
@@ -30,12 +33,25 @@ build() {
     cd "$pkgbase-$pkgver"
     export CARGO_HOME="$srcdir/cargo-home"
     cargo build --release --locked --workspace
+
+    # The fcitx5 addon (§5.7.3 layer 2, ADR-0007). C++ rather than Rust
+    # because it links Fcitx5Core directly; kept thin, with every model
+    # decision daemon-side.
+    cmake -S ime/fcitx5-lisa -B build-ime \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    cmake --build build-ime
 }
 
 check() {
     cd "$pkgbase-$pkgver"
     export CARGO_HOME="$srcdir/cargo-home"
     cargo test --release --locked --workspace
+    # The addon's fcitx5-free halves: the loopback HTTP client and the
+    # double-tap-Shift state machine. Cheap, and the gesture is the kind
+    # of thing that breaks silently — a detector that stops firing looks
+    # exactly like a user pressing Shift wrong.
+    ( cd build-ime && ctest --output-on-failure )
 }
 
 package_lisa-inferenced() {
@@ -67,6 +83,33 @@ package_lisa-modeld() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     # The daemon loop + D-Bus service land in M1; binary ships for
     # store/catalog operations via the lisa CLI meanwhile.
+}
+
+package_lisa-ime() {
+    pkgdesc="Lisa OS input-method addon: writing tools + double-tap-Shift summon (PLAN §5.7.3 layer 2)"
+    # fcitx5 is the runtime, not just a build dep: this is an addon
+    # loaded into its process. lisa-inferenced does the proofreading —
+    # the addon itself holds no model logic (ADR-0007).
+    depends=(fcitx5 lisa-inferenced)
+    # An input method reaches apps through toolkit modules. Without
+    # these, fcitx5 runs and GTK/Qt apps never route a key to it, which
+    # looks exactly like the addon being broken.
+    optdepends=(
+        'fcitx5-gtk: GTK2/3/4 apps'
+        'fcitx5-qt: Qt5/6 apps'
+        'fcitx5-configtool: change the trigger key or turn the gesture off'
+    )
+    cd "$pkgbase-$pkgver"
+    DESTDIR="$pkgdir" cmake --install build-ime
+
+    # Make fcitx5 start with the session and be the input method GTK/Qt
+    # apps talk to. Shipping the addon without this produces the worst
+    # kind of "installed but does nothing": every file present, the
+    # gesture dead, and nothing logged to explain it.
+    install -Dm644 os/packages/lisa/lisa-ime.sh \
+        "$pkgdir/etc/profile.d/lisa-ime.sh"
+    install -Dm644 os/packages/lisa/fcitx5-lisa-autostart.desktop \
+        "$pkgdir/etc/xdg/autostart/fcitx5-lisa.desktop"
 }
 
 package_lisa-portal() {
