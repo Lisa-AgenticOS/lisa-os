@@ -128,7 +128,11 @@ mod imp {
         // A path that does not exist is a different matter and is
         // skipped: `.pub-cache` on a machine with no Flutter, or
         // `/var/lib/lisa/flutter` on a dev host, are simply absent.
-        let mut add = |set: RulesetCreated, dir: &Path, access| -> Result<RulesetCreated, String> {
+        // Not `mut`: the closure consumes and returns the ruleset rather
+        // than mutating a capture. clippy's -D warnings catches this only
+        // on Linux, since this whole module is cfg'd to it — a macOS dev
+        // host cannot lint the code that matters most here.
+        let add = |set: RulesetCreated, dir: &Path, access| -> Result<RulesetCreated, String> {
             match PathFd::new(dir) {
                 Err(_) => Ok(set), // not on this machine
                 Ok(fd) => set

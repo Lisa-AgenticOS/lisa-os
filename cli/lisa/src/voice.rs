@@ -414,12 +414,39 @@ fn play(wav: &Path) -> anyhow::Result<()> {
     bail!("no working audio player (tried pw-play, paplay, aplay, afplay)")
 }
 
+/// Is `bin` an executable on PATH?
+///
+/// Resolved in-process rather than by running `which(1)`, because
+/// **`which` is not installed on the Lisa OS image**. Shelling out to it
+/// returned false for everything — piper, every audio player, every
+/// recorder — so `lisa say` reported "[tts unavailable]" with piper at
+/// /usr/bin/piper, and `lisa listen` found no recorder with three of
+/// them installed. One missing helper silently disabled every voice
+/// feature on the device.
+///
+/// `command -v` is a shell builtin and would have worked, but it needs a
+/// shell; walking PATH needs nothing and cannot be absent.
 fn which(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let p = dir.join(bin);
+        // Existence is not enough: a directory named `piper`, or a file
+        // with no execute bit, must not count as the program.
+        p.is_file() && is_executable(&p)
+    })
+}
+
+#[cfg(unix)]
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(p: &Path) -> bool {
+    p.exists()
 }
 
 /// Wake-word gate (ADR-0011: "Hey Lisa" is the shipping default). True
@@ -534,6 +561,52 @@ mod tests {
         let mut avi = Vec::from(*b"RIFF\0\0\0\0AVI ");
         avi.resize(44, 0);
         assert!(!is_wav(&avi));
+    }
+
+    /// `which(1)` is not on the Lisa OS image. The first version of this
+    /// helper spawned it, so it answered false for every program on the
+    /// device — piper, aplay, arecord — and silently turned off every
+    /// voice feature while reporting success.
+    #[test]
+    fn programs_are_found_without_the_which_binary() {
+        // The PATH is deliberately narrowed to ONE directory holding one
+        // executable, and `which(1)` is not in it. That is what makes
+        // this test able to fail: an implementation that shells out to
+        // `which` cannot find it either, so it answers false and the
+        // assertion below breaks. Asserting on `sh` from the real PATH
+        // would pass on any dev host that happens to have `which`, which
+        // is exactly the machine where the bug is invisible.
+        let dir = std::env::temp_dir().join(format!("lisa-which-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prog = dir.join("lisa-fake-engine");
+        std::fs::write(&prog, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // A second file with NO execute bit: present, but not a program.
+        let data = dir.join("lisa-not-a-program");
+        std::fs::write(&data, "x").unwrap();
+
+        // SAFETY: single-threaded test; PATH is restored before returning.
+        let saved = std::env::var_os("PATH");
+        unsafe { std::env::set_var("PATH", &dir) };
+        let found = which("lisa-fake-engine");
+        let found_data = which("lisa-not-a-program");
+        let found_missing = which("lisa-absent-engine");
+        match saved {
+            Some(p) => unsafe { std::env::set_var("PATH", p) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            found,
+            "an executable on PATH must be found without which(1)"
+        );
+        assert!(!found_data, "a non-executable file is not a program");
+        assert!(!found_missing, "an absent name must not match");
     }
 
     /// A sink that accepts audio and plays nothing is indistinguishable

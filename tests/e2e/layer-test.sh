@@ -22,9 +22,13 @@ say "provision build deps"
 # pacman >= 7's Landlock/alpm-user download sandbox cannot apply inside a
 # rootless container; disabling it is container-only (real hosts keep it).
 grep -q '^DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-# glib2: lisa-shell makedepends (makepkg runs without -s here, so
-# makedepends must be preinstalled).
-pacman -Syu --noconfirm --needed base-devel rust git curl glib2
+# Every makedepend of the lisa split package, because makepkg runs
+# without -s here. glib2: lisa-shell schema compile. cmake + fcitx5:
+# lisa-ime, the fcitx5 addon (PLAN 5.7.3). This list and the
+# PKGBUILD makedepends move together — adding lisa-ime broke this
+# test and the release with the same "Missing dependencies" error,
+# hours apart, because they did not.
+pacman -Syu --noconfirm --needed base-devel rust git curl glib2 cmake fcitx5
 
 say "container-only sandbox relaxation for the service"
 # Rootless containers cannot create mount namespaces or attach cgroup BPF
