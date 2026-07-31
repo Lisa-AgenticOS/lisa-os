@@ -99,25 +99,146 @@ pub(crate) fn explain_cmd(
 pub(crate) fn suggest_task() -> liblisa::tasks::Task {
     liblisa::tasks::Task {
         name: "shell_suggest".into(),
-        system: "You translate a natural-language request into exactly ONE shell \
-                 command for a Linux system. Return ONLY the JSON object: command \
-                 (a single command line — no shell prompt, no backticks, no \
-                 comments) and explanation (one short sentence on what it does, \
-                 flagging anything destructive). Prefer common, portable tools; \
-                 when the request is ambiguous pick the most conservative reading."
+        system: "You translate a natural-language request into a Linux command, as \
+                 STRUCTURE rather than as a line of shell. Return ONLY the JSON \
+                 object: steps (one or more {program, args} objects, piped together \
+                 left to right) and explanation (one short sentence on what it \
+                 does, flagging anything destructive). `program` is a bare command \
+                 name, never a path. Each argument is its own array element, \
+                 unquoted and unescaped — the shell quoting is added later. There \
+                 is no shell: no operators, no redirection, no globbing you did not \
+                 write out, no substitution. To write output to a file, pipe to \
+                 `tee`. Prefer common, portable tools; when the request is \
+                 ambiguous pick the most conservative reading."
             .into(),
         schema: json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string", "maxLength": 300},
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "program": {"type": "string", "maxLength": 40},
+                            "args": {
+                                "type": "array",
+                                "maxItems": 16,
+                                "items": {"type": "string", "maxLength": 120}
+                            }
+                        },
+                        "required": ["program", "args"]
+                    }
+                },
                 "explanation": {"type": "string", "maxLength": 200}
             },
-            "required": ["command", "explanation"]
+            "required": ["steps", "explanation"]
         }),
     }
 }
 
-/// Screen a suggested command before it is ever printed (ADR-0029).
+/// One step of a suggestion: a program and its arguments, already
+/// separated. No shell syntax anywhere in it.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct Step {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// Shell-quote one argument for DISPLAY.
+///
+/// This runs after judgement, never before it. The guard sees the
+/// argument as the model wrote it; this only decides how to spell it so
+/// a shell will reconstruct that exact string. Getting the order wrong
+/// would mean judging text that is not what runs — which is the entire
+/// class of bug #88 exists to remove.
+fn shell_quote(arg: &str) -> String {
+    // Empty must be quoted or it vanishes from the line entirely.
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    let safe = arg
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "@%+=:,./-_".contains(c));
+    if safe {
+        return arg.to_string();
+    }
+    // Single quotes protect everything except a single quote, which is
+    // spelled by leaving the quoted run and adding an escaped one.
+    format!("'{}'", arg.replace('\'', r"'\''"))
+}
+
+/// Render steps as the shell line a person will see and Ctrl+G will run.
+pub(crate) fn render_steps(steps: &[Step]) -> String {
+    steps
+        .iter()
+        .map(|s| {
+            std::iter::once(shell_quote(&s.program))
+                .chain(s.args.iter().map(|a| shell_quote(a)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Screen structured steps — the point of issue #88.
+///
+/// Each step is judged with `check_command`, whose input is argv: small,
+/// bounded, and with nothing to parse. `check_shell_line` had to read an
+/// arbitrary shell string, and three adversarial rounds found 8, then
+/// 11, then 10 bypasses — flat, not converging, because every fix was
+/// correct and left the next spelling open. The difference was the
+/// input, not the effort.
+///
+/// The strictest verdict across the steps wins: a pipeline is as
+/// dangerous as its worst member, and `find . | xargs rm -rf /` is not
+/// made safe by beginning with `find`.
+pub(crate) fn screen_steps_with(
+    steps: &[Step],
+    overrides: &lisa_guard::Overrides,
+) -> Result<Option<String>, String> {
+    let mut warning: Option<String> = None;
+    for step in steps {
+        let args: Vec<&str> = step.args.iter().map(String::as_str).collect();
+        // Advisory allowlist: a human reads this before pressing Enter,
+        // and a suggester that can only name the eleven programs the
+        // unattended forge loop may run is not a suggester. Every other
+        // rule still applies — the allowlist answers "may this run with
+        // nobody watching", not "is this catastrophic".
+        let verdict = overrides.relax(lisa_guard::check_command_advisory(&step.program, &args));
+        let (rule, reason) = match (verdict.rule(), verdict.reason()) {
+            (Some(rule), Some(reason)) => (rule, reason.to_string()),
+            _ => continue,
+        };
+        if verdict.is_denied() {
+            return Err(format!(
+                "refused to suggest that command [{rule}]: {reason}\n\
+                 lisa does not type commands that destroy the system, erase the audit \
+                 trail, or hand out privilege."
+            ));
+        }
+        // First warning wins: they are all shown together with the
+        // command, and a wall of them reads as noise rather than as a
+        // thing to look at.
+        warning.get_or_insert(format!("warning [{rule}]: {reason}"));
+    }
+    Ok(warning)
+}
+
+/// Screen a rendered shell line — the BACKSTOP, not the decision (#88).
+///
+/// The primary judgement is `screen_steps_with`, on argv. This reads a
+/// finished line and exists for two reasons: strings that arrive from
+/// somewhere other than the structured path, and the possibility that
+/// rendering introduces something the structured judgement did not see.
+///
+/// It may only add a refusal. Nothing here can permit a command the
+/// structured check refused, which is what keeps a shell parser out of
+/// the path that says yes — three adversarial rounds found 8, 11 and 10
+/// bypasses in that parser, flat rather than converging.
 ///
 /// `Err` = never show it: stdout is what the Ctrl+G hook copies into the
 /// shell's edit buffer, so a refused command must not reach it. `Ok(Some)`
@@ -179,25 +300,63 @@ pub(crate) fn suggest_cmd(
     let content = crate::chat_completion(url, &body)?;
     let v: Value = serde_json::from_str(content.trim())
         .with_context(|| format!("model reply was not the JSON object: {content}"))?;
-    // Model output reaches the terminal AND (via the Ctrl+G hook) the shell
-    // line buffer — strip every control character (issue #15). The command
-    // additionally collapses to one line: a smuggled newline would split it
-    // into "the part you review" + "the part that runs on your Enter".
-    let command: String = crate::sanitize_terminal(v["command"].as_str().unwrap_or(""))
-        .replace(['\n', '\t'], " ")
-        .trim()
-        .to_string();
-    if command.is_empty() {
+    // Structure, not a line of shell (#88). The model names a program
+    // and its arguments; nothing here parses shell, because three
+    // adversarial rounds on a shell parser found 8, then 11, then 10
+    // bypasses — flat, not converging.
+    //
+    // Model output still reaches the terminal AND, via the Ctrl+G hook,
+    // the shell line buffer, so every field is stripped of control
+    // characters (issue #15). Newlines collapse for the same reason as
+    // before: a smuggled one would split the suggestion into "the part
+    // you review" and "the part that runs on your Enter".
+    let clean = |s: &str| {
+        crate::sanitize_terminal(s)
+            .replace(['\n', '\t'], " ")
+            .trim()
+            .to_string()
+    };
+    let steps: Vec<Step> = v["steps"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|it| Step {
+                    program: clean(it["program"].as_str().unwrap_or("")),
+                    args: it["args"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|x| x.as_str()).map(clean).collect())
+                        .unwrap_or_default(),
+                })
+                .filter(|st: &Step| !st.program.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if steps.is_empty() {
         bail!("no command came back — try rewording the request");
     }
     let explanation = crate::sanitize_terminal(v["explanation"].as_str().unwrap_or(""))
         .trim()
         .to_string();
-    // Judge before printing: stdout is the shell's edit buffer.
-    let warning = match screen_suggestion(&command) {
+    // Judge the STRUCTURE before rendering it. Rendering first and
+    // judging the rendered line would put a parser back in the path —
+    // which is the thing being removed.
+    let warning = match screen_steps_with(&steps, &lisa_guard::active_overrides()) {
         Ok(w) => w,
         Err(refusal) => bail!("{refusal}"),
     };
+    // Only now is there a shell string, and only for a person to read
+    // and a shell to run.
+    let command = render_steps(&steps);
+    // Defence in depth, in the one direction it is safe (#88). The
+    // structured check above is authoritative for ALLOWING; this reads
+    // the rendered line and may only add a refusal. If the renderer ever
+    // produced something the argv judgement did not anticipate, this
+    // catches it — and because it cannot permit anything, the shell
+    // parser is no longer in the path that says yes.
+    if let Err(refusal) = screen_suggestion(&command) {
+        bail!("{refusal}");
+    }
     if json_out {
         println!(
             "{}",
@@ -241,6 +400,97 @@ fn tail_excerpt(s: &str, max_bytes: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
+
+    /// Issue #88: the model returned a shell STRING and the guard had to
+    /// parse it. Three adversarial rounds found 8, then 11, then 10
+    /// bypasses — flat, not converging, because the input was arbitrary
+    /// shell. Structure removes the parser rather than improving it.
+    #[test]
+    fn a_pipeline_is_as_dangerous_as_its_worst_step() {
+        // `find . | xargs rm -rf /` is not made safe by starting with
+        // `find`, and a per-line reader that stopped at the first
+        // command would have said it was.
+        let steps = vec![
+            Step {
+                program: "find".into(),
+                args: vec![".".into()],
+            },
+            Step {
+                program: "xargs".into(),
+                args: vec!["rm".into(), "-rf".into(), "/".into()],
+            },
+        ];
+        let err = screen_steps_with(&steps, &lisa_guard::Overrides::default()).unwrap_err();
+        assert!(err.contains("refused"), "{err}");
+    }
+
+    #[test]
+    fn an_ordinary_pipeline_is_allowed_and_renders_as_shell() {
+        let steps = vec![
+            Step {
+                program: "grep".into(),
+                args: vec!["-r".into(), "TODO".into(), ".".into()],
+            },
+            Step {
+                program: "wc".into(),
+                args: vec!["-l".into()],
+            },
+        ];
+        assert!(
+            screen_steps_with(&steps, &lisa_guard::Overrides::default())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(render_steps(&steps), "grep -r TODO . | wc -l");
+    }
+
+    /// Quoting happens AFTER judgement, and has to survive a round trip.
+    #[test]
+    fn arguments_are_quoted_for_display_not_for_the_guard() {
+        let steps = vec![Step {
+            program: "grep".into(),
+            // Every one of these would be shell syntax if the model had
+            // written a line instead of a list — and here they are just
+            // text, which is the whole point.
+            args: vec![
+                "a b".into(),
+                "it's".into(),
+                "$HOME".into(),
+                "; rm -rf /".into(),
+                "`id`".into(),
+                "".into(),
+            ],
+        }];
+        let line = render_steps(&steps);
+        // The dangerous spellings are inert once quoted.
+        assert!(line.contains(r#"'a b'"#), "{line}");
+        assert!(line.contains(r#"'$HOME'"#), "{line}");
+        assert!(line.contains(r#"'; rm -rf /'"#), "{line}");
+        assert!(line.contains("'`id`'"), "{line}");
+        assert!(line.contains("''"), "empty arg must not vanish: {line}");
+        // A quote inside an argument is the case naive quoting gets
+        // wrong, and getting it wrong ends the quoted run early.
+        assert!(line.contains(r#"'it'\''s'"#), "{line}");
+    }
+
+    /// A program named by path sidesteps the allowlist and every rule
+    /// that matches on the program (round 1, #59). check_command refuses
+    /// it outright, which is why judging argv is stronger than judging a
+    /// line: there is no spelling to normalise first.
+    #[test]
+    fn a_program_named_by_path_is_refused() {
+        for prog in ["/bin/rm", "./rm", "../bin/rm"] {
+            let steps = vec![Step {
+                program: prog.into(),
+                args: vec!["-rf".into(), "/".into()],
+            }];
+            assert!(
+                screen_steps_with(&steps, &lisa_guard::Overrides::default()).is_err(),
+                "{prog} was allowed"
+            );
+        }
+    }
+
     use super::*;
 
     /// The user's Enter key is the review gate, and a tired user pressing
@@ -351,9 +601,20 @@ mod tests {
             "shell_suggest"
         );
         let schema = &req["response_format"]["json_schema"]["schema"];
-        assert!(schema["properties"]["command"].is_object());
+        // Structure, not a shell string (#88): the model names a
+        // program and its arguments, and nothing downstream parses
+        // shell to find out what it meant.
+        let steps = &schema["properties"]["steps"];
+        assert_eq!(steps["type"], "array");
+        let item = &steps["items"]["properties"];
+        assert!(item["program"].is_object());
+        assert_eq!(item["args"]["type"], "array");
         assert!(schema["properties"]["explanation"].is_object());
-        assert_eq!(schema["required"][0], "command");
+        assert_eq!(schema["required"][0], "steps");
+        assert!(
+            schema["properties"]["command"].is_null(),
+            "a `command` string is exactly what this issue removed"
+        );
         assert_eq!(
             req["messages"][1]["content"],
             "show the five biggest files here"
@@ -366,8 +627,13 @@ mod tests {
         // to a GBNF grammar, with the free-text fields length-bounded so
         // a small model cannot spiral.
         let g = suggest_task().grammar().unwrap();
-        assert!(g.contains(r#""\"command\"""#), "grammar: {g}");
-        assert!(g.contains("{0,300}"), "bounded command: {g}");
+        assert!(g.contains(r#""\"steps\"""#), "grammar: {g}");
+        assert!(g.contains(r#""\"program\"""#), "grammar: {g}");
+        // Every free-text field stays length-bounded so a small model
+        // cannot spiral, and the arrays are bounded too — an unbounded
+        // args list is the same failure wearing a different shape.
+        assert!(g.contains("{0,40}"), "bounded program: {g}");
+        assert!(g.contains("{0,120}"), "bounded arg: {g}");
         assert!(g.contains("{0,200}"), "bounded explanation: {g}");
     }
 

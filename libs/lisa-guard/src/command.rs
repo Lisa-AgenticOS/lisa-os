@@ -163,6 +163,35 @@ fn policy_for(program: &str) -> ProgramPolicy {
 
 /// Judge one argv-form command before it is spawned.
 pub fn check_command(program: &str, args: &[&str]) -> Verdict {
+    check_argv(program, args, Allowlist::Enforced)
+}
+
+/// Which programs may run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Allowlist {
+    /// Only `ALLOWED_COMMANDS`. For surfaces with **nobody watching** —
+    /// the forge loop runs unattended, so an unrecognised program is a
+    /// program nobody chose.
+    Enforced,
+    /// Any program name, with every other rule still applied. For
+    /// surfaces where a **human reviews before anything runs**: `lisa
+    /// suggest` prints into a shell buffer and waits for Enter, and a
+    /// suggester that can only name eleven programs is not a suggester.
+    ///
+    /// This is a smaller relaxation than it sounds. The allowlist
+    /// answers "may this run unattended"; every rule below it answers
+    /// "is this catastrophic", and those still apply — `rm -rf /`,
+    /// `mkfs`, erasing the Ledger and escalating privilege are refused
+    /// whatever the surface.
+    Advisory,
+}
+
+/// Judge argv for a surface where a human reviews the result (#88).
+pub fn check_command_advisory(program: &str, args: &[&str]) -> Verdict {
+    check_argv(program, args, Allowlist::Advisory)
+}
+
+fn check_argv(program: &str, args: &[&str], allowlist: Allowlist) -> Verdict {
     // A program is a bare name here. Naming it by path would sidestep
     // the allowlist entirely (`/bin/sh`) and every rule that matches on
     // the program (review round 1, #59).
@@ -172,7 +201,7 @@ pub fn check_command(program: &str, args: &[&str]) -> Verdict {
             format!("`{program}` names a program by path; only bare command names are allowed"),
         );
     }
-    if !ALLOWED_COMMANDS.contains(&program) {
+    if allowlist == Allowlist::Enforced && !ALLOWED_COMMANDS.contains(&program) {
         return Verdict::deny(
             "command.not_allowlisted",
             format!(
@@ -382,6 +411,52 @@ fn escapes(candidate: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// Issue #88: `lisa suggest` needs argv judgement without the forge
+    /// jail's allowlist — a human reviews the suggestion before Enter,
+    /// and a suggester that can only name eleven programs is useless.
+    /// The relaxation must be the allowlist and nothing else.
+    #[test]
+    fn advisory_allows_ordinary_programs_and_still_refuses_catastrophe() {
+        // Not in ALLOWED_COMMANDS, and perfectly ordinary.
+        for (prog, args) in [
+            ("wc", vec!["-l"]),
+            ("sort", vec![]),
+            ("head", vec!["-n", "5"]),
+        ] {
+            assert!(
+                !check_command_advisory(prog, &args).is_denied(),
+                "advisory refused an ordinary program: {prog}"
+            );
+            // …and the enforced allowlist still refuses them, because
+            // nothing is watching the forge loop.
+            assert!(
+                check_command(prog, &args).is_denied(),
+                "enforced allowed {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn advisory_is_not_a_way_around_the_dangerous_rules() {
+        // The whole relaxation is "which programs may run". Everything
+        // that answers "is this catastrophic" must survive it.
+        for (prog, args) in [
+            ("rm", vec!["-rf", "/"]),
+            ("mkfs.ext4", vec!["/dev/sda"]),
+            ("dd", vec!["if=/dev/zero", "of=/dev/sda"]),
+        ] {
+            assert!(
+                check_command_advisory(prog, &args).is_denied(),
+                "advisory allowed something catastrophic: {prog} {args:?}"
+            );
+        }
+        // A program named by path sidesteps every rule that matches on
+        // the program, so it is refused on both surfaces (round 1, #59).
+        assert!(check_command_advisory("/bin/rm", &["-rf", "/"]).is_denied());
+        assert!(check_command_advisory("./rm", &["-rf", "/"]).is_denied());
+    }
+
     use super::*;
 
     #[test]

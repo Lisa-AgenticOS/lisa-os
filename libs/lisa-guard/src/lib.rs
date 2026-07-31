@@ -29,7 +29,7 @@ mod path;
 mod rules;
 mod shell;
 
-pub use command::{ALLOWED_COMMANDS, check_command};
+pub use command::{ALLOWED_COMMANDS, Allowlist, check_command, check_command_advisory};
 pub use overrides::{Overrides, active as active_overrides, overrides_path};
 pub use path::{ContainError, contain, write_contained};
 pub use shell::{Invocation, check_shell_line};
