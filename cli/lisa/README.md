@@ -25,6 +25,13 @@ lisa ambient once --speak         # the whole loop, from the mic
 lisa ambient once recording.wav --speak   # or from a file
 ```
 
+Every transcription is ledgered as `voice.transcribe` — how long the
+audio was and a bounded preview, with the full text hashed rather than
+stored (ADR-0011 invariant 3: the Ledger answers "what did it hear?"
+without becoming a second copy of everything said near the machine). It
+sits in `transcribe`, which every path goes through, because ledgering
+per caller is how one of them ends up not doing it.
+
 `listen` is push-to-talk without a key to hold: it records at 16 kHz mono
 (what whisper.cpp wants), stops at `--seconds` or on Ctrl-C, and prints
 what it heard. `--keep` retains the audio, which is how you tell a bad

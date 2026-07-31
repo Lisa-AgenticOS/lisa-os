@@ -51,7 +51,57 @@ pub fn transcribe(audio: &Path, model: &Path) -> anyhow::Result<String> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    ledger_activation(audio, &text);
+    Ok(text)
+}
+
+/// Record that the microphone was used (ADR-0011, invariant 3: *every
+/// activation is in the Ledger*).
+///
+/// This sits in `transcribe` rather than in each caller because every
+/// path that turns audio into words comes through here — `lisa listen`,
+/// `lisa transcribe`, `lisa ambient`, and the push-to-talk service,
+/// which shells out to this same verb. Ledgering per caller is how one
+/// of them ends up not doing it.
+///
+/// What is written is the *shape* of the activation: how long the
+/// recording was and a bounded preview. The full transcript is hashed,
+/// not stored — the Ledger answers "what did it hear?" without becoming
+/// a second copy of everything said near the machine.
+///
+/// A Ledger that cannot be opened must not stop somebody transcribing a
+/// file. That is the opposite of the agent-loop rule (#129), where a
+/// call that cannot be recorded must not run — the difference is that
+/// this is a person acting on their own machine, and a guardrail never
+/// sits between them and it (CLAUDE.md 6a).
+fn ledger_activation(audio: &Path, text: &str) {
+    let seconds = std::fs::metadata(audio)
+        .map(|m| {
+            // 16 kHz mono 16-bit == 32000 bytes/s, minus the header.
+            // Approximate on purpose: the point is "about six seconds",
+            // not a sample count.
+            m.len().saturating_sub(44) as f64 / 32_000.0
+        })
+        .unwrap_or(0.0);
+    let preview: String = text.chars().take(160).collect();
+    let event = lisa_ledger::Event {
+        kind: "voice.transcribe".into(),
+        app_id: "host".into(),
+        model: "whisper".into(),
+        input_hash: blake3::hash(text.as_bytes()).to_hex().to_string(),
+        preview,
+        status: "ok".into(),
+        detail: format!("{seconds:.1}s of audio, transcribed locally"),
+        ref_id: None,
+        output_tokens: 0,
+        duration_ms: 0,
+    };
+    if let Ok(l) = lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path())
+        && let Err(e) = l.append(&event)
+    {
+        eprintln!("warning: could not ledger this transcription: {e}");
+    }
 }
 
 /// Record from the microphone, then transcribe it. This is push-to-talk

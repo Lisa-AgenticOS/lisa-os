@@ -105,13 +105,32 @@ speech without re-triggering the wake word.
 
 ## Staging
 
-1. **Substrate (now):** local STT + TTS in `lisa-inferenced`
-   (transcribe/speak), OpenAI-compat endpoints, catalog pins, `lisa
-   transcribe` / `lisa say`.
-2. **Addressed-intent classifier (now):** guided-generation module +
+1. **Substrate — done 2026-07-31, later than this list implied.** For a
+   week "now" meant the *code* existed. It could not run: neither
+   whisper.cpp nor piper is in Arch, so no device had an engine, and
+   `lisa say` pointed at a voice path nothing creates, passed a flag
+   piper does not have, and returned success on every failure — it could
+   never have produced a sound. Both engines are packaged
+   (`os/packages/`), a redistributable voice is pinned (LibriTTS-R,
+   CC BY 4.0 — the obvious choices were a licence form or
+   non-commercial), and the chain is verified as a round trip: piper
+   says a sentence, whisper transcribes it back word for word.
+2. **Addressed-intent classifier (done):** guided-generation module +
    eval fixtures.
+2a. **Push-to-talk — done 2026-07-31, and not in the original plan.**
+   `lisa listen`, plus `dev.lisaos.Voice1` on the overlay backend and a
+   held key in the shell. It was added because stage 3 needs hardware
+   and stage 1 needed *something* a person could actually use in the
+   meantime — and because it is the honest floor: an explicit key is the
+   version of this feature that needs no trust argument at all. It
+   satisfies invariants 3 (every activation is ledgered, as
+   `voice.transcribe`) and 4's spirit (an indicator is on screen for
+   exactly as long as the microphone is open), and it makes invariants
+   1, 2 and 5 trivially true — there is no always-on path in the code.
 3. **Ambient loop (needs audio hardware / the field iMac):** VAD +
-   ring-buffer capture, the mute + indicator, ledger wiring, the overlay
-   backend consuming audio turns.
+   ring-buffer capture, the *hard* mute of invariant 4, the wake word,
+   the overlay backend consuming audio turns. Not started. Nothing in
+   this repo records unprompted, and nothing should until this stage is
+   built deliberately rather than arrived at.
 4. **Multimodal turn:** screen/selection/context attached to an
    addressed turn.
