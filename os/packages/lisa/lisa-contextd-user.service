@@ -27,8 +27,11 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# NO ProtectKernelTunables/ProtectKernelModules: in a per-user service
+# they imply a private user namespace, inside which no peer's
+# /proc/<pid>/exe is readable — which breaks lisa_peer::exe_of_peer and
+# with it every ADR-0033 identity decision this daemon makes (#161).
+# See lisa-remoted-user.service for the full account.
 UMask=0077
 
 [Install]

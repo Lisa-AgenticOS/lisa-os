@@ -25,10 +25,15 @@ RestrictNamespaces=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 MemoryDenyWriteExecute=yes
-PrivateTmp=yes
-ProtectSystem=strict
-# Grants + per-user ledger live under ~/.local/share/lisa.
-ReadWritePaths=%h/.local/share/lisa
+# NO mount-based sandboxing (PrivateTmp, ProtectSystem, ProtectHome,
+# ProtectKernel*) in this unit, and the omission is load-bearing
+# (#161): a per-user manager can only apply those inside a private
+# user namespace, and from there /proc/<pid>/exe and
+# /proc/<pid>/root/.flatpak-info of every peer are EACCES. This portal
+# IS the caller-identification surface (#106, #107) — sandboxed that
+# way it cannot identify anyone, so every grant decision fails closed
+# and the trust boundary is simply off. os/repo-tools/check-user-units.py
+# holds the line.
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native

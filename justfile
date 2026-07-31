@@ -14,6 +14,10 @@ lint:
     # A stray apostrophe in a workflow comment closes the container
     # script and fails the build somewhere unrelated. Cheap to check.
     python3 os/repo-tools/check-workflow-quoting.py
+    # Mount-based sandboxing in a per-user unit silently breaks peer
+    # identity for the whole session (#161). Cheap to check, brutal to
+    # debug from the refusals it causes.
+    python3 os/repo-tools/check-user-units.py
 
 fmt:
     cargo fmt --all
