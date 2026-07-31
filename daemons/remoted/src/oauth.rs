@@ -102,10 +102,13 @@ pub struct OauthProvider {
     encoding: Encoding,
     /// Extra authorize-URL query params beyond the PKCE/OAuth standard set.
     authorize_extra: &'static [(&'static str, &'static str)],
-    /// Anthropic uses the PKCE verifier itself as the OAuth `state`;
-    /// OpenAI uses a fresh random state.
-    state_is_verifier: bool,
     /// Anthropic echoes `state` in the code-exchange body.
+    ///
+    /// It used to echo the PKCE *verifier* there, because the verifier
+    /// was also being used as the front-channel `state` (#110). It now
+    /// echoes the real state — an independent random value — which is
+    /// what the authorization server was sent and what a token endpoint
+    /// asking for `state` can only sensibly mean.
     exchange_sends_state: bool,
     /// OpenAI repeats `scope` on the refresh request.
     refresh_sends_scope: bool,
@@ -130,7 +133,6 @@ pub const ANTHROPIC: OauthProvider = OauthProvider {
     scope: "user:profile user:inference",
     encoding: Encoding::Json,
     authorize_extra: &[("code", "true")],
-    state_is_verifier: true,
     exchange_sends_state: true,
     refresh_sends_scope: false,
     anthropic_bearer: true,
@@ -156,7 +158,6 @@ pub const OPENAI: OauthProvider = OauthProvider {
         ("codex_cli_simplified_flow", "true"),
         ("originator", "lisa"),
     ],
-    state_is_verifier: false,
     exchange_sends_state: false,
     refresh_sends_scope: true,
     anthropic_bearer: false,
@@ -252,7 +253,12 @@ pub fn authorize_url(p: &OauthProvider, challenge: &str, state: &str) -> String 
 }
 
 /// The code→token exchange body (`authorization_code` grant). Pure.
-fn exchange_params(p: &OauthProvider, code: &str, verifier: &str) -> Vec<(&'static str, String)> {
+fn exchange_params(
+    p: &OauthProvider,
+    code: &str,
+    verifier: &str,
+    state: &str,
+) -> Vec<(&'static str, String)> {
     let mut params = vec![
         ("grant_type", "authorization_code".to_string()),
         ("client_id", p.client_id.to_string()),
@@ -261,7 +267,10 @@ fn exchange_params(p: &OauthProvider, code: &str, verifier: &str) -> Vec<(&'stat
         ("redirect_uri", p.redirect_uri.to_string()),
     ];
     if p.exchange_sends_state {
-        params.push(("state", verifier.to_string()));
+        // The state, not the verifier. These were the same value before
+        // #110; sending the verifier here as well as in the authorize
+        // URL was the same secret twice rather than a second factor.
+        params.push(("state", state.to_string()));
     }
     params
 }
@@ -449,11 +458,23 @@ impl OauthManager {
             }
         };
         let pkce = Pkce::generate();
-        let state = if p.state_is_verifier {
-            pkce.verifier.clone()
-        } else {
-            random_state()
-        };
+        // Independent of the verifier, always (#110).
+        //
+        // Anthropic's flow used the PKCE code_verifier itself as
+        // `state`, and `state` goes in the authorize URL — so the
+        // verifier travelled through the front channel next to
+        // S256(verifier). RFC 7636 §4.1 requires the verifier to be
+        // sent only in the back-channel token request, and the whole
+        // point is that someone who observes the authorize URL cannot
+        // complete an intercepted code. With the preimage in the same
+        // query string, PKCE contributed nothing to that flow, and
+        // `state` stopped being an independent CSRF token because it
+        // was derivable from the same observation.
+        //
+        // The URL also reaches places a secret should not: browser
+        // history, and an `xdg-open <url>` argv that is world-readable
+        // in /proc.
+        let state = random_state();
         let url = authorize_url(p, &pkce.challenge, &state);
 
         let this = Arc::clone(self);
@@ -482,7 +503,7 @@ impl OauthManager {
                     "timed out waiting for the browser".into(),
                 )),
                 Ok(Err(e)) => Err(e),
-                Ok(Ok(code)) => self.complete_login(p, &code, verifier).await,
+                Ok(Ok(code)) => self.complete_login(p, &code, verifier, state).await,
             };
         match result {
             Ok(()) => LoginOutcome {
@@ -503,8 +524,9 @@ impl OauthManager {
         p: &OauthProvider,
         code: &str,
         verifier: &str,
+        state: &str,
     ) -> Result<(), OauthError> {
-        let resp = post_token(&self.http, p, exchange_params(p, code, verifier)).await?;
+        let resp = post_token(&self.http, p, exchange_params(p, code, verifier, state)).await?;
         let refresh = resp
             .refresh
             .ok_or_else(|| OauthError::Callback("token response missing refresh_token".into()))?;
@@ -805,20 +827,62 @@ mod tests {
     #[test]
     fn exchange_and_refresh_bodies_match_each_vendor_flow() {
         // Anthropic: echoes state == verifier, no scope on refresh.
-        let ax = exchange_params(&ANTHROPIC, "the-code", "the-verifier");
+        let ax = exchange_params(&ANTHROPIC, "the-code", "the-verifier", "the-state");
         assert!(ax.contains(&("grant_type", "authorization_code".into())));
         assert!(ax.contains(&("code_verifier", "the-verifier".into())));
-        assert!(ax.contains(&("state", "the-verifier".into())));
+        // The STATE, not the verifier (#110). These used to be the same
+        // value, so echoing it here sent the same secret twice rather
+        // than adding a second factor.
+        assert!(ax.contains(&("state", "the-state".into())));
+        assert!(
+            !ax.contains(&("state", "the-verifier".into())),
+            "the verifier must not travel as state"
+        );
         let ar = refresh_params(&ANTHROPIC, "r1");
         assert!(ar.contains(&("grant_type", "refresh_token".into())));
         assert!(ar.contains(&("refresh_token", "r1".into())));
         assert!(!ar.iter().any(|(k, _)| *k == "scope"));
 
         // OpenAI: no state in exchange, repeats scope on refresh.
-        let ox = exchange_params(&OPENAI, "c", "v");
+        let ox = exchange_params(&OPENAI, "c", "v", "s");
         assert!(!ox.iter().any(|(k, _)| *k == "state"));
         let or = refresh_params(&OPENAI, "r2");
         assert!(or.contains(&("scope", "openid profile email offline_access".into())));
+    }
+
+    /// Issue #110: Anthropic's flow used the PKCE code_verifier as the
+    /// OAuth `state`, and `state` goes in the authorize URL — so the
+    /// verifier and S256(verifier) travelled together in one query
+    /// string, through browser history and a world-readable
+    /// `xdg-open <url>` argv. RFC 7636 §4.1 requires the verifier to be
+    /// sent only in the back-channel token request.
+    #[test]
+    fn the_pkce_verifier_never_appears_in_an_authorize_url() {
+        for p in [&ANTHROPIC, &OPENAI] {
+            let pkce = Pkce::generate();
+            let state = random_state();
+            let url = authorize_url(p, &pkce.challenge, &state);
+            assert!(
+                !url.contains(&pkce.verifier),
+                "{} authorize URL carries the verifier: {url}",
+                p.id
+            );
+            assert!(url.contains(&pkce.challenge), "{} lost its challenge", p.id);
+            assert!(url.contains(&state), "{} lost its state", p.id);
+        }
+    }
+
+    #[test]
+    fn state_is_independent_of_the_verifier_for_every_provider() {
+        // If state were derived from the verifier it would stop being an
+        // independent CSRF token: anyone who saw the authorize URL could
+        // compute it from the same observation.
+        for _ in 0..16 {
+            let pkce = Pkce::generate();
+            let state = random_state();
+            assert_ne!(state, pkce.verifier);
+            assert_ne!(state, pkce.challenge);
+        }
     }
 
     #[test]
