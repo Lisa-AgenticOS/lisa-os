@@ -145,6 +145,25 @@ install -d /efi
 # which survives mkosi's preset pass; these are belt-and-suspenders.)
 if [ -f /usr/lib/systemd/system/NetworkManager.service ]; then
     systemctl enable NetworkManager.service || true
+    # ...and nobody else owns an interface. networkd is enabled by the
+    # distro default, so BOTH ran on desktop images: NetworkManager
+    # holding every link, networkd holding none, and
+    # systemd-networkd-wait-online waiting for a link that will never
+    # come up under its management. It timed out on every boot, so
+    # `systemctl --failed` was never empty (#160).
+    #
+    # Worse than untidy: a permanently-failed unit is the first thing
+    # anyone checks on a misbehaving machine, and this trained both
+    # people and `lisa doctor` to skim a list that always had an entry
+    # in it. Two managers on one host is also a hazard waiting for the
+    # day something ships a .network file.
+    #
+    # Done HERE and not in 00-lisa.preset because that preset is shared
+    # with images that have no NetworkManager, where networkd IS the
+    # networking — disabling it there would leave them with none.
+    systemctl disable systemd-networkd.service 2>/dev/null || true
+    systemctl disable systemd-networkd.socket 2>/dev/null || true
+    systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
     systemctl enable systemd-resolved.service || true
     systemctl enable iwd.service 2>/dev/null || true
     # Persist Wi-Fi across A/B updates: NetworkManager writes profiles to
