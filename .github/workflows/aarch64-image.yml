@@ -72,7 +72,7 @@ jobs:
               # lisa-shell'\''s makedepends (build-packages.sh runs makepkg
               # without -s), cmake for llama.cpp, devtools for arch-meson
               # (the forked gnome-control-center). All present on ALARM.
-              pacman -S --noconfirm --needed base-devel rust git glib2 cmake devtools
+              pacman -S --noconfirm --needed base-devel rust git glib2 cmake fcitx5 devtools
               pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
 
               # --- Lisa packages, natively on aarch64 (issue #28) --------
@@ -143,6 +143,7 @@ jobs:
               # proof is the opt/zen/zen check in the image-content step
               # below; this loop only catches a wholesale build failure.
               for p in lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-agentd \
+                       lisa-ime \
                        lisa-notes lisa-remoted lisa-contextd llama.cpp \
                        whisper.cpp \
                        zen-browser zen-browser-launcher \
@@ -169,6 +170,10 @@ jobs:
                    lisa-modeld
                    lisa-cli
                    lisa-shell
+                   # Writing tools + double-tap-Shift (§5.7.3 layer 2).
+                   # Unlike piper next door this is arch-clean — it links
+                   # fcitx5, which Arch Linux ARM does package.
+                   lisa-ime
                    lisa-agentd
                    lisa-notes
                    lisa-remoted
