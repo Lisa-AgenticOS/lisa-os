@@ -374,6 +374,12 @@ jobs:
               echo "FAIL: no mbsync — apps/mail has nothing to read from"
               fail=1
             }
+            # The other direction. Reply and Forward are shown disabled
+            # in the Mail app precisely because this was missing.
+            [ -x mnt-pull/usr/bin/msmtp ] || {
+              echo "FAIL: no msmtp — mail can be read but never answered"
+              fail=1
+            }
             # mbsync speaks OAuth only through this. Cyrus SASL ships no
             # XOAUTH2 and no OAUTHBEARER, so without it a connected Google
             # account and an installed syncer still cannot authenticate —

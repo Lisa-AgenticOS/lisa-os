@@ -34,6 +34,9 @@ pub struct Account {
     /// `true` for implicit TLS on 993 (`ImapUseSsl`), which is what
     /// Gmail advertises. `false` means STARTTLS on 143.
     pub imap_ssl: bool,
+    /// Submission host, when the account reports one. GOA does for
+    /// Google (`smtp.gmail.com`); derived from the IMAP host otherwise.
+    pub smtp_host: Option<String>,
 }
 
 /// How mbsync proves who we are.
@@ -52,6 +55,7 @@ pub enum Credential {
 pub struct Paths {
     pub maildir: PathBuf,
     pub config: PathBuf,
+    pub send_config: PathBuf,
 }
 
 impl Paths {
@@ -59,6 +63,9 @@ impl Paths {
         Self {
             maildir: maildir.unwrap_or_else(|| home.join("Mail")),
             config: home.join(".config/lisa/mbsyncrc"),
+            // Ours, at our own path, for the same reason as mbsyncrc:
+            // ~/.msmtprc is where a person's hand-written config lives.
+            send_config: home.join(".config/lisa/msmtprc"),
         }
     }
 }
@@ -245,6 +252,60 @@ pub fn render_mbsyncrc(accounts: &[Account], paths: &Paths, credential: &Credent
     out
 }
 
+/// The sending half, as text.
+///
+/// msmtp rather than a client of our own: same reasoning as mbsync for
+/// receiving. It implements XOAUTH2 natively instead of through Cyrus
+/// SASL, so this needs no plugin — `passwordeval` runs the same token
+/// helper mbsync uses.
+///
+/// One account block each plus a default, so `msmtp -a <slug>` picks the
+/// identity and a bare `msmtp` still works.
+pub fn render_msmtprc(accounts: &[Account], credential: &Credential) -> String {
+    let mut out = String::new();
+    out.push_str(MARKER);
+    out.push_str("\n#\n# Sending half. Receiving is mbsyncrc, next to this file.\n\n");
+    out.push_str("defaults\ntls on\ntls_trust_file /etc/ssl/certs/ca-certificates.crt\n");
+    // A log is how a person finds out why a message did not leave. Under
+    // the user's own state directory, never /var: mail is theirs.
+    out.push_str("logfile ~/.local/state/lisa/msmtp.log\n\n");
+
+    for account in accounts {
+        let id = slug(&account.identity);
+        // Gmail's submission host is smtp.<domain> where IMAP is
+        // imap.<domain>; deriving it beats hardcoding one provider, and
+        // GOA reports it directly for accounts that have it.
+        let host = account
+            .smtp_host
+            .clone()
+            .unwrap_or_else(|| account.imap_host.replacen("imap.", "smtp.", 1));
+        out.push_str(&format!("account {id}\n"));
+        out.push_str(&format!("host {host}\n"));
+        out.push_str("port 587\n");
+        out.push_str("tls_starttls on\n");
+        out.push_str(&format!("from {}\n", account.identity));
+        out.push_str(&format!("user {}\n", account.imap_user));
+        match credential {
+            Credential::OnlineAccount => {
+                out.push_str("auth xoauth2\n");
+                out.push_str(&format!(
+                    "passwordeval \"lisa mail token --account {}\"\n",
+                    account.id
+                ));
+            }
+            Credential::AppPassword { file } => {
+                out.push_str("auth on\n");
+                out.push_str(&format!("passwordeval \"cat {}\"\n", file.display()));
+            }
+        }
+        out.push('\n');
+    }
+    if let Some(first) = accounts.first() {
+        out.push_str(&format!("account default : {}\n", slug(&first.identity)));
+    }
+    out
+}
+
 /// Refuse to overwrite a config we did not write.
 pub fn may_write(existing: Option<&str>) -> bool {
     match existing {
@@ -332,6 +393,7 @@ pub fn accounts() -> Result<Vec<Account>> {
             imap_host: text(mail, "ImapHost"),
             imap_user: text(mail, "ImapUserName"),
             imap_ssl: flag(mail, "ImapUseSsl"),
+            smtp_host: Some(text(mail, "SmtpHost")).filter(|h| !h.is_empty()),
         });
     }
     out.sort_by(|a, b| a.identity.cmp(&b.identity));
@@ -567,6 +629,21 @@ pub fn setup(app_password: Option<PathBuf>, maildir: Option<PathBuf>, force: boo
     std::fs::write(&paths.config, &text)
         .with_context(|| format!("could not write {}", paths.config.display()))?;
 
+    // The sending half. Written now rather than when sending is first
+    // attempted: the credential and the account list are in hand here,
+    // and a config that appears only after a failure is a config nobody
+    // finds. It carries no secret — the token comes from the same helper
+    // at send time — so 0600 is belt-and-braces rather than the point.
+    let send = render_msmtprc(&selected, &credential);
+    std::fs::write(&paths.send_config, &send)
+        .with_context(|| format!("could not write {}", paths.send_config.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ =
+            std::fs::set_permissions(&paths.send_config, std::fs::Permissions::from_mode(0o600));
+    }
+
     for account in &selected {
         let root = account_root(&paths.maildir, &account.identity, selected.len() > 1);
         std::fs::create_dir_all(&root)
@@ -574,6 +651,7 @@ pub fn setup(app_password: Option<PathBuf>, maildir: Option<PathBuf>, force: boo
         println!("account:  {}  ->  {}", account.identity, root.display());
     }
     println!("config:   {}", paths.config.display());
+    println!("sending:  {}", paths.send_config.display());
     println!("maildir:  {}", paths.maildir.display());
     match enable_timer() {
         Ok(true) => println!("timer:    every 5 minutes (lisa-mail-sync.timer)"),
@@ -648,6 +726,7 @@ mod tests {
             imap_host: "imap.gmail.com".into(),
             imap_user: "someone@example.test".into(),
             imap_ssl: true,
+            smtp_host: Some("smtp.gmail.com".into()),
         }
     }
 
@@ -781,6 +860,7 @@ mod tests {
             imap_host: "imap.gmail.com".into(),
             imap_user: "other@gmail.test".into(),
             imap_ssl: true,
+            smtp_host: Some("smtp.gmail.com".into()),
         }
     }
 
@@ -859,6 +939,50 @@ mod tests {
                 "{s} -> {out}"
             );
         }
+    }
+
+    #[test]
+    fn sending_uses_the_same_token_helper_and_never_stores_a_credential() {
+        let text = render_msmtprc(&[account()], &Credential::OnlineAccount);
+        assert!(text.contains("auth xoauth2"), "{text}");
+        assert!(
+            text.contains(r#"passwordeval "lisa mail token --account account_1785335038_0""#),
+            "{text}"
+        );
+        // GOA reports SmtpAuthLogin=false and SmtpAuthPlain=false for
+        // the connected Google account: XOAUTH2 is the only mechanism
+        // that would work, so offering another would just fail later.
+        assert!(!text.contains("auth on"), "{text}");
+        assert!(text.contains("host smtp.gmail.com"), "{text}");
+    }
+
+    #[test]
+    fn a_submission_host_is_derived_when_the_account_does_not_report_one() {
+        // Not every provider tells us. Deriving smtp.<domain> from
+        // imap.<domain> beats hardcoding one provider's hostnames.
+        let mut a = account();
+        a.smtp_host = None;
+        a.imap_host = "imap.fastmail.com".into();
+        let text = render_msmtprc(std::slice::from_ref(&a), &Credential::OnlineAccount);
+        assert!(text.contains("host smtp.fastmail.com"), "{text}");
+    }
+
+    #[test]
+    fn each_account_can_send_as_itself() {
+        // Sending from the wrong address is the mail equivalent of
+        // syncing two mailboxes into one folder: recoverable, but only
+        // after somebody has already read it.
+        let text = render_msmtprc(&[account(), second()], &Credential::OnlineAccount);
+        assert!(text.contains("from someone@example.test"), "{text}");
+        assert!(text.contains("from other@gmail.test"), "{text}");
+        assert!(text.contains("--account account_1785335038_0"), "{text}");
+        assert!(text.contains("--account account_1785447543_1"), "{text}");
+        // A bare `msmtp` has to pick something, and picking silently is
+        // worse than picking predictably.
+        assert!(
+            text.contains("account default : someone_at_example.test"),
+            "{text}"
+        );
     }
 
     #[test]
