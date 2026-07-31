@@ -92,3 +92,37 @@ Settings → Intelligence and the companion's remote routing enabled
 
 `just shell-test` (pure logic, any JS runtime). The window itself is verified
 on the GNOME desktop (GJS is interpreted — copy and run, no image rebuild).
+
+## Limits
+
+Written down because the alternative is a reader inferring them from
+silence — and because rule 10 asks every component to say what it does
+*not* do.
+
+- **No tools.** The Assistant talks; it cannot act. It has no Agent Bus
+  client, so it cannot read a file, search your notes, or send a
+  message — the tool families exist (`lisa tools`, the Mail and Surfer
+  MCP surfaces) and this window is not wired to them. That is issue #59
+  / ADR-0025: one agent loop, shared with the harness, rather than a
+  second one grown here. Until then "summarise my mail" is answered from
+  the model's imagination, not your mail.
+- **No memory across conversations.** Sessions persist (the same layout
+  harness-core's `SessionStore` uses), so a conversation survives a
+  restart — but nothing is recalled *between* them. harness-core's
+  `Memory` exists and this window does not use it.
+- **No skills.** `harness-core` routes skills deterministically and the
+  Assistant asks for none, so a reply is whatever the base model knows.
+- **Markdown renders; the model's other output shapes do not.** Tables
+  become their raw pipes, and images are not fetched — Pango markup has
+  no block model, which `lib/markdown.js` says more about.
+- **No voice.** PLAN §5.7.5 is not built here; the overlay's
+  push-to-talk is a separate surface.
+- **One persona.** harness-core calls this pillar "Soul" and rates it
+  partial: the persona is a caller-supplied string, with no profiles,
+  tiers, or delegation.
+
+The honest summary: this is a good chat window on top of a real
+inference stack, and it is **not** yet the agent the rest of the system
+is built to support. The gap is deliberate and tracked, not forgotten —
+write-tier tools were also gated on the consent surface split (#145,
+closed), which was the thing that had to land first.
