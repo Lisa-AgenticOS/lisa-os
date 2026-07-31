@@ -18,7 +18,10 @@
 # in `lisa apps` (Rust).
 set -eu
 
-for base in "${LISA_ZEN_DIR:-}" /var/lib/lisa/apps/payloads/zen/current /opt/zen; do
+for base in "${LISA_ZEN_DIR:-}" \
+            /var/lib/lisa-apps/payloads/zen/current \
+            /var/lib/lisa/apps/payloads/zen/current \
+            /opt/zen; do
     if [ -n "$base" ] && [ -x "$base/zen" ]; then
         exec "$base/zen" "$@"
     fi

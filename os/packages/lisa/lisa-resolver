@@ -22,7 +22,12 @@
 set -eu
 
 BAKED=/usr/lib/lisa/bin/lisa
-CHANNEL=/var/lib/lisa/apps/payloads/runtime/current/bin/lisa
+# New location first (see APPS_DIR in cli/lisa/src/apps.rs): the old one
+# is inside inferenced's DynamicUser StateDirectory and unreadable by the
+# user who runs this. The legacy path stays as a fallback so a device
+# mid-upgrade keeps resolving what it already has.
+CHANNEL=/var/lib/lisa-apps/payloads/runtime/current/bin/lisa
+[ -x "$CHANNEL" ] || CHANNEL=/var/lib/lisa/apps/payloads/runtime/current/bin/lisa
 
 if [ "${LISA_RESOLVED:-}" = "1" ]; then
     # We already resolved once; a second pass means the payload re-entered

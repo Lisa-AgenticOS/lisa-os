@@ -8,7 +8,10 @@
 set -eu
 rel="${1:?usage: lisa-app <relpath-under-shell-tree> [args...]}"
 shift
-for base in "${LISA_APPS_DIR:-}" /var/lib/lisa/apps/current /usr/share/lisa/shell; do
+for base in "${LISA_APPS_DIR:-}" \
+            /var/lib/lisa-apps/payloads/shell/current \
+            /var/lib/lisa/apps/current \
+            /usr/share/lisa/shell; do
     [ -n "$base" ] && [ -f "$base/$rel" ] && exec gjs -m "$base/$rel" "$@"
 done
 echo "lisa-app: $rel not found in any apps tree" >&2

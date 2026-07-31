@@ -16,9 +16,12 @@
 //!
 //! Layout, per channel: `<base>/versions/<ver>/` holds one full tree and
 //! `<base>/current` is a symlink flipped atomically (symlink + rename).
-//! `<base>` is `/var/lib/lisa/apps` for `shell` — unchanged from ADR-0020, so
-//! trees installed by older releases keep working — and
-//! `/var/lib/lisa/apps/payloads/<name>` for everything since. Integrity:
+//! `<base>` is `/var/lib/lisa-apps` (and `/var/lib/lisa-apps/payloads/<name>`
+//! per channel). It sits beside the model store rather than inside
+//! `/var/lib/lisa`, which is a DynamicUser StateDirectory whose real path
+//! (`/var/lib/private/lisa`) no ordinary user can traverse — see APPS_DIR.
+//! The old location is still read, never written, so a device mid-upgrade
+//! keeps resolving what it already has. Integrity:
 //! sha256 against the release's SHA256SUMS manifest (same trust level as the
 //! sysupdate transfer set; GPG signing lands with the M1 signed repo).
 
@@ -27,12 +30,47 @@ use sha2::{Digest, Sha256};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
-const APPS_DIR: &str = "/var/lib/lisa/apps";
+/// Where payloads live.
+///
+/// **Beside the model store, not inside `/var/lib/lisa`.** That path is
+/// lisa-inferenced's `StateDirectory` with `DynamicUser=`, so systemd
+/// puts the real tree under `/var/lib/private/lisa`, and both
+/// `/var/lib/private` (0700 root) and `/var/lib/private/lisa` (0700
+/// nobody) are closed to everyone. Payloads written there are unreadable
+/// by the user who has to execute them.
+///
+/// That was not theoretical: on the reference iMac the zen payload
+/// installed correctly, `lisa apps status` reported it current as root,
+/// and `[ -x .../current/zen ]` failed as the desktop user — so
+/// `/usr/bin/zen-browser` fell through to the baked `/opt/zen` every
+/// time. The fallback hid it, and deleting `/opt/zen` (issue #89) would
+/// have shipped a browser that could not start.
+///
+/// `/var/lib/lisa-models` already solved exactly this for models, with a
+/// tmpfiles rule making it 2775 root:lisa. Payloads use the same shape.
+const APPS_DIR: &str = "/var/lib/lisa-apps";
+
+/// The pre-fix location, still read so trees installed by older releases
+/// keep resolving until they are replaced. Never written.
+const LEGACY_APPS_DIR: &str = "/var/lib/lisa/apps";
 
 fn apps_dir() -> PathBuf {
-    std::env::var_os("LISA_APPS_STATE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(APPS_DIR))
+    if let Some(p) = std::env::var_os("LISA_APPS_STATE") {
+        return PathBuf::from(p);
+    }
+    // Prefer the new location. Fall back to the legacy one only when it
+    // exists and the new one does not — an older device that has not yet
+    // taken the release carrying the tmpfiles rule still finds its
+    // payloads, rather than losing them at the moment of upgrade.
+    let current = PathBuf::from(APPS_DIR);
+    if current.is_dir() {
+        return current;
+    }
+    let legacy = PathBuf::from(LEGACY_APPS_DIR);
+    if legacy.is_dir() {
+        return legacy;
+    }
+    current
 }
 
 /// The architecture whose payloads this system takes. Overridable so the
