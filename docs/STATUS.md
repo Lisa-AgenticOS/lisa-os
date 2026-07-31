@@ -423,9 +423,26 @@ Pantheon. Feeds the M4 shell ADR.
   iMac found and fixed: metadata `shell-version` capped at 49 while
   the image ships GNOME 50 (extensions never loaded) — now declares
   50. Still need the desktop session: the §5.7 budget runs. Deferred
-  within M4:
-  voice v1 (§5.7.5), writing-tools layer 1 (GTK module), wlr-layer-shell
+  within M4: writing-tools layer 1 (GTK module), wlr-layer-shell
   overlay frontend, bus-action launcher lane (M5).
+- **Voice v1 (§5.7.5, ADR-0011) — landed 2026-07-31, untried on
+  hardware.** For a week this was code that could not run: Arch packages
+  neither engine, so no device had one, and `lisa say` could never have
+  produced a sound (a voice path nothing creates, a flag piper does not
+  have, and success returned on every failure). Now: `whisper.cpp` and
+  `piper` are packaged and in the image lane, a redistributable voice is
+  pinned (LibriTTS-R, CC BY 4.0 — the well-known alternatives are a
+  signed licence form or non-commercial), `lisa listen` captures,
+  `lisa ambient once` runs the whole loop from the microphone, and
+  push-to-talk holds a key in the shell via `dev.lisaos.Voice1`. Every
+  transcription is ledgered as `voice.transcribe`.
+  Verified as a round trip in a container with the build trees deleted —
+  piper says a sentence, whisper hears it back word for word — but **no
+  one has held the key on the iMac**: the engines reach a device with the
+  next release. ARM gets speech in and not out (no onnxruntime on Arch
+  Linux ARM). The ambient loop (VAD, ring buffer, hard mute, wake word)
+  is ADR-0011 stage 3 and has not started; nothing in the repo records
+  unprompted.
 - **M5 (branch `m5-agentd`, §5.4, ADR-0009):** Agent Bus core landed —
   `daemons/agentd` joins the workspace with MCP-native manifest loading
   + validation (Appendix B), tool registry + discovery, the
