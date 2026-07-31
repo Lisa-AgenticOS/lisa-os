@@ -17,3 +17,10 @@ ureq = { version = "3.3.0", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# Landlock (ADR-0029 phase 3, #53) — Linux only. An unprivileged kernel
+# LSM, so the confinement needs no root and no container; on every other
+# host the module reports "unavailable" and the subprocess runs
+# unconfined, which the caller is told.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"

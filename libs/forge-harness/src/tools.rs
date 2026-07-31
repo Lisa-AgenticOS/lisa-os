@@ -391,12 +391,43 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
         Ok(p) => format!("{p}:/var/lib/lisa/flutter/bin"),
         Err(_) => "/var/lib/lisa/flutter/bin".to_string(),
     };
-    match Command::new(program)
-        .args(argv)
-        .env("PATH", path)
-        .current_dir(jail.root())
-        .output()
-    {
+    // Confine the CHILD, not us (ADR-0029 phase 3, #53). `cargo test`
+    // compiles and runs build.rs and test bodies that the model just
+    // wrote, as this user, outside every rule in lisa-guard — once
+    // execve has happened the guard is not in the process any more.
+    //
+    // A Landlock ruleset is inherited and cannot be relaxed, so applying
+    // it here would confine the harness itself and every later child for
+    // the life of the daemon. It goes in pre_exec: forked, not yet
+    // exec'd. Paths are resolved before the fork; the callback only
+    // makes syscalls.
+    let mut cmd = Command::new(program);
+    cmd.args(argv).env("PATH", path).current_dir(jail.root());
+    let confinement = crate::confine::available();
+    #[cfg(unix)]
+    if confinement.is_enforced() {
+        let project = jail.root().to_path_buf();
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        // SAFETY: runs in the forked child before exec. It allocates
+        // nothing and takes no locks — `confine` builds its rules from
+        // the two paths captured above and issues syscalls.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
+                if crate::confine::confine(&project, &home).is_enforced() {
+                    Ok(())
+                } else {
+                    // Refuse to run rather than run unconfined after
+                    // deciding confinement was available: silently
+                    // dropping the jail is the failure this exists to
+                    // prevent.
+                    Err(std::io::Error::other("landlock confinement failed"))
+                }
+            });
+        }
+    }
+    match cmd.output() {
         Err(e) => ToolOutcome::err(format!("running `{program}`: {e}")),
         Ok(out) => {
             let status = out
@@ -404,8 +435,17 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
                 .code()
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| out.status.to_string());
+            // If the child ran unconfined, the model — and the Ledger
+            // preview, and whoever reads the transcript afterwards —
+            // is told. Reporting a jail that did not close would be
+            // worse than not having one, because the point of a
+            // guardrail is that somebody can rely on it.
+            let note = confinement
+                .note()
+                .map(|n| format!("note: {n}\n"))
+                .unwrap_or_default();
             let text = format!(
-                "exit: {status}\n{}{}",
+                "{note}exit: {status}\n{}{}",
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             );

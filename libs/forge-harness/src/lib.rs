@@ -14,6 +14,7 @@
 //! self-inspection join the loop next (run-controller).
 
 pub mod agent;
+pub mod confine;
 pub mod jail;
 pub mod openai;
 pub mod shell_tool;

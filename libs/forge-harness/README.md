@@ -27,7 +27,6 @@ Nobody is watching it, so the boundaries are deterministic and live in
 `run_tests` invokes `cargo test` / `flutter test` over source the model
 just wrote, which executes `build.rs` and test bodies as the user,
 outside every guard above. So: **jailed for its own file tools,
-unconfined for the toolchains it invokes.** Landlock closes this
 (ADR-0029 phase 3); until it lands, run the forge loop on projects you'd
 already be willing to `cargo test`.
 
@@ -47,6 +46,17 @@ against real models and the scripted-backend test; the Flutter lane
 scaffolds, verifies, builds and installs.
 
 ## Limits and open issues
+
+- **Subprocesses are Landlock-confined on Linux** (ADR-0029 phase 3,
+  #53). `cargo test` compiles and runs `build.rs` and test bodies the
+  model just wrote; once `execve` has happened no Rust-level guard is in
+  that process any more. The child is restricted to the project
+  directory plus named build caches, with the toolchain read-only —
+  applied in `pre_exec`, because a Landlock ruleset is inherited and
+  cannot be relaxed, so applying it in the harness would confine the
+  harness. Where Landlock is unavailable (macOS, older kernels) the
+  subprocess runs **unconfined and says so** in its own tool output; a
+  jail reported but not closed would be worse than none.
 
 - **The Ledger is mandatory** (#129, closed). `AgentConfig` has no
   `Default`: constructing one requires deciding where the record goes,
