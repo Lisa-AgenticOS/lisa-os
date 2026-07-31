@@ -80,7 +80,15 @@ FCITX_CONFIGURATION(
                                       _("Request timeout (seconds)"), 30};
     fcitx::Option<bool> doubleShiftSummon{
         this, "DoubleShiftSummon",
-        _("Double-tap Shift summons the Lisa assistant overlay"), true};);
+        _("Double-tap Shift summons the Lisa assistant overlay"), true};
+    // Hands-free (PLAN §5.7.5): the double tap also opens the
+    // microphone, the shape people know from Siri. Separate from the
+    // summon switch on purpose — somebody may want the overlay on that
+    // gesture without it ever listening, and turning a microphone on is
+    // not a detail to bundle into somebody else's preference.
+    fcitx::Option<bool> doubleShiftListen{
+        this, "DoubleShiftListen",
+        _("...and starts listening (speak instead of typing)"), true};);
 
 class LisaWritingTools final : public fcitx::AddonInstance {
 public:
@@ -214,6 +222,25 @@ private:
         msg << std::string(); // empty prompt: just show the layer
         msg << fcitx::dbus::Container(fcitx::dbus::Container::Type::Array,
                                       fcitx::dbus::Signature("{sv}"));
+        // options: {"listen": <true>} asks the overlay to open the
+        // microphone as well as the layer. Sent only when configured,
+        // and the overlay treats its absence as "do not listen" — so an
+        // older frontend paired with a newer addon summons silently
+        // rather than recording unexpectedly.
+        if (*config_.doubleShiftListen) {
+            // a{sv} is written as nested containers: a DictEntry inside
+            // the array, and the value as an explicit Variant container.
+            // There is no DictEntryEnd — every container closes with
+            // ContainerEnd, which is why the nesting has to be exact.
+            msg << fcitx::dbus::Container(fcitx::dbus::Container::Type::DictEntry,
+                                          fcitx::dbus::Signature("sv"));
+            msg << std::string("listen");
+            msg << fcitx::dbus::Container(fcitx::dbus::Container::Type::Variant,
+                                          fcitx::dbus::Signature("b"));
+            msg << true;
+            msg << fcitx::dbus::ContainerEnd();   // variant
+            msg << fcitx::dbus::ContainerEnd();   // dict entry
+        }
         msg << fcitx::dbus::ContainerEnd();
         summonSlot_ = msg.callAsync(
             kSummonTimeoutUsec,

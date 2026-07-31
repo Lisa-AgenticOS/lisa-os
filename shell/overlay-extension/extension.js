@@ -39,6 +39,13 @@ import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH,
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
 const VoiceProxy = Gio.DBusProxy.makeProxyWrapper(VOICE_IFACE_XML);
 
+// How long the hands-free lane listens before stopping itself. Long
+// enough for a sentence, short enough that a forgotten session is not an
+// open microphone. Push-to-talk does not use this — it ends when the key
+// does — and the Voice1 service keeps a much longer stuck-key backstop
+// underneath, which is a safety net rather than an interaction.
+const HANDS_FREE_SECONDS = 12;
+
 const CHIPS = [
     // [id, label, hint] — window/selection ship in later layers
     // (§5.7.4 / §5.7.3 layer 3); the backend reports them unavailable.
@@ -325,6 +332,7 @@ export default class LisaOverlayExtension extends Extension {
         this._talkSession = 0;
         this._talkWatch = 0;
         this._talkKey = 0;
+        this._handsFreeTimer = 0;
         this._listenOsd = null;
 
         Main.wm.addKeybinding(
@@ -462,6 +470,10 @@ export default class LisaOverlayExtension extends Extension {
     }
 
     _stopTalking() {
+        if (this._handsFreeTimer) {
+            GLib.source_remove(this._handsFreeTimer);
+            this._handsFreeTimer = 0;
+        }
         if (this._talkWatch) {
             global.stage.disconnect(this._talkWatch);
             this._talkWatch = 0;
@@ -490,6 +502,38 @@ export default class LisaOverlayExtension extends Extension {
         // Straight into the overlay with the text already submitted —
         // the same handoff the launcher's "Ask Lisa" lane performs.
         this._summon(text, {});
+    }
+
+    // Escape while listening cancels the recording as well as dismissing
+    // the layer. Without this the overlay closes and the microphone
+    // stays open behind it — an indicator on a surface nobody is looking
+    // at is not an indicator.
+    _cancelListening() {
+        if (this._talkSession) {
+            const id = this._talkSession;
+            this._stopTalking_noSubmit(id);
+            return true;
+        }
+        return false;
+    }
+
+    _stopTalking_noSubmit(id) {
+        if (this._handsFreeTimer) {
+            GLib.source_remove(this._handsFreeTimer);
+            this._handsFreeTimer = 0;
+        }
+        if (this._talkWatch) {
+            global.stage.disconnect(this._talkWatch);
+            this._talkWatch = 0;
+        }
+        this._talkSession = 0;
+        this._talkKey = 0;
+        this._hideListening();
+        try {
+            this._voiceProxy_().CancelSync(id);
+        } catch (e) {
+            logError(e, 'could not cancel the recording');
+        }
     }
 
     _onVoiceFailed(id, reason) {
@@ -567,6 +611,49 @@ export default class LisaOverlayExtension extends Extension {
             this._overlay.cancelActive();
             this._overlay.submit();
         }
+        // Hands-free lane (§5.7.5): summon AND open the microphone, the
+        // shape people know from Siri. Double-tap-Shift asks for this;
+        // the launcher's "Ask Lisa" hand-off does not, so it stays opt-in
+        // per call rather than becoming what Summon always does.
+        const listen = options?.listen;
+        const wants = listen instanceof GLib.Variant
+            ? listen.recursiveUnpack() : Boolean(listen);
+        if (wants)
+            this._listenHandsFree();
+    }
+
+    // Listening without a key held down. Push-to-talk ends when the key
+    // comes up; this has no key, so it needs its own ending — and an
+    // open microphone with no defined end is the thing this feature must
+    // never be. Three of them: a ceiling, Escape, and a second
+    // double-tap.
+    //
+    // The ceiling lives here rather than in the Voice1 service because
+    // it is a UI decision. The service keeps its own much longer
+    // stuck-key backstop, which is a safety net, not an interaction.
+    _listenHandsFree() {
+        if (this._talkSession) {
+            // A second double-tap while listening means "stop", the same
+            // way pressing the key again does on a phone.
+            this._stopTalking();
+            return;
+        }
+        let id;
+        try {
+            id = this._voiceProxy_().StartListeningSync()[0];
+        } catch (e) {
+            Main.notify('Lisa', `Cannot listen: ${e.message}`);
+            return;
+        }
+        this._talkSession = id;
+        this._showListening();
+        this._handsFreeTimer = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT, HANDS_FREE_SECONDS, () => {
+                this._handsFreeTimer = 0;
+                if (this._talkSession === id)
+                    this._stopTalking();
+                return GLib.SOURCE_REMOVE;
+            });
     }
 
     _show() {
@@ -583,7 +670,12 @@ export default class LisaOverlayExtension extends Extension {
         });
         this._keyPressId = this._overlay.connect('key-press-event', (actor, event) => {
             if (event.get_key_symbol() === Clutter.KEY_Escape) {
-                // First Escape cancels a live stream, second dismisses.
+                // Listening first: closing the layer while the recording
+                // continued would leave an open microphone behind a
+                // surface nobody is looking at, and the indicator would
+                // go with it. Then a live stream, then dismiss.
+                if (this._cancelListening())
+                    return Clutter.EVENT_STOP;
                 if (!this._overlay.cancelActive())
                     this._hide();
                 return Clutter.EVENT_STOP;
@@ -596,6 +688,12 @@ export default class LisaOverlayExtension extends Extension {
     _hide() {
         if (!this._overlay)
             return;
+        // The layer going away must take the microphone with it, by
+        // whatever route it went — Escape, Hide() over D-Bus, the
+        // extension being disabled. Anything that can close this surface
+        // and leave a recording running is an open microphone with no
+        // indicator, which is the one outcome this feature may not have.
+        this._cancelListening();
         if (this._keyPressId) {
             this._overlay.disconnect(this._keyPressId);
             this._keyPressId = 0;
