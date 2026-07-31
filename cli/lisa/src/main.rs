@@ -261,6 +261,21 @@ enum Command {
         #[arg(long)]
         model: Option<PathBuf>,
     },
+    /// Record from the microphone and transcribe it (push-to-talk,
+    /// §5.7.5). The capture half every other voice verb assumed.
+    Listen {
+        /// Stop after this many seconds. Push-to-talk holds the key for
+        /// as long as somebody is talking, so this is a ceiling, not a
+        /// setting: an unbounded recorder that is never stopped fills a
+        /// disk quietly.
+        #[arg(long, default_value_t = 15)]
+        seconds: u32,
+        #[arg(long)]
+        model: Option<PathBuf>,
+        /// Keep the recording at this path instead of discarding it.
+        #[arg(long)]
+        keep: Option<PathBuf>,
+    },
     /// Speak text with the local voice (piper / say) (TTS, §5.7.5).
     Say { text: Vec<String> },
     /// Lisa Ambient: the voice loop (ADR-0011).
@@ -644,6 +659,24 @@ fn run() -> anyhow::Result<()> {
         Command::Transcribe { audio, model } => {
             let m = voice::whisper_model(model)?;
             println!("{}", voice::transcribe(&audio, &m)?);
+            Ok(())
+        }
+        Command::Listen {
+            seconds,
+            model,
+            keep,
+        } => {
+            // Resolve the model BEFORE opening the microphone. Recording
+            // somebody and then discovering there is nothing to
+            // transcribe with wastes the one thing that cannot be
+            // retried — they have already said it.
+            let m = voice::whisper_model(model)?;
+            let text = voice::listen(seconds, &m, keep.as_deref())?;
+            if text.is_empty() {
+                eprintln!("(nothing heard)");
+            } else {
+                println!("{text}");
+            }
             Ok(())
         }
         Command::Say { text } => voice::say(&text.join(" ")),

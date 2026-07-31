@@ -14,6 +14,36 @@ scaffolds a lisa_ui app and runs the loop against `flutter analyze`;
 the forge apps dir on /var and write the `.desktop` entry that puts it in
 the app grid.
 
+**Voice verbs (PLAN §5.7.5, ADR-0011).**
+
+```
+lisa listen                       # record from the mic, print the transcript
+lisa listen --seconds 30 --keep /tmp/q.wav
+lisa transcribe recording.wav     # transcribe a file instead
+lisa say "the build is green"     # speak it
+lisa ambient once recording.wav --speak   # transcribe → classify → answer → say
+```
+
+`listen` is push-to-talk without a key to hold: it records at 16 kHz mono
+(what whisper.cpp wants), stops at `--seconds` or on Ctrl-C, and prints
+what it heard. `--keep` retains the audio, which is how you tell a bad
+transcript caused by the microphone from one caused by the model.
+
+Both engines come from `os/packages/`, because Arch ships neither.
+Verified 2026-07-31 as a round trip in a container with the build trees
+deleted: piper synthesized "The quick brown fox jumps over the lazy dog"
+and whisper transcribed it back word for word.
+
+**Limits.** There is no wake word and no always-on capture — `listen`
+records only while you run it, which is the whole design until `voiced`
+lands. `lisa ambient` still needs an audio file for the loop; it is not
+wired to `listen` yet. TTS needs a voice installed
+(`lisa models get piper-libritts-r-medium-en-us`) and STT a whisper model
+(`lisa models get whisper-base-en`); both verbs say so, with the command
+to run, rather than failing quietly. **piper is not in the ARM image** —
+Arch Linux ARM has no onnxruntime — so on aarch64 `lisa say` falls
+through to printing the text.
+
 **`lisa mail` — join a connected account to the Maildir the Mail app
 reads (issue #155).**
 

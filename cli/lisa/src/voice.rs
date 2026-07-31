@@ -54,6 +54,96 @@ pub fn transcribe(audio: &Path, model: &Path) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Record from the microphone, then transcribe it. This is push-to-talk
+/// without a key to hold: the capture half that `transcribe` (file in)
+/// and `say` (audio out) were both written against and neither had.
+///
+/// Recording stops at `seconds` or when the user interrupts, whichever
+/// comes first. `keep` writes the audio somewhere permanent — useful
+/// when a transcript is wrong and the question is whether the microphone
+/// or the model is at fault.
+pub fn listen(seconds: u32, model: &Path, keep: Option<&Path>) -> anyhow::Result<String> {
+    let wav = match keep {
+        Some(p) => p.to_path_buf(),
+        None => std::env::temp_dir().join(format!("lisa-listen-{}.wav", std::process::id())),
+    };
+
+    // 16 kHz mono 16-bit: what whisper.cpp wants. Handing it 44.1 kHz
+    // stereo makes it resample internally and transcribe slightly worse,
+    // for no gain — nothing here is listening to music.
+    let rec = recorder().context(
+        "no recorder found (tried pw-record, parecord, arecord) — \
+         on the image these come from pipewire and alsa-utils",
+    )?;
+    let args: Vec<&str> = match rec {
+        "arecord" => vec!["-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-d"],
+        // pw-record and parecord take the duration differently: they run
+        // until signalled, so the ceiling is applied by timeout(1)-style
+        // handling below rather than by a flag.
+        _ => vec![],
+    };
+
+    eprintln!("listening for up to {seconds}s — speak now, Ctrl-C to stop");
+    let status = if rec == "arecord" {
+        let secs = seconds.to_string();
+        Command::new(rec)
+            .args(&args)
+            .arg(&secs)
+            .arg(&wav)
+            .status()
+            .with_context(|| format!("running {rec}"))?
+    } else {
+        // pw-record/parecord stop on signal. `timeout` is coreutils and
+        // is present wherever these are.
+        Command::new("timeout")
+            .arg(seconds.to_string())
+            .arg(rec)
+            .arg("--rate=16000")
+            .arg("--channels=1")
+            .arg("--format=s16")
+            .arg(&wav)
+            .status()
+            .with_context(|| format!("running {rec} under timeout"))?
+    };
+    // `timeout` exits 124 when it fires, which here is the NORMAL end of
+    // a recording, not a failure. Treating it as an error is how this
+    // would reject every recording that ran to the ceiling.
+    let timed_out = status.code() == Some(124);
+    if !status.success() && !timed_out {
+        bail!("{rec} failed while recording (exit {:?})", status.code());
+    }
+
+    let bytes = std::fs::read(&wav)
+        .with_context(|| format!("{rec} produced no recording at {}", wav.display()))?;
+    if !is_wav(&bytes) {
+        bail!(
+            "{rec} wrote {} bytes and not a WAV — is a microphone connected?",
+            bytes.len()
+        );
+    }
+    // A header with no samples after it is a microphone that is muted or
+    // permission-denied. whisper would transcribe it as silence and the
+    // user would blame the model.
+    if bytes.len() <= 44 {
+        bail!("recorded a header and no audio — check the microphone is not muted");
+    }
+
+    let text = transcribe(&wav, model)?;
+    if keep.is_none() {
+        let _ = std::fs::remove_file(&wav);
+    }
+    Ok(text)
+}
+
+/// First available recorder. pw-record is native to the image's PipeWire
+/// stack; arecord comes from alsa-utils, which is in the image so sound
+/// can be proved below PipeWire (ADR-0024).
+fn recorder() -> Option<&'static str> {
+    ["pw-record", "parecord", "arecord"]
+        .into_iter()
+        .find(|b| which(b))
+}
+
 /// Speak text locally: piper on the image, `say` on a macOS dev host.
 pub fn say(text: &str) -> anyhow::Result<()> {
     if which("piper") {
