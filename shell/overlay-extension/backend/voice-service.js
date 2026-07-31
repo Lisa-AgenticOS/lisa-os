@@ -145,6 +145,17 @@ export class VoiceService {
             if (!wav || !GLib.file_test(wav, GLib.FileTest.EXISTS))
                 throw new Error('the recorder produced no audio');
 
+            // A WAV header with no samples after it is 44 bytes. That is
+            // what a press-press faster than the recorder can start
+            // produces, and whisper reads it as silence — so the user is
+            // told "did not catch that", which blames their speech for a
+            // recording that never happened. Say the true thing instead.
+            const size = Gio.File.new_for_path(wav)
+                .query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null)
+                .get_size();
+            if (size <= 44)
+                throw new Error('nothing was recorded — hold the key a moment longer');
+
             const argv = transcribeArgv(wav);
             argv[0] = GLib.getenv('LISA_CLI') ?? 'lisa';
             const proc = Gio.Subprocess.new(argv,
