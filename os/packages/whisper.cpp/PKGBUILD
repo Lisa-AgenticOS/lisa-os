@@ -26,7 +26,7 @@
 pkgname=whisper.cpp
 # Upstream tags releases; v1.9.1 is 2026-06-19.
 pkgver=v1.9.1
-pkgrel=1
+pkgrel=2
 pkgdesc="OpenAI Whisper inference in C/C++ — the ASR engine behind lisa transcribe (§5.7.5)"
 arch=(x86_64 aarch64)
 url="https://github.com/ggml-org/whisper.cpp"
@@ -53,6 +53,7 @@ build() {
     -DGGML_NATIVE=OFF \
     -DGGML_BACKEND_DL=ON \
     -DGGML_CPU_ALL_VARIANTS=ON \
+    -DGGML_BACKEND_DIR=/usr/lib \
     -DCMAKE_INSTALL_RPATH=/usr/lib \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
   # GGML_NATIVE=OFF matters: ON bakes -march=native, and this package is
@@ -70,6 +71,14 @@ build() {
   # BACKEND_DL + CPU_ALL_VARIANTS is the way to have both: every CPU
   # variant is built as a separate shared backend and the best one is
   # selected at load. No baked -march, and AVX2 where it exists.
+  #
+  # BACKEND_DIR is NOT optional with BACKEND_DL, and shipping without
+  # it produced a binary that ABORTED on the device (20260731.61,
+  # devices=0 backends=0): ggml's default dlopen search is the
+  # executable's directory and the cwd — /usr/bin holds no backends,
+  # so a package whose fourteen variants sat correctly in /usr/lib
+  # loaded none of them. check() below exercises the actual dlopen
+  # path, because --help does not and a variants-on-disk count cannot.
   #
   # The RPATH pair matters just as much and is less obvious. By default
   # cmake writes a RUNPATH pointing at the BUILD directory, so the
@@ -103,6 +112,28 @@ check() {
   # line is what that decision costs, and it is the cheaper half of the
   # trade — the alternative is a binary that runs here and nowhere else.
   LD_LIBRARY_PATH="$srcdir/build/bin" "$srcdir/build/bin/whisper-cli" --help >/dev/null
+
+  # --help proved nothing about the part that actually broke: with
+  # BACKEND_DL the CPU code arrives by dlopen at init, and 20260731.61
+  # shipped a whisper-cli that passed --help and then ABORTED on every
+  # real invocation, because no backend was found. So: exercise the
+  # dlopen path. cwd is in ggml's search list, so running from the
+  # build's bin directory stands in for /usr/lib on the device; the
+  # model is garbage on purpose — by the time whisper rejects it, the
+  # backends either loaded (the line asserted below) or did not.
+  cd "$srcdir/build/bin"
+  local out
+  out=$(LD_LIBRARY_PATH=. ./whisper-cli -m /dev/null -f /dev/null 2>&1 || true)
+  if ! grep -q "load_backend: loaded" <<<"$out"; then
+    echo "!! whisper-cli loaded NO dynamic backend — on a device this" >&2
+    echo "   aborts at startup (devices=0). Output was:" >&2
+    echo "$out" | head -20 >&2
+    return 1
+  fi
+  # And the baked search dir is the one the package installs into —
+  # cwd made the check above pass; only GGML_BACKEND_DIR makes the
+  # installed binary pass.
+  grep -q "GGML_BACKEND_DIR:PATH=/usr/lib" "$srcdir/build/CMakeCache.txt"
 }
 
 package() {
