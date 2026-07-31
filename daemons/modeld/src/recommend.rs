@@ -104,6 +104,8 @@ mod tests {
             engine: "llama-server".into(),
             source: None,
             blake3: None,
+            config_source: None,
+            config_blake3: None,
             min_ram_gb: min,
             notes: None,
             revoked: false,

@@ -131,12 +131,30 @@ engine = "whisper-cpp"
 min_ram_gb = 4
 
 [[model]]
-id = "piper-voices-base"
+# TTS for the spoken reply (§5.7.5, ADR-0011). piper onnx voice.
+#
+# LICENSE IS WHY THIS VOICE AND NOT A BETTER-KNOWN ONE. The obvious
+# default, en_US-lessac-medium, is trained on Blizzard 2013 data whose
+# licence is a registration form — name, postal address and a contact
+# person, agreed per organisation. That cannot be shipped in an OS
+# image. en_US-ryan-high is CC BY-NC-SA: no commercial use. The Mycroft
+# mimic3 voices (amy, alan, kusal) state only "See URL", which is not a
+# licence review. LibriTTS-R is CC BY 4.0 — redistributable with
+# attribution, which the About page carries.
+id = "piper-libritts-r-medium-en-us"
 task = "tts"
 tiers = [0, 1, 2, 3, 4]
-license = "MIT"
+license = "CC-BY-4.0"
 engine = "piper"
+source = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx"
+blake3 = "43608e5c7dfd5cc00660a2c67783f752f0c93217bf1d27e15454cb957f6f55ac"
+# The voice is TWO files. The .onnx.json carries the phoneme map, the
+# 22.05 kHz sample rate and the 904-speaker table; without it piper has
+# weights it cannot use.
+config_source = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx.json"
+config_blake3 = "6c75327cfbb14ff2db4c26c3bc73458bcd9709194e4352d9ff184e9955b094c5"
 min_ram_gb = 2
+notes = "English TTS, ~75 MiB, 22.05 kHz, 904 speakers (defaults to 0). Verified 2026-07-31: synthesized a non-silent RIFF/WAVE through the packaged piper. Dataset LibriTTS-R (openslr.org/141), CC BY 4.0 — attribution required."
 
 [[model]]
 id = "openwakeword"

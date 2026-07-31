@@ -2960,6 +2960,24 @@ fn models(cmd: ModelsCmd, store_root: Option<PathBuf>) -> anyhow::Result<()> {
                 e.size as f64 / (1 << 30) as f64,
                 ref_path.display()
             );
+            // A piper voice is weights plus an .onnx.json config, and the
+            // weights alone will not synthesize. Pulled under `<id>.json`
+            // so the engine can find it next to the ref it was told about.
+            //
+            // Half-pinned is refused rather than half-fetched: an entry
+            // naming a config with no hash would otherwise install an
+            // unverified file beside a verified one.
+            match (&entry.config_source, &entry.config_blake3) {
+                (Some(cfg_src), Some(cfg_hash)) => {
+                    let c = fetch::pull(&store, cfg_src, &format!("{id}.json"), cfg_hash)?;
+                    println!("installed `{}` (config, {} bytes)", c.name, c.size);
+                }
+                (None, None) => {}
+                _ => bail!(
+                    "`{id}` pins only half of its config artifact — \
+                     config_source and config_blake3 must both be set"
+                ),
+            }
         }
         ModelsCmd::Hash { file } => {
             println!("{}", ModelStore::hash_file(&file)?);
