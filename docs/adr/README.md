@@ -25,7 +25,7 @@ Read it as: **what would a person find on a device today.**
 | 0008 portal standalone | yes | Installed since v20260730.55 (#153) |
 | 0009 agent bus core | yes | — |
 | 0010 remote providers | yes | PKCE state fixed (#110); needs a live sign-in to confirm |
-| 0011 ambient assistant | **no** | No `voiced`, no wake word, no push-to-talk. PLAN §5.7.5 |
+| 0011 ambient assistant | partial | The middle is built and verified: `lisa transcribe` (whisper.cpp) → `ambient classify` → `say` (piper), driven from an audio FILE. Missing both ends — live mic capture, wake word, push-to-talk — and the `voiced` daemon. Nothing is installed on a device: no whisper, no piper, no ASR/TTS model (#158) |
 | 0012 control-center panel | yes | — |
 | 0013 harness intents | partial | Sessions/Memory/Skills done. Soul partial; Crons, Hands, Background tasks, Self-improvement not started |
 | 0014 lisa_ui fork | yes | — |
@@ -53,7 +53,7 @@ Read it as: **what would a person find on a device today.**
 | 0036 assistant acts on its own | **no** | Depends on 0025 |
 | 0037 browser is a Lisa app | partial | Surfer ships; write tools and the agent surface open (#146) |
 
-Three decisions have **no** implementation at all — 0011, 0031, 0036.
+Two decisions have **no** implementation at all — 0031 and 0036 — and 0011 has a tested pipeline with no way to speak into it.
 
 An earlier version of this table listed 0025 among them, which was
 wrong: the Assistant is on the harness and calls Agent Bus tools. The
