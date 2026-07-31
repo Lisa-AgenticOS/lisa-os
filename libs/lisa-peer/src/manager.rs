@@ -50,8 +50,17 @@ use std::path::{Path, PathBuf};
 ///   script that `exec`s one of these, so neither the script nor the
 ///   shell is ever the caller's executable;
 /// - Settings, which hosts the Intelligence panel in-process.
-pub const DEFAULT_MANAGERS: [&str; 3] = [
+pub const DEFAULT_MANAGERS: [&str; 4] = [
     "/usr/lib/lisa/bin/lisa",
+    // Both payload locations. The runtime channel moved to
+    // /var/lib/lisa-apps because the old path sits inside
+    // inferenced's DynamicUser StateDirectory, where no user can reach
+    // it (see APPS_DIR in cli/lisa/src/apps.rs). /usr/bin/lisa execs
+    // whichever it finds, so this list has to name both or the CLI
+    // becomes un-identifiable the moment a runtime payload installs —
+    // and the failure is a refusal to manage grants, which reads like a
+    // security decision rather than a stale path.
+    "/var/lib/lisa-apps/payloads/runtime/current/bin/lisa",
     "/var/lib/lisa/apps/payloads/runtime/current/bin/lisa",
     "/usr/bin/gnome-control-center",
 ];
