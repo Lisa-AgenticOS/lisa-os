@@ -99,6 +99,52 @@ Both actions are logged to the Ledger (kind `boot.repair`).
 - **GRUB-style scripted fallback** — we are not adding a second boot
   loader; sd-boot's simplicity is load-bearing (PLAN §3).
 
+## Phase 3: the console the owner is dropped at (issue #23, 2026-07-31)
+
+Everything above is about reaching a *working* system. This is about the
+case where none exists and systemd drops to `emergency.service` — which
+runs `sulogin`, which refuses:
+
+```
+You are in emergency mode... Cannot open access to console,
+the root account is locked.
+```
+
+Verified on the reference iMac: `passwd -S root` reports `L`, both
+`emergency.service` and `rescue.service` run `systemd-sulogin-shell`,
+and no drop-in exists. The rescue path ends at a refusal.
+
+**Decision: set `SYSTEMD_SULOGIN_FORCE=1` on both units**, shipped as a
+drop-in in the `lisa` package. `systemd-sulogin-shell` reads it from the
+environment and from the kernel command line; the drop-in covers the
+first, and the second remains available to somebody who has already
+opened the boot menu.
+
+Both units, not just `emergency`: a failed boot lands in `emergency`,
+`systemctl rescue` lands in `rescue`, and a recovery path that works
+from only one of them is one a person finds by luck.
+
+### Why this is not a security regression
+
+The root filesystem is not encrypted. Anyone at the machine can already
+read and rewrite every byte with a USB stick — which is precisely how
+the device was recovered after field incident #20. Refusing them a
+shell protects nothing and converts a recoverable fault into a brick.
+
+It is also the wrong shape of guardrail. A guardrail sits between the
+model and the machine, never between a person and their own machine
+(CLAUDE.md 6a, ADR-0030). Emergency mode is reached by a human at a
+console *after their computer failed to boot*: the last place to be
+enforcing policy against them.
+
+### What would change this
+
+TPM-backed disk encryption (PLAN §3, `systemd-cryptenroll`) inverts the
+reasoning — a forced rescue shell on an unlocked rootfs becomes a way
+*past* the encryption rather than a way around a locked account. This
+drop-in is to be reconsidered as part of that work rather than carried
+forward by inertia.
+
 ## Acceptance (per issue #23)
 
 A nightly `ab-recovery` job that reconstructs the #20 disk state —
@@ -107,6 +153,12 @@ then (a) boots the Lisa Rescue entry and asserts it lands in the healthy
 root, and (b) boots normally and asserts the self-repair pass removed
 the dangling entry and restored the missing one, with `boot.repair`
 ledger entries present.
+
+Phase 3 adds (c): with **both** slots broken, the machine reaches a
+usable shell rather than the locked-account refusal — the state that
+required a USB reinstall in field incident #2 (#45). Asserting the
+drop-in is installed is not the same claim and is not enough; the
+assertion has to be that a shell appears.
 
 ## Consequences
 

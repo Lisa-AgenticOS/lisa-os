@@ -202,6 +202,14 @@ package_lisa-cli() {
         "$pkgdir/usr/lib/systemd/user/lisa-mail-sync.service"
     install -Dm644 os/packages/lisa/lisa-mail-sync.timer \
         "$pkgdir/usr/lib/systemd/user/lisa-mail-sync.timer"
+    # A rescue shell the owner can actually reach (issue #23). Both
+    # units, because emergency.service is where a failed boot lands and
+    # rescue.service is where `systemctl rescue` goes — a recovery path
+    # that works from only one of them is one a person finds by luck.
+    for unit in emergency rescue; do
+        install -Dm644 os/packages/lisa/emergency-force-sulogin.conf \
+            "$pkgdir/usr/lib/systemd/system/$unit.service.d/10-lisa-force-sulogin.conf"
+    done
     # Terminal integration (PLAN §5.8): opt-in shell hooks for
     # `lisa explain` / `lisa suggest` (Ctrl+G review gate). All logic is
     # in the CLI; these only wire keys and prompts (CLAUDE.md rule 4).
