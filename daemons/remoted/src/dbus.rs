@@ -46,10 +46,23 @@ impl Remote1 {
         let peer = lisa_peer::resolve(conn, header)
             .await
             .map_err(|_| refused(None))?;
+        // Same as the socket path: carry WHY identification failed, or a
+        // refusal on this surface is indistinguishable from a refusal on
+        // that one and neither says which step broke (#161).
         #[cfg(unix)]
-        let exe = lisa_peer::exe_of_peer(&peer).ok();
+        let identified = lisa_peer::exe_of_peer(&peer);
         #[cfg(not(unix))]
-        let exe: Option<PathBuf> = None;
+        let identified: Result<PathBuf, lisa_peer::IdentityError> =
+            Err(lisa_peer::IdentityError::Unsupported);
+        let exe = identified.as_ref().ok().cloned();
+        if let Err(e) = &identified {
+            tracing::warn!(
+                identity = %e,
+                pid = peer.pid.unwrap_or(0),
+                same_user = peer.is_same_user_as_us(),
+                "could not identify the caller of a management call"
+            );
+        }
         let managers = lisa_peer::manager::resolve_managers(&self.managers);
         Manager::authorize(peer.is_same_user_as_us(), exe.as_deref(), &managers)
             .map_err(|_| refused(exe.as_deref()))

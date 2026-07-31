@@ -145,14 +145,25 @@ fn manager_of(
     let Some(peer) = peer else {
         return Err(refuse());
     };
+    // The identification error is carried, not discarded (#161). An
+    // empty `exe` cannot tell "the bus gave us no pidfd" from "we have a
+    // pidfd but could not read /proc/<pid>/exe" — and those have
+    // completely different fixes. Every caller on this machine was
+    // refused with exe="" and the log said nothing more, so the reason
+    // had to be reconstructed by reading code.
     #[cfg(unix)]
-    let exe = lisa_peer::exe_of_peer(peer).ok();
+    let identified = lisa_peer::exe_of_peer(peer);
     #[cfg(not(unix))]
-    let exe: Option<PathBuf> = None;
+    let identified: Result<PathBuf, lisa_peer::IdentityError> =
+        Err(lisa_peer::IdentityError::Unsupported);
+    let exe = identified.as_ref().ok().cloned();
     let allowed = lisa_peer::manager::resolve_managers(&managers.0);
     Manager::authorize(peer.is_same_user_as_us(), exe.as_deref(), &allowed).map_err(|why| {
         tracing::warn!(
             exe = exe.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+            identity = identified.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
+            pid = peer.pid.unwrap_or(0),
+            same_user = peer.is_same_user_as_us(),
             %why,
             "refused a management call over the socket"
         );
