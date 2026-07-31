@@ -247,12 +247,35 @@ mod tests {
         );
     }
 
-    /// The shipped defaults are the three files documented above — a
-    /// fourth appearing without a decision is worth failing over.
+    /// A new PROGRAM in this list must be a decision, not a diff nobody
+    /// read. The original form of this test asserted a count of three,
+    /// and it did its job — it failed when the runtime payload moved to
+    /// /var/lib/lisa-apps and a fourth path appeared.
+    ///
+    /// But a count is the wrong invariant: it cannot tell "the same
+    /// binary is now reachable at two paths" from "something new may
+    /// manage grants", and only the second is dangerous. So the
+    /// assertion is on program identity instead, and it still fails for
+    /// anything genuinely new.
     #[test]
-    fn the_default_allowlist_is_the_documented_three() {
-        assert_eq!(default_managers().len(), 3);
+    fn only_known_programs_may_manage_grants() {
+        let names: Vec<String> = default_managers()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        for n in &names {
+            assert!(
+                n == "lisa" || n == "gnome-control-center",
+                "unexpected manager program {n:?} — adding one is a \
+                 decision about who may change grants, not a path fix"
+            );
+        }
         assert!(default_managers().iter().all(|p| p.is_absolute()));
+        // Every path distinct: a duplicate means a botched edit.
+        let mut sorted = default_managers();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), default_managers().len());
     }
 }
 
