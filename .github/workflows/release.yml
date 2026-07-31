@@ -142,7 +142,7 @@ jobs:
               # can run with -d, and so the PKGBUILD can compare the
               # installed headers against its kernel pin.
               pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake devtools \
-                linux-headers bc
+                linux-headers bc fcitx5
 
               # A cached git source is keyed by DIRECTORY NAME, never
               # by remote, and the cache step falls back to restore-keys
