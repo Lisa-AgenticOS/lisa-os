@@ -97,11 +97,27 @@ if [ ! -f .deps-installed ]; then
     #                — imported by openwakeword/data.py but absent from
     #                  its install_requires, so `pip install -e` leaves
     #                  them out and training dies at the first import.
+    # torch from the CPU index. The default Linux wheel depends on a
+    # stack of nvidia-cuda-* packages — roughly 2.5 GiB — and there is no
+    # NVIDIA GPU in any machine this targets: the reference iMac has a
+    # Radeon Pro 560, which torch does not use either. Training here is
+    # CPU regardless, so the CUDA payload is pure download and disk.
     uv pip install --python "$PY" \
-        torch torchaudio torchinfo torchmetrics \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch torchaudio
+    uv pip install --python "$PY" \
+        torchinfo torchmetrics \
         onnx onnxruntime tqdm 'scipy<1.15' scikit-learn pyyaml huggingface_hub \
         speechbrain audiomentations torch-audiomentations acoustics \
-        pronouncing webrtcvad mutagen
+        pronouncing mutagen
+    # webrtcvad is deliberately NOT here. It was added on the assumption
+    # that a wake-word trainer needs a VAD; openWakeWord imports it
+    # nowhere — its vad.py runs Silero through onnxruntime. The
+    # assumption cost real time: webrtcvad is a C extension with no
+    # wheel, so it is the one package here that needs a compiler, and
+    # Lisa OS has an immutable root with no cc on it. A dependency
+    # nothing imports turned a machine with 100 GiB free into a machine
+    # that could not train at all.
     touch .deps-installed
 fi
 
