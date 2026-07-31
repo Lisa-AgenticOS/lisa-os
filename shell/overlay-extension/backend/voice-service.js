@@ -11,13 +11,17 @@
 //
 // WHAT IT DOES NOT DO
 //
-// It does not listen on its own. There is no wake word, no always-on
-// capture, and no timer: the microphone opens when StartListening is
-// called and closes when StopListening is, both driven by a key a
-// person is physically holding. That is a deliberate property, not a
-// missing feature — an ambient loop is a different design with a
-// different consent story (ADR-0011), and it needs its own ADR before
-// anything in this repo starts recording unprompted.
+// It does not listen on its own. There is no wake word and no always-on
+// capture: the microphone opens when StartListening is called and closes
+// when StopListening is, both driven by a person pressing a key. That is
+// a deliberate property, not a missing feature — an ambient loop is a
+// different design with a different consent story (ADR-0011), and it
+// needs its own ADR before anything in this repo records unprompted.
+//
+// The key lane is a TOGGLE rather than hold-to-talk. Not a preference:
+// a global keybinding under Wayland delivers the press to the shell and
+// every later key event to the focused application, so the release is
+// not reliably observable. See extension.js.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -26,12 +30,25 @@ import {Capture, cleanTranscript, pickRecorder, recorderArgv, transcribeArgv}
     from '../lib/voice.js';
 import {VOICE_IFACE_XML, VOICE_BUS_NAME, VOICE_OBJECT_PATH} from '../lib/iface.js';
 
-/// A recording longer than this is almost certainly a stuck key rather
-/// than somebody with a lot to say. Without it, a key-release event lost
-/// to a compositor restart leaves a recorder running on the microphone
-/// until the session ends, which is both a privacy problem and a disk
-/// one, and nothing would report it.
+/// Backstop for a session nobody stopped. The UI has its own, much
+/// shorter ceiling; this one catches the case where the UI itself went
+/// away — a crashed or reloaded extension leaving a recorder running on
+/// the microphone with no indicator and nothing to report it. Observed:
+/// a session ran until cancelled by hand because the release was never
+/// seen.
 const MAX_SECONDS = 120;
+
+/// Build a D-Bus error GJS will actually marshal.
+///
+/// `new Gio.DBusError({message})` looks right and is not: a GError needs
+/// a numeric `code` and a domain, and without them GJS throws
+/// "No property 'code' in GError constructor" — which replaces the real
+/// reason with a complaint about the error object. Every failure inside
+/// StartListening surfaced as that instead of as itself, so the caller
+/// was told the microphone could not start and never told why.
+function dbusError(message) {
+    return new GLib.Error(Gio.DBusError, Gio.DBusError.FAILED, message);
+}
 
 export class VoiceService {
     constructor(connection) {
@@ -49,14 +66,12 @@ export class VoiceService {
     StartListening() {
         const started = this._capture.start();
         if (!started.ok)
-            throw new Gio.DBusError({message: `cannot listen: ${started.reason}`});
+            throw dbusError(`cannot listen: ${started.reason}`);
 
         const recorder = pickRecorder(prog => !!GLib.find_program_in_path(prog));
         if (!recorder) {
             this._capture.cancel();
-            throw new Gio.DBusError({
-                message: 'no recorder installed (pw-record, parecord or arecord)',
-            });
+            throw dbusError('no recorder installed (pw-record, parecord or arecord)');
         }
 
         const id = started.id;
@@ -68,7 +83,7 @@ export class VoiceService {
         } catch (e) {
             this._capture.cancel();
             this._wav = null;
-            throw new Gio.DBusError({message: `could not start ${recorder}: ${e.message}`});
+            throw dbusError(`could not start ${recorder}: ${e.message}`);
         }
 
         // See MAX_SECONDS: a lost key-release must not leave the
@@ -89,7 +104,7 @@ export class VoiceService {
     StopListening(id) {
         const stopped = this._capture.stop(id);
         if (!stopped.ok)
-            throw new Gio.DBusError({message: stopped.reason});
+            throw dbusError(stopped.reason);
         this._clearGuard();
         this._emit('Transcribing', new GLib.Variant('(t)', [id]));
         // SIGINT, not SIGKILL: the recorders finalise the WAV header on

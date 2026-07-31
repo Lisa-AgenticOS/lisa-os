@@ -39,11 +39,16 @@ import {OVERLAY_IFACE_XML, OVERLAY_BUS_NAME, OVERLAY_OBJECT_PATH,
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
 const VoiceProxy = Gio.DBusProxy.makeProxyWrapper(VOICE_IFACE_XML);
 
-// How long the hands-free lane listens before stopping itself. Long
-// enough for a sentence, short enough that a forgotten session is not an
-// open microphone. Push-to-talk does not use this — it ends when the key
-// does — and the Voice1 service keeps a much longer stuck-key backstop
-// underneath, which is a safety net rather than an interaction.
+// How long either lane listens before stopping itself. Long enough for a
+// sentence, short enough that a forgotten session is not an open
+// microphone.
+//
+// BOTH lanes use it now. The key lane was meant to end when the key came
+// up, but a global keybinding under Wayland only reliably delivers the
+// PRESS — the release goes to whatever application has focus. So both
+// are toggles, and this ceiling is the backstop for both. The Voice1
+// service keeps a much longer stuck-session guard underneath, which is a
+// safety net rather than an interaction.
 const HANDS_FREE_SECONDS = 12;
 
 const CHIPS = [
@@ -330,8 +335,6 @@ export default class LisaOverlayExtension extends Extension {
         this._voiceProxy = null;
         this._voiceSignals = null;
         this._talkSession = 0;
-        this._talkWatch = 0;
-        this._talkKey = 0;
         this._handsFreeTimer = 0;
         this._listenOsd = null;
 
@@ -440,8 +443,21 @@ export default class LisaOverlayExtension extends Extension {
     }
 
     _startTalking() {
-        if (this._talkSession)
+        // TOGGLE, not hold-to-talk, and that is forced by Wayland rather
+        // than chosen. A global keybinding gives the shell the PRESS;
+        // every key event after it goes to the focused application, so
+        // `global.stage`'s captured-event sees the release only by luck.
+        // Measured on the reference iMac, both ways: one session stopped
+        // after 0.1s on a stray modifier release and transcribed
+        // silence, the next never saw a release at all and recorded
+        // until it was cancelled by hand.
+        //
+        // A second press is something GNOME delivers reliably. The
+        // ceiling and Escape remain, so a forgotten session still ends.
+        if (this._talkSession) {
+            this._stopTalking();
             return;
+        }
         let id;
         try {
             id = this._voiceProxy_().StartListeningSync()[0];
@@ -454,19 +470,16 @@ export default class LisaOverlayExtension extends Extension {
         this._talkSession = id;
         this._showListening();
 
-        // Watch for the key coming back up. The event is consumed only
-        // when it is OUR key: swallowing anything else would eat
-        // keystrokes for every other application while Lisa listens.
-        const event = Clutter.get_current_event();
-        this._talkKey = event ? event.get_key_symbol() : 0;
-        this._talkWatch = global.stage.connect('captured-event', (actor, ev) => {
-            if (ev.type() !== Clutter.EventType.KEY_RELEASE)
-                return Clutter.EVENT_PROPAGATE;
-            if (this._talkKey && ev.get_key_symbol() !== this._talkKey)
-                return Clutter.EVENT_PROPAGATE;
-            this._stopTalking();
-            return Clutter.EVENT_PROPAGATE;
-        });
+        // Same ceiling as the hands-free lane: a session that is never
+        // stopped by hand still ends, and an open microphone always has
+        // a defined end.
+        this._handsFreeTimer = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT, HANDS_FREE_SECONDS, () => {
+                this._handsFreeTimer = 0;
+                if (this._talkSession === id)
+                    this._stopTalking();
+                return GLib.SOURCE_REMOVE;
+            });
     }
 
     _stopTalking() {
@@ -474,13 +487,8 @@ export default class LisaOverlayExtension extends Extension {
             GLib.source_remove(this._handsFreeTimer);
             this._handsFreeTimer = 0;
         }
-        if (this._talkWatch) {
-            global.stage.disconnect(this._talkWatch);
-            this._talkWatch = 0;
-        }
         const id = this._talkSession;
         this._talkSession = 0;
-        this._talkKey = 0;
         this._hideListening();
         if (!id)
             return;
@@ -522,12 +530,7 @@ export default class LisaOverlayExtension extends Extension {
             GLib.source_remove(this._handsFreeTimer);
             this._handsFreeTimer = 0;
         }
-        if (this._talkWatch) {
-            global.stage.disconnect(this._talkWatch);
-            this._talkWatch = 0;
-        }
         this._talkSession = 0;
-        this._talkKey = 0;
         this._hideListening();
         try {
             this._voiceProxy_().CancelSync(id);
