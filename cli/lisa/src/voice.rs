@@ -311,6 +311,31 @@ fn say_with_piper(text: &str, voice: &Path) -> anyhow::Result<()> {
     played
 }
 
+/// Is PipeWire's default sink a null sink — one that swallows audio and
+/// reports success?
+///
+/// `auto_null` is what PipeWire falls back to when it has no real
+/// output. Asking is cheap and the alternative is unfalsifiable: a
+/// player writing into it behaves exactly like a player that worked.
+fn null_sink_is_default() -> bool {
+    let Ok(out) = Command::new("pactl").arg("get-default-sink").output() else {
+        // No pactl means no PipeWire/Pulse to be wrong about.
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let name = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .to_ascii_lowercase();
+    is_null_sink(&name)
+}
+
+/// Split out so the name matching is testable without an audio server.
+fn is_null_sink(name: &str) -> bool {
+    name == "auto_null" || name.contains("dummy") || name.contains("null")
+}
+
 /// Is this actually a RIFF/WAVE file with room for a header?
 ///
 /// The guard that turns "piper exited 0 and the speakers stayed quiet"
@@ -325,8 +350,23 @@ fn is_wav(bytes: &[u8]) -> bool {
 /// sound can be proved below PipeWire — see ADR-0024/issue #44, where
 /// every session-level indicator was green and the speakers were mute).
 fn play(wav: &Path) -> anyhow::Result<()> {
+    // A null sink accepts everything and plays nothing, and the player
+    // still exits 0 — so trying PipeWire first would "succeed" in
+    // silence and never reach aplay. Observed on the reference iMac
+    // (issue #44): the CS8409 codec is loaded and ALSA has the analog
+    // device, but PipeWire publishes no output sink for it, leaving
+    // `auto_null` as the default. Direct-ALSA playback works there;
+    // everything through PipeWire is discarded.
+    //
+    // This is exactly the failure `say` was rewritten to stop making,
+    // one layer further down: an exit code that means "accepted", not
+    // "audible".
+    let pipewire_is_a_black_hole = null_sink_is_default();
     for player in ["pw-play", "paplay", "aplay", "afplay"] {
         if !which(player) {
+            continue;
+        }
+        if pipewire_is_a_black_hole && (player == "pw-play" || player == "paplay") {
             continue;
         }
         let st = Command::new(player)
@@ -465,6 +505,23 @@ mod tests {
         let mut avi = Vec::from(*b"RIFF\0\0\0\0AVI ");
         avi.resize(44, 0);
         assert!(!is_wav(&avi));
+    }
+
+    /// A sink that accepts audio and plays nothing is indistinguishable
+    /// from one that worked, by exit code — which is how `lisa say`
+    /// would report success and be silent on the reference iMac, where
+    /// PipeWire publishes no output for the CS8409 and leaves
+    /// `auto_null` as the default (issue #44).
+    #[test]
+    fn a_null_sink_is_recognised_as_not_playing_anything() {
+        assert!(is_null_sink("auto_null"));
+        assert!(is_null_sink("dummy output"));
+        assert!(is_null_sink("null-sink-0"));
+        // Real sinks must not be mistaken for null ones, or the
+        // PipeWire path gets skipped on machines where it works.
+        assert!(!is_null_sink("alsa_output.pci-0000_00_1f.3.analog-stereo"));
+        assert!(!is_null_sink("bluez_output.00_11_22_33_44_55.1"));
+        assert!(!is_null_sink(""));
     }
 
     /// An explicitly-set voice that does not exist must resolve to
