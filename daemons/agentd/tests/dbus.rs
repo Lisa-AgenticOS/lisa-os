@@ -143,13 +143,31 @@ async fn list_and_discover_report_registered_tools() {
     assert_eq!(hits[0]["name"], "add_event");
 }
 
+/// Issue #55: this test used to assert that asserting `user` executes a
+/// read-tier call without confirmation — which is exactly the hole. The
+/// chain was taken off the wire and believed, so any session-bus peer
+/// could buy the trusted path by naming it.
+///
+/// This test binary is not one of Lisa's own programs, so its `user`
+/// claim is now rewritten to `app:<app_id>` and the call escalates. The
+/// assertion below is the security property; the old one encoded the
+/// vulnerability.
 #[tokio::test]
-async fn read_call_with_user_provenance_executes() {
+async fn an_ordinary_peer_cannot_buy_the_trusted_path_by_naming_it() {
     let f = fixture().await;
     let p = proxy(&f.client).await;
     let (_, disposition, detail) = request_call(&p, "list_events", json!({}), &["user"]).await;
-    assert_eq!(disposition, "executed", "{detail}");
-    assert_eq!(f.dispatcher.dispatched(), 1);
+    assert_eq!(
+        disposition, "confirm-chip",
+        "an unverified `user` claim must not skip confirmation: {detail}"
+    );
+    // …and the reason is visible in the parked call, not merely implied:
+    // the chain says which app it was attributed to.
+    let spec: Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(spec["chain"][0], "app:org.gnome.Calendar", "{detail}");
+    assert_eq!(spec["escalated"], true, "{detail}");
+    // Nothing ran.
+    assert_eq!(f.dispatcher.dispatched(), 0);
 }
 
 #[tokio::test]
@@ -164,9 +182,14 @@ async fn write_call_parks_then_confirm_executes_and_undo_reverts() {
         &["user"],
     )
     .await;
-    assert_eq!(disposition, "confirm-chip");
+    // Modal, not chip: this test binary is not one of Lisa's programs,
+    // so its `user` claim is rewritten to `app:` (#55) and a write-tier
+    // call from app provenance escalates. That is the tier machinery
+    // working on a chain that is now true rather than asserted.
+    assert_eq!(disposition, "confirm-modal", "{spec_json}");
     let spec: Value = serde_json::from_str(&spec_json).unwrap();
-    assert_eq!(spec["escalated"], false);
+    assert_eq!(spec["escalated"], true, "{spec_json}");
+    assert_eq!(spec["chain"][0], "app:org.gnome.Calendar", "{spec_json}");
     assert_eq!(f.dispatcher.dispatched(), 0, "nothing runs before consent");
 
     let reply = p.call_method("Confirm", &(call_id, true)).await.unwrap();

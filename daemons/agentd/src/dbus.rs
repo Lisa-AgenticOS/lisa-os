@@ -102,6 +102,36 @@ async fn consent_role(conn: &zbus::Connection, caller: &lisa_peer::PeerId) -> Co
     }
 }
 
+/// Is this caller one of Lisa's own programs?
+///
+/// Program identity from `/proc/<pid>/exe` via the peer's credentials —
+/// never `comm`, which a process can rename, and never anything the
+/// message asserts (ADR-0033). Only these may claim `user` provenance:
+/// the CLI and the overlay backend are the two surfaces a human types
+/// into, and "a human typed this" is the one tag that buys trust rather
+/// than costing it.
+///
+/// Fails CLOSED: an unreadable peer is not a Lisa program. The cost of
+/// being wrong here is a downgrade to `app:` provenance, which asks for
+/// confirmation more often — the safe direction.
+async fn caller_is_lisa_program(
+    conn: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+) -> bool {
+    let Ok(peer) = lisa_peer::resolve(conn, header).await else {
+        return false;
+    };
+    if !peer.is_same_user_as_us() {
+        return false;
+    }
+    let Ok(exe) = lisa_peer::exe_of_peer(&peer) else {
+        return false;
+    };
+    lisa_peer::manager::default_managers()
+        .iter()
+        .any(|m| m == &exe)
+}
+
 fn disposition_of(confirmation: Confirmation) -> &'static str {
     match confirmation {
         Confirmation::Silent => "executed", // Silent calls return as executed.
@@ -189,13 +219,31 @@ impl Agent1 {
             .get("actor")
             .and_then(|v| v.downcast_ref::<&str>().ok().map(str::to_string))
             .unwrap_or_else(|| "host".to_string());
-        let chain: Vec<Provenance> = options
+        let asserted: Vec<Provenance> = options
             .get("provenance")
             .and_then(|v| Vec::<String>::try_from(v.clone()).ok())
             .unwrap_or_default()
             .iter()
             .map(|s| Provenance::parse(s))
             .collect();
+        // The chain arrived in a message; whether this caller may claim
+        // `user` is decided by the transport (ADR-0033, #55). Only a
+        // known Lisa program may say "a human typed this" — that is the
+        // one tag which BUYS trust, and it was previously free to
+        // anything on the session bus.
+        let trusted = caller_is_lisa_program(conn, &header).await;
+        let verified = crate::tier::verify_chain(asserted, trusted, &app_id);
+        if verified.downgraded {
+            // Recorded, not refused: refusing would break any app that
+            // simply tagged its input wrongly. A peer repeatedly
+            // claiming to be the human is the signature worth being
+            // able to grep the Ledger for afterwards.
+            eprintln!(
+                "agentd: {app_id} asserted user provenance without being a Lisa program; \
+                 downgraded to app:{app_id}"
+            );
+        }
+        let chain = verified.chain;
 
         let outcome = self
             .bus

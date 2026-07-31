@@ -126,6 +126,66 @@ pub enum Provenance {
     Other(String),
 }
 
+/// What a caller is allowed to *assert* about where its input came from.
+///
+/// The tier machinery below is real — untrusted provenance escalates
+/// read→write→destructive and an empty chain fails closed — but until
+/// now the chain it reasoned over was asserted by the caller and never
+/// checked (#55). Any session-bus peer could send `provenance: ["user"]`
+/// and take the trusted path, which is the one that skips confirmation
+/// for read-tier tools. A guardrail whose input the model's own host can
+/// choose is not a guardrail (ADR-0030).
+///
+/// `User` is the only tag that *grants* trust: it means "a human typed
+/// this". Every other tag describes attacker-reachable content and only
+/// ever costs trust, so asserting one is self-limiting and needs no
+/// check. So the rule is narrow on purpose — only the claim that buys
+/// something is verified.
+///
+/// A peer that is not a known Lisa program has its `User` claims
+/// rewritten to `App(id)`, which is exactly what it is: input arriving
+/// from some application. The call is not refused — refusing would
+/// break every legitimate app that forgot the tag — it is *downgraded*,
+/// and the difference is recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedChain {
+    pub chain: Vec<Provenance>,
+    /// True when the caller asserted more trust than it was owed. The
+    /// Ledger records this: a peer repeatedly claiming to be the human
+    /// is the signature worth being able to grep for afterwards.
+    pub downgraded: bool,
+}
+
+/// Bind an asserted chain to what the transport says about the caller.
+///
+/// `trusted_program` comes from peer credentials — `/proc/<pid>/exe` via
+/// `lisa_peer`, never from anything in the message (ADR-0033).
+pub fn verify_chain(
+    asserted: Vec<Provenance>,
+    trusted_program: bool,
+    app_id: &str,
+) -> VerifiedChain {
+    if trusted_program {
+        return VerifiedChain {
+            chain: asserted,
+            downgraded: false,
+        };
+    }
+    let mut downgraded = false;
+    let chain = asserted
+        .into_iter()
+        .map(|p| {
+            if p == Provenance::User {
+                downgraded = true;
+                Provenance::App(app_id.to_string())
+            } else {
+                p
+            }
+        })
+        .collect();
+    VerifiedChain { chain, downgraded }
+}
+
 impl Provenance {
     pub fn parse(s: &str) -> Provenance {
         match s {
@@ -284,6 +344,76 @@ pub fn resolve(declared: Tier, chain: &[Provenance]) -> Resolution {
 
 #[cfg(test)]
 mod tests {
+
+    /// Issue #55: the chain the tier machinery reasons over was asserted
+    /// by the caller and never checked. Any session-bus peer could send
+    /// `provenance: ["user"]` and take the trusted path — the one that
+    /// skips confirmation for read-tier tools.
+    #[test]
+    fn a_stranger_cannot_claim_a_human_typed_it() {
+        let asserted = vec![Provenance::User];
+        let v = verify_chain(asserted, false, "app.example.Evil");
+        assert_eq!(v.chain, vec![Provenance::App("app.example.Evil".into())]);
+        assert!(v.downgraded, "the substitution must be recorded");
+        // …and the downgraded chain is genuinely less trusted, which is
+        // the whole point: asserting `user` must buy nothing.
+        assert!(!v.chain.contains(&Provenance::User));
+    }
+
+    #[test]
+    fn a_lisa_program_keeps_the_chain_it_asserts() {
+        // The CLI and the overlay backend are the surfaces a human types
+        // into. Downgrading them would make every ordinary request ask
+        // for confirmation, which trains people to click through.
+        let v = verify_chain(vec![Provenance::User], true, "dev.lisaos.Cli");
+        assert_eq!(v.chain, vec![Provenance::User]);
+        assert!(!v.downgraded);
+    }
+
+    /// Only the claim that BUYS trust is verified.
+    #[test]
+    fn tags_that_only_cost_trust_pass_through_untouched() {
+        // `mail`, `web`, `file` all describe attacker-reachable content
+        // and only ever escalate the tier. Asserting one is
+        // self-limiting, so checking it would be ceremony — and worse,
+        // rewriting it could LOWER the tier of a real untrusted chunk.
+        let untrusted = vec![
+            Provenance::Mail,
+            Provenance::Web,
+            Provenance::File,
+            Provenance::Other("weird".into()),
+        ];
+        let v = verify_chain(untrusted.clone(), false, "app.example.Thing");
+        assert_eq!(v.chain, untrusted);
+        assert!(!v.downgraded);
+    }
+
+    #[test]
+    fn a_mixed_chain_loses_only_its_user_link() {
+        // The realistic shape of the attack: a real untrusted chunk with
+        // `user` prepended to buy back the trust it costs.
+        let v = verify_chain(
+            vec![Provenance::User, Provenance::Mail],
+            false,
+            "app.lisaos.Mail",
+        );
+        assert_eq!(
+            v.chain,
+            vec![Provenance::App("app.lisaos.Mail".into()), Provenance::Mail]
+        );
+        assert!(v.downgraded);
+    }
+
+    #[test]
+    fn an_empty_chain_is_left_empty_and_still_fails_closed() {
+        // Verification must not accidentally populate a chain: an empty
+        // one is the fail-closed case the tier machinery already relies
+        // on, and inventing a link here would defeat it.
+        let v = verify_chain(vec![], false, "app.example.Thing");
+        assert!(v.chain.is_empty());
+        assert!(!v.downgraded);
+    }
+
     use super::*;
 
     fn user() -> Vec<Provenance> {
