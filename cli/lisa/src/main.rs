@@ -2164,6 +2164,33 @@ fn warn_if_boot_default_is_pinned(installed: Option<&str>) {
 /// (older image, no sysupdated build) — the caller falls back to the
 /// exec path. A real update failure is an error: falling back would just
 /// fail again with a worse message.
+/// Is this failure "you are not root", as opposed to a real problem?
+///
+/// Walks the error chain rather than matching on the message: the
+/// payload tree is root-owned and a desktop user hits EACCES on the
+/// first mkdir, which is a different situation from an unreachable app
+/// channel and deserves a different sentence (#140).
+fn is_permission_denied(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+    })
+}
+
+/// Will anything retry the payload fetch on its own?
+///
+/// The deferral message is only honest if the timer exists and is
+/// active. Reporting "the timer will handle it" on a system where it is
+/// masked would be a more comfortable lie than the sudo instruction it
+/// replaces.
+fn apps_sync_timer_active() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "lisa-apps-sync.timer"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn update_via_sysupdated(reboot: bool) -> anyhow::Result<bool> {
     use zbus::blocking::{Connection, Proxy};
 
@@ -2508,11 +2535,42 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
     // the silent version of this failure is a user who reboots into a
     // desktop with no browser.
     if let Err(e) = apps::sync() {
-        eprintln!(
-            "!! could not pre-fetch app payloads: {e:#}\n\
-             !! the new slot may boot without them — run `sudo lisa apps sync` \
-             once online, before or after rebooting"
-        );
+        // Two different failures wearing one message (#140).
+        //
+        // The payload tree lives on root-owned /var, so a desktop user
+        // running `lisa update` cannot write it — while the OS half of
+        // the same command works fine, because sysupdated is
+        // polkit-mediated and grants the active local session. Telling
+        // that user to run `sudo lisa apps sync` is precisely the shape
+        // ADR-0034 exists to forbid: nothing user-facing should need
+        // sudo, and `escalate.privilege` is an unoverridable Deny in our
+        // own guard. So it is not said.
+        //
+        // Nothing is lost by not saying it: lisa-apps-sync.timer already
+        // runs the same fetch as root, hourly, and exists for exactly
+        // this case. The honest report is that the work is deferred, not
+        // that the user must escalate — but ONLY if that timer is
+        // actually going to run, so that is checked rather than assumed.
+        if is_permission_denied(&e) {
+            if apps_sync_timer_active() {
+                eprintln!(
+                    "-- app payloads need root to stage; leaving them to \
+                     lisa-apps-sync.timer, which fetches them within the hour.\n\
+                     -- the next boot may briefly lack them."
+                );
+            } else {
+                eprintln!(
+                    "!! app payloads could not be staged and lisa-apps-sync.timer \
+                     is not running, so nothing will retry.\n\
+                     !! enable it with: systemctl enable --now lisa-apps-sync.timer"
+                );
+            }
+        } else {
+            eprintln!(
+                "!! could not pre-fetch app payloads: {e:#}\n\
+                 !! the new slot may boot without them; lisa-apps-sync.timer retries hourly"
+            );
+        }
     }
     // Preferred: the polkit-mediated D-Bus path (works unprivileged). Its
     // work runs inside systemd-sysupdated.service, so it already survives a
@@ -3222,5 +3280,43 @@ PRETTY_NAME="Lisa OS 20260727.47"
         assert!("20260727.47" > "20260727.46");
         // Not newer than itself: this is the "truly up to date" case.
         assert!(!("20260728.49" > "20260728.49"));
+    }
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use super::is_permission_denied;
+
+    /// Issue #140: `lisa update` told the desktop user to run
+    /// `sudo lisa apps sync`, which is the exact shape ADR-0034 forbids
+    /// — nothing user-facing should need sudo, and `escalate.privilege`
+    /// is an unoverridable Deny in our own guard. Distinguishing "you
+    /// are not root" from "the channel is unreachable" is what lets the
+    /// message be honest without escalating.
+    #[test]
+    fn a_permission_error_is_told_apart_from_a_real_failure() {
+        let denied = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Permission denied (os error 13)",
+        ));
+        assert!(is_permission_denied(&denied));
+
+        // …including when it is wrapped, which is how it actually
+        // arrives: apps::sync adds context about which payload and
+        // which directory before it reaches the caller.
+        let wrapped = denied.context("creating /var/lib/lisa/apps/payloads/zen/versions");
+        assert!(is_permission_denied(&wrapped));
+    }
+
+    #[test]
+    fn an_unreachable_channel_is_not_mistaken_for_a_permission_problem() {
+        // Reporting "leave it to the timer" for a network failure would
+        // be a comfortable lie: the timer will fail the same way.
+        let offline = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        assert!(!is_permission_denied(&offline));
+        assert!(!is_permission_denied(&anyhow::anyhow!("checksum mismatch")));
     }
 }
