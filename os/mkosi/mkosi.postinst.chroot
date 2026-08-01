@@ -273,3 +273,34 @@ EOF
             "/etc/systemd/user/timers.target.wants/$u"
     done
 fi
+
+# GNOME ships org.freedesktop.IBus.session.GNOME.service enabled by
+# preset, and on Lisa it fails on every boot:
+#
+#   sh[2731]: current session already has an ibus-daemon.
+#   Failed to start IBus Daemon for GNOME.
+#
+# Measured on the reference iMac (20260801.62, 20h uptime): the unit is
+# `failed`, MainPID=0, and `pgrep -c ibus-daemon` is 0 — so it is not
+# losing a race with a working daemon, there is simply no ibus on this
+# system at all. Lisa's IME is fcitx5 (§5.7.3, running as pid 2202), and
+# GNOME's own input-source switcher is moved to Super+Shift+Space.
+#
+# So this unit provides nothing and fails permanently. That matters
+# beyond tidiness: `systemctl --user --failed` is the first thing anyone
+# reads when a desktop misbehaves, and a list with a standing false
+# alarm in it is a list people stop reading. `lisa doctor` prints it.
+#
+# Same two mechanisms as the podman block above — the preset is what
+# survives a fresh slot's preset-all.
+if [ -e /usr/lib/systemd/user/org.freedesktop.IBus.session.GNOME.service ]; then
+    mkdir -p /usr/lib/systemd/user-preset
+    cat > /usr/lib/systemd/user-preset/01-lisa-ibus.preset <<'EOF'
+# Lisa's input method is fcitx5; GNOME's IBus unit has no daemon to
+# manage here and fails on every boot. Sorts before GNOME's preset.
+disable org.freedesktop.IBus.session.GNOME.service
+EOF
+    rm -f /etc/systemd/user/default.target.wants/org.freedesktop.IBus.session.GNOME.service \
+        /usr/lib/systemd/user/default.target.wants/org.freedesktop.IBus.session.GNOME.service \
+        /usr/lib/systemd/user/gnome-session.target.wants/org.freedesktop.IBus.session.GNOME.service
+fi

@@ -253,7 +253,17 @@ fn capture(program: &str, args: &[&str]) -> String {
     }
 }
 
-/// The Lisa units worth knowing the state of.
+/// The Lisa units worth knowing the state of, by their INSTALLED name.
+///
+/// Not their repo filename: `os/packages/lisa/lisa-remoted-user.service`
+/// installs as `usr/lib/systemd/user/lisa-remoted.service`. Listing the
+/// source name too put a line in every report that read
+///
+///     lisa-remoted-user.service            not running
+///
+/// for a unit no system can ever have. A status list with a permanent
+/// false alarm in it is worse than a shorter one — it teaches the reader
+/// that "not running" here is normal.
 const UNITS: &[&str] = &[
     "lisa-inferenced.service",
     "lisa-modeld.service",
@@ -261,10 +271,37 @@ const UNITS: &[&str] = &[
     "lisa-agentd.service",
     "lisa-harnessd.service",
     "lisa-remoted.service",
-    "lisa-remoted-user.service",
     "lisa-inferenced-dbus.service",
     "xdg-desktop-portal-lisa.service",
 ];
+
+/// Unit names some D-Bus activation file starts, read from the files
+/// themselves (`SystemdService=`) rather than guessed from a naming
+/// convention — the mapping is arbitrary on purpose
+/// (`dev.lisaos.Portal.service` → `xdg-desktop-portal-lisa.service`).
+fn dbus_activatable_units() -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for dir in [
+        "/usr/share/dbus-1/services",
+        "/usr/share/dbus-1/system-services",
+        "/usr/local/share/dbus-1/services",
+    ] {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            for line in text.lines() {
+                if let Some(v) = line.trim().strip_prefix("SystemdService=") {
+                    out.insert(v.trim().to_string());
+                }
+            }
+        }
+    }
+    out
+}
 
 fn os_section() -> Section {
     let mut body = String::new();
@@ -420,6 +457,7 @@ fn units_section() -> Section {
         )
     );
     let _ = writeln!(body, "\n-- Lisa units --");
+    let activatable = dbus_activatable_units();
     for unit in UNITS {
         // `is-active` alone hides "not installed", which is the answer
         // half the time and the one that explains the rest.
@@ -429,6 +467,13 @@ fn units_section() -> Section {
             format!("system:{sys}")
         } else if usr != "inactive" && !usr.starts_with('(') {
             format!("user:{usr}")
+        } else if activatable.contains(*unit) {
+            // Idle is the CORRECT state for these — the bus starts them
+            // on the first call and they exit when done.
+            // xdg-desktop-portal-lisa read "not running" in every report
+            // while being perfectly healthy, which is indistinguishable
+            // from the daemon that genuinely died.
+            "idle (D-Bus activated)".into()
         } else {
             "not running".into()
         };
