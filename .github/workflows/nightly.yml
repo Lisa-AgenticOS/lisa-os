@@ -102,10 +102,25 @@ jobs:
             NAME=$(mdir -b -i "$RAW@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1 || true)
             if [ -n "$NAME" ]; then
               mcopy -i "$RAW@@$OFF" "::/EFI/Linux/$NAME" uki-drm.efi
-              objcopy --dump-section .initrd=initrd-drm.img uki-drm.efi discard-drm.efi || true
+              # `|| true` here used to swallow the reason. When objcopy
+              # cannot read the UKI, the fallback below quietly checks
+              # the STANDALONE initrd instead — so the assertion passes
+              # while the thing that ships is unexamined, and the next
+              # objcopy in this step dies with no message at all. That
+              # is how this job stayed red for four nights with nobody
+              # able to say why. Keep going on failure, but say what
+              # failed and what the file actually contains.
+              if ! objcopy --dump-section .initrd=initrd-drm.img uki-drm.efi discard-drm.efi; then
+                echo "WARN: objcopy could not read .initrd from $NAME — sections present:"
+                objdump -h uki-drm.efi 2>&1 | head -30 || echo "  (objdump could not read it either)"
+              fi
             fi
           fi
-          [ -f initrd-drm.img ] || cp os/mkosi/lisa.initrd initrd-drm.img
+          if [ ! -f initrd-drm.img ]; then
+            echo "NOTE: falling back to the standalone os/mkosi/lisa.initrd —"
+            echo "      this checks the built initrd, NOT the one inside the UKI."
+            cp os/mkosi/lisa.initrd initrd-drm.img
+          fi
           python3 - <<'PY'
           import subprocess, sys
           d = open('initrd-drm.img','rb').read()
@@ -138,7 +153,19 @@ jobs:
           # A check that inspected nothing has not passed: if the UKI was
           # never extracted above, say so rather than silently succeed.
           [ -f uki-drm.efi ] || { echo "FAIL: no UKI to check the cmdline of"; exit 1; }
-          objcopy --dump-section .cmdline=cmdline.txt uki-drm.efi /dev/null 2>/dev/null
+          # NOT 2>/dev/null. With `bash -e`, a suppressed objcopy failure
+          # ends the whole step on an unexplained exit 1 — which is
+          # precisely what happened here for four consecutive nightlies,
+          # taking ab-recovery, ab-rollback and ab-sysupdate down with it
+          # (they are `needs: image`). An error nobody can read is worse
+          # than the error.
+          if ! objcopy --dump-section .cmdline=cmdline.txt uki-drm.efi /dev/null; then
+            echo "FAIL: could not read .cmdline out of the UKI (above is objcopy's reason)."
+            echo "      Sections objdump can see:"
+            objdump -h uki-drm.efi 2>&1 | head -30 || echo "      (objdump could not read it either)"
+            echo "      UKI file type: $(file -b uki-drm.efi 2>/dev/null || echo unknown)"
+            exit 1
+          fi
           tr -d '\0' < cmdline.txt | grep -q 'plymouth.ignore-serial-consoles' || {
             echo "FAIL: UKI cmdline lacks plymouth.ignore-serial-consoles"
             echo "      Plymouth finds console=ttyS0, decides the machine is"
@@ -148,9 +175,6 @@ jobs:
             exit 1
           }
           echo 'cmdline carries plymouth.ignore-serial-consoles: OK'
-          python3 - <<'PY'
-          import sys
-          PY
           rm -f initrd-drm.img uki-drm.efi discard-drm.efi
       - name: Initrd must carry the Lisa initrd overlay
         run: |
