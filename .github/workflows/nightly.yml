@@ -419,11 +419,39 @@ jobs:
               fi
             done
           done
-          if [ -e mnt-pull/usr/lib/systemd/user/podman.socket ] &&
-             ! grep -q '^disable podman.socket$' mnt-pull/usr/lib/systemd/user-preset/01-lisa-podman.preset 2>/dev/null; then
-            echo "FAIL: no user preset keeping podman.socket off — a preset-all on a fresh slot re-enables it (#130, the #160 shape)"
-            fail=1
-          fi
+          # Both preset checks are guarded on the vendor unit existing,
+          # so each would pass VACUOUSLY on an image where the package is
+          # absent — the shape of pass that makes a suite look green while
+          # asserting nothing. Say which branch was taken, every time, so
+          # a silently-skipped check is visible in the log instead of
+          # indistinguishable from a real one.
+          check_preset() {  # $1 vendor unit, $2 preset file, $3 disable line, $4 issue
+            if [ ! -e "mnt-pull/usr/lib/systemd/user/$1" ]; then
+              echo "SKIP: $1 is not in this image — nothing to keep disabled ($4)"
+              return
+            fi
+            if grep -q "^disable $3\$" "mnt-pull/usr/lib/systemd/user-preset/$2" 2>/dev/null; then
+              echo "OK: $2 keeps $3 off across a preset-all ($4)"
+            else
+              echo "FAIL: $1 ships but $2 does not disable it — a preset-all on a fresh slot re-enables it ($4, the #160 shape)"
+              fail=1
+            fi
+          }
+          check_preset podman.socket 01-lisa-podman.preset podman.socket "#130"
+          # GNOME's IBus unit fails on every boot here — measured on the
+          # device: unit failed, MainPID=0, and zero ibus-daemon processes
+          # running, so it is not losing a race, there is no ibus at all.
+          # Lisa's IME is fcitx5. A standing failure in `systemctl --user
+          # --failed` is what teaches people that red is normal.
+          check_preset org.freedesktop.IBus.session.GNOME.service \
+            01-lisa-ibus.preset org.freedesktop.IBus.session.GNOME.service "#130-adjacent"
+          for w in default.target.wants gnome-session.target.wants; do
+            if [ -e "mnt-pull/etc/systemd/user/$w/org.freedesktop.IBus.session.GNOME.service" ] ||
+               [ -e "mnt-pull/usr/lib/systemd/user/$w/org.freedesktop.IBus.session.GNOME.service" ]; then
+              echo "FAIL: the IBus unit is still enabled in $w — it fails on every boot here"
+              fail=1
+            fi
+          done
           # Issue #142: without this the machine mints a new SSH identity
           # on every A/B update, and each first login afterwards warns
           # REMOTE HOST IDENTIFICATION HAS CHANGED — training the user to
