@@ -98,6 +98,20 @@ if [ -f /usr/lib/systemd/system/gdm.service ] && ! id lisa &>/dev/null; then
     echo 'lisa:lisa' | chpasswd
 fi
 
+# Rootless containers need a subordinate uid/gid range (#130 phase 0,
+# ADR-0034). Without /etc/subuid + /etc/subgid, user-namespace mapping
+# fails QUIETLY — podman degrades to single-uid mode and everything
+# built on `lisa dev` inherits the breakage with no error naming the
+# cause. useradd would have allocated a range itself had these files
+# existed at creation time; on this image they do not, so write the
+# conventional first range explicitly. Nightly asserts it (the
+# lisa-apps-sync.timer enablement regression is the precedent for
+# assert-what-postinst-wrote).
+if id lisa &>/dev/null; then
+    echo 'lisa:100000:65536' > /etc/subuid
+    echo 'lisa:100000:65536' > /etc/subgid
+fi
+
 # Suppress GNOME's first-login wizard (gnome-initial-setup) for the
 # autologin user, so first login lands straight in the session instead
 # of a welcome/timezone/account tour. Harmless if g-i-s isn't installed

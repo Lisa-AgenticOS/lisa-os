@@ -313,6 +313,28 @@ jobs:
           check_enabled NetworkManager.service multi-user.target
           check_enabled iwd.service multi-user.target
           check_enabled lisa-inferenced.service multi-user.target
+          # #130 phase 0 (ADR-0034): the provisioned user must carry a
+          # subordinate uid/gid range and the setuid mappers must exist,
+          # or rootless containers fail QUIETLY — podman falls back to a
+          # single-uid namespace and `lisa dev` inherits the breakage
+          # with no error naming this. Same shape as check_enabled:
+          # user-exists IMPLIES range-exists, so the minimal flavor
+          # (no gdm → no user) stays green legitimately.
+          if grep -q '^lisa:' mnt-pull/etc/passwd 2>/dev/null; then
+            for f in subuid subgid; do
+              if ! grep -q '^lisa:[0-9]*:[0-9]*$' "mnt-pull/etc/$f" 2>/dev/null; then
+                echo "FAIL: user lisa exists but /etc/$f carries no range — rootless containers will quietly degrade (#130)"
+                cat "mnt-pull/etc/$f" 2>/dev/null || echo "  ($f absent)"
+                fail=1
+              fi
+            done
+            for m in newuidmap newgidmap; do
+              if [ ! -e "mnt-pull/usr/bin/$m" ]; then
+                echo "FAIL: $m missing — the subuid range exists but nothing can apply it (#130)"
+                fail=1
+              fi
+            done
+          fi
           # Issue #142: without this the machine mints a new SSH identity
           # on every A/B update, and each first login afterwards warns
           # REMOTE HOST IDENTIFICATION HAS CHANGED — training the user to
