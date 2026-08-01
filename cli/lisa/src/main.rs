@@ -2505,6 +2505,19 @@ fn staging_failure_help(unit: &str) -> String {
 /// `CheckNew` needs polkit `sysupdate1.check`, which is `allow_active=yes`
 /// — free from a local Settings window, refused from SSH. That refusal is
 /// reported, never silently rendered as "no update available".
+///
+/// Reported to a MACHINE as well as to a person: a failed check exits
+/// non-zero. It used to print `check-failed: …` and exit 0, so on the
+/// reference device
+///
+///   $ lisa update --check; echo $?
+///   check-failed: …InteractiveAuthorizationRequired…
+///   0
+///
+/// — and the Settings "Check for Updates" button runs exactly this. Any
+/// caller that branched on the exit status was told the check succeeded
+/// and found nothing, which is the difference between "you are up to
+/// date" and "I could not look".
 fn update_check_cmd() -> anyhow::Result<()> {
     use zbus::blocking::{Connection, Proxy};
 
@@ -2514,6 +2527,7 @@ fn update_check_cmd() -> anyhow::Result<()> {
     }
 
     let mut checked = false;
+    let mut why: Option<String> = None;
     if let Ok(conn) = Connection::system()
         && let Ok(manager) = Proxy::new(
             &conn,
@@ -2548,13 +2562,26 @@ fn update_check_cmd() -> anyhow::Result<()> {
                 println!("available: {newest}");
             }
             Ok(_) => checked = true, // Checked; nothing newer offered.
-            Err(e) => println!("check-failed: {e}"),
+            Err(e) => {
+                println!("check-failed: {e}");
+                why = Some(e.to_string());
+            }
         }
     }
     if !checked {
         println!(
             "note: could not reach the update channel — \
              `available:` above is absent, not empty"
+        );
+        // Non-zero, so a script or the Settings button can tell "I could
+        // not look" from "nothing to install". The human-readable lines
+        // above are already printed; this only adds the machine-readable
+        // half that was missing.
+        bail!(
+            "update check did not run: {}",
+            why.unwrap_or_else(
+                || "sysupdated (org.freedesktop.sysupdate1) was not reachable".into()
+            )
         );
     }
     Ok(())
