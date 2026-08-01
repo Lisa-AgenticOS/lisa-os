@@ -329,6 +329,40 @@ impl AgentBus {
         self.pending.lock().expect("pending lock").len()
     }
 
+    /// Record that a caller claimed `user` provenance it was not
+    /// entitled to, and was downgraded (#55).
+    ///
+    /// The downgrade itself happens in `tier::verify_chain` and is not
+    /// a refusal — an app that simply tags its input wrongly must keep
+    /// working. What matters is the *pattern*: a peer repeatedly
+    /// claiming a human typed this is the signature of something trying
+    /// to reach the trusted path, and the only place that signature can
+    /// be seen after the fact is the Ledger. It was an `eprintln`,
+    /// which is to say it was in the journal of whoever happened to be
+    /// looking, for as long as the journal kept it.
+    ///
+    /// Its own event kind rather than a field on `tool.call`: the call
+    /// may never reach the bus (it can be denied earlier), and a
+    /// security signal that only appears when the call succeeds is one
+    /// you cannot search for.
+    pub fn ledger_provenance_downgrade(&self, actor: &str, app_id: &str, tool: &str) {
+        // Best-effort by design: failing the call because the note
+        // could not be written would turn a Ledger problem into an
+        // outage, and the call is not the thing at fault here.
+        if let Err(e) = self.ledger.append(&Event {
+            kind: "agent.provenance_downgrade".into(),
+            app_id: actor.into(),
+            preview: preview_of(&format!(
+                "{app_id}/{tool} claimed user provenance without being a Lisa program"
+            )),
+            status: "downgraded".into(),
+            detail: format!("asserted=user verified=app:{app_id} tool={tool}"),
+            ..Default::default()
+        }) {
+            eprintln!("agentd: could not ledger a provenance downgrade: {e}");
+        }
+    }
+
     /// Drop every parked call past its TTL, handing them back so each
     /// can be ledgered (#137).
     ///
@@ -1898,5 +1932,33 @@ mod tests {
         let tail = ledger.tail(1).unwrap();
         assert_eq!(tail[0].kind, "tool.complete");
         assert_eq!(tail[0].status, "error");
+    }
+
+    /// #55: a peer claiming provenance it is not entitled to leaves a
+    /// record somebody can search for.
+    ///
+    /// The downgrade is deliberately not a refusal, so the Ledger entry
+    /// is the ONLY lasting evidence that anything happened — and it
+    /// used to be an `eprintln`, i.e. evidence with the lifetime of a
+    /// journal rotation. The assertion is on the searchable fields: a
+    /// distinct kind, the claiming app named, and the verdict readable
+    /// without cross-referencing anything else.
+    #[test]
+    fn a_provenance_downgrade_is_recorded_where_it_can_be_found() {
+        let Fixture { bus, ledger, .. } = fixture();
+        bus.ledger_provenance_downgrade("host", "app.example.Evil", "delete_event");
+        let tail = ledger.tail(1).unwrap();
+        assert_eq!(tail[0].kind, "agent.provenance_downgrade");
+        assert_eq!(tail[0].status, "downgraded");
+        assert!(
+            tail[0].detail.contains("app.example.Evil"),
+            "the claiming app must be named in the entry: {}",
+            tail[0].detail
+        );
+        assert!(
+            tail[0].detail.contains("asserted=user"),
+            "the entry must say what was claimed: {}",
+            tail[0].detail
+        );
     }
 }

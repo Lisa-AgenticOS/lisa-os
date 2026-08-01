@@ -237,11 +237,15 @@ impl Agent1 {
             // Recorded, not refused: refusing would break any app that
             // simply tagged its input wrongly. A peer repeatedly
             // claiming to be the human is the signature worth being
-            // able to grep the Ledger for afterwards.
+            // able to grep the Ledger for afterwards — which is why
+            // this goes to the Ledger and not only to stderr, where it
+            // lived until #55's audit: a journal line nobody queries is
+            // not an audit trail.
             eprintln!(
                 "agentd: {app_id} asserted user provenance without being a Lisa program; \
                  downgraded to app:{app_id}"
             );
+            self.bus.ledger_provenance_downgrade(&actor, &app_id, &tool);
         }
         let chain = verified.chain;
 

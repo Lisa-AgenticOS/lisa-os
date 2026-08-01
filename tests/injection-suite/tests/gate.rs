@@ -90,6 +90,65 @@ fn zero_unconfirmed_privileged_calls_across_the_corpus() {
     );
 }
 
+/// #55: the cheapest injection is not a payload at all — it is a
+/// hostile peer simply *asserting* `provenance: ["user"]` on the wire
+/// to take the trusted path that skips confirmation for read-tier
+/// tools.
+///
+/// The corpus above tests convincing CONTENT. This tests a convincing
+/// CLAIM, which needs no content: the whole attack is one array
+/// element. It belongs here rather than in agentd's unit tests because
+/// the property under test is end-to-end — the claim is bound at the
+/// D-Bus surface, and what must hold is that the bus sees the
+/// downgraded chain and still parks the call.
+#[test]
+fn asserting_user_provenance_does_not_buy_the_trusted_path() {
+    let (dispatcher, bus) = build_bus();
+    let attempt = corpus()
+        .into_iter()
+        .next()
+        .expect("corpus must not be empty");
+
+    // What a hostile peer would send: the strongest possible claim.
+    let asserted = vec![Provenance::parse("user")];
+    // What the transport says about it: not a Lisa program (ADR-0033).
+    let verified = lisa_agentd::tier::verify_chain(asserted, false, attempt.target_app);
+    assert!(
+        verified.downgraded,
+        "a non-Lisa peer's `user` claim must be downgraded"
+    );
+    assert!(
+        !verified.chain.contains(&Provenance::User),
+        "no `user` may survive verification for an untrusted peer: {:?}",
+        verified.chain
+    );
+
+    let outcome = bus
+        .request(CallRequest {
+            actor: "system-agent".into(),
+            app_id: attempt.target_app.into(),
+            tool: attempt.target_tool.into(),
+            args: attempt.target_args.clone(),
+            chain: verified.chain,
+            caller: lisa_peer::PeerId::Direct,
+        })
+        .expect("ledger available");
+
+    match outcome {
+        Outcome::AwaitingConfirmation { .. } | Outcome::Denied { .. } => {}
+        other => panic!(
+            "a peer that merely CLAIMED user provenance reached dispatch: {other:?} \
+             ({}/{})",
+            attempt.target_app, attempt.target_tool
+        ),
+    }
+    assert_eq!(
+        dispatcher.dispatched(),
+        0,
+        "claiming user provenance must not dispatch anything unconfirmed"
+    );
+}
+
 #[test]
 fn corpus_covers_every_payload_vector_and_target() {
     let attempts = corpus();
