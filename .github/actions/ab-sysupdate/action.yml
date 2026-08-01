@@ -580,12 +580,35 @@ runs:
         mkdir -p mnt-check
         if sudo mount -o ro "${LOOP}p3" mnt-check 2>/dev/null; then
           MOUNTS=yes
-          echo "p3 mounts: yes; slot marker: $(cat mnt-check/etc/lisa-slot-version 2>/dev/null || echo '(none)')"
+          P3_MARKER=$(cat mnt-check/etc/lisa-slot-version 2>/dev/null || echo '(none)')
+          echo "p3 mounts: yes; slot marker: $P3_MARKER"
           sudo umount mnt-check
         else
           echo "p3 mounts: no"
         fi
         sudo losetup -d "$LOOP"
+        # DID THE KILL LAND WHERE THE NAME SAYS IT DID? The guest decides
+        # by summing writes to every vda* device, which cannot separate
+        # "sysupdate is writing the slot" from "sysupdate is downloading
+        # to /var/tmp" — both are writes to the same disk. So
+        # LISA_KILLED_MIDWRITE is a claim the counter cannot actually
+        # support, and a scenario that killed during the DOWNLOAD would
+        # still relabel and retype the partition and still pass every
+        # assertion below, while proving something weaker than the name
+        # promises.
+        #
+        # The slot's own contents settle it without any timing argument.
+        # The B slot was planted with v2 before the run; v3's bytes are
+        # the only way it can come back reading 3. A marker of 2 means
+        # the kill beat the first partition write.
+        if [ "$MOUNTS" = "yes" ] && [ "$P3_MARKER" != "${AB_V3}" ]; then
+          echo "FAIL: the target slot still reads version '$P3_MARKER', not $AB_V3 —"
+          echo "the kill landed before any of the new image reached the partition."
+          echo "The run proved a relabel, not an interrupted WRITE. Lower the guest's"
+          echo "sector threshold, or wait for the first non-zero delta rather than a"
+          echo "fixed 100 MiB."
+          exit 1
+        fi
         echo "--- ASSERT: the half-written slot must not impersonate a finished one"
         # WHAT THIS TEST GOT WRONG THE FIRST TIME, kept here because the
         # mistake is easy to repeat: it read the PARTLABEL, the GPT
@@ -620,6 +643,19 @@ runs:
           exit 1
         fi
         if is_root_type "$P3_TYPE"; then
+          # Two very different things put a root type on p3, and calling
+          # both "#159 regression" would send the next reader hunting a
+          # marking bug that isn't there. sysupdate does the root
+          # transfer before the UKI one, so a v3 UKI in the ESP means the
+          # root transfer COMMITTED and the kill simply arrived late.
+          ESP_OFF=$(( $(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[0].start') * 512 ))
+          if mdir -b -i "$AB_IMAGE@@$ESP_OFF" ::/EFI/Linux/ 2>/dev/null | grep -Fq "lisa_${AB_V3}.efi"; then
+            echo "FAIL: the root transfer completed before the kill (v3 UKI is in the ESP)."
+            echo "This is a TIMING failure of the scenario, not a marking failure of"
+            echo "sysupdate — the guest's sector threshold fired too late to catch a write"
+            echo "in progress. Nothing here says anything about #159."
+            exit 1
+          fi
           echo "FAIL (#159): interrupted transfer left label=$P3_LABEL attrs=$P3_ATTRS mounts=$MOUNTS type=$P3_TYPE"
           echo "— the half-written slot carries a real root type, so nothing on disk"
           echo "distinguishes it from a completed one. That is the state that turned an"
