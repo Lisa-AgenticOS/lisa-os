@@ -51,10 +51,15 @@ unix socket and gains no network itself.
   VERIFIED public constants ported from the shipping Construct app
   (`brain/oauth/`), pinned in `oauth.rs` (CLAUDE.md rule 8 — no invented
   URLs). API keys still work for every provider.
-- **ESP provisioning (field test, provisional):** `--import-esp <mnt>`
-  imports staged `lisa-provision/<provider>.key` files into the 0600
-  store and scrubs them off the world-readable FAT ESP. Shipped as the
-  `lisa-remoted-provision.service` oneshot; superseded by the M7 OOBE.
+- **ESP provisioning (designed, NOT shipped — #164):** `--import-esp
+  <mnt>` imports staged `lisa-provision/<provider>.key` files into the
+  0600 store and scrubs them off the world-readable FAT ESP. The
+  `lisa-remoted-provision.service` oneshot exists in the repo but **no
+  installer ships it** — and as written it would provision the
+  system-scope broker's state dir, which the desktop's per-user broker
+  never reads. Do not stage keys on the ESP expecting them to be
+  imported; nothing will import them, and nothing will scrub them.
+  Superseded by the M7 OOBE unless #164 decides otherwise.
 
 ## Who may change things (issue #99)
 

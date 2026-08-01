@@ -215,6 +215,15 @@ oneshot unit (`lisa-remoted-provision.service`, `Before=` the broker,
 This mechanism is explicitly provisional and is superseded by the M7
 installer OOBE.
 
+**Status correction (2026-08-01, #164):** the oneshot was designed and
+written but is **shipped by no installer** — neither the PKGBUILD nor
+mkosi.extra installs it — so staged keys are neither imported nor
+scrubbed, and remain in plaintext on the world-readable ESP. It also
+targets the system-scope broker's state, which the desktop's per-user
+broker (the one Settings and the CLI talk to) never reads. Treat this
+section as design record, not behavior, until #164 either wires it for
+the user broker or retires it in favor of the OOBE.
+
 ### 7. `inferenced` surface
 
 `inferenced` gains only config: a `[remote]` section (`enabled`,
