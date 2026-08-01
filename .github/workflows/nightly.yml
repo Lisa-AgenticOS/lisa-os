@@ -450,9 +450,28 @@ jobs:
             # XOAUTH2 and no OAUTHBEARER, so without it a connected Google
             # account and an installed syncer still cannot authenticate —
             # every other link in the chain present and the mail still not
-            # arriving. Only meaningful on the release image, which is
-            # where os/packages/ lands.
-            if [ -x mnt-pull/usr/bin/mbsync ] &&
+            # arriving.
+            #
+            # SCOPE, and it is load-bearing: this check can only pass on
+            # an image that carries os/packages/. The comment always said
+            # so; the CONDITION did not, and gated on mbsync instead —
+            # which arrives from Arch's repos via mkosi.conf's `isync` on
+            # BOTH images. The nightly job runs a plain `mkosi build`
+            # with no PackageDirectories= (release.yml passes
+            # /build/pkgs), so libxoauth2.so cannot exist here and the
+            # nightly was guaranteed red from the day this landed
+            # (83e1d89, 2026-07-30). It went unnoticed only because the
+            # objcopy bug (#165) was failing an earlier step first.
+            #
+            # The marker is a file only os/packages can produce.
+            # /usr/lib/lisa/bin/lisa comes from the lisa-cli package;
+            # `isync` and friends never bring it.
+            if [ ! -x mnt-pull/usr/lib/lisa/bin/lisa ]; then
+              echo "SKIP: no os/packages payload in this image (no lisa-cli),"
+              echo "      so the XOAUTH2 mechanism cannot be asserted here."
+              echo "      This is the nightly's plain mkosi build; release.yml"
+              echo "      builds os/packages and IS gated on it."
+            elif [ -x mnt-pull/usr/bin/mbsync ] &&
                ! ls mnt-pull/usr/lib/sasl2/libxoauth2.so >/dev/null 2>&1; then
               echo "FAIL: mbsync is installed but SASL has no XOAUTH2 mechanism"
               echo "      (os/packages/cyrus-sasl-xoauth2). Gmail cannot be"

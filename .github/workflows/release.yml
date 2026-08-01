@@ -481,6 +481,44 @@ jobs:
       # in the job summary so the slot-shrink decision reads measurements
       # instead of memory. Read-only, and BEFORE the A/B gate — that gate is
       # destructive to lisa-usb.raw.
+      - name: The mail chain must be complete in the shipped image (#155)
+        run: |
+          set -o pipefail
+          sudo apt-get install -qq -y --no-install-recommends btrfs-progs >/dev/null
+          LOOP=$(sudo losetup -P --show -f lisa-usb.raw)
+          sudo mkdir -p /mnt/mailcheck
+          sudo mount -o ro "${LOOP}p2" /mnt/mailcheck
+          fail=0
+          # This assertion used to live ONLY in nightly.yml, where it
+          # could never pass: that job runs a plain `mkosi build` with no
+          # PackageDirectories=, so cyrus-sasl-xoauth2 — which only
+          # os/packages builds — is absent by construction while `isync`
+          # arrives from Arch on both images. It was therefore either red
+          # or meaningless everywhere. It belongs HERE, on the artifact
+          # that is about to be published and actually contains the
+          # package.
+          #
+          # The PKGBUILD's own check() already proves the mechanism
+          # loads; this proves the built plugin reached the IMAGE. Those
+          # are different claims, and #155 was the second one failing.
+          if [ -x /mnt/mailcheck/usr/bin/mbsync ] &&
+             ! ls /mnt/mailcheck/usr/lib/sasl2/libxoauth2.so >/dev/null 2>&1; then
+            echo "FAIL: mbsync ships but SASL has no XOAUTH2 mechanism"
+            echo "      (os/packages/cyrus-sasl-xoauth2 did not reach the image)."
+            echo "      Gmail cannot be authenticated with an Online Accounts token."
+            ls -l /mnt/mailcheck/usr/lib/sasl2/ 2>/dev/null || echo "      (no /usr/lib/sasl2 at all)"
+            fail=1
+          fi
+          # A check that inspected nothing has not passed.
+          if [ ! -x /mnt/mailcheck/usr/bin/mbsync ]; then
+            echo "FAIL: no mbsync in the release image — the mail chain"
+            echo "      cannot sync at all (mkosi.conf Packages= isync)."
+            fail=1
+          fi
+          sudo umount /mnt/mailcheck
+          sudo losetup -d "$LOOP"
+          [ "$fail" -eq 0 ] || exit 1
+          echo "mail chain (mbsync + XOAUTH2 mechanism) present in the image: OK"
       - name: Measure the populated root (ADR-0023 phase 3 input)
         run: |
           set -o pipefail
