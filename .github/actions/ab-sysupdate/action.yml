@@ -246,14 +246,43 @@ runs:
             # metadata preamble. The host inspects the corpse.
             systemctl start systemd-networkd
             for _ in $(seq 1 60); do (echo > /dev/tcp/10.0.2.2/8000) 2>/dev/null && break; sleep 1; done
+            # PROVE THE PROBE BEFORE TRUSTING IT. The first version read
+            # `awk '$3=="vda3"' /proc/diskstats` without checking that the
+            # line exists; an empty result makes every later `$(( cur -
+            # base ))` a silent arithmetic error, the test never fires,
+            # and the run ends in an ambiguous LISA_KILL_TOO_LATE that
+            # says nothing about whether the transfer was fast or the
+            # counter was missing. A watcher that cannot see is not a
+            # watcher.
+            probe() { awk -v d="$1" '$3==d {print $10}' /proc/diskstats; }
+            target=""
+            for d in vda3 vda; do
+                if [ -n "$(probe "$d")" ]; then target="$d"; break; fi
+            done
+            if [ -z "$target" ]; then
+                echo "LISA_NO_DISKSTATS — no write counter for vda3 or vda:" > /dev/console
+                cat /proc/diskstats > /dev/console
+                systemctl poweroff
+                exit 0
+            fi
+            echo "LISA_WATCHING dev=$target" > /dev/console
             /usr/lib/systemd/systemd-sysupdate update > /tmp/sysupdate.log 2>&1 &
             upd=$!
-            base=$(awk '$3=="vda3" {print $10}' /proc/diskstats)
-            got=0
+            base=$(probe "$target")
+            got=0; cur="$base"; ticks=0
             for _ in $(seq 1 900); do
                 if ! kill -0 "$upd" 2>/dev/null; then break; fi
-                cur=$(awk '$3=="vda3" {print $10}' /proc/diskstats)
-                if [ $(( cur - base )) -gt 204800 ]; then got=1; break; fi
+                cur=$(probe "$target")
+                # 100 MiB in 512-byte sectors. Past any metadata
+                # preamble, well short of a 10 GiB slot.
+                if [ "$(( cur - base ))" -gt 204800 ]; then got=1; break; fi
+                ticks=$(( ticks + 1 ))
+                # Progress every 15s: a run that ends "too late" must
+                # still show what the counter was doing, so the next
+                # iteration is data-driven rather than another guess.
+                if [ $(( ticks % 15 )) = 0 ]; then
+                    echo "LISA_WRITE_PROGRESS t=${ticks}s sectors=$(( cur - base ))" > /dev/console
+                fi
                 sleep 1
             done
             if [ "$got" = "1" ]; then
@@ -261,9 +290,15 @@ runs:
                 echo "LISA_KILLED_MIDWRITE sectors=$(( cur - base ))" > /dev/console
             else
                 # The update finished (or died) before the threshold —
-                # the kill proved nothing. Say so; the host fails on it.
-                echo "LISA_KILL_TOO_LATE" > /dev/console
-                tail -10 /tmp/sysupdate.log > /dev/console
+                # the kill proved nothing. Say so, with the evidence:
+                # how far the counter got, and what sysupdate itself
+                # said. `>` per line, because a pipe into /dev/console
+                # from a subshell can lose output on poweroff.
+                echo "LISA_KILL_TOO_LATE sectors=$(( cur - base )) after=${ticks}s" > /dev/console
+                echo "--- sysupdate said:" > /dev/console
+                tail -20 /tmp/sysupdate.log > /dev/console 2>&1
+                echo "--- diskstats for $target:" > /dev/console
+                grep " $target " /proc/diskstats > /dev/console
             fi
             systemctl poweroff
         elif [ "$v" = "1" ]; then
