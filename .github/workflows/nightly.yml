@@ -563,6 +563,29 @@ jobs:
           image: lisa.raw
           version: "1"
 
+  # Issue #159: the OTHER half of the field incident — a transfer killed
+  # mid-write must leave a slot the boot path can tell apart from a good
+  # one. Same rig, own image copy (the action consumes it destructively),
+  # driver SIGKILLs sysupdate once >100 MiB has hit the target slot. If
+  # this job goes red, systemd does not mark half-written slots on this
+  # version and we must (label prefix until verified complete — #159's
+  # fourth checkbox becomes the work).
+  ab-interrupted-transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: image
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download built image
+        uses: actions/download-artifact@v4
+        with:
+          name: lisa-image
+      - uses: ./.github/actions/ab-sysupdate
+        with:
+          image: lisa.raw
+          version: "1"
+          scenario: interrupted-transfer
+
   # ADR-0022 phase 1 (issue #23): the #20 disk state, reconstructed.
   # Boot 1 (pristine) lets lisa-boot-repair stash the booted UKI on the
   # durable /var partition. Then mtools damage: delete the booted UKI

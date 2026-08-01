@@ -69,6 +69,19 @@ inputs:
       the same shape real consecutive releases take, and the ordering
       systemd's version comparison actually applies.
     required: true
+  scenario:
+    description: >-
+      "normal" (default) runs the three-version protection scenario to
+      completion. "interrupted-transfer" (issue #159) uses the same rig
+      but SIGKILLs systemd-sysupdate inside the guest once the target
+      slot has taken >100 MiB of writes, then asserts host-side that the
+      half-written slot is DISTINGUISHABLE from a completed one by
+      something the boot path can read — the field failure this guards
+      against was an interrupted transfer leaving a mountable,
+      plausibly-labeled slot that both boot attempts then died in.
+      Never run on real hardware; that is the point of it living here.
+    required: false
+    default: normal
 
 runs:
   using: composite
@@ -78,6 +91,7 @@ runs:
       env:
         AB_IMAGE: ${{ inputs.image }}
         AB_VERSION: ${{ inputs.version }}
+        AB_SCENARIO: ${{ inputs.scenario }}
       run: |
         [ -f "$AB_IMAGE" ] || { echo "FAIL: no image at $AB_IMAGE"; exit 1; }
         # Everything this scenario writes goes in its own directory, and the
@@ -215,11 +229,44 @@ runs:
         # so every root stays a byte-copy of v1 except the marker and
         # os-release. (systemd.run= is container-only; a real enabled
         # unit is the way to script a VM boot.)
+        # Which flavor of the run the guest driver should perform. Baked
+        # as a file because the driver heredoc is single-quoted (no
+        # expansion) and must stay so — it contains $ syntax of its own.
+        echo "$AB_SCENARIO" | sudo tee mnt-root/etc/lisa-demo-scenario >/dev/null
         sudo tee mnt-root/usr/local/bin/lisa-demo.sh >/dev/null <<'EOF'
         #!/bin/bash
         v=$(cat /etc/lisa-slot-version)
         echo "LISA_SLOT_BOOTED=$v" > /dev/console
-        if [ "$v" = "1" ]; then
+        scenario=$(cat /etc/lisa-demo-scenario 2>/dev/null || echo normal)
+        if [ "$v" = "1" ] && [ "$scenario" = "interrupted-transfer" ]; then
+            # Issue #159: what does a SIGKILL'd transfer leave behind?
+            # Start the update, watch the TARGET slot's write counter
+            # (/proc/diskstats field 10 = sectors written), and kill -9
+            # once >100 MiB has landed — solidly mid-write, past any
+            # metadata preamble. The host inspects the corpse.
+            systemctl start systemd-networkd
+            for _ in $(seq 1 60); do (echo > /dev/tcp/10.0.2.2/8000) 2>/dev/null && break; sleep 1; done
+            /usr/lib/systemd/systemd-sysupdate update > /tmp/sysupdate.log 2>&1 &
+            upd=$!
+            base=$(awk '$3=="vda3" {print $10}' /proc/diskstats)
+            got=0
+            for _ in $(seq 1 900); do
+                if ! kill -0 "$upd" 2>/dev/null; then break; fi
+                cur=$(awk '$3=="vda3" {print $10}' /proc/diskstats)
+                if [ $(( cur - base )) -gt 204800 ]; then got=1; break; fi
+                sleep 1
+            done
+            if [ "$got" = "1" ]; then
+                kill -9 "$upd" 2>/dev/null
+                echo "LISA_KILLED_MIDWRITE sectors=$(( cur - base ))" > /dev/console
+            else
+                # The update finished (or died) before the threshold —
+                # the kill proved nothing. Say so; the host fails on it.
+                echo "LISA_KILL_TOO_LATE" > /dev/console
+                tail -10 /tmp/sysupdate.log > /dev/console
+            fi
+            systemctl poweroff
+        elif [ "$v" = "1" ]; then
             systemctl start systemd-networkd
             for _ in $(seq 1 60); do (echo > /dev/tcp/10.0.2.2/8000) 2>/dev/null && break; sleep 1; done
             if /usr/lib/systemd/systemd-sysupdate update > /tmp/sysupdate.log 2>&1; then
@@ -359,6 +406,7 @@ runs:
         ls -lh serve/
 
     - name: "A/B: update over the middle slot + reboot into v3 (UEFI QEMU)"
+      if: ${{ inputs.scenario != 'interrupted-transfer' }}
       shell: bash
       env:
         AB_IMAGE: ${{ inputs.image }}
@@ -428,3 +476,67 @@ runs:
           echo "FAIL: middle UKI still in ESP — the wrong UKI was vacuumed"; exit 1
         fi
         echo "SYSUPDATE DEMO: PASS (booted-oldest v${AB_V1} protected, v${AB_V3} installed over v${AB_V2}, rebooted into v${AB_V3})"
+
+    - name: "A/B: SIGKILL mid-transfer, then prove the slot is distinguishable (#159)"
+      if: ${{ inputs.scenario == 'interrupted-transfer' }}
+      shell: bash
+      env:
+        AB_IMAGE: ${{ inputs.image }}
+      run: |
+        set -o pipefail
+        AB_IMAGE="$(realpath "$AB_IMAGE")"
+        cd ab-scratch
+        [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm
+        sudo apt-get install -qq -y --no-install-recommends qemu-system-x86 ovmf >/dev/null
+        (cd serve && python3 -m http.server 8000 >/dev/null 2>&1 &)
+        cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
+        timeout 1200 qemu-system-x86_64 \
+          -machine q35 -accel kvm -accel tcg -m 4G -nographic \
+          -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+          -drive if=pflash,format=raw,file=vars.fd \
+          -drive "file=$AB_IMAGE,format=raw,if=virtio" \
+          | tee console.log
+        echo "--- console assertions"
+        grep -q "LISA_SLOT_BOOTED=1" console.log
+        grep -q "LISA_KILLED_MIDWRITE" console.log
+        grep -q "reboot: Power down" console.log
+        if grep -q "LISA_KILL_TOO_LATE" console.log; then
+          echo "FAIL: the transfer completed before the kill — the scenario proved nothing"
+          exit 1
+        fi
+        echo "--- RECORD: what the interrupted slot actually looks like (#159)"
+        sfdisk -J "$AB_IMAGE" | jq '.partitiontable.partitions[]' | tee parts.json
+        # Select the B slot by node, not array index — the release image
+        # carries more partitions than the nightly one.
+        P3_LABEL=$(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[] | select(.node | test("3$")) | .name // "(none)"')
+        P3_ATTRS=$(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[] | select(.node | test("3$")) | .attrs // "(none)"')
+        echo "p3 label: $P3_LABEL"
+        echo "p3 attrs: $P3_ATTRS"
+        LOOP=$(sudo losetup -P --show -f "$AB_IMAGE")
+        echo "p3 blkid: $(sudo blkid "${LOOP}p3" || echo '(unreadable)')"
+        MOUNTS=no
+        mkdir -p mnt-check
+        if sudo mount -o ro "${LOOP}p3" mnt-check 2>/dev/null; then
+          MOUNTS=yes
+          echo "p3 mounts: yes; slot marker: $(cat mnt-check/etc/lisa-slot-version 2>/dev/null || echo '(none)')"
+          sudo umount mnt-check
+        else
+          echo "p3 mounts: no"
+        fi
+        sudo losetup -d "$LOOP"
+        echo "--- ASSERT: the half-written slot must not impersonate a finished one"
+        # The boot path can read exactly three things about a slot before
+        # trusting it: its PARTLABEL, its GPT attribute bits (63 =
+        # NoAuto), and whether it mounts. A slot that (a) carries the
+        # final root_<v3> label, (b) has no NoAuto marking, and (c)
+        # mounts, is INDISTINGUISHABLE from a good slot — which is the
+        # exact state that turned an SSH drop into a USB reinstall.
+        # Any one distinguishing property is enough to pass.
+        if [ "$P3_LABEL" = "root_${AB_V3}" ] && [ "$MOUNTS" = "yes" ] \
+           && ! grep -q "GUID:63" <<<"$P3_ATTRS"; then
+          echo "FAIL (#159): interrupted transfer left label=$P3_LABEL attrs=$P3_ATTRS mounts=$MOUNTS"
+          echo "— nothing the boot path reads distinguishes this slot from a completed one."
+          echo "sysupdate did not mark it; we must (label prefix until verified, per the issue)."
+          exit 1
+        fi
+        echo "INTERRUPTED-TRANSFER: PASS (label=$P3_LABEL attrs=$P3_ATTRS mounts=$MOUNTS — distinguishable)"
