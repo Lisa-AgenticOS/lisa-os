@@ -159,7 +159,18 @@ jobs:
           # taking ab-recovery, ab-rollback and ab-sysupdate down with it
           # (they are `needs: image`). An error nobody can read is worse
           # than the error.
-          if ! objcopy --dump-section .cmdline=cmdline.txt uki-drm.efi /dev/null; then
+          # The output copy goes to a FILE, never /dev/null. objcopy
+          # writes a full copy of its input as well as dumping the
+          # section, and on a PE input (which a UKI is) it then fails
+          # with `objcopy: /dev/null: file truncated` — reproduced
+          # against binutils 2.42 with a systemd-boot .efi: /dev/null
+          # exits 1, a real path exits 0, while an ELF input tolerates
+          # both. That exit code, under `bash -e` with stderr
+          # suppressed, is the entire four-night outage (#165): the
+          # dump itself had worked all along. Every other objcopy call
+          # in this repo already used a discard FILE; this was the one
+          # that did not.
+          if ! objcopy --dump-section .cmdline=cmdline.txt uki-drm.efi discard-cmdline.efi; then
             echo "FAIL: could not read .cmdline out of the UKI (above is objcopy's reason)."
             echo "      Sections objdump can see:"
             objdump -h uki-drm.efi 2>&1 | head -30 || echo "      (objdump could not read it either)"
@@ -175,7 +186,7 @@ jobs:
             exit 1
           }
           echo 'cmdline carries plymouth.ignore-serial-consoles: OK'
-          rm -f initrd-drm.img uki-drm.efi discard-drm.efi
+          rm -f initrd-drm.img uki-drm.efi discard-drm.efi discard-cmdline.efi
       - name: Initrd must carry the Lisa initrd overlay
         run: |
           # Issue #50 / ADR-0028. `os/mkosi/mkosi.initrd/` looked like a
