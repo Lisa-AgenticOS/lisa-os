@@ -51,15 +51,18 @@ unix socket and gains no network itself.
   VERIFIED public constants ported from the shipping Construct app
   (`brain/oauth/`), pinned in `oauth.rs` (CLAUDE.md rule 8 — no invented
   URLs). API keys still work for every provider.
-- **ESP provisioning (designed, NOT shipped — #164):** `--import-esp
-  <mnt>` imports staged `lisa-provision/<provider>.key` files into the
-  0600 store and scrubs them off the world-readable FAT ESP. The
-  `lisa-remoted-provision.service` oneshot exists in the repo but **no
-  installer ships it** — and as written it would provision the
-  system-scope broker's state dir, which the desktop's per-user broker
-  never reads. Do not stage keys on the ESP expecting them to be
-  imported; nothing will import them, and nothing will scrub them.
-  Superseded by the M7 OOBE unless #164 decides otherwise.
+- **ESP provisioning: removed (#164, 2026-08-01).** A `--import-esp`
+  oneshot used to exist that read `lisa-provision/<provider>.key` off
+  the FAT ESP into the 0600 store and scrubbed the staging file. No
+  installer ever shipped the unit, so staged keys were neither imported
+  nor scrubbed — they simply sat in plaintext on a world-readable
+  partition while the broker reported "no key stored". The code, the
+  units and the flag are gone rather than wired up: keys now arrive
+  through Settings › Intelligence (API key or OAuth sign-in), which is
+  the path that is actually tested on hardware, and staging a plaintext
+  secret on an unencrypted partition is not a mechanism worth shipping
+  as a supported alternative. `git log -- daemons/remoted/src/provision.rs`
+  has the implementation if the ESP route is ever needed again.
 
 ## Who may change things (issue #99)
 
@@ -125,12 +128,12 @@ still worth having and is not here.
 ```sh
 cargo run -p lisa-remoted -- --state-dir /tmp/lisa-remoted \
     --ledger /tmp/lisa-remoted/ledger.db
-# oneshot ESP import:
-cargo run -p lisa-remoted -- --state-dir /tmp/lisa-remoted --import-esp /Volumes/ESP
 ```
 
-Units: `os/packages/lisa/lisa-remoted.service`,
-`os/packages/lisa/lisa-remoted-provision.service`.
+Unit: `os/packages/lisa/lisa-remoted-user.service`, installed by the
+PKGBUILD as `usr/lib/systemd/user/lisa-remoted.service`. The broker runs
+per-user, not system-wide — Settings and the CLI talk to the user
+instance, so a system-scope copy would hold state nobody reads (#164).
 
 ## Packaging & the socket bridge (TODO — needs Linux verification)
 

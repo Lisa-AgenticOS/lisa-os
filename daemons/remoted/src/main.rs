@@ -1,10 +1,7 @@
-//! lisa-remoted entry point: unix-socket HTTP server (+ optional D-Bus
-//! registration) or the `--import-esp` oneshot (ADR-0008 §6).
+//! lisa-remoted entry point: unix-socket HTTP server, optionally also
+//! registering dev.lisaos.Remote1 on the session bus.
 
 use clap::Parser;
-use lisa_remoted::provision;
-use lisa_remoted::registry::Registry;
-use lisa_remoted::secrets::SecretStore;
 use lisa_remoted::service::Broker;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,12 +23,6 @@ struct Args {
     /// Ledger database path (defaults like the other daemons).
     #[arg(long)]
     ledger: Option<PathBuf>,
-
-    /// Oneshot: import staged `lisa-provision/*.key` files from this
-    /// ESP mountpoint into the credential store, scrub them from the
-    /// ESP, and exit (field-test provisioning, superseded by M7 OOBE).
-    #[arg(long, value_name = "ESP_MOUNTPOINT")]
-    import_esp: Option<PathBuf>,
 
     /// Also register dev.lisaos.Remote1 on the session bus.
     #[arg(long)]
@@ -61,24 +52,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
     let state_dir = args.state_dir.unwrap_or_else(default_state_dir);
-
-    if let Some(esp) = args.import_esp {
-        let registry = Registry::open(&state_dir)?;
-        let secrets = SecretStore::open(&state_dir)?;
-        let outcomes = provision::import_esp(&esp, &registry, &secrets)?;
-        for o in &outcomes {
-            match o {
-                provision::Outcome::Imported(id) => {
-                    tracing::info!(provider = %id, "imported staged key; scrubbed from ESP")
-                }
-                provision::Outcome::UnknownProvider(id) => {
-                    tracing::warn!(provider = %id, "unknown provider id; left on ESP")
-                }
-            }
-        }
-        tracing::info!(count = outcomes.len(), "ESP provisioning pass complete");
-        return Ok(());
-    }
 
     let ledger_path = args
         .ledger

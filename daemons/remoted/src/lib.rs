@@ -10,7 +10,6 @@ pub mod consent;
 pub mod dbus;
 pub mod net;
 pub mod oauth;
-pub mod provision;
 pub mod proxy;
 pub mod registry;
 pub mod secrets;

@@ -38,10 +38,14 @@ file is the context the next Claude Code session needs; read
   the 19 GiB desktop layout).
 - Provisional login: `lisa`/`lisa`, GDM autologin (on the record in
   `os/mkosi/README.md`; replaced by M7 OOBE).
-- A Tinker API key is staged on the field device's ESP at
-  `lisa-provision/tinker.key`; PR #6's `lisa-remoted-provision.service`
-  imports + scrubs it on first boot of a build that ships the broker.
-  Never commit keys; the ESP is a staging area only.
+- ~~A Tinker API key is staged on the field device's ESP at
+  `lisa-provision/tinker.key`~~ — **stale, and it mattered (#164).** The
+  importing oneshot was never shipped by any installer, so nothing would
+  have imported or scrubbed a staged key; it would simply have stayed in
+  plaintext on a world-readable FAT partition. Checked on the reference
+  iMac 2026-08-01: no `/efi/lisa-provision` and no `*.key` anywhere on
+  the ESP, so nothing is exposed. The ESP route is now removed entirely;
+  keys arrive through Settings › Intelligence (API key or OAuth).
 
 ## In-flight state at handover
 

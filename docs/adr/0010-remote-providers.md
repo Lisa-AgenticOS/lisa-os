@@ -194,7 +194,23 @@ downstream; the broker surfaces that rather than masking it.
   a scope that is not enabled is refused (and the refusal is ledgered).
   Enforcement lives in the broker, not in callers.
 
-### 6. Field-test key provisioning over the ESP (provisional)
+### 6. Field-test key provisioning over the ESP — RETIRED (#164, 2026-08-01)
+
+**This section is history, not behavior.** The mechanism below was
+designed and implemented but shipped by no installer, and it has now
+been removed rather than wired up: `provision.rs`, the `--import-esp`
+flag and both units are deleted (recoverable via `git log`).
+
+Two reasons. It was never needed in the end — Settings › Intelligence
+provisions keys by paste or OAuth sign-in, tested on the reference
+device — and what it did was write a plaintext secret to an
+unencrypted, world-readable FAT partition and rely on a later boot to
+scrub it. As a fallback for a machine with no keyboard that is a
+defensible trade; as a supported path alongside a working one, it is
+just a second place secrets can be left behind.
+
+What follows is the design as it stood, kept because the staging
+convention is referenced in older field notes:
 
 Until the M7 OOBE exists, the only partition writable from a macOS dev
 machine on the field iMac is the FAT ESP. Staging convention:
@@ -215,14 +231,11 @@ oneshot unit (`lisa-remoted-provision.service`, `Before=` the broker,
 This mechanism is explicitly provisional and is superseded by the M7
 installer OOBE.
 
-**Status correction (2026-08-01, #164):** the oneshot was designed and
-written but is **shipped by no installer** — neither the PKGBUILD nor
-mkosi.extra installs it — so staged keys are neither imported nor
-scrubbed, and remain in plaintext on the world-readable ESP. It also
-targets the system-scope broker's state, which the desktop's per-user
-broker (the one Settings and the CLI talk to) never reads. Treat this
-section as design record, not behavior, until #164 either wires it for
-the user broker or retires it in favor of the OOBE.
+**Resolution (2026-08-01, #164):** retired, per the note at the head of
+this section. Anyone reaching for the ESP route should ask first why
+Settings › Intelligence will not do — and if the answer is "the machine
+has no working desktop", that is ADR-0022's rescue path, not a key
+import.
 
 ### 7. `inferenced` surface
 

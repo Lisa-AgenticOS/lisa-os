@@ -104,11 +104,11 @@ def user_unit_sources(root: Path) -> set:
                 if not tok.endswith(".service") or tok.startswith("$"):
                     continue
                 # Resolve to a real repo file, or skip: destination
-                # paths and enable-symlink targets share basenames with
-                # UNRELATED units (the user unit installs renamed as
-                # lisa-remoted.service — the name of the system-scope
-                # unit next to it), so a basename match would flag the
-                # wrong file.
+                # paths and enable-symlink targets are basenames of the
+                # INSTALLED unit, which routinely differs from the repo
+                # filename (lisa-remoted-user.service installs as
+                # lisa-remoted.service), so a basename match would flag
+                # the wrong file or none at all.
                 src = root / tok
                 if src.is_file():
                     sources.add(src.resolve())
