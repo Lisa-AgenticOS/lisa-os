@@ -305,7 +305,12 @@ runs:
             done
             if [ "$got" = "1" ]; then
                 kill -9 "$upd" 2>/dev/null
-                echo "LISA_KILLED_MIDWRITE sectors=$(( cur - base ))" > /dev/console
+                # MIDTRANSFER, not MIDWRITE: the counter sums every vda*
+                # write, so it cannot tell the slot write from the
+                # download to /var/tmp. Both are interruptions of a
+                # claimed target, which is what #159 is about — but the
+                # name should not claim precision the measurement lacks.
+                echo "LISA_KILLED_MIDTRANSFER sectors=$(( cur - base ))" > /dev/console
             else
                 # The update finished (or died) before the threshold —
                 # the kill proved nothing. Say so, with the evidence:
@@ -556,7 +561,7 @@ runs:
           | tee console.log
         echo "--- console assertions"
         grep -q "LISA_SLOT_BOOTED=1" console.log
-        grep -q "LISA_KILLED_MIDWRITE" console.log
+        grep -q "LISA_KILLED_MIDTRANSFER" console.log
         grep -q "reboot: Power down" console.log
         if grep -q "LISA_KILL_TOO_LATE" console.log; then
           echo "FAIL: the transfer completed before the kill — the scenario proved nothing"
@@ -587,28 +592,32 @@ runs:
           echo "p3 mounts: no"
         fi
         sudo losetup -d "$LOOP"
-        # DID THE KILL LAND WHERE THE NAME SAYS IT DID? The guest decides
-        # by summing writes to every vda* device, which cannot separate
-        # "sysupdate is writing the slot" from "sysupdate is downloading
-        # to /var/tmp" — both are writes to the same disk. So
-        # LISA_KILLED_MIDWRITE is a claim the counter cannot actually
-        # support, and a scenario that killed during the DOWNLOAD would
-        # still relabel and retype the partition and still pass every
-        # assertion below, while proving something weaker than the name
-        # promises.
+        # WHERE THE KILL LANDED — reported, not asserted, and the reason
+        # is a correction to this very block.
         #
-        # The slot's own contents settle it without any timing argument.
-        # The B slot was planted with v2 before the run; v3's bytes are
-        # the only way it can come back reading 3. A marker of 2 means
-        # the kill beat the first partition write.
-        if [ "$MOUNTS" = "yes" ] && [ "$P3_MARKER" != "${AB_V3}" ]; then
-          echo "FAIL: the target slot still reads version '$P3_MARKER', not $AB_V3 —"
-          echo "the kill landed before any of the new image reached the partition."
-          echo "The run proved a relabel, not an interrupted WRITE. Lower the guest's"
-          echo "sector threshold, or wait for the first non-zero delta rather than a"
-          echo "fixed 100 MiB."
-          exit 1
-        fi
+        # It used to REQUIRE the slot to read v3, on the argument that
+        # only v3's bytes could put it there. True in one direction and
+        # false in the other: the marker file sits at some arbitrary
+        # offset inside a 10 GiB filesystem image, so a transfer can have
+        # written a hundred megabytes of that image without yet having
+        # reached the extent holding /etc/lisa-slot-version. Run
+        # 30720421209 is exactly that — 262780 sectors written, marker
+        # still '2' — and the assertion failed a perfectly good
+        # interruption.
+        #
+        # It also asked the wrong question. #159 is about a slot that was
+        # CLAIMED and not finished; sysupdate relabels and retypes the
+        # target before the first byte is fetched, so an interruption
+        # during the download leaves the identical dangerous state — and
+        # is the likelier one in the field, where the network is what
+        # drops. Both stages are the case of interest. The GPT type below
+        # is what proves the transfer was in flight and never committed,
+        # and it needs no timing argument at all.
+        case "$P3_MARKER" in
+          "${AB_V3}") echo "stage: the kill landed after the slot's own bytes began arriving" ;;
+          "${AB_V2}") echo "stage: the kill landed during the download or before the marker's extent was reached — the target was already claimed and retyped" ;;
+          *)          echo "stage: target slot reads '$P3_MARKER' (neither $AB_V2 nor $AB_V3)" ;;
+        esac
         echo "--- ASSERT: the half-written slot must not impersonate a finished one"
         # WHAT THIS TEST GOT WRONG THE FIRST TIME, kept here because the
         # mistake is easy to repeat: it read the PARTLABEL, the GPT
