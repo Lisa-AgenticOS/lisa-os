@@ -30,6 +30,19 @@ jobs:
             -v "$PWD":/src -w /src docker.io/library/archlinux:latest bash -ec '
               # pacman >= 7 sandbox cannot apply inside the container
               sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+              # Give the throwaway container a keyring of its own before
+              # anything upgrades archlinux-keyring. Without this its
+              # post-upgrade hook prints
+              #
+              #   ==> ERROR: There is no secret key available to sign with.
+              #   error: command failed to execute correctly
+              #
+              # mid-transaction, non-fatally, in every single build. It
+              # costs nothing here and it is worth nothing there: a log
+              # that cries ERROR on a healthy run is how #165 stayed
+              # unread for four nights.
+              pacman-key --init
+              pacman-key --populate archlinux
               pacman -Syu --noconfirm mkosi
               mkosi --directory os/mkosi summary
               mkosi --directory os/mkosi build
