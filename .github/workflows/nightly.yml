@@ -370,6 +370,20 @@ jobs:
               fi
             done
           fi
+          # …and the runtime that uses the range. Every one of these is an
+          # OPTIONAL dependency of podman on Arch, so a mirror reshuffle
+          # can drop any of them without the build noticing and rootless
+          # podman will still start — degraded, with the failure surfacing
+          # later as "DNS is broken" or "the container has no init". This
+          # is presence only; that podman can actually build a user
+          # namespace on this image is asserted by ab-recovery's rootless
+          # probe, which runs it.
+          for b in podman crun netavark aardvark-dns pasta fuse-overlayfs catatonit; do
+            if ! ls mnt-pull/usr/bin/"$b" mnt-pull/usr/lib/podman/"$b" >/dev/null 2>&1; then
+              echo "FAIL: $b is not in the image — rootless containers degrade quietly without it (#130)"
+              fail=1
+            fi
+          done
           # Issue #142: without this the machine mints a new SSH identity
           # on every A/B update, and each first login afterwards warns
           # REMOTE HOST IDENTIFICATION HAS CHANGED — training the user to
@@ -704,6 +718,39 @@ jobs:
           UNIT
           sudo ln -sf ../lisa-test-poweroff.service \
             mnt-root/usr/lib/systemd/system/multi-user.target.wants/lisa-test-poweroff.service
+          # #130 phase 0: prove the rootless path, do not infer it from
+          # files. The image job already asserts /etc/subuid, newuidmap
+          # and the podman package set exist — none of which shows that
+          # podman can actually build a user namespace here, which is the
+          # thing that fails QUIETLY. `podman unshare id` needs no
+          # network and no image: it enters the namespace and prints the
+          # identity inside it, so uid=0 in the output is the mapping
+          # working, and nothing else produces that line.
+          sudo tee mnt-root/usr/local/bin/lisa-rootless-probe.sh >/dev/null <<'PROBE'
+          #!/bin/bash
+          if ! id lisa >/dev/null 2>&1; then
+              echo "LISA_ROOTLESS_SKIP no lisa user in this image" > /dev/console
+              exit 0
+          fi
+          uid=$(id -u lisa)
+          install -d -o lisa -g "$(id -gn lisa)" -m 0700 "/run/user/$uid"
+          out=$(runuser -u lisa -- env "XDG_RUNTIME_DIR=/run/user/$uid" podman unshare id 2>&1)
+          echo "LISA_ROOTLESS_ID rc=$? $out" > /dev/console
+          PROBE
+          sudo chmod +x mnt-root/usr/local/bin/lisa-rootless-probe.sh
+          sudo tee mnt-root/usr/lib/systemd/system/lisa-rootless-probe.service >/dev/null <<'UNIT'
+          [Unit]
+          Description=Rootless container probe (#130 phase 0)
+          After=multi-user.target
+          Before=lisa-test-poweroff.service
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/lisa-rootless-probe.sh
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          sudo ln -sf ../lisa-rootless-probe.service \
+            mnt-root/usr/lib/systemd/system/multi-user.target.wants/lisa-rootless-probe.service
           # The baked sysupdate channel must stay quiet (hermetic test).
           sudo ln -sf /dev/null mnt-root/etc/systemd/system/systemd-sysupdate.timer
           sudo umount mnt-root
@@ -741,6 +788,27 @@ jobs:
           test -f mnt-var/lib/lisa/uki/"$UKINAME" || { echo "FAIL: no stash"; exit 1; }
           sudo umount mnt-var
           sudo losetup -d "$LOOP"
+          echo "--- #130 phase 0: rootless container probe"
+          grep "LISA_ROOTLESS" boot1.log || echo "(the probe produced no line at all)"
+          if grep -q "LISA_ROOTLESS_SKIP" boot1.log; then
+            echo "FAIL (#130): the probe skipped — this image is built with the"
+            echo "provisioned user, so a missing 'lisa' account is a regression in"
+            echo "mkosi.postinst.chroot, not a legitimate skip."
+            exit 1
+          fi
+          # uid=0 can only be printed from INSIDE the user namespace: the
+          # probe runs as an unprivileged user, so unmapped it prints that
+          # user's real uid instead. This is the assertion; rc=0 alone
+          # would also pass for a podman that declined and exited clean.
+          if ! grep -q "LISA_ROOTLESS_ID rc=0 uid=0(root)" boot1.log; then
+            echo "FAIL (#130): rootless podman could not build a user namespace."
+            echo "subuid/subgid ranges and newuidmap are asserted present by the image"
+            echo "job, so look at the mapping itself — this is the quiet failure the"
+            echo "phase-0 checklist exists to catch."
+            grep -A3 "LISA_ROOTLESS" boot1.log || true
+            exit 1
+          fi
+          echo "ROOTLESS: PASS (podman entered a user namespace as the provisioned user)"
       - name: Damage the ESP (#20 reconstruction)
         run: |
           mdel -i "$ESP" "::/EFI/Linux/$UKINAME"

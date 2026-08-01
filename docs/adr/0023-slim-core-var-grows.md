@@ -101,6 +101,43 @@ release.yml now records the populated-root total and the `/opt/zen` share
 in every release's job summary, so the phase-3 decision reads a
 measurement rather than a memory.
 
+## Phase 3, measured (2026-08-01) — and the paragraph above was wrong
+
+The measurement the paragraph above asked for has now been taken, by the
+step it asked for. Release run 30674396878:
+
+```
+populated root: 4542 MiB (/opt/zen: 364 MiB)
+```
+
+**4.4 GiB, not 7.9.** The "7 GiB slots do not fit" verdict rested on the
+word *if* — "if the populated root was ~8.3 GiB when the slots went
+8 → 10 GiB" — and nobody had measured it. The 8 → 10 GiB bump was driven
+by a build that ran out of room while writing, which is not the same
+number as a finished root's size. So this correction is itself an
+instance of the mistake it was written to correct: an estimate, restated
+often enough to be quoted as a finding.
+
+What the measurement actually says:
+
+| | MiB | as a share of a 7 GiB slot |
+|---|---|---|
+| populated root today (Zen included) | 4542 | 63% |
+| same, with Zen moved to the channel | ~4178 | 58% |
+
+**Phase 3 is reachable, and it was reachable before Zen moved.** 7 GiB
+slots leave ~2.5 GiB of headroom at today's payload; the image target
+of ~1+7+7+2 = 17 GiB stands as originally written. The follow-on hunt
+for "more payload that has to leave the image first" — GNOME, llama.cpp,
+`linux-firmware` — is not required by the budget and should not be
+justified by it.
+
+This is also the number the phase-0 prerequisites of issue #130 are
+weighed against: a rootless container runtime (podman + crun + netavark
+and their dependencies) is a low-hundreds-of-MiB addition, which the
+headroom above absorbs without moving the slot target. Its measured
+delta is recorded in that issue when the first image carrying it builds.
+
 **Never lose the browser (the migration's actual hard part).** The image
 and the channel are decoupled, but a device that already has Zen baked in
 does not get to choose when its root is replaced. The path implemented:
