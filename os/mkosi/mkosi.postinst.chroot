@@ -235,3 +235,41 @@ if command -v glib-compile-schemas >/dev/null 2>&1 &&
     [ -d /usr/share/glib-2.0/schemas ]; then
     glib-compile-schemas /usr/share/glib-2.0/schemas || true
 fi
+
+# Podman ships four user units and its own pacman install ENABLES them:
+# podman.service, podman.socket, podman-auto-update.timer and
+# podman-clean-transient.service. None of them was asked for.
+#
+# podman.socket is the one that matters. It exposes podman's REST API on
+# $XDG_RUNTIME_DIR/podman/podman.sock — a socket that can create,
+# start and mount containers, taking its instructions as HTTP rather
+# than as argv. Lisa's guard classifies COMMANDS (`check_command`,
+# ADR-0029): an agent that can reach a REST socket asks for a container
+# without ever forming a command line, so nothing is there to classify.
+# That is a surface added by a dependency, not by a decision — exactly
+# what "no undeclared surfaces" is meant to prevent, and #130's design
+# drives podman through its CLI, where the guard can see it.
+#
+# Two mechanisms, because one is not enough (the #160 lesson): remove
+# the symlinks pacman made, AND write a user preset that outranks
+# podman's own, so a `systemctl --user preset-all` on a fresh slot does
+# not quietly put them back.
+if [ -e /usr/lib/systemd/user/podman.socket ]; then
+    mkdir -p /usr/lib/systemd/user-preset
+    cat > /usr/lib/systemd/user-preset/01-lisa-podman.preset <<'EOF'
+# Podman's own units stay off (#130). `lisa dev` drives podman through
+# its CLI, where the guard can classify what is being asked for; the
+# REST socket takes the same requests as HTTP, where it cannot. Sorts
+# before podman's shipped preset, and presets are first-match-wins.
+disable podman.service
+disable podman.socket
+disable podman-auto-update.timer
+disable podman-clean-transient.service
+EOF
+    for u in podman.service podman.socket podman-auto-update.timer \
+        podman-clean-transient.service; do
+        rm -f "/etc/systemd/user/default.target.wants/$u" \
+            "/etc/systemd/user/sockets.target.wants/$u" \
+            "/etc/systemd/user/timers.target.wants/$u"
+    done
+fi

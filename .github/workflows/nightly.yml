@@ -378,12 +378,39 @@ jobs:
           # is presence only; that podman can actually build a user
           # namespace on this image is asserted by ab-recovery's rootless
           # probe, which runs it.
+          # Either location counts — podman ships some of these under
+          # /usr/lib/podman as well. `ls a b` is the wrong test for that:
+          # it exits non-zero when EITHER argument is missing, so the
+          # first version of this loop demanded both paths and failed
+          # every binary that lives in only one. Six of seven "missing"
+          # packages were sitting in the image while the build log showed
+          # pacman installing them.
           for b in podman crun netavark aardvark-dns pasta fuse-overlayfs catatonit; do
-            if ! ls mnt-pull/usr/bin/"$b" mnt-pull/usr/lib/podman/"$b" >/dev/null 2>&1; then
+            if [ ! -e mnt-pull/usr/bin/"$b" ] && [ ! -e mnt-pull/usr/lib/podman/"$b" ]; then
               echo "FAIL: $b is not in the image — rootless containers degrade quietly without it (#130)"
               fail=1
             fi
           done
+          # Podman's pacman install ENABLES four user units nobody asked
+          # for, podman.socket among them — a REST API that creates and
+          # runs containers over HTTP, where the guard's command
+          # classification has nothing to classify. postinst removes the
+          # symlinks and writes a user preset; assert both, because the
+          # symlink removal alone is exactly what #160 proved insufficient
+          # (a fresh slot's preset run put the links straight back).
+          for u in podman.service podman.socket podman-auto-update.timer podman-clean-transient.service; do
+            for w in default.target.wants sockets.target.wants timers.target.wants; do
+              if [ -e "mnt-pull/etc/systemd/user/$w/$u" ]; then
+                echo "FAIL: $u is enabled in $w — podman's units must stay off (#130)"
+                fail=1
+              fi
+            done
+          done
+          if [ -e mnt-pull/usr/lib/systemd/user/podman.socket ] &&
+             ! grep -q '^disable podman.socket$' mnt-pull/usr/lib/systemd/user-preset/01-lisa-podman.preset 2>/dev/null; then
+            echo "FAIL: no user preset keeping podman.socket off — a preset-all on a fresh slot re-enables it (#130, the #160 shape)"
+            fail=1
+          fi
           # Issue #142: without this the machine mints a new SSH identity
           # on every A/B update, and each first login afterwards warns
           # REMOTE HOST IDENTIFICATION HAS CHANGED — training the user to
