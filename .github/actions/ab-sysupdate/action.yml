@@ -254,25 +254,34 @@ runs:
             # says nothing about whether the transfer was fast or the
             # counter was missing. A watcher that cannot see is not a
             # watcher.
-            probe() { awk -v d="$1" '$3==d {print $10}' /proc/diskstats; }
-            target=""
-            for d in vda3 vda; do
-                if [ -n "$(probe "$d")" ]; then target="$d"; break; fi
-            done
-            if [ -z "$target" ]; then
-                echo "LISA_NO_DISKSTATS — no write counter for vda3 or vda:" > /dev/console
+            # Watch the WHOLE DISK, not the target partition, and this is
+            # the second thing this probe got wrong. sysupdate does not
+            # write through /dev/vda3: it opens the disk and addresses
+            # the partition through that descriptor, reporting
+            #
+            #   Successfully installed '…root.xz' as '/proc/self/fd/3p3'
+            #
+            # so every sector lands in vda's counter while vda3's stays
+            # at exactly 0 — which is what the previous run measured for
+            # 153 seconds while a 10 GiB image streamed past it. Summing
+            # every vda* row is indifferent to which bdev the kernel
+            # accounts to, so a future systemd that writes the partition
+            # directly does not silently blind this again.
+            probe() { awk '$3 ~ /^vda/ {s += $10} END {print s+0}' /proc/diskstats; }
+            if [ "$(probe)" = "0" ] && ! grep -q " vda" /proc/diskstats; then
+                echo "LISA_NO_DISKSTATS — no write counter for any vda device:" > /dev/console
                 cat /proc/diskstats > /dev/console
                 systemctl poweroff
                 exit 0
             fi
-            echo "LISA_WATCHING dev=$target" > /dev/console
+            echo "LISA_WATCHING dev=vda* (summed)" > /dev/console
             /usr/lib/systemd/systemd-sysupdate update > /tmp/sysupdate.log 2>&1 &
             upd=$!
-            base=$(probe "$target")
+            base=$(probe)
             got=0; cur="$base"; ticks=0
             for _ in $(seq 1 900); do
                 if ! kill -0 "$upd" 2>/dev/null; then break; fi
-                cur=$(probe "$target")
+                cur=$(probe)
                 # 100 MiB in 512-byte sectors. Past any metadata
                 # preamble, well short of a 10 GiB slot.
                 if [ "$(( cur - base ))" -gt 204800 ]; then got=1; break; fi
@@ -297,8 +306,8 @@ runs:
                 echo "LISA_KILL_TOO_LATE sectors=$(( cur - base )) after=${ticks}s" > /dev/console
                 echo "--- sysupdate said:" > /dev/console
                 tail -20 /tmp/sysupdate.log > /dev/console 2>&1
-                echo "--- diskstats for $target:" > /dev/console
-                grep " $target " /proc/diskstats > /dev/console
+                echo "--- diskstats (vda*):" > /dev/console
+                grep " vda" /proc/diskstats > /dev/console
             fi
             systemctl poweroff
         elif [ "$v" = "1" ]; then
