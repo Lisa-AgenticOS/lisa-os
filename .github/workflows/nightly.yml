@@ -688,3 +688,49 @@ jobs:
             echo "FAIL: dangling UKI survived"; exit 1
           fi
           echo "AB-RECOVERY: PASS (stash -> damage -> restore + cleanup)"
+      # ADR-0022 acceptance case (c), issue #23: with BOTH slots broken
+      # the machine must reach a USABLE shell, not "root account is
+      # locked" — the refusal that turned field incident #2 into a USB
+      # reinstall. Asserting the drop-in file exists is explicitly not
+      # the claim (the ADR says so); the claim is that a human at the
+      # console gets a shell, so the test IS a human at the console: it
+      # types a command into the serial port and requires the output.
+      - name: Boot 3 — both slots broken must still yield a shell (case c)
+        run: |
+          set -o pipefail
+          # root= names a PARTLABEL no slot carries — the initrd waits,
+          # times out, and drops to rd.emergency. That is the both-
+          # slots-broken end state however the slots actually broke;
+          # rd.timeout keeps the wait short.
+          {
+            # Wait out the root-device timeout plus initrd fallout,
+            # nudge sulogin (it wants an Enter), then type a command
+            # whose OUTPUT cannot appear from mere input echo: the
+            # arithmetic only expands if a real shell evaluated it.
+            sleep 120
+            printf '\n'
+            sleep 10
+            printf 'echo LISA_SHELL_$((40+2))\n'
+            sleep 10
+            printf 'poweroff -f\n'
+            sleep 30
+          } | timeout 300 qemu-system-x86_64 \
+            -machine q35 -accel kvm -accel tcg -m 3G -nographic -no-reboot \
+            -kernel vmlinuz -initrd initrd.img \
+            -append "root=PARTLABEL=root_gone rw console=ttyS0 rd.timeout=45 systemd.gpt_auto=no" \
+            -drive file=lisa.raw,format=raw,if=virtio \
+            | tee boot3.log || true
+          echo "--- case (c) assertions"
+          if grep -q "root account is locked" boot3.log; then
+            echo "FAIL (#23c): the locked-account refusal — the exact field dead end"
+            exit 1
+          fi
+          if ! grep -q "LISA_SHELL_42" boot3.log; then
+            echo "FAIL (#23c): no shell executed the probe command."
+            echo "The rd.emergency path did not yield a usable shell; the"
+            echo "ADR-0022 phase-3 drop-in must reach the INITRD's"
+            echo "emergency unit, not only the root fs."
+            tail -30 boot3.log
+            exit 1
+          fi
+          echo "AB-RECOVERY case (c): PASS (both slots broken -> live shell, no locked-account refusal)"
