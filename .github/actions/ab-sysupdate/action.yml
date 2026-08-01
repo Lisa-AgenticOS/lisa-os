@@ -239,6 +239,15 @@ runs:
         echo "LISA_SLOT_BOOTED=$v" > /dev/console
         scenario=$(cat /etc/lisa-demo-scenario 2>/dev/null || echo normal)
         if [ "$v" = "1" ] && [ "$scenario" = "interrupted-transfer" ]; then
+            # The host boots this image a SECOND time to prove the rescue
+            # resolver rejects the half-written slot. That boot lands on
+            # this same root, so the driver must not start another update
+            # — hence the marker written just before the poweroff below.
+            if [ -f /etc/lisa-interrupted-done ]; then
+                echo "LISA_SECOND_BOOT (interrupted slot on disk; no new transfer)" > /dev/console
+                systemctl poweroff
+                exit 0
+            fi
             # Issue #159: what does a SIGKILL'd transfer leave behind?
             # Start the update, watch the TARGET slot's write counter
             # (/proc/diskstats field 10 = sectors written), and kill -9
@@ -309,6 +318,11 @@ runs:
                 echo "--- diskstats (vda*):" > /dev/console
                 grep " vda" /proc/diskstats > /dev/console
             fi
+            # Written LAST, and synced: the next boot of this slot must
+            # see it, or the rescue-boot step turns into a second
+            # uncontrolled transfer.
+            : > /etc/lisa-interrupted-done
+            sync
             systemctl poweroff
         elif [ "$v" = "1" ]; then
             systemctl start systemd-networkd
@@ -554,8 +568,12 @@ runs:
         # carries more partitions than the nightly one.
         P3_LABEL=$(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[] | select(.node | test("3$")) | .name // "(none)"')
         P3_ATTRS=$(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[] | select(.node | test("3$")) | .attrs // "(none)"')
+        P3_TYPE=$(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[] | select(.node | test("3$")) | .type // "(none)"' | tr 'a-f' 'A-F')
+        P2_TYPE=$(sfdisk -J "$AB_IMAGE" | jq -r '.partitiontable.partitions[] | select(.node | test("2$")) | .type // "(none)"' | tr 'a-f' 'A-F')
         echo "p3 label: $P3_LABEL"
         echo "p3 attrs: $P3_ATTRS"
+        echo "p3 type:  $P3_TYPE"
+        echo "p2 type:  $P2_TYPE  (the completed slot, for comparison)"
         LOOP=$(sudo losetup -P --show -f "$AB_IMAGE")
         echo "p3 blkid: $(sudo blkid "${LOOP}p3" || echo '(unreadable)')"
         MOUNTS=no
@@ -569,18 +587,120 @@ runs:
         fi
         sudo losetup -d "$LOOP"
         echo "--- ASSERT: the half-written slot must not impersonate a finished one"
-        # The boot path can read exactly three things about a slot before
-        # trusting it: its PARTLABEL, its GPT attribute bits (63 =
-        # NoAuto), and whether it mounts. A slot that (a) carries the
-        # final root_<v3> label, (b) has no NoAuto marking, and (c)
-        # mounts, is INDISTINGUISHABLE from a good slot — which is the
-        # exact state that turned an SSH drop into a USB reinstall.
-        # Any one distinguishing property is enough to pass.
-        if [ "$P3_LABEL" = "root_${AB_V3}" ] && [ "$MOUNTS" = "yes" ] \
-           && ! grep -q "GUID:63" <<<"$P3_ATTRS"; then
-          echo "FAIL (#159): interrupted transfer left label=$P3_LABEL attrs=$P3_ATTRS mounts=$MOUNTS"
-          echo "— nothing the boot path reads distinguishes this slot from a completed one."
-          echo "sysupdate did not mark it; we must (label prefix until verified, per the issue)."
+        # WHAT THIS TEST GOT WRONG THE FIRST TIME, kept here because the
+        # mistake is easy to repeat: it read the PARTLABEL, the GPT
+        # attribute bits and whether the slot mounts, found all three
+        # identical to a good slot, and concluded nothing marked it. The
+        # marker was in the fourth property it never read — the GPT
+        # partition TYPE. sysupdate relabels the target and switches its
+        # type to a derived "not finished with this yet" GUID before the
+        # first byte lands, and only patches the real root type in on
+        # success (src/sysupdate/sysupdate-transfer.c). Nightly
+        # 30686479397 measured it: the killed slot came out
+        # 7A01D3C6-92AC-43E9-BD77-5726B602AD9D while the finished slot
+        # beside it carried the real root type.
+        #
+        # So the assertion is on the type, and it is one-sided on
+        # purpose: we never hardcode the derived GUID, only require that
+        # it is NOT a root type. A future systemd is free to derive a
+        # different one; what may not change is that an unfinished slot
+        # stops looking like a root partition.
+        ROOT_TYPE_X86_64=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+        ROOT_TYPE_ARM64=B921B045-1DF0-41C3-AF44-4C6F280D3FAE
+        is_root_type() { [ "$1" = "$ROOT_TYPE_X86_64" ] || [ "$1" = "$ROOT_TYPE_ARM64" ]; }
+        # POSITIVE CONTROL. A check that only ever asks "is p3 not a root
+        # type" passes just as happily against a disk with no root types
+        # at all — a wrong jq path, a renamed field, an image whose slots
+        # moved. Require the FINISHED slot to carry the root type first,
+        # so the discriminator is known to discriminate.
+        if ! is_root_type "$P2_TYPE"; then
+          echo "FAIL: the completed slot p2 does not carry a root GPT type ($P2_TYPE)."
+          echo "The type check below cannot distinguish anything on this disk — fix the"
+          echo "probe, do not trust its verdict."
           exit 1
         fi
-        echo "INTERRUPTED-TRANSFER: PASS (label=$P3_LABEL attrs=$P3_ATTRS mounts=$MOUNTS — distinguishable)"
+        if is_root_type "$P3_TYPE"; then
+          echo "FAIL (#159): interrupted transfer left label=$P3_LABEL attrs=$P3_ATTRS mounts=$MOUNTS type=$P3_TYPE"
+          echo "— the half-written slot carries a real root type, so nothing on disk"
+          echo "distinguishes it from a completed one. That is the state that turned an"
+          echo "SSH drop into a USB reinstall (#45). sysupdate no longer marks the target;"
+          echo "we must mark it ourselves before trusting a slot to boot."
+          exit 1
+        fi
+        echo "INTERRUPTED-TRANSFER: PASS (label=$P3_LABEL attrs=$P3_ATTRS mounts=$MOUNTS)"
+        echo "  the mark is the GPT type: $P3_TYPE is not a root type; p2's $P2_TYPE is."
+        echo "  Label, attrs and mountability are all identical to a good slot — reading"
+        echo "  any of those instead of the type is how this looked like a missing marker."
+
+    # A mark nothing reads is not a mark. The step above proves the disk
+    # carries one; this one proves the code that consumes it does its job,
+    # by running it — ADR-0022 phase 2's resolver, on the very disk the
+    # kill just damaged. Until now that resolver was only ever asserted to
+    # EXIST (nightly "Initrd must carry the Lisa initrd overlay"), which
+    # is the failure mode this repo keeps repeating: a file that is
+    # present and a mechanism that works are different claims.
+    #
+    # The disk is the interesting one on purpose: root_3 sorts NEWER than
+    # root_1, so a resolver that ignored the GPT type would pick the
+    # half-written slot first. Getting root_1 is therefore only explicable
+    # by the type check having fired.
+    - name: "A/B: the rescue resolver must refuse the half-written slot (#159, ADR-0022 phase 2)"
+      if: ${{ inputs.scenario == 'interrupted-transfer' }}
+      shell: bash
+      env:
+        AB_IMAGE: ${{ inputs.image }}
+      run: |
+        set -o pipefail
+        AB_IMAGE="$(realpath "$AB_IMAGE")"
+        cd ab-scratch
+        [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm
+        # vmlinuz/initrd.img were dumped from the image's own UKI in the
+        # plant step — the shipped initrd, overlay and all. Direct kernel
+        # boot is the only way to hand it the rescue cmdline: the rescue
+        # UKI is deliberately not installed in the ESP (it captures
+        # sd-boot's default — see the nightly's note on issue #23).
+        [ -s vmlinuz ] && [ -s initrd.img ] || { echo "FAIL: no kernel/initrd from the plant step"; ls -l; exit 1; }
+        timeout 600 qemu-system-x86_64 \
+          -machine q35 -accel kvm -accel tcg -m 3G -nographic -no-reboot \
+          -kernel vmlinuz -initrd initrd.img \
+          -append "root=/dev/lisa/newest-good rw console=ttyS0 rd.timeout=90 systemd.gpt_auto=no" \
+          -drive "file=$AB_IMAGE,format=raw,if=virtio" \
+          | tee rescue.log || true
+        echo "--- what the resolver said"
+        grep "lisa-rescue:" rescue.log || echo "(nothing — the resolver produced no output at all)"
+        if ! grep -q "lisa-rescue:" rescue.log; then
+          echo "FAIL (#159/ADR-0022): the resolver never ran. Its own cmdline gate"
+          echo "(root=/dev/lisa/newest-good) was satisfied, so this is the unit not"
+          echo "reaching the initrd or not being wanted by initrd-root-device.target."
+          tail -40 rescue.log
+          exit 1
+        fi
+        if ! grep -q "unfinished sysupdate target" rescue.log; then
+          echo "FAIL (#159): the resolver ran but did not reject the half-written slot."
+          echo "root_3 sorts newest, so it was the first candidate; slot_is_committed()"
+          echo "should have refused it on its GPT type. Either the type check is not"
+          echo "reading ID_PART_ENTRY_TYPE, or udevadm is missing from the initrd (in"
+          echo "which case it returns 'committed' by design and trusts everything)."
+          exit 1
+        fi
+        if ! grep -q "booting newest mountable root: /dev/vda2" rescue.log; then
+          echo "FAIL (#159): the resolver rejected the bad slot but did not land on the"
+          echo "good one (/dev/vda2). What it chose:"
+          grep "lisa-rescue:" rescue.log
+          exit 1
+        fi
+        # And it must actually BOOT — a resolver that picks the right
+        # device but publishes it in a way systemd cannot mount leaves the
+        # machine hung on sysroot.mount, which is no better than picking
+        # wrong. LISA_SECOND_BOOT comes from the demo driver on the root
+        # filesystem, so seeing it means userspace on the chosen slot ran.
+        if ! grep -q "LISA_SECOND_BOOT" rescue.log; then
+          echo "FAIL (#159): the resolver chose /dev/vda2 but the machine never reached"
+          echo "userspace on it. The usual cause is the symlink: systemd's sysroot.mount"
+          echo "Requires= a .device unit, which exists only for links udev published —"
+          echo "a hand-made symlink is invisible to it and the mount waits forever."
+          tail -40 rescue.log
+          exit 1
+        fi
+        echo "RESCUE RESOLVER: PASS (root_3 half-written and refused on its GPT type;"
+        echo "booted /dev/vda2 = root_1 and reached userspace)"

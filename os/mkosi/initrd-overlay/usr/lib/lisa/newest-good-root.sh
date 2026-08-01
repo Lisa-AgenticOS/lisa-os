@@ -92,6 +92,27 @@ slot_is_committed() {
     [ "$ptype" = "$ROOT_TYPE_X86_64" ] || [ "$ptype" = "$ROOT_TYPE_ARM64" ]
 }
 
+# Hand the chosen device to the boot path. A bare symlink is NOT enough,
+# and this is the trap that made two nightlies hang "waiting for
+# /dev/lisa/newest-good": systemd turns root=/dev/... into a sysroot.mount
+# that Requires= the matching .device unit, and a .device unit exists only
+# for paths udev published as DEVLINKS. A symlink created here with ln is
+# invisible to udev, so sysroot.mount waits forever for a device that will
+# never appear. Publishing a udev rule and re-triggering the device makes
+# udev own the link — and udev is what systemd is listening to.
+publish() {
+    if command -v udevadm >/dev/null 2>&1; then
+        mkdir -p /run/udev/rules.d
+        printf 'SUBSYSTEM=="block", KERNEL=="%s", SYMLINK+="lisa/newest-good"\n' \
+            "${1##*/}" > /run/udev/rules.d/99-lisa-newest-good.rules
+        udevadm control --reload >/dev/null 2>&1
+        udevadm trigger --action=change --settle "$1" >/dev/null 2>&1
+    fi
+    # Belt and braces: if udev is absent or the trigger did not land, the
+    # link still exists for anything that resolves paths directly.
+    [ -e "$link" ] || ln -sf "$1" "$link"
+}
+
 for dev in $candidates; do
     [ -b "$dev" ] || continue
     if ! slot_is_committed "$dev"; then
@@ -101,7 +122,7 @@ for dev in $candidates; do
     if mount -o ro "$dev" "$probe" 2>/dev/null; then
         if [ -f "$probe/usr/lib/os-release" ]; then
             umount "$probe" 2>/dev/null
-            ln -sf "$dev" "$link"
+            publish "$dev"
             echo "lisa-rescue: booting newest mountable root: $dev"
             exit 0
         fi
