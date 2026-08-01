@@ -4,16 +4,19 @@
 //! the query, and rank by a blend of BM25 (lexical) and cosine (vector).
 //! Embedding is pluggable via [`Embedder`].
 //!
-//! WHAT ACTUALLY EMBEDS TODAY: [`HashEmbedder`], everywhere — the
-//! daemon's D-Bus paths and the CLI both construct it directly. The
-//! model-backed embedder (a background-QoS call to `lisa-inferenced`'s
-//! `/v1/embeddings`, loopback, not egress) is the DESIGN and does not
-//! exist yet (#163); the one real `/v1/embeddings` call in the tree is
-//! the standalone `lisa embed` verb, which feeds nothing here. An
-//! earlier version of this header described that wiring as current
-//! behavior, which is this repo's most repeated defect (CLAUDE.md
-//! rule 10) — hybrid=true returned hits in a different order and
-//! nothing could tell there was no semantic model behind it.
+//! WHAT ACTUALLY EMBEDS TODAY: whichever [`resolve`] returns, and it
+//! says which. [`InferencedEmbedder`] when `lisa-inferenced`'s unix
+//! socket answers, [`HashEmbedder`] otherwise — and the fallback is
+//! never quiet: it logs a warning, the CLI prints a note, and the
+//! Ledger entry for the search carries `"embedder": "hash"`. That is
+//! the whole of #163: `hybrid=true` used to return plausibly-ranked
+//! hits with no semantic model behind them, and neither a caller nor a
+//! reviewer could tell.
+//!
+//! The socket, not `127.0.0.1:7777`, because this daemon runs with
+//! `RestrictAddressFamilies=AF_UNIX` and `IPAddressDeny=any` — see
+//! [`InferencedEmbedder`] for why that shapes the design rather than
+//! being worked around.
 //!
 //! Vectors persist in `chunk_vectors`; ranking is brute-force cosine
 //! over the FTS5-prefiltered candidate set (sqlite-vec is the later
@@ -64,6 +67,173 @@ impl Embedder for HashEmbedder {
             })
             .collect())
     }
+}
+
+/// The model-backed embedder: `lisa-inferenced`'s `/v1/embeddings`,
+/// reached over a **unix socket** rather than `127.0.0.1:7777`.
+///
+/// The socket is not a stylistic preference. This daemon runs with
+/// `RestrictAddressFamilies=AF_UNIX` and `IPAddressDeny=any`
+/// (`os/packages/lisa/lisa-contextd-user.service`) — it cannot open an
+/// IP socket at all, loopback included, because "contextd never reaches
+/// the network" is a kernel-enforced property and not a promise
+/// (CLAUDE.md rule 5). An embedder written against the loopback port
+/// would compile, pass every test on a dev host where no unit file
+/// applies, and fail only on the device, silently, as a fallback to
+/// [`HashEmbedder`] — which is the exact defect #163 was filed about.
+pub struct InferencedEmbedder {
+    socket: std::path::PathBuf,
+    model: Option<String>,
+}
+
+impl InferencedEmbedder {
+    /// Where the per-user companion puts its socket.
+    pub fn default_socket() -> Option<std::path::PathBuf> {
+        std::env::var_os("LISA_INFERENCED_SOCKET")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("XDG_RUNTIME_DIR")
+                    .map(std::path::PathBuf::from)
+                    .map(|d| d.join("lisa/inferenced.sock"))
+            })
+    }
+
+    pub fn new(socket: std::path::PathBuf, model: Option<String>) -> Self {
+        Self { socket, model }
+    }
+}
+
+impl Embedder for InferencedEmbedder {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, StoreError> {
+        use std::io::{Read, Write};
+        let mut body = serde_json::json!({ "input": texts });
+        if let Some(model) = &self.model {
+            body["model"] = serde_json::Value::String(model.clone());
+        }
+        let body = serde_json::to_vec(&body).map_err(io_err)?;
+        let mut stream = std::os::unix::net::UnixStream::connect(&self.socket)?;
+        // `Connection: close` is what makes read_to_end the whole
+        // response: the server hangs up when it is done, so there is no
+        // framing to get wrong and no keep-alive state to manage. Host
+        // is required by HTTP/1.1 and ignored over a socket.
+        let head = format!(
+            "POST /v1/embeddings HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        stream.write_all(&body)?;
+        stream.flush()?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw)?;
+
+        let split = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .ok_or_else(|| io_msg("no header/body separator in the embeddings response"))?;
+        let head = String::from_utf8_lossy(&raw[..split]).to_string();
+        let payload = &raw[split + 4..];
+        let status = head
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .unwrap_or("?")
+            .to_string();
+        // Refuse rather than mis-parse. Nothing this daemon asks for
+        // should come back chunked (a JSON body has a known length), so
+        // if one does, the assumption above has stopped holding and
+        // silently reading framing bytes as JSON would be worse.
+        if head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+        {
+            return Err(io_msg(
+                "embeddings response is chunked; this client reads Content-Length bodies only",
+            ));
+        }
+        if status != "200" {
+            return Err(io_msg(&format!(
+                "embeddings returned HTTP {status}: {}",
+                String::from_utf8_lossy(payload).trim()
+            )));
+        }
+        let json: serde_json::Value = serde_json::from_slice(payload).map_err(io_err)?;
+        if let Some(msg) = json["error"]["message"].as_str() {
+            return Err(io_msg(&format!("embeddings error: {msg}")));
+        }
+        let data = json["data"]
+            .as_array()
+            .ok_or_else(|| io_msg("embeddings response has no data array"))?;
+        // One vector per input, in order. A short reply would silently
+        // misalign vectors with chunks — every document after the gap
+        // would carry someone else's meaning.
+        if data.len() != texts.len() {
+            return Err(io_msg(&format!(
+                "embeddings returned {} vectors for {} inputs",
+                data.len(),
+                texts.len()
+            )));
+        }
+        let mut out = Vec::with_capacity(data.len());
+        for item in data {
+            let v = item["embedding"]
+                .as_array()
+                .ok_or_else(|| io_msg("an embeddings entry has no embedding array"))?;
+            let mut v: Vec<f32> = v
+                .iter()
+                .filter_map(|x| x.as_f64())
+                .map(|x| x as f32)
+                .collect();
+            if v.is_empty() {
+                return Err(io_msg("an embeddings entry is an empty vector"));
+            }
+            // Stored normalized so cosine is a dot product, exactly as
+            // HashEmbedder's output is.
+            normalize(&mut v);
+            out.push(v);
+        }
+        Ok(out)
+    }
+}
+
+fn io_err<E: std::fmt::Display>(e: E) -> StoreError {
+    io_msg(&e.to_string())
+}
+
+fn io_msg(msg: &str) -> StoreError {
+    StoreError::Io(std::io::Error::other(msg.to_string()))
+}
+
+/// Pick the embedder a production path should use, and say which one it
+/// got. Never falls back quietly: #163 exists because `hybrid=true` kept
+/// returning plausibly-ordered hits with no model behind them, and
+/// nothing in the logs or the Ledger said so.
+pub fn resolve() -> (Box<dyn Embedder>, &'static str) {
+    resolve_with(InferencedEmbedder::default_socket())
+}
+
+/// The testable half of [`resolve`]: the socket comes in as an argument
+/// so a test can point it at a stub without mutating the process
+/// environment, which is both unsafe and shared between parallel tests.
+pub fn resolve_with(socket: Option<std::path::PathBuf>) -> (Box<dyn Embedder>, &'static str) {
+    // Connect, don't stat. A socket file outlives the daemon that made
+    // it, so existence would happily select a dead endpoint and turn a
+    // startup-time report into a failure at the first embed.
+    if let Some(path) = &socket
+        && std::os::unix::net::UnixStream::connect(path).is_ok()
+    {
+        return (
+            Box::new(InferencedEmbedder::new(path.clone(), None)),
+            "inferenced",
+        );
+    }
+    tracing::warn!(
+        socket = ?socket,
+        "no model-backed embedder: falling back to HashEmbedder, which has no semantic model \
+         behind it. Hybrid search will still return results, and they will still look ranked — \
+         they are lexical only (#163)."
+    );
+    (Box::new(HashEmbedder::default()), "hash")
 }
 
 fn normalize(v: &mut [f32]) {
@@ -209,6 +379,100 @@ impl ContextStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for lisa-inferenced's `/v1/embeddings` on a unix
+    /// socket. Answers `n` requests then stops; every vector it returns
+    /// is a distinctive constant so a test can tell its output apart
+    /// from anything HashEmbedder would produce.
+    fn stub_embeddings_server(
+        path: std::path::PathBuf,
+        requests: usize,
+    ) -> std::thread::JoinHandle<()> {
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..requests {
+                let Ok((mut sock, _)) = listener.accept() else {
+                    return;
+                };
+                // Read just the headers; the body length is known from
+                // Content-Length but the stub does not need the body.
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let body = serde_json::json!({
+                    "data": [{ "embedding": [3.0, 4.0] }]
+                })
+                .to_string();
+                let _ = sock.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        })
+    }
+
+    /// #163: a reachable model-backed embedder must actually be used.
+    /// The stub returns [3,4], which normalizes to [0.6,0.8] — a
+    /// two-element vector HashEmbedder (64 dims of token counts) can
+    /// never produce, so this asserts the model's numbers arrived rather
+    /// than merely that something was selected.
+    #[test]
+    fn a_reachable_socket_is_used_instead_of_the_hash_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("inferenced.sock");
+        // Two connections: resolve_with probes, then embed sends.
+        let server = stub_embeddings_server(sock.clone(), 2);
+
+        let (embedder, kind) = resolve_with(Some(sock.clone()));
+        assert_eq!(
+            kind, "inferenced",
+            "a live socket must win over the fallback"
+        );
+        let out = embedder.embed(&["anything".to_string()]).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].len(),
+            2,
+            "vector came from somewhere other than the socket"
+        );
+        assert!((out[0][0] - 0.6).abs() < 1e-6 && (out[0][1] - 0.8).abs() < 1e-6);
+        let _ = server.join();
+
+        // POSITIVE CONTROL. The assertions above pass for a test that
+        // simply never reaches the fallback path; this is the same call
+        // with the socket taken away, and it must come back "hash".
+        // Without it, deleting InferencedEmbedder entirely would leave
+        // the suite green in the only way that matters.
+        let gone = dir.path().join("not-a-socket.sock");
+        let (fallback, kind) = resolve_with(Some(gone));
+        assert_eq!(kind, "hash", "an unreachable socket must fall back, loudly");
+        let out = fallback.embed(&["anything".to_string()]).unwrap();
+        assert_eq!(out[0].len(), 64, "the fallback is HashEmbedder's 64 dims");
+    }
+
+    /// A truncated reply must be an error, not a silently short set of
+    /// vectors: chunks and vectors are matched by position, so one
+    /// missing vector gives every document after it someone else's
+    /// meaning.
+    #[test]
+    fn a_short_reply_is_refused_rather_than_misaligned() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("short.sock");
+        let server = stub_embeddings_server(sock.clone(), 1);
+        let embedder = InferencedEmbedder::new(sock, None);
+        let err = embedder
+            .embed(&["one".to_string(), "two".to_string()])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("1 vectors for 2 inputs"),
+            "expected a count mismatch, got: {err}"
+        );
+        let _ = server.join();
+    }
 
     #[test]
     fn hybrid_search_embeds_and_reranks() {

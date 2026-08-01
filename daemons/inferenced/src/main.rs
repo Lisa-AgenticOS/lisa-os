@@ -40,6 +40,19 @@ struct Args {
     /// shell surfaces their engine surface.
     #[arg(long)]
     dbus: bool,
+    /// Additionally serve the same HTTP API on a unix socket. Defaults
+    /// to $XDG_RUNTIME_DIR/lisa/inferenced.sock; pass a path to
+    /// override, or set LISA_INFERENCED_SOCKET.
+    ///
+    /// This exists for callers that are forbidden IP sockets outright.
+    /// lisa-contextd runs with RestrictAddressFamilies=AF_UNIX and
+    /// IPAddressDeny=any (CLAUDE.md rule 5 — egress is architecture,
+    /// enforced by the kernel rather than by convention), so it cannot
+    /// reach 127.0.0.1:7777 to embed. Rather than punch a hole in the
+    /// side holding the user's context, the side accepting connections
+    /// offers a door that does not require the network stack at all.
+    #[arg(long, value_name = "PATH")]
+    socket: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -214,13 +227,83 @@ async fn main() -> anyhow::Result<()> {
     };
     let listener = tokio::net::TcpListener::bind(&cfg.bind.0).await?;
     info!("OpenAI-compat endpoint on http://{}", cfg.bind.0);
-    axum::serve(listener, api::router(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            info!("shutting down");
-        })
-        .await?;
+    let router = api::router(state);
+
+    // The unix-socket door, for callers with no network stack to speak
+    // of (see --socket). Failing to bind it is a warning, not a fatal:
+    // the TCP endpoint is what every existing caller uses, and a
+    // read-only runtime dir must not take chat down with it.
+    let unix = match unix_socket_path(args.socket) {
+        Some(path) => match bind_unix(&path) {
+            Ok(l) => {
+                info!(socket = %path.display(), "OpenAI-compat endpoint also on unix socket");
+                Some(l)
+            }
+            Err(e) => {
+                warn!(socket = %path.display(), error = %e,
+                      "unix socket unavailable — callers restricted to AF_UNIX cannot reach this daemon");
+                None
+            }
+        },
+        None => {
+            info!("no unix socket (no --socket, no LISA_INFERENCED_SOCKET, no XDG_RUNTIME_DIR)");
+            None
+        }
+    };
+
+    let shutdown = || async {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("shutting down");
+    };
+    match unix {
+        Some(unix) => {
+            let tcp = axum::serve(listener, router.clone()).with_graceful_shutdown(shutdown());
+            let uds = axum::serve(unix, router).with_graceful_shutdown(shutdown());
+            // Either listener dying is fatal — a half-serving daemon is
+            // the shape of failure this repo keeps paying for.
+            tokio::try_join!(tcp, uds)?;
+        }
+        None => {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown())
+                .await?
+        }
+    }
     Ok(())
+}
+
+/// Where the unix socket goes: the flag, then the environment, then the
+/// per-user runtime dir. `None` means "do not offer one" — which is the
+/// right answer for a system daemon with no XDG_RUNTIME_DIR, not an
+/// error.
+fn unix_socket_path(flag: Option<PathBuf>) -> Option<PathBuf> {
+    flag.or_else(|| std::env::var_os("LISA_INFERENCED_SOCKET").map(PathBuf::from))
+        .or_else(|| {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .map(|d| d.join("lisa/inferenced.sock"))
+        })
+}
+
+/// Bind the socket 0600 and owner-only, replacing a stale one.
+fn bind_unix(path: &std::path::Path) -> anyhow::Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // A socket left by a previous run is not a live server; binding over
+    // it is the documented pattern. Only ever remove a SOCKET — if the
+    // path holds anything else, that is someone else's file and the bind
+    // should fail loudly instead.
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(path)?,
+        Ok(_) => anyhow::bail!("{} exists and is not a socket", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let listener = tokio::net::UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
 }
 
 /// Is the given binary runnable — an absolute path that exists, or a bare

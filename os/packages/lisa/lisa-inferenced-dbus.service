@@ -22,7 +22,13 @@ Type=exec
 # broker owns egress, and the broker still gates every request on per-scope
 # consent + a stored credential (nothing leaves by default, rule 5).
 Environment=LISA_REMOTED_SOCKET=%t/lisa/remoted.sock
-ExecStart=/usr/bin/lisa-inferenced --dbus --bind 127.0.0.1:7778 --engine llama --models-dir /var/lib/lisa-models/refs --config /usr/share/lisa/inferenced-remote.toml
+# --socket serves the same HTTP API on a unix socket, for callers that
+# are forbidden IP sockets outright. lisa-contextd runs with
+# RestrictAddressFamilies=AF_UNIX and IPAddressDeny=any, so it cannot
+# reach :7778 to embed — the loopback port is still a network socket
+# (#163). Spelled out rather than left to the daemon's default, so the
+# path the context fabric depends on is visible in the unit that owns it.
+ExecStart=/usr/bin/lisa-inferenced --dbus --bind 127.0.0.1:7778 --socket %t/lisa/inferenced.sock --engine llama --models-dir /var/lib/lisa-models/refs --config /usr/share/lisa/inferenced-remote.toml
 Restart=on-failure
 RestartSec=2
 

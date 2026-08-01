@@ -54,7 +54,6 @@
 //! macOS dev hosts and CI alike); session-bus registration is used on
 //! real systems.
 
-use crate::embed::HashEmbedder;
 use crate::store::{ContextStore, StoreError};
 use lisa_ledger::{Event, Ledger};
 use lisa_peer::app::{AppIdentity, IdentityResolver, ProcResolver};
@@ -231,6 +230,16 @@ impl Context1 {
         } else {
             "context.search"
         };
+        // Pick the embedder before ledgering, so the entry can say which
+        // one ranked the results. A hybrid search backed by HashEmbedder
+        // is lexical with extra steps; "you can read exactly what it
+        // did" has to include that (#163).
+        let (embedder, embedder_kind) = if hybrid {
+            let (e, k) = crate::embed::resolve();
+            (Some(e), k)
+        } else {
+            (None, "none")
+        };
         // §5.3 asks for (app, scope, query hash, doc-ids). It was
         // `app_id: "host"` with no scopes, so a retrieval could not be
         // attributed to the app that made it.
@@ -244,6 +253,7 @@ impl Context1 {
                     "scopes": scopes,
                     "unscoped": unscoped_allowed,
                     "identity": app.kind.as_str(),
+                    "embedder": embedder_kind,
                 })
                 .to_string(),
                 ..Default::default()
@@ -258,14 +268,21 @@ impl Context1 {
                 // Both, rather than silently dropping one: an app that
                 // asked for the better ranking and got the worse one
                 // would have no way to tell.
-                self.store
-                    .search_hybrid_scoped(&query, &scopes, &HashEmbedder::default(), limit)
+                self.store.search_hybrid_scoped(
+                    &query,
+                    &scopes,
+                    embedder.as_deref().expect("hybrid implies an embedder"),
+                    limit,
+                )
             } else {
                 self.store.search_scoped(&query, &scopes, limit)
             }
         } else if hybrid {
-            self.store
-                .search_hybrid(&query, &HashEmbedder::default(), limit)
+            self.store.search_hybrid(
+                &query,
+                embedder.as_deref().expect("hybrid implies an embedder"),
+                limit,
+            )
         } else {
             self.store.search(&query, limit)
         }

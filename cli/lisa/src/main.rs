@@ -2686,8 +2686,19 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
                 report.indexed, report.chunks, report.skipped_unchanged
             );
             if embed {
-                let n = store.embed_pending(&lisa_contextd::embed::HashEmbedder::default())?;
-                println!("embedded {n} new chunk(s) for hybrid search");
+                // Say which embedder wrote these vectors. A store filled
+                // by the hash fallback and one filled by the model look
+                // identical afterwards, and mixing them silently makes
+                // cosine meaningless (#163).
+                let (embedder, kind) = lisa_contextd::embed::resolve();
+                let n = store.embed_pending(embedder.as_ref())?;
+                println!("embedded {n} new chunk(s) for hybrid search (embedder: {kind})");
+                if kind == "hash" {
+                    eprintln!(
+                        "note: no model-backed embedder was reachable, so these vectors carry no \
+                         semantic meaning — hybrid search will rank lexically (#163)"
+                    );
+                }
             }
         }
         ContextCmd::Search {
@@ -2697,6 +2708,12 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
             scope,
         } => {
             let query = query.join(" ");
+            let (embedder, embedder_kind) = if hybrid {
+                let (e, k) = lisa_contextd::embed::resolve();
+                (Some(e), k)
+            } else {
+                (None, "none")
+            };
             // Every retrieval is ledgered (PLAN §5.3) — query hash, not text.
             let ledger = lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path())?;
             ledger.append(&lisa_ledger::Event {
@@ -2710,6 +2727,7 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
                 app_id: "host".into(),
                 input_hash: blake3::hash(query.as_bytes()).to_hex().to_string(),
                 status: "ok".into(),
+                detail: serde_json::json!({ "embedder": embedder_kind }).to_string(),
                 ..Default::default()
             })?;
             // Scope and hybrid are orthogonal — visibility vs ranking —
@@ -2723,7 +2741,7 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
                 store.search_hybrid_scoped(
                     &query,
                     &scopes,
-                    &lisa_contextd::embed::HashEmbedder::default(),
+                    embedder.as_deref().expect("hybrid implies an embedder"),
                     limit,
                 )?
             } else if !scope.is_empty() {
@@ -2732,7 +2750,7 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
             } else if hybrid {
                 store.search_hybrid(
                     &query,
-                    &lisa_contextd::embed::HashEmbedder::default(),
+                    embedder.as_deref().expect("hybrid implies an embedder"),
                     limit,
                 )?
             } else {

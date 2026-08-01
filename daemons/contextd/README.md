@@ -20,6 +20,17 @@ Implemented and unit-tested (macOS + Linux, no daemon required):
 - **Hybrid retrieval** (`embed.rs`) — per-chunk embeddings + BM25×cosine
   blend over FTS-prefiltered candidates (sqlite-vec at scale is the later
   optimization). `embed_pending`, `search_hybrid`.
+  **Which embedder** is decided by `embed::resolve()` and always
+  reported: `InferencedEmbedder` when `lisa-inferenced`'s unix socket
+  answers, `HashEmbedder` otherwise. The fallback is never quiet — a
+  warning in the log, a note on the CLI, and `"embedder"` in the search's
+  Ledger entry — because for a year `hybrid=true` returned
+  plausibly-ranked hits with no semantic model behind them and nothing
+  said so (#163).
+  The socket rather than `127.0.0.1:7777`: this daemon runs
+  `RestrictAddressFamilies=AF_UNIX` + `IPAddressDeny=any`, so it cannot
+  open an IP socket at all — loopback is still the network stack. The
+  companion passes `--socket %t/lisa/inferenced.sock`.
 - **Per-app memory** (`memory.rs`) — namespace-isolated key/value with
   zero-residual wipe (an app never reads another's namespace).
 - **Scoped-ACL retrieval** (`acl.rs`) — maps a granted portal scope to
