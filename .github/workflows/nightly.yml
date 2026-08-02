@@ -496,9 +496,11 @@ jobs:
           # retrieve credentials from the keyring". That is what a
           # connected Google account did on the field iMac on 2026-07-30.
           #
-          # Implication, not presence — this job also builds the minimal
-          # image, where gdm is legitimately absent (same reasoning as
-          # check_enabled above).
+          # Implication, not presence — so a future minimal/no-desktop
+          # flavor (M7, ADR-0031), where gdm is legitimately absent,
+          # joins without turning this red (same reasoning as
+          # check_enabled above). No such flavor is built yet; today
+          # this job builds only the full-desktop image.
           if [ -e mnt-pull/usr/bin/gdm ]; then
             [ -x mnt-pull/usr/bin/gnome-keyring-daemon ] || {
               echo "FAIL: the image ships gdm but no Secret Service"

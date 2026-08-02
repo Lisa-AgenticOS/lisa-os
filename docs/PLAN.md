@@ -410,7 +410,7 @@ lisa/
 - **M4 — Surfaces:** assistant overlay, semantic launcher, Writing Tools layers 1–2, voice v1, Ledger app. *Accept:* §5.7 budgets.
 - **M5 — Agent Bus:** MCP manifests, `agentd`, confirmation tiers, undo, first-party apps expose tools, injection suite green. *Accept:* §5.4 block.
 - **M6 — Apps, Forge alpha & polish:** §5.8 app set (Notes/Recorder in the Flutter lane), screen context, model adapters (LoRA) trained + shipped, `lisa_ui` v0 + `lisa_flutter` parity samples, **Forge alpha meeting the §5.12.1 acceptance block**.
-- **M7 — Personal Compute Node** + nonfree image variant + installer OOBE, which now also chooses **server or desktop** and, for server, which network edge (ADR-0031). Server mode is close to free: the nightly already builds and boot-tests a minimal no-desktop image.
+- **M7 — Personal Compute Node** + nonfree image variant + installer OOBE, which now also chooses **server or desktop** and, for server, which network edge (ADR-0031). Server mode is close to free in *content* — same daemons, no desktop package set — but no minimal no-desktop image is built anywhere yet: every workflow runs a plain `mkosi build` of the one full-desktop definition (the nightly's checks are already implication-shaped so a minimal flavor can join without turning them red).
 - **M8 — Public alpha ISO:** docs site, SDK quickstarts, eval dashboard, security review pass.
 
 ## 11. Testing strategy
