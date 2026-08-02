@@ -1,6 +1,7 @@
 # ADR-0004: Flutter app lane + the Forge
 
-- **Status:** accepted (spike pending — see below)
+- **Status:** accepted (spike DONE — its findings are the appendix at
+  the foot of this file; status corrected 2026-08-02)
 - **Date:** 2026-07-20
 
 ## Context

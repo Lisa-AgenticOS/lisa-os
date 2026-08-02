@@ -1,6 +1,9 @@
 # ADR-0014: lisa_ui becomes the kit Lisa apps import — Material-backed now, vendored fork later
 
-- **Status:** proposed
+- **Status:** accepted, implemented (corrected 2026-08-02). The ADR's
+  own premise — "today's lisa_ui is a 229-line, widgets-only seed" — is
+  no longer true: it is ~1100 lines, `lisa forge --flutter` scaffolds
+  against it, and the tree installs to /usr/share/lisa/lisa_ui on device.
 - **Date:** 2026-07-24
 
 ## Context

@@ -1,6 +1,11 @@
 # ADR-0035: The desktop is a prompt — a floating dock-prompt, no top bar
 
-- Status: **proposed** (design only — no code yet)
+- Status: accepted, partly implemented (corrected 2026-08-02). §4's
+  consent surface SHIPPED — `shell/consent/lisa-consentd.js` and
+  `dev.lisaos.Consent1` split the confirmation UI out of the model host
+  (#135), so the thing that asks and the thing that answers are
+  different processes. The rest of the wireframe — §2's prompt in the
+  dock above all — is still design.
 - Date: 2026-07-27
 - Source: hand wireframe, Flakerim, 2026-07-27, with three readings
   corrected by the author the same day (top centre, launcher, dock)

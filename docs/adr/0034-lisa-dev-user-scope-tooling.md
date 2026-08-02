@@ -1,6 +1,10 @@
 # ADR-0034: `lisa dev` — developer tooling in the user's home, rootless
 
-- Status: **proposed** (design only — no code; gated behind signing and
+- Status: accepted; **phase 0 implemented 2026-08-01** (subuid/subgid +
+  newuidmap, the podman runtime set, and a probe that runs `podman
+  unshare id` on the built image). Phase 1 — the `lisa dev` verb itself
+  and the /home disk guard — is not started. Was marked "no code" and
+  gated behind
   the ADR-0033 rollout)
 - Date: 2026-07-26
 - Relates: ADR-0019 (dedicated /home), ADR-0020 (app channel), ADR-0023
