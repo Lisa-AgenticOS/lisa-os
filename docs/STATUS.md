@@ -3,7 +3,30 @@
 Living snapshot of where the build actually is, so any machine (or a
 fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
-"where are we on it" companion. **Last updated: 2026-07-26.**
+"where are we on it" companion. **Last updated: 2026-08-02.**
+
+## 2026-08-02 — the split (ADR-0039) and Google OAuth verified
+
+- **The repo split happened.** Two of ADR-0006's triggers fired; three
+  new org repos exist, extracted with `git filter-repo`, history
+  preserved: **lisa-desktop** (`shell/*`, `ime/*` — will vendor the
+  GNOME Shell fork, ADR-0038), **lisa-apps** (`apps/*` less the Rust
+  `apps/notes`), **lisa-packages** (the `[lisa]` pacman index, seeded).
+  **Nothing was deleted here** — this repo still builds the image
+  exactly as before; #171 is the checklist for making the new path real
+  (per-repo PKGBUILDs → hosted `[lisa]` → image consumes it → only then
+  removal). Held triggers, on purpose: `liblisa` (no external
+  consumer), Flutter lane (no shipped app).
+- **Google approved OAuth brand verification** for project `lisaos`
+  (2026-08-02): the "unverified app" interstitial is gone from GOA
+  Google sign-in. Constraint: any new scope or consent-screen change
+  re-triggers verification — the shipped scope list is frozen until we
+  deliberately re-submit.
+- **layer-e2e flake fixed** (contextd embed test): the HTTP stub read
+  once and replied; when that read raced the client's two-write
+  request, the body write hit a closed peer — BrokenPipe in CI only.
+  Stub now drains a full request and counts answered requests, not
+  accepted connections. 200 consecutive runs green.
 
 ## TL;DR
 
