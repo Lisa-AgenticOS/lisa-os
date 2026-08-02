@@ -368,6 +368,11 @@ package_lisa-shell() {
         "$pkgdir/usr/share/applications/app.lisaos.Preview.desktop"
     install -Dm644 apps/preview/app.lisaos.Preview.json \
         "$pkgdir/usr/share/lisa/apps/app.lisaos.Preview.json"
+    # Space-to-preview in Files: Nautilus calls this name, and without
+    # the activation file the call fails whenever Preview is closed —
+    # which is most of the time and exactly when it is wanted.
+    install -Dm644 apps/preview/org.gnome.NautilusPreviewer2.service \
+        "$pkgdir/usr/share/dbus-1/services/org.gnome.NautilusPreviewer2.service"
     install -Dm644 apps/surfer/app.lisaos.Surfer.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.Surfer.desktop"
     install -Dm644 apps/surfer/app.lisaos.Surfer.json \

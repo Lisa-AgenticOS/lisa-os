@@ -1,0 +1,8 @@
+# Space-to-preview in Files, when Preview is not already running.
+#
+# Nautilus calls org.gnome.NautilusPreviewer2 on Space; without an
+# activation file the call fails whenever the app happens to be closed,
+# which is most of the time and is exactly when the user wants it.
+[D-BUS Service]
+Name=org.gnome.NautilusPreviewer2
+Exec=/usr/bin/lisa-app preview/lisa-preview.js

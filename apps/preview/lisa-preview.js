@@ -27,6 +27,7 @@ import Gio from 'gi://Gio';
 import {kindOf, siblings} from './lib/formats.js';
 import {zoomStep, fitScale, fitWidthScale, step, rotate} from './lib/view.js';
 import {McpServer} from './lib/mcp.js';
+import {Previewer} from './lib/previewer.js';
 
 /// Poppler is optional at RUNTIME, not at build time. A dev host
 /// without it should still open images rather than failing to start —
@@ -60,7 +61,7 @@ const app = new Adw.Application({
     flags: Gio.ApplicationFlags.HANDLES_OPEN,
 });
 
-let win = null, mcp = null;
+let win = null, mcp = null, previewer = null;
 const state = {
     path: null, kind: null, rotation: 0, zoom: 1, fitMode: 'fit',
     pageIndex: 0, pageCount: 1, doc: null, pixbuf: null,
@@ -334,6 +335,22 @@ function ensureUi() {
         mcp = new McpServer(handlers);
         try { mcp.start(); } catch (e) { logError(e, 'lisa-preview mcp'); }
     }
+    if (!previewer) {
+        // Space in Files lands here (lib/previewer.js).
+        previewer = new Previewer({
+            onShow: (uri) => {
+                const file = Gio.File.new_for_uri(uri);
+                const path = file.get_path();
+                // A URI with no local path is a remote or virtual file.
+                // Refusing by name beats opening an empty window.
+                if (!path) { toast(`Preview cannot open ${uri}`); return; }
+                if (loadFile(path)) win.present();
+            },
+            onClose: () => win?.close(),
+            isVisible: () => !!win?.get_visible(),
+        });
+        try { previewer.start(); } catch (e) { logError(e, 'lisa-preview previewer'); }
+    }
 }
 
 app.connect('open', (_a, files) => {
@@ -343,6 +360,9 @@ app.connect('open', (_a, files) => {
     if (path) loadFile(path);
 });
 app.connect('activate', () => { ensureUi(); win.present(); render(); });
-app.connect('shutdown', () => { try { mcp?.stop(); } catch (e) { /* exiting */ } });
+app.connect('shutdown', () => {
+    try { mcp?.stop(); } catch (e) { /* exiting */ }
+    try { previewer?.stop(); } catch (e) { /* exiting */ }
+});
 
 app.run([imports.system.programInvocationName, ...ARGV]);

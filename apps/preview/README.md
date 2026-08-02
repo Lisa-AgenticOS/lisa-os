@@ -46,6 +46,28 @@ the door was missing.
   newline JSON-RPC per `libs/mcp-bus`. Same shape as Surfer's on
   purpose; a change to the pattern belongs in both.
 
+### Space, in Files
+
+Select a file in Files and press Space — the macOS Quick Look gesture.
+Nautilus does not implement quick preview itself: on Space it calls
+whoever owns `org.gnome.NautilusPreviewer2`. That is how GNOME Sushi
+works, and Sushi is **not** installed on this image, which is why Space
+did nothing at all before this app existed.
+
+`lib/previewer-protocol.js` holds the names and the toggle rule (pure,
+tested); `lib/previewer.js` owns the bus name. The signature is not
+guessed — `strings /usr/bin/nautilus` shows the variant format `(ssbs)`
+beside `ShowFile`, and nautilus's own source builds
+`g_variant_new ("(ssbs)", uri, window_handle, close_if_already_visible,
+activation_token)`. A D-Bus method with the wrong signature does not
+fail softly: the call errors and the key does nothing, which is
+indistinguishable from the feature not existing.
+
+`org.gnome.NautilusPreviewer2.service` makes it D-Bus activatable, so
+Space works when Preview is closed — which is most of the time, and
+exactly when it is wanted. Closing the preview exits the app; the next
+Space starts it again.
+
 ### Keys
 
 `+` `-` zoom · `0` fit · `1` actual size · `R` rotate ·
