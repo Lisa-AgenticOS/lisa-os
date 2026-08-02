@@ -30,6 +30,21 @@ export const CONFIG_NAME = 'lisa/mail.json';
 export const DEFAULTS = {
     /// `null` means "decide at runtime" — see `resolveMaildir`.
     maildir: null,
+    /// Load images and other remote content in messages without asking.
+    ///
+    /// DEFAULT ON, by the project owner's decision (2026-08-02), and
+    /// the trade is written down here rather than left for someone to
+    /// rediscover: a remote image is how a tracking pixel works. With
+    /// this on, opening a message tells the sender that you opened it,
+    /// when, and roughly from where. Most mail clients default it off
+    /// for exactly that reason; the counter-argument is that a mail
+    /// client which renders every newsletter as broken boxes is one
+    /// people stop using, and a banner on every message trains them to
+    /// click banners.
+    ///
+    /// It is a setting, so it is the user's to change either way, and
+    /// the settings page says what it costs.
+    showRemoteImages: true,
 };
 
 /// Read config text into an object, never throwing.
@@ -50,11 +65,18 @@ export function parseConfig(text) {
     const maildir = typeof raw.maildir === 'string' && raw.maildir.trim()
         ? raw.maildir.trim()
         : null;
-    return {maildir};
+    // Only an explicit `false` turns it off. A missing key is an older
+    // config, not a preference — and silently reading "absent" as "off"
+    // would change behaviour on upgrade with nothing to explain it.
+    const showRemoteImages = raw.showRemoteImages === false ? false : DEFAULTS.showRemoteImages;
+    return {maildir, showRemoteImages};
 }
 
 export function serializeConfig(config) {
-    return `${JSON.stringify({maildir: config?.maildir ?? null}, null, 2)}\n`;
+    return `${JSON.stringify({
+        maildir: config?.maildir ?? null,
+        showRemoteImages: config?.showRemoteImages !== false,
+    }, null, 2)}\n`;
 }
 
 /// Where the Maildir actually is, and which of the three answers won.

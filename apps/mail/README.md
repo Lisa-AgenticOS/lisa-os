@@ -186,6 +186,18 @@ table, and an entry in `app.lisaos.Mail.json`. Keep `maxLength` bounds at
 or under 256: a larger one breaks grammar compilation for **every**
 offered tool, not just this app's (issue #147).
 
+## Settings
+
+A real preferences page, not only the diagnostic it started as.
+
+- **Show images in messages** — default **on** (project owner's
+  decision, 2026-08-02). The trade is stated on the page rather than
+  buried: a remote image is how a sender learns you opened a message,
+  when, and roughly from where. Off restores the per-message banner.
+  Toggling it re-renders the message on screen, not just the next one.
+- Maildir location, on-disk counts, and the sync diagnostic that
+  explains *why there is no mail* — the reason this page exists at all.
+
 ## Limits
 
 - **No sending.** Reply, forward and compose need SMTP — credentials and

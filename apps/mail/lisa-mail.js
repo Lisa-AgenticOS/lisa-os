@@ -405,7 +405,13 @@ let readerStack = null;
 let readerHtml = null;
 /// Remote loads are refused unless the person asked for this message.
 /// Reset on every open: consent is per message, not a mode you leave on.
-let allowRemote = false;
+/// Whether remote content in the CURRENT message may load.
+///
+/// Seeded per message from the `showRemoteImages` setting (default on,
+/// see lib/settings.js for the trade). The per-message reset stays:
+/// turning the setting off must take effect on the very next message,
+/// not on the next launch.
+let allowRemote = true;
 let remoteBanner = null;
 let currentAccountName = null;
 /// The message currently open, so the banner can re-render it.
@@ -579,7 +585,7 @@ function clearReader() {
     readerTitle.set_label('');
     readerFrom.set_label('');
     readerBody.buffer.set_text('', -1);
-    allowRemote = false;
+    allowRemote = loadConfig().showRemoteImages !== false;
     if (readerStack)
         readerStack.set_visible_child_name('text');
     if (readerActions) {
@@ -837,7 +843,7 @@ function showMessage(msg) {
     readerFrom.set_label(name ? `${name}  ·  ${addr}` : addr);
     // Consent is per message: opening a different one must not inherit
     // the last one's permission to phone home.
-    allowRemote = false;
+    allowRemote = loadConfig().showRemoteImages !== false;
     openMessageFull = full;
     renderBody(full);
 }
@@ -1259,6 +1265,39 @@ function openPreferences(parent) {
         subtitle: storeSummary(folders, counts),
     }));
     page.add(location);
+
+    // --- Reading: the preferences that are actually preferences.
+    //
+    // This page began as a diagnostic ("why is there no mail?") and had
+    // no settings in it at all, which made "Settings" a slightly odd
+    // name for it. The switch below is the first real one.
+    const reading = new Adw.PreferencesGroup({
+        title: 'Reading',
+        description: 'Remote images are how senders know you opened a message. ' +
+            'Turning this off shows a banner instead, and you decide per message.',
+    });
+    const remoteRow = new Adw.SwitchRow({
+        title: 'Show images in messages',
+        subtitle: 'Loads pictures and other content from the sender’s servers',
+        active: loadConfig().showRemoteImages !== false,
+    });
+    remoteRow.connect('notify::active', () => {
+        const config = loadConfig();
+        config.showRemoteImages = remoteRow.get_active();
+        if (!saveConfig(config)) {
+            // Say so rather than leaving a switch that springs back
+            // with no explanation.
+            remoteRow.set_subtitle('Could not save this preference');
+            return;
+        }
+        // Take effect on what is on screen now, not on next launch.
+        allowRemote = config.showRemoteImages;
+        // openMessageFull, not an invented `currentMessage` — line 1069
+        // (the “show images” banner) already re-renders through it.
+        if (openMessageFull) renderBody(openMessageFull);
+    });
+    reading.add(remoteRow);
+    page.add(reading);
 
     // --- Why there is, or is not, mail arriving.
     const sync = new Adw.PreferencesGroup({title: 'Syncing'});

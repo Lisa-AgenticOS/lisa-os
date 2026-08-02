@@ -104,4 +104,23 @@ test('the on-disk summary counts what is there and pluralises like a person', ()
     assert(storeSummary([], {}).includes('not a Maildir'));
 });
 
+// --- remote images (2026-08-02) -------------------------------------
+
+test('remote images default on, and an older config is not read as off', () => {
+    assertEq(parseConfig('{}').showRemoteImages, true, 'empty config');
+    assertEq(parseConfig('{"showRemoteImages": false}').showRemoteImages, false, 'explicit false');
+    // A config written before this setting existed must not flip
+    // behaviour on upgrade: absent is not a preference.
+    assertEq(parseConfig('{"maildir":"/x"}').showRemoteImages, true, 'older config');
+    assertEq(parseConfig('{"showRemoteImages": "no"}').showRemoteImages, true, 'non-boolean');
+});
+
+test('the setting survives a restart', () => {
+    // Toggling it in the UI is worth nothing if it does not round-trip.
+    for (const value of [true, false]) {
+        const round = parseConfig(serializeConfig({maildir: null, showRemoteImages: value}));
+        assertEq(round.showRemoteImages, value, `round-trip ${value}`);
+    }
+});
+
 finish('mail/settings');
