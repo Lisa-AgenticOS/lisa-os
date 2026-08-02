@@ -31,3 +31,6 @@ os/packages/*/*.log
 lisa-app/
 .ci-cache/
 repo-out/
+
+# QEMU/rustc crash dumps — 300 MB each, never wanted in the tree.
+*.core
