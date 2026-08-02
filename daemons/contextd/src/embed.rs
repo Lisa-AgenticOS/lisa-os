@@ -470,6 +470,49 @@ impl ContextStore {
 mod tests {
     use super::*;
 
+    /// Read one whole HTTP request: headers, then `Content-Length`
+    /// bytes of body.
+    ///
+    /// A stub that reads ONCE and replies is a race, not a server. The
+    /// client writes its headers and its body as two separate
+    /// `write_all` calls (see `post_json`), so a single `read` may
+    /// return the headers alone — at which point a stub that answers
+    /// and closes leaves the client's second write aimed at a dead
+    /// peer, and `embed()` fails with `BrokenPipe`. That is not a
+    /// hypothetical: it turned `a_reachable_socket_is_used_...` red in
+    /// CI while passing on every developer machine, because it only
+    /// bites when the read wins the race against the second write.
+    ///
+    /// Returns false if the peer hung up before completing a request —
+    /// which is what the probe connection in `resolve_with` does, by
+    /// design.
+    fn drain_request(sock: &mut std::os::unix::net::UnixStream) -> bool {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let mut byte = [0u8; 1];
+        // Headers, byte at a time. Slow and completely correct — this
+        // is a test stub, and the alternative is re-implementing
+        // buffered parsing with a leftover-bytes bug in it.
+        while !buf.ends_with(b"\r\n\r\n") {
+            match sock.read(&mut byte) {
+                Ok(0) | Err(_) => return false,
+                Ok(_) => buf.push(byte[0]),
+            }
+        }
+        let len = String::from_utf8_lossy(&buf)
+            .lines()
+            .find_map(|l| {
+                l.split_once(':').and_then(|(k, v)| {
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        let mut body = vec![0u8; len];
+        sock.read_exact(&mut body).is_ok()
+    }
+
     /// A stand-in for lisa-inferenced's `/v1/embeddings` on a unix
     /// socket. Answers `n` requests then stops; every vector it returns
     /// is a distinctive constant so a test can tell its output apart
@@ -480,15 +523,21 @@ mod tests {
     ) -> std::thread::JoinHandle<()> {
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            for _ in 0..requests {
+            use std::io::Write;
+            // Counts ANSWERED requests, not accepted connections.
+            // `resolve_with` probes by connecting and hanging up
+            // immediately; charging that probe against the budget is
+            // how the caller ends up counting connections in a comment
+            // instead of stating what it needs answered.
+            let mut answered = 0;
+            while answered < requests {
                 let Ok((mut sock, _)) = listener.accept() else {
                     return;
                 };
-                // Read just the headers; the body length is known from
-                // Content-Length but the stub does not need the body.
-                let mut buf = [0u8; 4096];
-                let _ = sock.read(&mut buf);
+                if !drain_request(&mut sock) {
+                    continue;
+                }
+                answered += 1;
                 let body = serde_json::json!({
                     "data": [{ "embedding": [3.0, 4.0] }]
                 })
@@ -512,10 +561,11 @@ mod tests {
     ) -> std::thread::JoinHandle<()> {
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            if let Ok((mut sock, _)) = listener.accept() {
-                let mut buf = [0u8; 4096];
-                let _ = sock.read(&mut buf);
+            use std::io::Write;
+            while let Ok((mut sock, _)) = listener.accept() {
+                if !drain_request(&mut sock) {
+                    continue;
+                }
                 let data: Vec<_> = ids
                     .iter()
                     .map(|id| serde_json::json!({ "id": id, "object": "model" }))
@@ -529,6 +579,8 @@ mod tests {
                     )
                     .as_bytes(),
                 );
+                // Exactly one ANSWERED request, so `join()` returns.
+                return;
             }
         })
     }
@@ -542,13 +594,14 @@ mod tests {
     fn a_reachable_socket_is_used_instead_of_the_hash_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("inferenced.sock");
-        // THREE connections now: resolve_with probes the socket, then
-        // asks /v1/models, then embed() posts. The stub answers every
-        // request with an embeddings body, so the models query finds no
-        // "id" and correctly yields no model — which is what this test
-        // wants, since it is asserting the embedder choice, not the
-        // model choice.
-        let server = stub_embeddings_server(sock.clone(), 3);
+        // TWO answered requests: /v1/models, then the embeddings POST.
+        // (resolve_with also probes by connecting and hanging up; the
+        // stub does not count a request it never answered.) The stub
+        // replies to everything with an embeddings body, so the models
+        // query finds no "id" and correctly yields no model — which is
+        // what this test wants, since it is asserting the embedder
+        // choice, not the model choice.
+        let server = stub_embeddings_server(sock.clone(), 2);
 
         let chosen = resolve_with(Some(sock.clone()));
         assert_eq!(
