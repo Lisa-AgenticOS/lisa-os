@@ -57,9 +57,20 @@ import {
 /// right behaviour is plain text, not a stack trace. `null` means the
 /// reading pane stays a TextView, which is what it was before HTML
 /// rendering existed and is a perfectly good mail reader.
+///
+/// NOT `await import()`, which is what this was and what silently killed
+/// every Agent Bus tool this app declares. A top-level await makes the
+/// module an async evaluation, so `app.run()` drives the main loop from
+/// inside a continuation that never finished: the MCP socket binds and
+/// appears in $XDG_RUNTIME_DIR/lisa/mcp — and since mcp-bus treats
+/// socket presence AS tool availability, `search_mail` and
+/// `read_message` were advertised and answered nothing. Measured on the
+/// reference device: connect succeeds, `initialize` times out, nothing
+/// in any log. `imports.gi` is synchronous and keeps the module plain.
 let WebKit = null;
 try {
-    WebKit = (await import('gi://WebKit?version=6.0')).default;
+    imports.gi.versions.WebKit = '6.0';
+    WebKit = imports.gi.WebKit;
 } catch {
     // No WebKit here. readerHtml stays null and the TextView is used.
 }
