@@ -3,10 +3,10 @@
 - Status: accepted; **phase 1 COMPLETE 2026-08-02** — the overlap ended
   and the baked /opt/zen left both image lanes (#89), verified on the
   reference device first (`zen-browser --version` answered by the apps
-  channel). Phase 2 = installer pre-pull, not started. Phase 3 = slot
-  shrink, now MEASURED as reachable (4542 MiB populated root against a
-  7 GiB target) — see "Phase 3, measured", which corrects this ADR's own
-  earlier estimate.
+  channel). Phase 2 = installer pre-pull, not started. **Phase 3 = slot
+  shrink: TRIED AT 7G AND REVERTED the same day** — the `du` figure this
+  ADR reasoned from is not the quantity that governs slot size. See
+  "Phase 3, attempted".
 - Date: 2026-07-25 (measurements added 2026-07-26)
 - Relates: ADR-0020 (app update channel), ADR-0001/0003 (Track I image),
   issue #37 (Flutter SDK to /var), issue #46 (the 23 GiB flash pain that
@@ -141,6 +141,49 @@ weighed against: a rootless container runtime (podman + crun + netavark
 and their dependencies) is a low-hundreds-of-MiB addition, which the
 headroom above absorbs without moving the slot target. Its measured
 delta is recorded in that issue when the first image carrying it builds.
+
+## Phase 3, attempted and reverted (2026-08-02)
+
+The section above concluded phase 3 was reachable and I changed the
+repart slots to 7G on the strength of it. The build refused (nightly run
+30744614158):
+
+```
+Filesystem size:  8.45GiB
+  Data: single    5.41GiB
+  Metadata: DUP   256.00MiB
+  Shrink:         no
+Partition 1's contents (8.4G) don't fit in the partition (7G).
+```
+
+**Two different quantities were wearing the same name.** `du -sxm` on a
+mounted root — the 4542 MiB this ADR has quoted since 2026-08-01 —
+reports the bytes of files. What decides whether a slot is big enough is
+what `mkfs.btrfs --rootdir` produces, and btrfs without `--shrink`
+allocates generously: 5.41 GiB of data became an 8.45 GiB filesystem.
+The governing number is ~1.6x the one this ADR was reading.
+
+So this is the *third* correction in this document's phase-3 story, and
+they rhyme. First an estimate ("~1.5 GiB of Zen") was quoted as a
+finding. Then an inference ("if the root was ~8.3 GiB… 7 GiB does not
+fit") was quoted as a finding. Now a real measurement of the *wrong
+quantity* was quoted as a finding. Measuring is not enough; it has to be
+the thing that decides.
+
+**What this means for the plan.** The payload is not the constraint.
+Zen's 363 MiB left the image against a ~3 GiB gap, and removing GNOME or
+llama.cpp would not close it either. The two real levers are:
+
+1. **`mkfs.btrfs --rootdir --shrink`**, which repart does not pass
+   today. If the filesystem were built tight, 5.4 GiB of data would need
+   far less than 8.45 GiB of partition.
+2. **~9G slots**, a 17 → 20 GiB image and still a win, if the tight-fs
+   route turns out not to be available.
+
+Either needs its own experiment, and against BOTH lanes: the release
+image carries more than the nightly one, so a size that fits here is not
+yet proof it fits there. **The next attempt must read a `contents (X)`
+line out of a build log, not a `du` total.**
 
 **Never lose the browser (the migration's actual hard part).** The image
 and the channel are decoupled, but a device that already has Zen baked in
