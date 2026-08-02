@@ -794,6 +794,40 @@ jobs:
           # network and no image: it enters the namespace and prints the
           # identity inside it, so uid=0 in the output is the mapping
           # working, and nothing else produces that line.
+          # Codecs, checked by ASKING GSTREAMER, not by looking for files
+          # (#146). I got this wrong by hand first: `ls /usr/lib/gstreamer-1.0
+          # | grep opus` and a gst-inspect count disagreed, and only the
+          # element query is authoritative — a plugin .so can be present
+          # and register nothing, and a -libs package installs libraries
+          # that register nothing at all.
+          sudo tee mnt-root/usr/local/bin/lisa-codec-probe.sh >/dev/null <<'CODEC'
+          #!/bin/bash
+          # YouTube negotiates VP9/AV1 video with Opus audio. vp9dec alone
+          # plays it silent, which is the failure worth catching.
+          miss=""
+          for e in vp9dec opusdec; do
+              gst-inspect-1.0 "$e" >/dev/null 2>&1 || miss="$miss $e"
+          done
+          if [ -n "$miss" ]; then
+              echo "LISA_CODECS_MISSING$miss" > /dev/console
+          else
+              echo "LISA_CODECS_OK vp9dec opusdec" > /dev/console
+          fi
+          CODEC
+          sudo chmod +x mnt-root/usr/local/bin/lisa-codec-probe.sh
+          sudo tee mnt-root/usr/lib/systemd/system/lisa-codec-probe.service >/dev/null <<'UNIT'
+          [Unit]
+          Description=Media codec probe (#146)
+          After=multi-user.target
+          Before=lisa-test-poweroff.service
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/lisa-codec-probe.sh
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          sudo ln -sf ../lisa-codec-probe.service \
+            mnt-root/usr/lib/systemd/system/multi-user.target.wants/lisa-codec-probe.service
           sudo tee mnt-root/usr/local/bin/lisa-rootless-probe.sh >/dev/null <<'PROBE'
           #!/bin/bash
           if ! id lisa >/dev/null 2>&1; then
@@ -877,6 +911,16 @@ jobs:
             exit 1
           fi
           echo "ROOTLESS: PASS (podman entered a user namespace as the provisioned user)"
+          echo "--- #146: the codecs Surfer needs for YouTube"
+          grep "LISA_CODECS" boot1.log || echo "(the codec probe produced no line at all)"
+          if ! grep -q "LISA_CODECS_OK" boot1.log; then
+            echo "FAIL (#146): Surfer cannot decode what YouTube serves."
+            echo "vp9dec without opusdec plays video silently — the shape of broken that"
+            echo "looks like it works. These are declared in Packages= precisely because"
+            echo "they used to arrive as accidental transitive dependencies of GNOME."
+            exit 1
+          fi
+          echo "CODECS: PASS"
       - name: Damage the ESP (#20 reconstruction)
         run: |
           mdel -i "$ESP" "::/EFI/Linux/$UKINAME"
