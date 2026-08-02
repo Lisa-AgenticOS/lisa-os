@@ -689,3 +689,10 @@ jobs:
             "lisa-zen_${VER}_x86_64.tar.zst" \
             "lisa-zen_${VER}_aarch64.tar.zst" \
             SHA256SUMS
+          # The packages the image was built FROM, for the [lisa] index
+          # (ADR-0039, lisa-os#171): lisa-packages' publish workflow is
+          # dispatched with `lisa-os=v${VER}` and repo-adds exactly these.
+          # Same binaries, second delivery path — never a separate build.
+          # Debug split-packages stay out: symbols are index noise.
+          ls repo-out/*.pkg.tar.zst | grep -v -- '-debug-' \
+            | xargs gh release upload "v${VER}"
