@@ -58,3 +58,15 @@ switch-input-source-backward=[]
 [org.gnome.settings-daemon.plugins.power]
 sleep-inactive-ac-type='nothing'
 sleep-inactive-battery-type='nothing'
+
+# What is pinned in the dock.
+#
+# NEVER SET, until now — and the dock has shipped since 2026-07-27. GNOME's
+# stock default is Epiphany, Geary, Calendar, Music and Nautilus, and Lisa
+# installs none of the first four, so an always-visible dock built to be the
+# centrepiece of the desktop (ADR-0035 §2) rendered as one icon and the
+# show-apps button.
+#
+# Lisa's own apps first, in the order somebody reaches for them, with the
+# terminal last because it is the one a person opens deliberately.
+favorite-apps=['app.lisaos.Surfer.desktop', 'app.lisaos.Mail.desktop', 'app.lisaos.Assistant.desktop', 'app.lisaos.Preview.desktop', 'app.lisaos.LedgerApp.desktop', 'org.gnome.Console.desktop']
