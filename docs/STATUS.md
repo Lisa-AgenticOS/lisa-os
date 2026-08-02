@@ -5,6 +5,23 @@ fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
 "where are we on it" companion. **Last updated: 2026-08-02.**
 
+## 2026-08-03 — the [lisa] index is live (#171 steps 1–3)
+
+- `lisa-desktop` and `lisa-apps` tagged **v0.1.0**; their CI builds,
+  tests (makepkg `check()` under gjs) and attaches packages to
+  releases. `lisa-packages`' publish workflow repo-adds them into the
+  hosted **`[lisa]` index** on the rolling `current` release.
+- Proven by execution: a clean Arch container given only the
+  `Server=` line synced the repo and installed both packages; the
+  combined `/usr/share/lisa/shell` tree matches the monorepo's.
+- Still open on #171: signing-key custody (owner decision — SigLevel
+  is Optional until then), step 4 (the image consumes `[lisa]`,
+  target v32/#89), a lisa-os package tag so lisa-cli/daemons index,
+  steps 5–6 (integration test, then removal from the monorepo).
+- #163 device half: `nomic-embed-text-v1.5` pulled on the iMac, but
+  the running inferenced predates unix-socket serving — closes when
+  v32 lands and the journal shows `kind=inferenced`.
+
 ## 2026-08-02 — the split (ADR-0039) and Google OAuth verified
 
 - **The repo split happened.** Three new org repos exist, extracted
