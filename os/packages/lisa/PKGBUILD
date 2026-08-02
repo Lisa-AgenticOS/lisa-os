@@ -321,8 +321,9 @@ package_lisa-shell() {
     # Surfer (ADR-0037) and Mail: Lisa apps, riding the same GJS tree.
     # lisa-app resolves entries relative to $share, so "surfer/..." and
     # "mail/..." work.
-    cp -a apps/surfer apps/mail "$share/"
-    rm -rf "$share/surfer/spike" "$share/surfer/tests" "$share/mail/tests"
+    cp -a apps/surfer apps/mail apps/preview "$share/"
+    rm -rf "$share/surfer/spike" "$share/surfer/tests" "$share/mail/tests" \
+        "$share/preview/tests"
     rm -rf "$share"/*/tests
     # Compile the overlay keybinding schema in place so the extension's
     # getSettings() resolves from its own schemas/ directory.
@@ -363,6 +364,10 @@ package_lisa-shell() {
     install -Dm644 shell/ledger-app/app.lisaos.LedgerApp.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.LedgerApp.desktop"
     # Assistant chat window: launcher entry + its spark icon (ADR-0015).
+    install -Dm644 apps/preview/app.lisaos.Preview.desktop \
+        "$pkgdir/usr/share/applications/app.lisaos.Preview.desktop"
+    install -Dm644 apps/preview/app.lisaos.Preview.json \
+        "$pkgdir/usr/share/lisa/apps/app.lisaos.Preview.json"
     install -Dm644 apps/surfer/app.lisaos.Surfer.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.Surfer.desktop"
     install -Dm644 apps/surfer/app.lisaos.Surfer.json \

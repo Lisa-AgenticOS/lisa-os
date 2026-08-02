@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Preview
+Comment=Look at a file, and let your assistant look with you
+Exec=lisa-app preview/lisa-preview.js %f
+Icon=image-x-generic-symbolic
+Terminal=false
+Categories=Graphics;Viewer;GTK;
+MimeType=image/avif;image/bmp;image/dds;image/gif;image/heif;image/vnd.microsoft.icon;image/jpeg;image/jxl;image/png;image/pnm;image/qoi;image/svg+xml;image/tga;image/tiff;image/webp;image/xbm;image/xpm;application/pdf;
+StartupNotify=true
