@@ -44,6 +44,7 @@ import {listFolder, messagePath, previewOf} from './lib/maildir.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
 import {actionsFor, flagChange, moveTo} from './lib/actions.js';
 import {McpServer} from './lib/mcp.js';
+import {linkAction} from './lib/links.js';
 
 import {
     CONFIG_NAME, accountRows, parseConfig, resolveMaildir, serializeConfig,
@@ -651,19 +652,42 @@ function buildWebView() {
     view.connect('decide-policy', (_v, decision, type) => {
         if (type === WebKit.PolicyDecisionType.NAVIGATION_ACTION) {
             const uri = decision.get_navigation_action()?.get_request()?.get_uri() ?? '';
-            // The initial load of the message itself is the only
-            // navigation allowed to proceed in place.
-            if (uri.startsWith('about:') || uri === '' || uri.startsWith('data:'))
+            // lib/links.js owns the rules and is tested without a
+            // display. `data:` used to be allowed here — it is needed
+            // for inline image BYTES, which is the RESPONSE branch
+            // below, not for navigation, and allowing it let a clicked
+            // `data:text/html,…` link redraw the reading pane as
+            // anything the sender liked.
+            const decided = linkAction(uri);
+            if (decided.action === 'in-place')
                 return false;
-            // A clicked link opens in the browser, where a person can
-            // see where they are going. It never navigates this view:
-            // a reading pane that can be steered elsewhere is a phishing
-            // surface wearing a mail client.
             decision.ignore();
-            try {
-                Gtk.show_uri(null, uri, Gdk.CURRENT_TIME);
-            } catch (e) {
-                logError(e, 'mail: could not open link');
+            if (decided.action === 'external') {
+                // A clicked link opens in the browser, where a person
+                // can see where they are going. It never navigates this
+                // view: a reading pane that can be steered elsewhere is
+                // a phishing surface wearing a mail client.
+                try {
+                    Gtk.show_uri(null, decided.uri, Gdk.CURRENT_TIME);
+                } catch (e) {
+                    logError(e, 'mail: could not open link');
+                }
+            } else {
+                // Refused, and said so. A link that does nothing when
+                // clicked reads as a broken app; this reads as a
+                // decision, which is what it is.
+                //
+                // There is no toast overlay in this window — checked,
+                // after writing `toast?.(…)` here and finding the
+                // binding does not exist at all, which is a
+                // ReferenceError rather than the no-op the `?.` implies.
+                // The banner is the surface this window already has.
+                if (remoteBanner) {
+                    remoteBanner.set_title(decided.reason);
+                    remoteBanner.set_revealed(true);
+                } else {
+                    log(`mail: refused link ${decided.uri}`);
+                }
             }
             return true;
         }
