@@ -7,9 +7,11 @@ fresh Claude Code session) can pick up without reconstructing context.
 
 ## 2026-08-02 — the split (ADR-0039) and Google OAuth verified
 
-- **The repo split happened.** Two of ADR-0006's triggers fired; three
-  new org repos exist, extracted with `git filter-repo`, history
-  preserved: **lisa-desktop** (`shell/*`, `ime/*` — will vendor the
+- **The repo split happened.** Three new org repos exist, extracted
+  with `git filter-repo`, history preserved — on two triggers ADR-0006
+  could not have contained (ADR-0038's vendored fork; ADR-0020's app
+  channel); all four of ADR-0006's own staged triggers remain unfired
+  and held (ADR-0039): **lisa-desktop** (`shell/*`, `ime/*` — will vendor the
   GNOME Shell fork, ADR-0038), **lisa-apps** (`apps/*` less the Rust
   `apps/notes`), **lisa-packages** (the `[lisa]` pacman index, seeded).
   **Nothing was deleted here** — this repo still builds the image

@@ -16,9 +16,13 @@ read since as "we are a monorepo", and the question raised on 2026-08-02
 was whether it had gone stale.
 
 It had not. It is a **trigger-based** policy — "split by exception, on
-triggers, not on a date" — with four named triggers. Two of them have
-now fired, and ADR-0038 created a fifth that ADR-0006 could not have
-anticipated.
+triggers, not on a date" — with four named triggers. Precision matters
+here, because this ADR is the record: **none of ADR-0006's own four
+triggers has fired.** What fired are two triggers it could not have
+contained, created by decisions taken after it was written (ADR-0038's
+vendored fork; ADR-0020's app channel). The policy held; its trigger
+table was incomplete, which is the expected way for a trigger table to
+age.
 
 ### What ADR-0006 got right
 
@@ -67,16 +71,25 @@ has both.
 
 ## Decision
 
-### 1. Fire two of ADR-0006's triggers, and add one
+### 1. Split on two new triggers, recorded in ADR-0006's ledger
 
 | New repo | Contents | Trigger |
 |---|---|---|
-| `lisa-desktop` | `shell/*`, `ime/fcitx5-lisa` | **New (ADR-0038):** a vendored upstream fork. Also ADR-0006 stage 4, "upstreaming to fcitx5". |
-| `lisa-apps` | `apps/*` except `apps/notes` | ADR-0020 already gave apps a release channel independent of the image. GJS, no Rust, own cadence. |
-| `lisa-packages` | The `[lisa]` package index: PKGBUILDs, the built repo, the signing key | **New.** The consumption mechanism ADR-0006 left undefined. |
+| `lisa-desktop` | `shell/*`, `ime/fcitx5-lisa` | **New (ADR-0038):** a vendored upstream fork. `ime/` rides along because the IME is part of the desktop surface it summons — ADR-0006 stage 4's own trigger ("upstreaming to fcitx5") has NOT fired. |
+| `lisa-apps` | `apps/*` except `apps/notes` | **New (ADR-0020):** apps already have a release channel independent of the image. GJS, no Rust, own cadence. `apps/*` appears in none of ADR-0006's four stages. |
+| `lisa-packages` | The `[lisa]` package index: the built repo, the signing key, the publish workflow | **New.** The consumption mechanism ADR-0006 left undefined. |
 
-### 2. Do NOT fire the other two. The triggers have not fired.
+### 2. ADR-0006's own four stages ALL remain unfired
 
+- **Stage 1, the model catalog** — trigger is "catalog goes live (M1)"
+  with its own signed release channel. `models/catalog/` ships inside
+  the image; there is no independent catalog release channel yet.
+  **Held.**
+- **Stage 4, themes / fcitx5 / portal spec** — trigger is a community
+  theme engine or actual upstreaming. `ime/fcitx5-lisa` moved to
+  `lisa-desktop` as part of the desktop surface, but nothing has been
+  upstreamed and no theme engine exists. **Held** (the directory moved;
+  the trigger did not fire).
 - **Stage 2, `liblisa` SDK** — trigger is "first external consumer /
   crates.io publication". There is no external consumer. `liblisa` is a
   path dependency of `daemons/inferenced` and `cli/lisa`, both of which
