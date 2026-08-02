@@ -229,12 +229,37 @@ jobs:
                    usr/share/applications/zen-browser.desktop \
                    usr/share/icons/hicolor/128x128/apps/zen-browser.png \
                    usr/lib/systemd/system/lisa-apps-sync.timer \
-                   etc/systemd/system/timers.target.wants/lisa-apps-sync.timer \
                    usr/lib/lisa/bin/lisa \
                    usr/bin/gnome-control-center \
                    usr/share/icons/hicolor/scalable/apps/lisa-intelligence-symbolic.svg; do
             if sudo test -e "/mnt/lisaroot/$f"; then echo "ok   $f"; else echo "MISSING $f"; rc=1; fi
           done
+          # ENABLE SYMLINKS NEED -L, NOT -e, and that is why this job has
+          # been red since 2026-07-26. A wants symlink points at the
+          # ABSOLUTE path /usr/lib/systemd/system/<unit>, which resolves
+          # against the HOST root while the image is loop-mounted here —
+          # so every correctly-enabled unit looks dangling from outside
+          # and `test -e` calls it MISSING.
+          #
+          # nightly.yml diagnosed exactly this and fixed its own
+          # check_enabled(); the fix was never carried across, and this
+          # lane sat red for a week reporting a healthy image as broken.
+          # Which is the expensive half: a job that cries wolf gets muted,
+          # and then it cannot report the real thing either.
+          #
+          # Either wants directory counts — /etc for an explicit enable,
+          # /usr/lib for a preset one.
+          enabled=no
+          for w in etc/systemd/system usr/lib/systemd/system; do
+            if sudo test -L "/mnt/lisaroot/$w/timers.target.wants/lisa-apps-sync.timer"; then
+              echo "ok   lisa-apps-sync.timer enabled via $w"; enabled=yes; break
+            fi
+          done
+          if [ "$enabled" = no ]; then
+            echo "MISSING lisa-apps-sync.timer is installed but not enabled in either wants dir"
+            sudo ls -l /mnt/lisaroot/etc/systemd/system/timers.target.wants/ 2>&1 | head -5 || true
+            rc=1
+          fi
           # Guards against an accidentally cross-built or foreign binary.
           # NOTE: /usr/bin/lisa is the resolver *shell script* (issue #52),
           # so the real CLI to arch-check is the baked binary it falls back
