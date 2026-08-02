@@ -77,8 +77,15 @@ Grounding first — this is what we're measuring against, based on WWDC26 announ
 
 ### Desktop environment strategy
 
-- **Phase 1–2: GNOME base.** Best portal maturity, libadwaita for first-party apps, Shell is extensible enough for our overlay/launcher surfaces. We patch, we don't fork the Shell yet.
-- **Phase 3+:** evaluate a purpose-built shell (candidates: custom GNOME Shell fork, or a wlroots/smithay compositor) once the daemons and SDK are proven. The moat is the substrate, not the window manager.
+- **Phase 1–2: GNOME base.** Best portal maturity, libadwaita for first-party apps, Shell is extensible enough for our overlay/launcher surfaces. We patch, we don't fork the Shell yet. **Complete.**
+- **Phase 3: DECIDED (2026-08-02, ADR-0038) — fork the Shell as Lisa
+  Desktop; do NOT fork Mutter.** The extension route delivered 1412
+  lines of JS and 178 of CSS, and its failure mode is silence: a
+  shell-version cap once left the image running stock GNOME with nobody
+  noticing until a live run. ADR-0035's thesis replaces the overview as
+  the organising idea, which is not a change an extension can make. The
+  moat is still the substrate, not the window manager — which is exactly
+  why Mutter stays upstream and only the JavaScript is ours.
 - KDE Plasma spin is welcome later; portals + D-Bus keep everything DE-agnostic by construction.
 
 ### Delivery strategy: two tracks (ADR-0003, learned from Omarchy)

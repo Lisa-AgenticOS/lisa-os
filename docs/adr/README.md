@@ -52,6 +52,7 @@ Read it as: **what would a person find on a device today.**
 | 0035 desktop is a prompt | partial | §4 consent split done (#145); §2 prompt-in-the-dock not started |
 | 0036 assistant acts on its own | **no** | Depends on 0025 |
 | 0037 browser is a Lisa app | partial | Surfer ships; write tools and the agent surface open (#146) |
+| 0038 Lisa Desktop — hard fork of GNOME Shell | accepted, no code | Forks the Shell's JS, NOT Mutter. Supersedes PLAN §3's "we patch, we don't fork the Shell yet" — this is the phase-3 decision that line deferred |
 
 Two decisions have **no** implementation at all — 0031 and 0036 — and 0011 has a tested pipeline with no way to speak into it.
 
