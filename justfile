@@ -22,6 +22,9 @@ lint:
     # corrupt the first update — sysupdate writes A's byte image into B.
     # A comment saying "MUST match" is not a mechanism.
     python3 os/repo-tools/check-repart-slots.py
+    # A stale EMBEDDING_MODEL does not error — the embedder just never
+    # finds it and silently falls back to a chat model (#163).
+    python3 os/repo-tools/check-embedding-model.py
 
 fmt:
     cargo fmt --all

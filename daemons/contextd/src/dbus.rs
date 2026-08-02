@@ -234,12 +234,15 @@ impl Context1 {
         // one ranked the results. A hybrid search backed by HashEmbedder
         // is lexical with extra steps; "you can read exactly what it
         // did" has to include that (#163).
-        let (embedder, embedder_kind) = if hybrid {
-            let (e, k) = crate::embed::resolve();
-            (Some(e), k)
-        } else {
-            (None, "none")
-        };
+        let chosen = hybrid.then(crate::embed::resolve);
+        let embedder_kind = chosen.as_ref().map_or("none", |c| c.kind);
+        // The model matters as much as the kind: "inferenced" covers both
+        // the pinned embedding model and whatever chat model the daemon
+        // defaults to, and those rank differently (#163).
+        let embedder_model = chosen
+            .as_ref()
+            .and_then(|c| c.model.clone())
+            .unwrap_or_else(|| "(daemon default)".into());
         // §5.3 asks for (app, scope, query hash, doc-ids). It was
         // `app_id: "host"` with no scopes, so a retrieval could not be
         // attributed to the app that made it.
@@ -254,6 +257,7 @@ impl Context1 {
                     "unscoped": unscoped_allowed,
                     "identity": app.kind.as_str(),
                     "embedder": embedder_kind,
+                    "embedder_model": embedder_model,
                 })
                 .to_string(),
                 ..Default::default()
@@ -271,7 +275,10 @@ impl Context1 {
                 self.store.search_hybrid_scoped(
                     &query,
                     &scopes,
-                    embedder.as_deref().expect("hybrid implies an embedder"),
+                    chosen
+                        .as_ref()
+                        .map(|c| c.embedder.as_ref())
+                        .expect("hybrid implies an embedder"),
                     limit,
                 )
             } else {
@@ -280,7 +287,10 @@ impl Context1 {
         } else if hybrid {
             self.store.search_hybrid(
                 &query,
-                embedder.as_deref().expect("hybrid implies an embedder"),
+                chosen
+                    .as_ref()
+                    .map(|c| c.embedder.as_ref())
+                    .expect("hybrid implies an embedder"),
                 limit,
             )
         } else {

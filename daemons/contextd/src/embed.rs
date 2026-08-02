@@ -86,6 +86,16 @@ pub struct InferencedEmbedder {
     model: Option<String>,
 }
 
+/// The model that does embeddings, by name.
+///
+/// This mirrors the single `task = "embeddings"` entry in
+/// `models/catalog/catalog.toml`, which is the project's source of truth
+/// for what each model is for. Duplicating the id here is deliberate —
+/// the catalog is build-time data that contextd does not read at runtime
+/// — and `os/repo-tools/check-embedding-model.py` fails the lint if the
+/// two ever disagree, so the duplicate cannot rot quietly.
+pub const EMBEDDING_MODEL: &str = "nomic-embed-text-v1.5";
+
 impl InferencedEmbedder {
     /// Where the per-user companion puts its socket.
     pub fn default_socket() -> Option<std::path::PathBuf> {
@@ -101,6 +111,57 @@ impl InferencedEmbedder {
     pub fn new(socket: std::path::PathBuf, model: Option<String>) -> Self {
         Self { socket, model }
     }
+
+    /// Which model this embedder will name in its requests, if any.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// Ask the daemon for [`EMBEDDING_MODEL`] only if it actually has it.
+    ///
+    /// Naming a model the daemon has not loaded is worse than naming
+    /// none: `engine_for` fails the request outright, so a device
+    /// without the embedding model downloaded would go from "embeds with
+    /// a chat model, adequately" to "cannot embed at all". Asking
+    /// `/v1/models` first is what keeps the improvement from being a
+    /// regression on the machine that has not run `lisa models get`.
+    pub fn preferred_model(socket: &std::path::Path) -> Option<String> {
+        let raw = http_get(socket, "/v1/models").ok()?;
+        let json: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        json["data"]
+            .as_array()?
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .find(|id| *id == EMBEDDING_MODEL)
+            .map(str::to_string)
+    }
+}
+
+/// Minimal HTTP/1.1 GET over a unix socket, returning the body.
+fn http_get(socket: &std::path::Path, path: &str) -> Result<Vec<u8>, StoreError> {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+    let head = format!(
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.flush()?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw)?;
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| io_msg("no header/body separator in the response"))?;
+    let status = String::from_utf8_lossy(&raw[..split])
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("?")
+        .to_string();
+    if status != "200" {
+        return Err(io_msg(&format!("GET {path} returned HTTP {status}")));
+    }
+    Ok(raw[split + 4..].to_vec())
 }
 
 impl Embedder for InferencedEmbedder {
@@ -208,24 +269,49 @@ fn io_msg(msg: &str) -> StoreError {
 /// got. Never falls back quietly: #163 exists because `hybrid=true` kept
 /// returning plausibly-ordered hits with no model behind them, and
 /// nothing in the logs or the Ledger said so.
-pub fn resolve() -> (Box<dyn Embedder>, &'static str) {
+pub fn resolve() -> Chosen {
     resolve_with(InferencedEmbedder::default_socket())
+}
+
+/// What [`resolve`] picked, and enough to say so out loud.
+///
+/// `kind` alone was not enough: "inferenced" covers both the pinned
+/// embedding model and the daemon's default chat model, and those give
+/// materially different retrieval. The Ledger and the CLI report both.
+pub struct Chosen {
+    pub embedder: Box<dyn Embedder>,
+    pub kind: &'static str,
+    pub model: Option<String>,
 }
 
 /// The testable half of [`resolve`]: the socket comes in as an argument
 /// so a test can point it at a stub without mutating the process
 /// environment, which is both unsafe and shared between parallel tests.
-pub fn resolve_with(socket: Option<std::path::PathBuf>) -> (Box<dyn Embedder>, &'static str) {
+pub fn resolve_with(socket: Option<std::path::PathBuf>) -> Chosen {
     // Connect, don't stat. A socket file outlives the daemon that made
     // it, so existence would happily select a dead endpoint and turn a
     // startup-time report into a failure at the first embed.
     if let Some(path) = &socket
         && std::os::unix::net::UnixStream::connect(path).is_ok()
     {
-        return (
-            Box::new(InferencedEmbedder::new(path.clone(), None)),
-            "inferenced",
-        );
+        // Name the embedding model when the daemon has it; stay silent
+        // and take the daemon's default when it does not. Both are the
+        // model-backed path — the difference is quality, not kind, and
+        // the Ledger says which via `embedder_model`.
+        let model = InferencedEmbedder::preferred_model(path);
+        if model.is_none() {
+            tracing::info!(
+                want = EMBEDDING_MODEL,
+                "the embedding model is not loaded; embedding with the daemon's default \
+                 (a chat model, mean-pooled). `lisa models get {}` improves retrieval quality.",
+                EMBEDDING_MODEL
+            );
+        }
+        return Chosen {
+            embedder: Box::new(InferencedEmbedder::new(path.clone(), model.clone())),
+            kind: "inferenced",
+            model,
+        };
     }
     tracing::warn!(
         socket = ?socket,
@@ -233,7 +319,11 @@ pub fn resolve_with(socket: Option<std::path::PathBuf>) -> (Box<dyn Embedder>, &
          behind it. Hybrid search will still return results, and they will still look ranked — \
          they are lexical only (#163)."
     );
-    (Box::new(HashEmbedder::default()), "hash")
+    Chosen {
+        embedder: Box::new(HashEmbedder::default()),
+        kind: "hash",
+        model: None,
+    }
 }
 
 fn normalize(v: &mut [f32]) {
@@ -415,6 +505,34 @@ mod tests {
         })
     }
 
+    /// A stand-in for GET /v1/models.
+    fn stub_models_server(
+        path: std::path::PathBuf,
+        ids: Vec<String>,
+    ) -> std::thread::JoinHandle<()> {
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf);
+                let data: Vec<_> = ids
+                    .iter()
+                    .map(|id| serde_json::json!({ "id": id, "object": "model" }))
+                    .collect();
+                let body = serde_json::json!({ "object": "list", "data": data }).to_string();
+                let _ = sock.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        })
+    }
+
     /// #163: a reachable model-backed embedder must actually be used.
     /// The stub returns [3,4], which normalizes to [0.6,0.8] — a
     /// two-element vector HashEmbedder (64 dims of token counts) can
@@ -424,15 +542,20 @@ mod tests {
     fn a_reachable_socket_is_used_instead_of_the_hash_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("inferenced.sock");
-        // Two connections: resolve_with probes, then embed sends.
-        let server = stub_embeddings_server(sock.clone(), 2);
+        // THREE connections now: resolve_with probes the socket, then
+        // asks /v1/models, then embed() posts. The stub answers every
+        // request with an embeddings body, so the models query finds no
+        // "id" and correctly yields no model — which is what this test
+        // wants, since it is asserting the embedder choice, not the
+        // model choice.
+        let server = stub_embeddings_server(sock.clone(), 3);
 
-        let (embedder, kind) = resolve_with(Some(sock.clone()));
+        let chosen = resolve_with(Some(sock.clone()));
         assert_eq!(
-            kind, "inferenced",
+            chosen.kind, "inferenced",
             "a live socket must win over the fallback"
         );
-        let out = embedder.embed(&["anything".to_string()]).unwrap();
+        let out = chosen.embedder.embed(&["anything".to_string()]).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0].len(),
@@ -448,10 +571,41 @@ mod tests {
         // Without it, deleting InferencedEmbedder entirely would leave
         // the suite green in the only way that matters.
         let gone = dir.path().join("not-a-socket.sock");
-        let (fallback, kind) = resolve_with(Some(gone));
-        assert_eq!(kind, "hash", "an unreachable socket must fall back, loudly");
-        let out = fallback.embed(&["anything".to_string()]).unwrap();
+        let fallback = resolve_with(Some(gone));
+        assert_eq!(
+            fallback.kind, "hash",
+            "an unreachable socket must fall back, loudly"
+        );
+        assert!(fallback.model.is_none(), "the fallback names no model");
+        let out = fallback.embedder.embed(&["anything".to_string()]).unwrap();
         assert_eq!(out[0].len(), 64, "the fallback is HashEmbedder's 64 dims");
+    }
+
+    /// #163's second half: naming the model. The stub answers
+    /// /v1/models with the catalog's embedding model, so the embedder
+    /// must ASK for it — and when the daemon lists only a chat model it
+    /// must ask for nothing rather than for a model that is not there,
+    /// which would turn "embeds adequately" into "cannot embed".
+    #[test]
+    fn the_embedding_model_is_named_only_when_the_daemon_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let with = dir.path().join("with.sock");
+        let s1 = stub_models_server(with.clone(), vec![EMBEDDING_MODEL.to_string()]);
+        assert_eq!(
+            InferencedEmbedder::preferred_model(&with).as_deref(),
+            Some(EMBEDDING_MODEL)
+        );
+        let _ = s1.join();
+
+        // POSITIVE CONTROL: the same call against a daemon that has only
+        // a chat model must come back None. Without this, a
+        // preferred_model() that returned Some unconditionally would
+        // also pass the assertion above.
+        let without = dir.path().join("without.sock");
+        let s2 = stub_models_server(without.clone(), vec!["qwen3-1.7b-instruct-q8".into()]);
+        assert_eq!(InferencedEmbedder::preferred_model(&without), None);
+        let _ = s2.join();
     }
 
     /// A truncated reply must be an error, not a silently short set of
