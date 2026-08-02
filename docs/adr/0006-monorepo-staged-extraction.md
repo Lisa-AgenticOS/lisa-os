@@ -45,3 +45,17 @@ catalog, published crate), never via git submodules.
   projects with release engineering to spare, which we are not.
 - Each trigger firing gets a short ADR appendix here noting the
   extraction, rather than a new ADR.
+
+## Appendix: extractions
+
+- **2026-08-02** — two triggers fired at once, and defining what the
+  extracted pieces are consumed *as* (a pacman package in a hosted
+  `[lisa]` repo) was more than an appendix could carry — hence
+  ADR-0039, the one exception to the "no new ADR" rule above, for the
+  reasons given there. Extracted: **`lisa-desktop`** (`shell/*`,
+  `ime/*`; trigger: ADR-0038's vendored GNOME Shell fork, plus stage
+  4's fcitx5 line) and **`lisa-apps`** (`apps/*` less `apps/notes`;
+  trigger: ADR-0020's image-independent app channel). Stage 2
+  (`liblisa`) and stage 3 (Flutter lane) explicitly did **not** fire —
+  no external consumer, no shipped Flutter app — and are recorded as
+  held in ADR-0039.
