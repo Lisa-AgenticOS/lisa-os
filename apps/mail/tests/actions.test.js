@@ -100,4 +100,17 @@ test('every action can be drawn without its icon', () => {
     }
 });
 
+
+test('reply and forward follow whether an account exists (#168)', () => {
+    const msg = {folder: 'INBOX', dir: 'cur', filename: 'a:2,S', seen: true, flagged: false};
+    const off = actionsFor(msg, ['INBOX'], false).find((a) => a.id === 'reply');
+    assertEq(off.enabled, false);
+    assert(off.why.includes('lisa mail setup'), 'and says how to fix it');
+    const on = actionsFor(msg, ['INBOX'], true).find((a) => a.id === 'reply');
+    assertEq(on.enabled, true);
+    assertEq(on.why, '', 'no excuse when it works');
+    // Shown either way: a missing reply button reads as unfinished.
+    assert(actionsFor(msg, ['INBOX'], false).some((a) => a.id === 'forward'));
+});
+
 finish('mail/actions');

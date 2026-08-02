@@ -46,6 +46,8 @@ import {
 import {classify, grouped, unreadCount} from './lib/smart.js';
 import {actionsFor, flagChange, moveTo} from './lib/actions.js';
 import {parseMessageId, planFor} from './lib/agent-actions.js';
+import {buildMessage, forwardFields, messageIdFor, replyFields} from './lib/compose.js';
+import {msmtpArgv, sendOutcome, sentFilename} from './lib/send.js';
 import {McpServer} from './lib/mcp.js';
 import {linkAction} from './lib/links.js';
 
@@ -785,7 +787,7 @@ function buildToolbar(msg) {
     // first, and fall back to the label: an "Archive" button is worse
     // than an icon and far better than a gap.
     const icons = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
-    for (const action of actionsFor(msg, store.folders())) {
+    for (const action of actionsFor(msg, store.folders(), canSend())) {
         const known = action.icon && icons?.has_icon(action.icon);
         const button = new Gtk.Button({
             ...(known ? {icon_name: action.icon} : {label: action.label}),
@@ -814,6 +816,12 @@ function runAction(msg, action) {
             const change = flagChange(msg, action.flag, action.on);
             if (change)
                 applyMove(msg.folder, change, msg.folder);
+        } else if (action.kind === 'send' && action.enabled !== false) {
+            const me = defaultIdentity();
+            openCompose(action.id === 'reply'
+                ? replyFields(msg, me)
+                : forwardFields(msg, me));
+            return;
         } else if (action.kind === 'move' && action.enabled !== false) {
             const mv = moveTo(msg, action.folder);
             if (mv)
@@ -1483,6 +1491,176 @@ function writeAction(tool, args = {}) {
         id: messageId(plan.toFolder, parseFilename(plan.change.toName, plan.change.toDir).unique),
         from: args.id, folder: plan.toFolder,
     };
+}
+
+// ---------------------------------------------------------------------
+// Sending (#168).
+//
+// `lisa mail setup` already writes ~/.config/lisa/msmtprc — one account
+// block per identity, credentials and XOAUTH2 included. So this is a
+// composer and a subprocess, not a mail transport.
+
+function msmtprcPath() {
+    return GLib.build_filenamev([GLib.get_user_config_dir(), 'lisa', 'msmtprc']);
+}
+
+/// Can this machine send? The config existing is the honest test —
+/// having msmtp installed says nothing about having an account.
+function canSend() {
+    return GLib.file_test(msmtprcPath(), GLib.FileTest.EXISTS)
+        && GLib.find_program_in_path('msmtp') !== null;
+}
+
+/// Write a message into a Maildir folder, atomically enough.
+///
+/// tmp/ then rename into cur/, which is the Maildir contract: a reader
+/// that scans mid-write must never see a partial file.
+function writeToMaildir(folder, text) {
+    const name = sentFilename(Math.floor(Date.now() / 1000),
+        `${GLib.random_int()}_${GLib.getenv('USER') ?? 'lisa'}`);
+    const dir = `${store.root}/${folder}`;
+    GLib.mkdir_with_parents(`${dir}/tmp`, 0o700);
+    GLib.mkdir_with_parents(`${dir}/cur`, 0o700);
+    const tmp = `${dir}/tmp/${name}`;
+    if (!GLib.file_set_contents(tmp, text))
+        throw new Error(`could not write ${tmp}`);
+    const to = messagePath(store.root, folder, 'cur', name);
+    if (!to)
+        throw new Error('refusing a path outside the maildir');
+    Gio.File.new_for_path(tmp).move(Gio.File.new_for_path(to), Gio.FileCopyFlags.NONE, null, null);
+    return name;
+}
+
+/// Compose → send. Returns the outcome; the caller shows it.
+///
+/// DRAFT FIRST. The message is written to Drafts before msmtp is
+/// invoked and removed only after a success, so a crash, a power cut or
+/// a refusal leaves the text on disk rather than nowhere. Losing a
+/// state flag is annoying; losing what somebody wrote is not a trade
+/// anybody would accept.
+function sendMessage(fields, account) {
+    let text;
+    try {
+        text = buildMessage({
+            ...fields,
+            date: new Date().toUTCString().replace('GMT', '+0000'),
+            messageId: messageIdFor(fields.from, GLib.random_int(), Date.now()),
+        });
+    } catch (e) {
+        return {sent: false, retryable: false, message: e.message};
+    }
+
+    let draft = null;
+    try {
+        draft = writeToMaildir('Drafts', text);
+    } catch (e) {
+        // Not fatal: the send can still go. But say so, because the
+        // safety net is what makes the next step safe to attempt.
+        logError(e, 'mail: could not save a draft before sending');
+    }
+
+    let status = -1;
+    let stderr = '';
+    try {
+        const proc = Gio.Subprocess.new(msmtpArgv(msmtprcPath(), account),
+            Gio.SubprocessFlags.STDIN_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        const [, , err] = proc.communicate_utf8(text, null);
+        stderr = err ?? '';
+        status = proc.get_exit_status();
+    } catch (e) {
+        return {sent: false, retryable: true, message: `Could not run msmtp: ${e.message}`};
+    }
+
+    const outcome = sendOutcome(status, stderr);
+    if (!outcome.sent)
+        return outcome; // the draft stays; that is the point of it
+
+    try {
+        writeToMaildir('Sent', text);
+    } catch (e) {
+        // Sent but not filed. Say exactly that — claiming failure would
+        // invite a second send of a message already delivered.
+        logError(e, 'mail: sent but could not save a copy');
+        return {sent: true, message: 'Sent, but the copy in Sent could not be written'};
+    }
+    if (draft) {
+        const path = messagePath(store.root, 'Drafts', 'cur', draft);
+        if (path) GLib.unlink(path);
+    }
+    if (currentFolder === 'Sent' || currentFolder === 'Drafts')
+        loadFolder(currentFolder);
+    return outcome;
+}
+
+/// The address messages are sent from.
+///
+/// The first `from` in the msmtprc — the same file msmtp will use, so
+/// the From header and the envelope cannot disagree. Reading the config
+/// rather than keeping a second copy is the point: one account list.
+function defaultIdentity() {
+    const text = readFile(msmtprcPath());
+    const m = String(text ?? '').match(/^\s*from\s+(\S+)/m);
+    return m ? m[1] : '';
+}
+
+/// The compose window. One window per message being written.
+function openCompose(fields) {
+    const win = new Adw.Window({
+        title: 'New message', default_width: 700, default_height: 560,
+        // app.get_active_window() rather than a module-level handle:
+        // the main window is a `const` inside its builder, and adding a
+        // second place that remembers it is a second place to get stale.
+        modal: false, transient_for: app.get_active_window(),
+    });
+    const toasts = new Adw.ToastOverlay();
+    const header = new Adw.HeaderBar();
+    const send = new Gtk.Button({label: 'Send'});
+    send.add_css_class('suggested-action');
+    header.pack_end(send);
+
+    const rows = new Adw.PreferencesGroup();
+    const to = new Adw.EntryRow({title: 'To'});
+    const cc = new Adw.EntryRow({title: 'Cc'});
+    const subject = new Adw.EntryRow({title: 'Subject'});
+    to.set_text(fields.to ?? '');
+    subject.set_text(fields.subject ?? '');
+    [to, cc, subject].forEach((r) => rows.add(r));
+
+    const body = new Gtk.TextView({wrap_mode: Gtk.WrapMode.WORD_CHAR, monospace: false});
+    body.buffer.set_text(fields.body ?? '', -1);
+    const scroller = new Gtk.ScrolledWindow({vexpand: true, child: body, margin_start: 12,
+        margin_end: 12, margin_bottom: 12});
+
+    const box = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, spacing: 12});
+    box.append(rows);
+    box.append(scroller);
+    const view = new Adw.ToolbarView({content: box});
+    view.add_top_bar(header);
+    toasts.set_child(view);
+    win.set_content(toasts);
+
+    send.connect('clicked', () => {
+        const [start, end] = [body.buffer.get_start_iter(), body.buffer.get_end_iter()];
+        const outcome = sendMessage({
+            from: fields.from || defaultIdentity(),
+            to: to.get_text(), cc: cc.get_text(), subject: subject.get_text(),
+            body: body.buffer.get_text(start, end, false),
+            inReplyTo: fields.inReplyTo ?? '', references: fields.references ?? '',
+        });
+        if (outcome.sent) {
+            win.close();
+            return;
+        }
+        // The window STAYS OPEN on failure, with the text in it and the
+        // reason on screen. Closing it and showing a toast somewhere
+        // else is how people lose what they wrote.
+        send.set_sensitive(!!outcome.retryable);
+        toasts.add_toast(new Adw.Toast({title: outcome.message, timeout: 8}));
+        if (!outcome.retryable && outcome.detail)
+            printerr(`mail: ${outcome.detail}`);
+    });
+
+    win.present();
 }
 
 app.run([imports.system.programInvocationName, ...ARGV]);

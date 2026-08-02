@@ -200,8 +200,18 @@ A real preferences page, not only the diagnostic it started as.
 
 ## Limits
 
-- **No sending.** Reply, forward and compose need SMTP — credentials and
-  egress — and the buttons are shown disabled rather than hidden.
+- **Sending: reply and forward work (#168); a standalone Compose entry
+  point does not yet.** `lib/compose.js` builds the message (Re: that
+  does not stack, a References chain so threading survives in the
+  recipient's client, base64 body so a long line cannot be rejected),
+  `lib/send.js` decides what an msmtp run meant, and the window keeps
+  the text on screen when a send fails. Draft-first: the message is
+  written to Drafts *before* msmtp runs and removed only on success, so
+  a crash or a refusal leaves what you wrote on disk. Needs
+  `lisa mail setup` to have written `~/.config/lisa/msmtprc`; without
+  it Reply and Forward are shown disabled and say so.
+  **Not yet exercised against a real account** — see the commit for what
+  was and was not verified.
 - **No permanent deletion.** Trash is a move; nothing here expunges.
 - ~~Actions are the window's, not the agent's.~~ **Done (#167):**
   `flag_message`, `mark_read`, `archive_message`, `trash_message` and

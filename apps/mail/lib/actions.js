@@ -111,7 +111,7 @@ export function moveTo(message, folder) {
 /// Returned as data so the toolbar is a loop rather than eight
 /// hand-written buttons that drift apart — and so what each button does
 /// is testable without a window.
-export function actionsFor(message, folders = []) {
+export function actionsFor(message, folders = [], canSend = false) {
     const inTrash = message.folder === 'Trash';
     return [
         {
@@ -161,20 +161,21 @@ export function actionsFor(message, folders = []) {
             label: 'Reply',
             icon: 'mail-reply-sender-symbolic',
             kind: 'send',
-            enabled: false,
-            // Shown and disabled, with the reason on the tooltip. A mail
-            // app with no reply button reads as unfinished; one whose
-            // reply button does nothing reads as broken. Saying why is
-            // neither.
-            why: 'Sending needs an outgoing account, which Lisa does not have yet',
+            // Enabled when there is an outgoing account (#168). Still
+            // SHOWN when there is not, with the reason on the tooltip:
+            // a mail app with no reply button reads as unfinished; one
+            // whose reply button does nothing reads as broken. Saying
+            // why is neither.
+            enabled: !!canSend,
+            why: canSend ? '' : 'Sending needs an outgoing account — run `lisa mail setup`',
         },
         {
             id: 'forward',
             label: 'Forward',
             icon: 'mail-forward-symbolic',
             kind: 'send',
-            enabled: false,
-            why: 'Sending needs an outgoing account, which Lisa does not have yet',
+            enabled: !!canSend,
+            why: canSend ? '' : 'Sending needs an outgoing account — run `lisa mail setup`',
         },
     ];
 }
