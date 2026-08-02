@@ -185,11 +185,11 @@ jobs:
                    # Permanent: the .desktop, icons and the
                    # /usr/bin/zen-browser resolver (ADR-0023 phase 1).
                    zen-browser-launcher
-                   # OVERLAP RELEASE ONLY — drop this line together with
-                   # release.yml'\''s, once devices have taken the release
-                   # that carries the resolver + lisa-apps-sync.timer. See
-                   # the long note in release.yml'\''s Packages= block.
-                   zen-browser
+                   # The /opt/zen payload is GONE from the image (#89,
+                   # ADR-0023 phase 1 complete) — it arrives on the apps
+                   # channel and the resolver above finds it. Dropped
+                   # together with release.yml'\''s line; see the note there
+                   # for the condition that was met and how it was checked.
           ExtraTrees=/build/extra
           Autologin=yes
           EOF

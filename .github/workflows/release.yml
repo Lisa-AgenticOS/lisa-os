@@ -404,31 +404,41 @@ jobs:
                    # of the ADR-0023 migration a root slot is on.
                    zen-browser-launcher
                    # ---------------------------------------------------
-                   # OVERLAP RELEASE ONLY (ADR-0023 phase 1, issue #51).
-                   # /opt/zen is ~363 MiB of root payload, paid twice by
-                   # the A/B layout, and it is now ALSO published on the
-                   # apps channel as lisa-zen_<ver>_<arch>.tar.zst.
+                   # MIGRATION COMPLETE (ADR-0023 phase 1, issues #51/#89).
+                   # `zen-browser` used to be baked here — ~363 MiB of root
+                   # payload, paid twice by the A/B layout — for exactly
+                   # one overlap cycle, because a device on an older image
+                   # had a `lisa update` predating the payload pre-fetch
+                   # and would have booted a slot with no browser at all.
                    #
-                   # It is still baked here for exactly one release cycle
-                   # because a device running an older image has a "lisa
-                   # update" that predates the pre-fetch in
-                   # cli/lisa/src/main.rs: it stages the next slot without
-                   # pulling any payload, so a slot with no /opt/zen and no
-                   # /var copy would boot without a browser. This release
-                   # is what puts the pre-fetch, the resolver and
-                   # lisa-apps-sync.timer on those devices, with the baked
-                   # copy still underneath as the floor.
+                   # The condition for deleting it was "the next release
+                   # after the overlap one has shipped AND devices have
+                   # taken it". v31 (20260726.34) was the overlap release;
+                   # .57, .60, .61 and .62 have since shipped, and the
+                   # reference iMac is running 20260801.62. Verified on it
+                   # 2026-08-02 rather than assumed:
                    #
-                   # TO COMPLETE THE MIGRATION (the next release after this
-                   # one has shipped and devices have taken it): delete the
-                   # zen-browser line below and the zen-browser entry in
-                   # the Packages= block of aarch64-image.yml. Leave
-                   # zen-browser-launcher, the payload build step, and
-                   # everything under /var untouched. Expected effect,
-                   # measured 2026-07-26: populated root -363 MiB, release
-                   # download about -90 MiB, and 2 x 363 MiB freed inside
-                   # the A/B slots for the phase-3 shrink.
-                   zen-browser
+                   #   $ zen-browser --version     # the shipped resolver
+                   #   Mozilla Zen 1.21.8b
+                   #
+                   # answered by /var/lib/lisa-apps/payloads/zen/current,
+                   # not by the baked /opt/zen. `lisa apps status` reports
+                   # zen current 20260731.57.
+                   #
+                   # zen-browser-launcher stays FOREVER (above): the
+                   # .desktop, icons and /usr/bin/zen-browser resolver are
+                   # what keep the browser launchable whichever side of the
+                   # migration a slot is on.
+                   #
+                   # RESIDUAL RISK, stated because it is not zero. A device
+                   # that skips releases — offline across two of them —
+                   # lands here from a pre-pre-fetch image: no /opt/zen in
+                   # the new slot and possibly no /var payload yet. It
+                   # self-heals when lisa-apps-sync.timer next fires (the
+                   # nightly asserts that timer is enabled), but there is a
+                   # window with no browser. Bounded and recoverable, and
+                   # the alternative is baking 726 MiB across both slots
+                   # forever.
                    # ---------------------------------------------------
                    # Apple CS8409/CS42L83 speaker override (issue #44,
                    # ADR-0024). depends=(linux=<exact version>), so if the
