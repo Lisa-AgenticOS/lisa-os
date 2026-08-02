@@ -743,10 +743,10 @@ function htmlDocument(body) {
                  margin: 16px; word-wrap: break-word; }
           img, table { max-width: 100% !important; height: auto; }
           pre { white-space: pre-wrap; }
-          a { color: #3584e4; }
+          a { color: #6D45C9; } /* token: violet-500 */
           @media (prefers-color-scheme: dark) {
-            body { background: transparent; color: #deddda; }
-            a { color: #78aeed; }
+            body { background: transparent; color: #FFF1E9; } /* token: warm-white */
+            a { color: #9B7BE8; } /* token: violet-300 */
           }
         </style></head><body>${body}</body></html>`;
 }

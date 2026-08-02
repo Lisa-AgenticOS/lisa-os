@@ -48,7 +48,7 @@ const LOGO_DIR = Gio.File.new_for_uri(import.meta.url)
     .get_parent().get_child('assets').get_child('provider-logos');
 
 const CSS = `
-@define-color lisa_violet #7A55D1;
+@define-color lisa_violet #6D45C9; /* token: violet-500 */
 .${EGRESS_CSS_CLASS} { color: #E66100; }
 banner.${EGRESS_CSS_CLASS} { background-color: alpha(#E66100, 0.15); }
 .provider-pill { border-radius: 99px; padding: 2px 10px; font-weight: 600; }
@@ -495,7 +495,7 @@ class SettingsWindow {
                 const [, bytes] = file.load_bytes(null);
                 const svg = new TextDecoder().decode(bytes.toArray())
                     .replaceAll('currentColor',
-                        this._styleManager.dark ? '#ffffff' : '#1a1a1a');
+                        this._styleManager.dark ? '#FFFFFF' : '#1B1917' /* tokens: surface / dark-base */);
                 texture = Gdk.Texture.new_from_bytes(new GLib.Bytes(svg));
             } catch (e) {
                 logError?.(e, `provider logo for ${providerId}`);

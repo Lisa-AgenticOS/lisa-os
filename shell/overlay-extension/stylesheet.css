@@ -37,7 +37,7 @@
 }
 
 .lisa-overlay-response {
-    color: #f2f2f2;
+    color: #FFF1E9; /* token: warm-white */
     font-size: 11.5pt;
     padding: 6px 2px;
 }
@@ -86,7 +86,7 @@
 }
 
 .lisa-consent-warnings {
-    color: #ffb3b3;
+    color: #FFB3B3; /* token: error-soft */
     font-size: 9.5pt;
 }
 

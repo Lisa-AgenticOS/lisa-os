@@ -1,0 +1,53 @@
+/* GENERATED from branding/tokens.json — edit that, then run
+   python3 branding/generate-tokens.py. Hand edits here are overwritten. */
+
+@define-color lisa_violet_700 #4F378B; /* brand / wordmark / deep surfaces */
+@define-color lisa_violet_500 #6D45C9; /* PRIMARY UI: buttons, toggles, links, the L tile */
+@define-color lisa_violet_300 #9B7BE8; /* hovers, gradient top, soft accents */
+@define-color lisa_ink_900 #2B2320; /* primary text on light */
+@define-color lisa_ink_700 #4A423D;
+@define-color lisa_ink_500 #6E635C; /* secondary text */
+@define-color lisa_ink_300 #9A8F88; /* tertiary / captions */
+@define-color lisa_line_200 #E7DED8; /* borders, dividers */
+@define-color lisa_warm_white #FFF1E9; /* on-dark text, warm surfaces */
+@define-color lisa_paper #FAF7F5; /* light app background */
+@define-color lisa_surface #FFFFFF; /* light cards */
+@define-color lisa_base #1B1917; /* dark app background */
+@define-color lisa_elevated #262220;
+@define-color lisa_card #302B28;
+@define-color lisa_line #3C3531;
+@define-color lisa_text_primary #FFF1E9;
+@define-color lisa_text_secondary #B7ABA3;
+@define-color lisa_success #3E9B6B;
+@define-color lisa_warning #E0A030;
+@define-color lisa_error #D6453C;
+@define-color lisa_info #4A7DB0;
+@define-color lisa_error_soft #FFB3B3; /* error/warning text on dark surfaces, where error-500 loses contrast (consent warnings) */
+@define-color lisa_egress #E66100; /* EXACTLY ONE MEANING: 'this leaves your hardware'. Remote/offload actions and their consent toggles. Never brand, never generic UI. */
+
+:root {
+  --lisa-violet-700: #4F378B;
+  --lisa-violet-500: #6D45C9;
+  --lisa-violet-300: #9B7BE8;
+  --lisa-ink-900: #2B2320;
+  --lisa-ink-700: #4A423D;
+  --lisa-ink-500: #6E635C;
+  --lisa-ink-300: #9A8F88;
+  --lisa-line-200: #E7DED8;
+  --lisa-warm-white: #FFF1E9;
+  --lisa-paper: #FAF7F5;
+  --lisa-surface: #FFFFFF;
+  --lisa-base: #1B1917;
+  --lisa-elevated: #262220;
+  --lisa-card: #302B28;
+  --lisa-line: #3C3531;
+  --lisa-text-primary: #FFF1E9;
+  --lisa-text-secondary: #B7ABA3;
+  --lisa-success: #3E9B6B;
+  --lisa-warning: #E0A030;
+  --lisa-error: #D6453C;
+  --lisa-info: #4A7DB0;
+  --lisa-error-soft: #FFB3B3;
+  --lisa-egress: #E66100;
+  --lisa-font-ui: "Rubik";
+}

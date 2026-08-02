@@ -25,6 +25,10 @@ lint:
     # A stale EMBEDDING_MODEL does not error — the embedder just never
     # finds it and silently falls back to a chat model (#163).
     python3 os/repo-tools/check-embedding-model.py
+    # The three-violets defect, mechanized (ADR-0038 step 1): any hex a
+    # shell/app surface hardcodes must be a branding/tokens.json token,
+    # and the generated token sheets must match their source.
+    python3 os/repo-tools/check-tokens.py
 
 fmt:
     cargo fmt --all
