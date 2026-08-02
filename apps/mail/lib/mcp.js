@@ -20,6 +20,14 @@ export class McpServer {
         this._tools = {
             search_mail: async (args) => await handlers.searchMail(args ?? {}),
             read_message: async (args) => await handlers.readMessage(args ?? {}),
+            // Write tier (#167). The tier lives in the manifest, which
+            // agentd reads; this map only routes. Every one goes through
+            // the same performer the toolbar buttons use.
+            flag_message: async (args) => await handlers.writeAction('flag_message', args ?? {}),
+            mark_read: async (args) => await handlers.writeAction('mark_read', args ?? {}),
+            archive_message: async (args) => await handlers.writeAction('archive_message', args ?? {}),
+            trash_message: async (args) => await handlers.writeAction('trash_message', args ?? {}),
+            move_message: async (args) => await handlers.writeAction('move_message', args ?? {}),
         };
         this._service = null;
         this._path = null;

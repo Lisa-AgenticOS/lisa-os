@@ -40,9 +40,12 @@ import Gtk from 'gi://Gtk';
 import {
     decodeWords, parseAddress, parseHeaders, readableBody, renderableBody, splitMessage,
 } from './lib/rfc822.js';
-import {listFolder, messagePath, previewOf} from './lib/maildir.js';
+import {
+    listFolder, messageId, messagePath, parseFilename, previewOf, uniqueMatchesId,
+} from './lib/maildir.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
 import {actionsFor, flagChange, moveTo} from './lib/actions.js';
+import {parseMessageId, planFor} from './lib/agent-actions.js';
 import {McpServer} from './lib/mcp.js';
 import {linkAction} from './lib/links.js';
 
@@ -348,7 +351,11 @@ class Store {
     message(folder, unique) {
         for (const dir of ['cur', 'new']) {
             for (const e of listDir(`${this.root}/${folder}/${dir}`)) {
-                if (!e.name.startsWith(unique))
+                // Compare SANITISED to sanitised. `startsWith` against
+                // the raw name never matched on a synced Maildir, where
+                // mbsync's `,U=<uid>` suffix is sanitised in the id and
+                // not on disk (see uniqueMatchesId).
+                if (!uniqueMatchesId(parseFilename(e.name, dir).unique, unique))
                     continue;
                 const path = messagePath(this.root, folder, dir, e.name);
                 if (!path)
@@ -356,9 +363,17 @@ class Store {
                 const raw = readFile(path);
                 const {headerText, body} = splitMessage(raw);
                 const headers = parseHeaders(headerText);
+                const meta = parseFilename(e.name, dir);
                 return {
                     folder,
                     id: `${folder}/${unique}`,
+                    // The ACTION shape as well as the reading shape:
+                    // flagChange/moveTo need the filename, the dir and
+                    // the current flags, and returning only the reading
+                    // fields is why the write tools could not act on
+                    // what read_message could find (#167).
+                    filename: e.name, dir,
+                    seen: meta.seen, flagged: meta.flagged,
                     from: parseAddress(headers.get('from')),
                     to: headers.get('to'),
                     subject: decodeSubject(headers.get('subject')),
@@ -1116,6 +1131,7 @@ app.connect('activate', () => {
     const mcp = new McpServer({
         searchMail: (args) => searchMail(args),
         readMessage: (args) => readMessage(args),
+        writeAction: (tool, args) => writeAction(tool, args),
     });
     mcp.start();
     window.connect('close-request', () => {
@@ -1425,6 +1441,47 @@ function readMessage({id = ''} = {}) {
         id: msg.id, folder: msg.folder, subject: msg.subject,
         from: msg.from.address, from_name: msg.from.name, to: msg.to, date: msg.date,
         body: msg.body,
+    };
+}
+
+/// The Write-tier tools (#167). lib/agent-actions.js decides; this
+/// performs, with the SAME `applyMove` the toolbar uses.
+///
+/// Every outcome is named. A tool that reports success having done
+/// nothing is the defect this repo keeps finding, so "already archived"
+/// comes back as `changed: false` with a reason rather than as a
+/// cheerful ok.
+function writeAction(tool, args = {}) {
+    const parsed = parseMessageId(args.id);
+    if (parsed.error)
+        return {error: parsed.error};
+    const message = store.message(parsed.folder, parsed.unique);
+    const plan = planFor(tool, message, args, store.folders());
+    if (plan.error)
+        return {error: plan.error};
+    if (plan.noop)
+        return {changed: false, reason: plan.noop, id: args.id};
+    try {
+        applyMove(message.folder, plan.change, plan.toFolder);
+    } catch (e) {
+        // The rename failed: say so. Returning ok here would tell the
+        // model the mail was filed while it sat where it was.
+        return {error: `could not ${tool}: ${e.message}`};
+    }
+    // The list on screen is now stale — the filename IS the identity,
+    // and a row remembering the old one fails its next action.
+    if (currentFolder === parsed.folder || plan.toFolder === currentFolder)
+        loadFolder(currentFolder);
+    // The id an agent can USE next, not the raw filename. Returning
+    // `folder/1785529483.3297_1.lisa,U=8407:2,FPS` would hand back a
+    // string that the very next lookup rejects — the same mismatch
+    // between id-space and disk-space this commit exists to fix, and I
+    // reintroduced it in my own return value until the device test
+    // showed the commas.
+    return {
+        changed: true,
+        id: messageId(plan.toFolder, parseFilename(plan.change.toName, plan.change.toDir).unique),
+        from: args.id, folder: plan.toFolder,
     };
 }
 

@@ -203,10 +203,12 @@ A real preferences page, not only the diagnostic it started as.
 - **No sending.** Reply, forward and compose need SMTP — credentials and
   egress — and the buttons are shown disabled rather than hidden.
 - **No permanent deletion.** Trash is a move; nothing here expunges.
-- **Actions are the window's, not the agent's.** `search_mail` and
-  `read_message` are the only Agent Bus tools; pinning, archiving and
-  flag changes are write-tier and wait on the consent surface split
-  (#145).
+- ~~Actions are the window's, not the agent's.~~ **Done (#167):**
+  `flag_message`, `mark_read`, `archive_message`, `trash_message` and
+  `move_message` are Write tier, resolved by `lib/agent-actions.js` into
+  the same `flagChange`/`moveTo` plans the toolbar uses — one
+  implementation, two callers. An action that would change nothing
+  returns `changed: false` with a reason rather than a cheerful ok.
 - **No threading.** Messages are listed individually. `References` and
   `In-Reply-To` are parsed and unused.
 - **No attachments.** MIME parts other than the readable body are

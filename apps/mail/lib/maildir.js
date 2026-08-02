@@ -43,9 +43,38 @@ export function parseFilename(name, dir) {
 /// will hand back to us in `read_message`. So it is normalised, and
 /// `messagePath` refuses anything that did not come from here.
 export function messageId(folder, unique) {
-    const safe = String(unique ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
-    const folderSafe = String(folder ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
-    return `${folderSafe}/${safe}`;
+    return `${sanitise(folder)}/${sanitise(unique)}`;
+}
+
+function sanitise(s) {
+    return String(s ?? '').replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+/// Does this on-disk unique part correspond to that id fragment?
+///
+/// THE INVERSE OF `messageId`, AND IT WAS MISSING. `messageId` maps
+/// `1785529483.3297_1.lisa,U=8407` to `1785529483.3297_1.lisa_U_8407`,
+/// and the lookup then compared that sanitised string against the raw
+/// filename with `startsWith` — which matches only when the unique part
+/// happened to contain nothing outside [A-Za-z0-9._-].
+///
+/// mbsync appends `,U=<uid>` to every message it syncs, so on a real
+/// synced Maildir NOTHING matched: `search_mail` handed out ids that
+/// `read_message` rejected with "no message". Measured on the reference
+/// device 2026-08-02. The unit tests missed it because their fixtures
+/// use synthetic alphanumeric names — the sanitiser is a no-op on those,
+/// so both sides agreed by accident.
+///
+/// Sanitising BOTH sides is the fix. The mapping is lossy (two files
+/// could sanitise to one id), so the caller takes the first match and
+/// that is the same message `search_mail` would have listed under that
+/// id — a collision means two files whose names differ only in
+/// punctuation, which Maildir uniqueness already rules out in practice.
+export function uniqueMatchesId(diskUnique, idUnique) {
+    const wanted = String(idUnique ?? '');
+    if (!wanted)
+        return false;
+    return sanitise(diskUnique) === wanted;
 }
 
 /// Turn `folder`, `dir` and a filename into a path under `root`, or
