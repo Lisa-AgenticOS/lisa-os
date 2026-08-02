@@ -80,10 +80,31 @@ function networkSession() {
 /// There is no Safari 60.5 — the number tracks WebKitGTK's own release,
 /// not Safari's — and sites that branch on it read it as an unknown or
 /// ancient browser. YouTube was the report: the page loads and video will
-/// not play. Media Source Extensions are on and every codec is installed
-/// (checked on the device: vp9, vp8, av1, opus, h264, aac all present),
-/// so the engine could play it; it was never offered a stream it could
-/// use.
+/// not play.
+///
+/// **The codec half of that diagnosis was wrong** (corrected 2026-08-02,
+/// #146). This comment used to say "every codec is installed (checked on
+/// the device: vp9, vp8, av1, opus, h264, aac all present)". Asked
+/// element by element on the reference device instead of by grep:
+///
+///     vp8dec present   vp9dec present
+///     opusdec MISSING  av1dec MISSING  dav1ddec MISSING
+///     avdec_h264 MISSING  avdec_aac MISSING  faad MISSING
+///
+/// The only opus elements on the system are `rtpopusdepay` and
+/// `rtpopuspay` — RTP payloaders from gst-plugins-good, not decoders.
+/// A `gst-inspect-1.0 | grep -i opus` finds those two and reads as
+/// "opus present", which is almost certainly how the original claim was
+/// made. (I made the same mistake from the other direction the same day,
+/// with `ls /usr/lib/gstreamer-1.0 | grep opus`.) Ask for the element by
+/// name; a substring is not an answer.
+///
+/// So there were TWO independent reasons YouTube video did not play, and
+/// fixing the user agent addressed one of them. The image now declares
+/// gst-plugins-base, gst-libav and gst-plugins-bad (os/mkosi/mkosi.conf),
+/// and ab-recovery asserts `vp9dec` AND `opusdec` register in the booted
+/// image — because vp9 without opus plays silently, which looks like it
+/// works.
 ///
 /// So the version becomes one that exists, and Surfer names itself at
 /// the end — the shape Epiphany uses. Everything before the product
