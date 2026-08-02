@@ -139,9 +139,12 @@ jobs:
               # is a build tag (b10093), not a digit. -debug- splits are
               # filtered so they cannot stand in for the real package.
               # The prefix glob cannot tell zen-browser from
-              # zen-browser-launcher (#51 split them), so the payload'\''s real
-              # proof is the opt/zen/zen check in the image-content step
-              # below; this loop only catches a wholesale build failure.
+              # zen-browser-launcher (#51 split them). Both are still BUILT
+              # here — the payload becomes lisa-zen_<ver>_aarch64.tar.zst on
+              # the apps channel — but since #89 only the launcher is
+              # installed INTO the image, so the image-content step below no
+              # longer looks for opt/zen/zen. This loop catches a wholesale
+              # build failure, nothing finer.
               for p in lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-agentd \
                        lisa-ime \
                        lisa-notes lisa-remoted lisa-contextd llama.cpp \
@@ -216,8 +219,12 @@ jobs:
           # presence proves OUR build won, not just that some g-c-c is in.
           # Its install path is fixed by cc-lisa-panel-meson.build, so this
           # check does not depend on an upstream meson variable.
+          # NOT opt/zen/zen: the payload left the image with #89. What must
+          # still be here is the LAUNCHER half — the resolver, the .desktop
+          # and the icons — which is what keeps the browser reachable now
+          # that the tree arrives on the apps channel.
           for f in usr/bin/lisa usr/bin/lisa-inferenced usr/bin/llama-server \
-                   usr/share/lisa/shell/assistant opt/zen/zen \
+                   usr/share/lisa/shell/assistant \
                    usr/bin/zen-browser \
                    usr/share/applications/zen-browser.desktop \
                    usr/share/icons/hicolor/128x128/apps/zen-browser.png \
@@ -232,7 +239,11 @@ jobs:
           # NOTE: /usr/bin/lisa is the resolver *shell script* (issue #52),
           # so the real CLI to arch-check is the baked binary it falls back
           # to. Checking /usr/bin/lisa here kept this job red from 872d942.
-          for b in usr/bin/llama-server usr/lib/lisa/bin/lisa opt/zen/zen; do
+          # opt/zen/zen dropped from this arch check with #89 — there is no
+          # baked tree to inspect. The aarch64 Zen payload is still built
+          # and published (lisa-zen_<ver>_aarch64.tar.zst); its arch is the
+          # payload build step's business, not the image's.
+          for b in usr/bin/llama-server usr/lib/lisa/bin/lisa; do
             sudo file "/mnt/lisaroot/$b" | grep -q "ARM aarch64" \
               || { echo "not an aarch64 binary: $b"; rc=1; }
           done
