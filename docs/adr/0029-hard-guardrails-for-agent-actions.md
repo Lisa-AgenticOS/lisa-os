@@ -1,6 +1,8 @@
 # ADR-0029: Hard guardrails for agent actions — policy outside the model
 
-- Status: accepted (phase 1 implemented 2026-07-26)
+- Status: accepted (phases 1–3 implemented; phase 3 landed after this
+  ADR was written and the text below was not updated with it — corrected
+  2026-08-02, see "Phase 3, implemented")
 - Date: 2026-07-26
 - Relates: ADR-0025 (one agent loop), PLAN §5.4 (Agent Bus), §5.10 +
   Appendix C (provenance, injection), §5.12.1 (forge tool jail), M5
@@ -364,6 +366,36 @@ Until that lands, the forge harness must be described as *jailed for its
 own file tools and unconfined for the toolchains it invokes*, and this
 ADR says so rather than letting the README imply otherwise.
 
+### Phase 3, implemented (recorded 2026-08-02)
+
+It landed, and this ADR was not updated with it — so for some weeks the
+document told readers to go build a thing that already existed. Written
+down now because an ADR that understates the code sends the next person
+to implement it twice.
+
+`libs/forge-harness/src/confine.rs` takes the `landlock` crate (0.4.7)
+and applies the ruleset in `pre_exec` — after the fork, before the exec,
+so the harness itself and its later children are unaffected while the
+one subprocess about to run is confined to the project root plus the
+toolchain's cache directories. `libs/forge-harness/src/tools.rs` calls
+it on every spawned command. Absence is reported rather than assumed
+away: on a kernel without Landlock, `Confinement::Unavailable` carries
+the reason, and the unit tests assert that a missing LSM is visible
+rather than silently skipped.
+
+**Phase 2 is complete too**, though under different names than the
+bullets above use: forge mutations are ledgered as `forge.tool` (not
+`forge.write`/`forge.command`); the per-skill `tools:` allowlist is
+enforced at dispatch by `Skill::allowed_by` with a regression test that
+fails if `write_file` runs outside it; manifest tiers are validated at
+load (#56); provenance is bound to peer credentials (#55, with the
+contextd cross-check still open); and `system-policy.md` was resolved by
+deleting it, which was the other half of the choice this ADR offered.
+
+**What remains genuinely unconfined:** network. Landlock 0.4 restricts
+the filesystem; a `build.rs` the model just wrote can still open a
+socket. That is the next honest limit, and it is not solved here.
+
 ## Consequences
 
 - Two working escapes are closed, with regression tests naming them.
@@ -374,5 +406,8 @@ ADR says so rather than letting the README imply otherwise.
 - The `Deny` class means some legitimate operation will eventually be
   refused with no way around it. That is the trade being made, and the
   reason `Deny` is kept small and `Confirm` carries the rest.
-- The forge harness remains unconfined at the subprocess boundary until
-  phase 3. That is now written down instead of assumed away.
+- ~~The forge harness remains unconfined at the subprocess boundary until
+  phase 3.~~ Phase 3 shipped: subprocesses are Landlock-confined to the
+  project root and the toolchain caches, with unavailability reported
+  rather than silently skipped. The remaining hole is the network, which
+  Landlock 0.4 does not cover.
