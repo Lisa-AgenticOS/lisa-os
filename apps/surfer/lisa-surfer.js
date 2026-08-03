@@ -27,6 +27,7 @@ import {EXTRACT_JS, pageResult} from './lib/extract.js';
 import {McpServer} from './lib/mcp.js';
 import {navigationTarget, clickScript, fillScript} from './lib/actions.js';
 import {rowLabel} from './lib/tablist.js';
+import {suggestionsFor} from './lib/omnibox.js';
 
 const HOME = 'https://duckduckgo.com';
 
@@ -328,7 +329,51 @@ function buildWindow() {
         placeholder_text: 'Search or enter address',
         input_purpose: Gtk.InputPurpose.URL,
     });
-    urlBar.connect('activate', () => navigate(urlBar.get_text()));
+    urlBar.connect('activate', () => { suggestPopover?.popdown(); navigate(urlBar.get_text()); });
+
+    // Address-bar suggestions (#182): open tabs + the search row —
+    // sources that exist. History-backed completion waits for a
+    // history feature; provider suggest-as-you-type is egress per
+    // keystroke and waits for its own toggle (lib/omnibox.js).
+    const suggestList = new Gtk.ListBox({css_classes: ['lisa-suggest']});
+    const suggestPopover = new Gtk.Popover({
+        child: suggestList,
+        autohide: false,
+        has_arrow: false,
+        can_focus: false,
+    });
+    suggestPopover.set_parent(urlBar);
+    const rebuildSuggestions = () => {
+        const text = urlBar.get_text();
+        const tabs = [];
+        for (let i = 0; i < tabView.get_n_pages(); i++) {
+            const v = tabView.get_nth_page(i).get_child();
+            tabs.push({title: v?.title ?? '', uri: v?.get_uri?.() ?? ''});
+        }
+        const items = suggestionsFor(text, tabs);
+        let row = suggestList.get_first_child();
+        while (row) { const next = row.get_next_sibling(); suggestList.remove(row); row = next; }
+        if (!items.length || !urlBar.has_focus) { suggestPopover.popdown(); return; }
+        for (const item of items) {
+            const label = new Gtk.Label({xalign: 0, ellipsize: 3, margin_start: 8, margin_end: 8, margin_top: 4, margin_bottom: 4});
+            if (item.kind === 'url') label.set_text(`Go to ${item.url}`);
+            else if (item.kind === 'tab') label.set_text(`Switch to: ${item.title || item.uri}`);
+            else label.set_text(`Search DuckDuckGo for “${item.query}”`);
+            const r = new Gtk.ListBoxRow({child: label});
+            r._item = item;
+            suggestList.append(r);
+        }
+        suggestPopover.set_size_request(urlBar.get_width(), -1);
+        suggestPopover.popup();
+    };
+    urlBar.connect('changed', rebuildSuggestions);
+    suggestList.connect('row-activated', (_l, r) => {
+        const item = r._item;
+        suggestPopover.popdown();
+        if (item.kind === 'tab') tabView.set_selected_page(tabView.get_nth_page(item.index));
+        else if (item.kind === 'url') currentView()?.load_uri(item.url);
+        else navigate(item.query);
+    });
 
     // Zen/Arc anatomy (#182 v2, from the owner's references): the
     // SIDEBAR owns navigation and the address bar; there is no top
@@ -501,6 +546,9 @@ function buildWindow() {
         .lisa-tablist row:selected { background: alpha(#9B7BE8, 0.28); } /* token: violet-300 */
         .lisa-tablist row:selected label { color: #FFF1E9; font-weight: 600; }
         .lisa-newtab { color: alpha(#FFF1E9, 0.65); border-radius: 10px; }
+        .lisa-suggest { background: transparent; }
+        .lisa-suggest row { border-radius: 8px; padding: 2px; }
+        .lisa-suggest row:hover { background: alpha(#9B7BE8, 0.25); } /* token: violet-300 */
         .lisa-content-card {
             background: #FFFFFF; /* token: surface */
             border-radius: 14px;
