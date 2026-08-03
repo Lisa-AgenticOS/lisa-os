@@ -435,6 +435,24 @@ pub fn token(account_id: Option<String>) -> Result<()> {
         }
     };
     let conn = session_bus()?;
+
+    // Refuse to call GOA while the login keyring is locked. GetAccessToken
+    // does not fail in that state — GOA parks it behind a Secret Service
+    // unlock prompt, which on a rebooted autologin machine is drawn for
+    // nobody, so the call simply never returns. Everything downstream
+    // inherits the hang: mbsync sits in "xoauth2: step1", msmtp sits in
+    // passwordeval, and lisa-mail-sync.service reads "activating"
+    // forever. Seen on the reference iMac 2026-08-03. A bounded, named
+    // failure here turns all of that into one actionable line.
+    if login_keyring_locked(&conn) {
+        bail!(
+            "the login keyring is locked, so no account can hand over a token.\n\
+             This happens after every reboot: autologin starts the session but \
+             never unlocks the keyring. Unlock it once at the machine (any app \
+             that touches a credential will prompt), then mail resumes on its own."
+        );
+    }
+
     let proxy = zbus::blocking::Proxy::new(
         &conn,
         GOA_SERVICE,
@@ -449,6 +467,32 @@ pub fn token(account_id: Option<String>) -> Result<()> {
     )?;
     println!("{token}");
     Ok(())
+}
+
+/// Is the Secret Service's `login` collection locked?
+///
+/// Property read, not an Unlock attempt: reading `Locked` never
+/// prompts, so this can be called from a headless path safely. Errors
+/// count as "not locked" — a system with no Secret Service at all is
+/// diagnosed by `has_secret_service` with its own message, and failing
+/// open here means a broken property read degrades to today's
+/// behaviour instead of inventing a new refusal.
+fn login_keyring_locked(conn: &zbus::blocking::Connection) -> bool {
+    zbus::blocking::Proxy::new(
+        conn,
+        "org.freedesktop.secrets",
+        "/org/freedesktop/secrets/collection/login",
+        "org.freedesktop.DBus.Properties",
+    )
+    .and_then(|p| {
+        p.call::<_, _, zbus::zvariant::OwnedValue>(
+            "Get",
+            &("org.freedesktop.Secret.Collection", "Locked"),
+        )
+    })
+    .ok()
+    .and_then(|v| bool::try_from(v).ok())
+    .unwrap_or(false)
 }
 
 /// Is the XOAUTH2 SASL mechanism installed?

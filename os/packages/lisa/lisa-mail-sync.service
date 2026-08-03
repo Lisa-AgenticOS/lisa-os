@@ -18,6 +18,13 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# A wedged credential fetch must become a red unit, not an "activating"
+# unit forever. Seen on the device 2026-08-03: reboot relocks the
+# keyring (GDM autologin never unlocks it), GOA's GetAccessToken then
+# waits on an unlock prompt nobody can see, mbsync waits on its
+# PassCmd, and this unit sat in "activating" with no end. Three
+# minutes is generous for a mail sync that is actually syncing.
+TimeoutStartSec=180
 ExecStart=/usr/bin/lisa mail sync
 # Sync is not urgent and competes with whatever the person is actually
 # doing; a full first pull can be thousands of messages.
