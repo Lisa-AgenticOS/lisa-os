@@ -458,7 +458,11 @@ jobs:
               # this that step cannot ever have worked — it was added
               # after v30 and this release is its first execution.
               mkdir -p /src/repo-out
-              cp /build/repo-out/lisa-cli-*.pkg.tar.* /src/repo-out/
+              # ALL packages, not just lisa-cli: the publish step uploads
+              # them for the [lisa] index (ADR-0039, #171), and anything
+              # not copied here died with this --rm container — which is
+              # why v20260802.63's release carries exactly one package.
+              cp /build/repo-out/*.pkg.tar.* /src/repo-out/
             '
           sudo chown -R "$USER:" lisa-usb.raw repo-out
           ls -lh repo-out/
