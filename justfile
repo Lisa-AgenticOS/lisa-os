@@ -29,6 +29,10 @@ lint:
     # shell/app surface hardcodes must be a branding/tokens.json token,
     # and the generated token sheets must match their source.
     python3 os/repo-tools/check-tokens.py
+    # The knowledge pack (#175) is generated from component READMEs; a
+    # stale committed copy would ship the model answers about last
+    # month's OS.
+    python3 os/repo-tools/build-knowledge.py --check
 
 fmt:
     cargo fmt --all

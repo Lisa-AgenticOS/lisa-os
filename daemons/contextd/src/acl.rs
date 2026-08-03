@@ -16,7 +16,10 @@ use crate::store::{ContextStore, StoreError};
 /// with a typo produced an invisible index rather than an error, and
 /// nothing distinguished "indexed nothing" from "indexed into a tag
 /// no scope can reach".
-pub const PROVENANCE: [&str; 5] = ["file", "mail", "calendar", "screen", "web"];
+/// `system` is the OS knowledge pack (#175, ADR-0040): docs generated
+/// at build time, describing the running image. Read-tier by design —
+/// a doc chunk informs an answer, it never authorizes an action.
+pub const PROVENANCE: [&str; 6] = ["file", "mail", "calendar", "screen", "web", "system"];
 
 /// Whether `provenance` is one the ACL can reason about.
 pub fn is_known_provenance(provenance: &str) -> bool {
@@ -51,6 +54,11 @@ pub fn provenance_for_scope(scope: &str) -> &'static [&'static str] {
         // NOT "screen.once" — see above.
         "screen.read" | "screen" => &["screen"],
         "web.read" | "web" => &["web"],
+        // The knowledge pack is world-readable ON THIS MACHINE by
+        // definition — it ships in /usr/share. Every scope that can
+        // read anything may also read it; a dedicated system.read
+        // scope would be consent theater for public bytes.
+        "system.read" | "system" => &["system"],
         _ => &[],
     }
 }

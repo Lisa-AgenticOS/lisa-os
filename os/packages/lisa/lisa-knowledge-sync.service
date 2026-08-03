@@ -1,0 +1,17 @@
+[Unit]
+Description=Index the OS knowledge pack into the context store (#175)
+# After the companion so that when the embedding model is present the
+# chunks embed in the same pass; without it they stay pending and the
+# next boot after `lisa models get` picks them up (sync says which).
+After=lisa-inferenced-dbus.service
+
+[Service]
+Type=oneshot
+# The pack only changes when the OS does, and the sync hashes it before
+# touching anything — so this is one hash comparison on every boot that
+# follows an unchanged image.
+ExecStart=/usr/bin/lisa context sync-knowledge
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

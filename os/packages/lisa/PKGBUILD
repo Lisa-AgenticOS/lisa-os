@@ -290,6 +290,20 @@ package_lisa-cli() {
     # here, so a user skill shadows a packaged one.
     install -d "$pkgdir/usr/share/lisa/skills"
     cp -r skills/. "$pkgdir/usr/share/lisa/skills/"
+    # The OS knowledge pack (#175, ADR-0040): generated from component
+    # READMEs, indexed under the `system` provenance by
+    # `lisa context sync-knowledge`, retrieved when the model is asked
+    # about the OS it runs on. Rides lisa-cli because the CLI is its
+    # only consumer today.
+    install -d "$pkgdir/usr/share/lisa/knowledge"
+    cp -r docs/knowledge/. "$pkgdir/usr/share/lisa/knowledge/"
+    # Sync it into the per-user context store at session start; a boot
+    # on an unchanged image is one hash comparison and done.
+    install -Dm644 os/packages/lisa/lisa-knowledge-sync.service \
+        "$pkgdir/usr/lib/systemd/user/lisa-knowledge-sync.service"
+    install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
+    ln -s ../lisa-knowledge-sync.service \
+        "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-knowledge-sync.service"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 

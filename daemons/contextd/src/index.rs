@@ -111,6 +111,19 @@ pub fn fts5_query(raw: &str) -> Option<String> {
 impl ContextStore {
     /// Index every text-like file under `root`. Returns what changed.
     pub fn index_dir(&self, root: &Path) -> Result<IndexReport, StoreError> {
+        self.index_dir_as(root, "file")
+    }
+
+    /// The same walk, writing under a caller-chosen provenance — the OS
+    /// knowledge pack indexes as `system` (#175). The tag must be one
+    /// the ACL knows (#104: an unknown tag is refused rather than
+    /// accepted into unreadability), and all the foreign-row
+    /// protections apply relative to it: a `system` walk will not
+    /// relabel a `file` document any more than the reverse.
+    pub fn index_dir_as(&self, root: &Path, provenance: &str) -> Result<IndexReport, StoreError> {
+        if !crate::acl::is_known_provenance(provenance) {
+            return Err(StoreError::UnknownProvenance(provenance.to_string()));
+        }
         let mut report = IndexReport::default();
         for entry in WalkDir::new(root)
             .follow_links(false)
@@ -155,7 +168,7 @@ impl ContextStore {
             // happens to match — otherwise the hash decides the label,
             // which is the instability described below.
             if let Some((_, _, ref old_provenance)) = existing
-                && old_provenance != "file"
+                && old_provenance != provenance
             {
                 report.skipped_foreign.push(source.clone());
                 continue;
@@ -186,7 +199,7 @@ impl ContextStore {
                 // Skipped rather than fatal: one such collision must not
                 // abort the walk over an entire home directory. It is
                 // counted and named so it is visible.
-                if old_provenance != "file" {
+                if old_provenance != provenance {
                     report.skipped_foreign.push(source.clone());
                     continue;
                 }
@@ -200,8 +213,8 @@ impl ContextStore {
             }
             conn.execute(
                 "INSERT INTO documents (source, provenance, mtime, content_hash)
-                 VALUES (?1, 'file', ?2, ?3)",
-                rusqlite::params![source, mtime, hash],
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![source, provenance, mtime, hash],
             )?;
             let doc_id = conn.last_insert_rowid();
             for (seq, chunk) in chunk_text(&content).iter().enumerate() {

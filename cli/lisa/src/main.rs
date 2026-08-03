@@ -499,6 +499,15 @@ enum ContextCmd {
         #[arg(long)]
         scope: Vec<String>,
     },
+    /// Index the OS knowledge pack (/usr/share/lisa/knowledge) under
+    /// the `system` provenance, if its content changed since the last
+    /// sync (#175). Cheap when nothing changed; run after updates.
+    SyncKnowledge {
+        /// Read the pack from here instead of /usr/share/lisa/knowledge
+        /// (dev hosts; tests).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2740,6 +2749,65 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
                     );
                 }
             }
+        }
+        ContextCmd::SyncKnowledge { dir } => {
+            let dir = dir.unwrap_or_else(|| PathBuf::from("/usr/share/lisa/knowledge"));
+            if !dir.is_dir() {
+                // A machine without a pack is not broken — the pack
+                // ships with the image and older images predate it.
+                println!("no knowledge pack at {} — nothing to sync", dir.display());
+                return Ok(());
+            }
+            // Change detection by content, not by version string: the
+            // pack is bytes on disk, and hashing what is actually there
+            // cannot disagree with what is actually there. app_memory
+            // under a reserved app id holds the last-synced hash.
+            let mut names: Vec<PathBuf> = walkdir::WalkDir::new(&dir)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+                .map(|e| e.into_path())
+                .collect();
+            names.sort();
+            let mut hasher = blake3::Hasher::new();
+            for p in &names {
+                hasher.update(p.to_string_lossy().as_bytes());
+                hasher.update(&std::fs::read(p)?);
+            }
+            let pack_hash = hasher.finalize().to_hex().to_string();
+
+            const STAMP_APP: &str = "dev.lisaos.knowledge";
+            if store.memory_get(STAMP_APP, "pack_hash")? == Some(pack_hash.clone()) {
+                println!("knowledge pack unchanged — already indexed");
+                return Ok(());
+            }
+            let report = store.index_dir_as(&dir, "system")?;
+            println!(
+                "knowledge pack: indexed {} file(s) ({} chunks), {} unchanged",
+                report.indexed, report.chunks, report.skipped_unchanged
+            );
+            // Embed ONLY with the model-backed embedder. Backfilling
+            // with the hash fallback would mix vector spaces in one
+            // store — cosine between a hash vector and a model vector
+            // is noise that LOOKS like ranking — so a machine without
+            // the model leaves the chunks pending and the next sync
+            // after `lisa models get` picks them up.
+            let chosen = lisa_contextd::embed::resolve();
+            if chosen.kind == "inferenced" {
+                let n = store.embed_pending(chosen.embedder.as_ref())?;
+                println!(
+                    "embedded {n} chunk(s) (model: {})",
+                    chosen.model.as_deref().unwrap_or("daemon default")
+                );
+            } else {
+                println!(
+                    "not embedding: no model-backed embedder (chunks stay pending; \
+                     rerun after `lisa models get {}`)",
+                    lisa_contextd::embed::EMBEDDING_MODEL
+                );
+            }
+            store.memory_set(STAMP_APP, "pack_hash", &pack_hash)?;
         }
         ContextCmd::Search {
             query,

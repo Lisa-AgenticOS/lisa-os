@@ -1,0 +1,45 @@
+{
+  "docs": [
+    {
+      "file": "mail.md",
+      "about": "The Mail app: reading, searching and writing email",
+      "sha256": "2d01525175fc617476d91b949b76448748ce7e336da7af080d9c91bbcbf81e1f"
+    },
+    {
+      "file": "surfer.md",
+      "about": "Surfer, the browser",
+      "sha256": "915c3ce142575e0b08df8db18f98d93b2707318647f998f0348b156e2c0ce1af"
+    },
+    {
+      "file": "preview.md",
+      "about": "Preview: images, PDF, and Space-to-preview in Files",
+      "sha256": "297d79af17143d4afe00524cd80a90749eb3ef439b8d7bea813d5a9b41e3870f"
+    },
+    {
+      "file": "terminal.md",
+      "about": "lisa explain / lisa suggest in the terminal",
+      "sha256": "1515989ec93cd052fd0d337daca1df9e469fffb7cb1a2552b24aa74ae87c54e9"
+    },
+    {
+      "file": "assistant.md",
+      "about": "The Lisa Assistant chat window",
+      "sha256": "a070bdb3c9cd588d47d7597f04f5aa26b1e5a0a5626af7a97e9b9b590cd3f938"
+    },
+    {
+      "file": "ledger.md",
+      "about": "The Ledger: every AI action, auditable",
+      "sha256": "8862bcfbedf85dde88519ddc99bac869b9968bf946de550d897cf1e528740c40"
+    },
+    {
+      "file": "overlay.md",
+      "about": "The assistant overlay and how to summon it",
+      "sha256": "3af59d994ae442eb653b70cae39637872967a8ec83cf9da638329092b42b86cd"
+    },
+    {
+      "file": "cli.md",
+      "about": "The lisa command line",
+      "sha256": "1095b7268de1d6f0c46b37c456bd02bcad3998504c6c284dedf243535159c52e"
+    }
+  ],
+  "$comment": "GENERATED \u2014 see build-knowledge.py. Consumed by `lisa context sync-knowledge` and the lisaos.dev docs build."
+}
