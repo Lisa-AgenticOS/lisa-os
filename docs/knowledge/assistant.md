@@ -17,6 +17,45 @@ text stays, #11); the entry stays typeable, only sending is gated. The header
 bar **exports the conversation as Markdown** (#8) — cloud turns keep their
 "left this machine" note.
 
+## Attachments (#209)
+
+The composer has a **paperclip** (a `Gtk.FileDialog` filtered to png, jpg,
+jpeg, webp, gif) and takes **Ctrl+V** of an image from the clipboard. Staged
+images appear as removable chips above the entry; the sent turn shows the
+thumbnail above its text, so the transcript keeps the half of the question
+that was a picture.
+
+On send they become OpenAI content parts on the user turn:
+
+```
+{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}
+```
+
+passed to `Harness1.Run` as an `attachments` option — a JSON string holding
+that array, the same way `history` travels. The daemon puts the message
+**text first**, then the parts; with no attachments the turn stays a plain
+string on the wire, unchanged. The bytes ride inside the request as a data
+URI, so nothing is uploaded and there is no temporary object with a URL to
+leak. This is the shape `lisa ask --attach` already builds.
+
+A **local model plus an attachment is refused in the window**, naming the
+model and saying to pick a cloud one. `lisa-inferenced`'s llama backend
+already refuses content parts — a text model handed an image would otherwise
+answer confidently about a picture nobody looked at — but that refusal is
+five layers away, after a spinner. `attachmentRefusal` in
+`lib/attachments.js` is the same rule applied where a person can still act
+on it: a courtesy, not the guard. An unknown model fails closed.
+
+Limits, because they are not obvious:
+
+- **Images only.** `lisa ask --attach` also takes wav/mp3; nothing in this
+  window picks or records audio, so the composer does not offer it.
+- **Thumbnails do not survive a restart.** The stored session shape is
+  `{role, text, model}` byte for byte — what harness-core's `SessionStore`
+  reads — and the image bytes are not in it. A reopened conversation shows
+  the text of a turn that had a picture, without the picture.
+- **No resizing.** A 12 MP screenshot is sent at 12 MP.
+
 ## Conversations
 
 A sidebar lists every conversation, most recently active first: **New**
@@ -43,17 +82,19 @@ vice versa. Launch reopens the most recent conversation.
 
 ## How it fits
 
-A **second thin frontend of the `dev.lisaos.Overlay1` backend** (the overlay's
-"one headless backend, many frontends" design). The window sends a multi-turn
-chat `Ask` and renders the streamed `Token` signals — the same contract the
-GNOME Shell overlay uses.
+A thin frontend of the **`dev.lisaos.Harness1`** loop in `lisa-harnessd`
+(ADR-0025) — the overlay's "one headless backend, many frontends" design, in
+the vocabulary the overlay already speaks (`Token`/`Finished`). The overlay
+keeps its own one-shot chat lane; real work happens here, because that lane
+skips the Agent Bus and left the assistant with no tools at all.
 
 ```
 lisa-assistant.js  (GJS + GTK4/Adwaita window)
-  │  Overlay1.Ask(prompt, {lane:"chat", model_hint, history_json}) → id
-  │  ← Token(id, delta) … Finished(id, status)
+  │  Harness1.Run(prompt, {model, trigger, history, workspace?,
+  │                        attachments?}) → run_id
+  │  ← Tool(id, name, detail) … Token(id, delta) … Finished(id, ok, summary)
   ▼
-lisa-overlayd.js  (backend chat lane)
+lisa-harnessd  (the agent loop, Agent Bus + workspace + skills tools)
   │  POST lisa-inferenced :7778 /v1/chat/completions (messages, stream)
   ▼
 lisa-inferenced → (remote:*) → remoted broker → Claude / GPT
@@ -73,6 +114,9 @@ lisa-inferenced → (remote:*) → remoted broker → Claude / GPT
 - `lib/model.js` — pure view-model (model-list assembly, send payload, egress
   marker, Markdown export, turn (de)serialization); unit-tested in
   `tests/model.test.js`.
+- `lib/attachments.js` — pure attachment logic (image mime by extension, the
+  `image_url` content part, the parts payload, the local-model refusal);
+  unit-tested in `tests/attachments.test.js`.
 - `lib/sessions.js` — pure session logic (key layout, records and index,
   titles, ordering, the legacy migration); unit-tested in
   `tests/sessions.test.js`.

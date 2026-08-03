@@ -149,13 +149,33 @@ pub fn action_from(acc: Accumulated) -> Result<AgentAction, ForgeError> {
     }
 }
 
+/// A user turn's `content`: a bare string, or — when the person
+/// attached something (issue #209) — OpenAI content parts with THEIR
+/// WORDS FIRST.
+///
+/// Order is load-bearing. A model handed the image before the question
+/// answers the question it invented for the image. And with no
+/// attachments the result must be byte-identical to a plain string:
+/// every text-only engine on the far side understands that shape and
+/// only that shape.
+fn user_content(m: &Message) -> Value {
+    if m.attachments.is_empty() {
+        return json!(m.content);
+    }
+    let mut parts = vec![json!({"type": "text", "text": m.content})];
+    // Forwarded verbatim — the harness does not re-model a provider's
+    // part schema, it passes it through (see inferenced `Content::Parts`).
+    parts.extend(m.attachments.iter().cloned());
+    Value::Array(parts)
+}
+
 /// Map the internal history onto the OpenAI message shapes.
 fn wire_messages(messages: &[Message]) -> Value {
     messages
         .iter()
         .map(|m| match m.role {
             Role::System => json!({"role": "system", "content": m.content}),
-            Role::User => json!({"role": "user", "content": m.content}),
+            Role::User => json!({"role": "user", "content": user_content(m)}),
             Role::Assistant => match &m.tool_call {
                 Some(call) => json!({
                     "role": "assistant",
@@ -355,6 +375,52 @@ mod tests {
         assert_eq!(arguments, json!({"path": "a.txt", "content": "hi"}));
         assert_eq!(msgs[3]["role"], "tool");
         assert_eq!(msgs[3]["tool_call_id"], "c1");
+    }
+
+    /// Issue #209's last mile: a user turn carrying an attachment leaves
+    /// as OpenAI CONTENT PARTS, with the person's words FIRST.
+    ///
+    /// Order is the whole point — a model handed the image before the
+    /// question answers the question it invented for the image. And a
+    /// message with no attachments must stay a plain string, because
+    /// that is what every text-only engine on the far side understands.
+    #[test]
+    fn attachments_turn_a_user_message_into_parts_text_first() {
+        let png = json!({
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        });
+        let mut m = Message::user("what is this?");
+        m.attachments = vec![png.clone()];
+        let wire = wire_messages(&[Message::user("plain"), m]);
+        let msgs = wire.as_array().unwrap();
+
+        // Without attachments: byte-identical to before — a bare string.
+        assert_eq!(msgs[0]["content"], json!("plain"));
+
+        // With them: parts, the text one first.
+        let parts = msgs[1]["content"].as_array().expect("content parts");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], json!({"type": "text", "text": "what is this?"}));
+        assert_eq!(parts[1], png, "the part is forwarded verbatim");
+        assert_eq!(msgs[1]["role"], "user");
+    }
+
+    /// Attachments belong to the person's turn. An assistant or tool
+    /// message must never grow parts from them: the loop appends tool
+    /// results by the thousand, and a stray image on one of those is an
+    /// image the model was never shown by a human.
+    #[test]
+    fn only_a_user_turn_carries_attachments() {
+        let part = json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}});
+        let mut a = Message::assistant_text("hi");
+        a.attachments = vec![part.clone()];
+        let mut t = Message::tool_result("c1", "read it");
+        t.attachments = vec![part];
+        let wire = wire_messages(&[a, t]);
+        let msgs = wire.as_array().unwrap();
+        assert_eq!(msgs[0]["content"], json!("hi"));
+        assert_eq!(msgs[1]["content"], json!("read it"));
     }
 
     #[test]

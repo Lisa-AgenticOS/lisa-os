@@ -9,6 +9,7 @@ use crate::jail::Jail;
 use crate::tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 use crate::{Backend, ForgeError, analyze};
 use lisa_ledger::{Event, Ledger, preview_of};
+use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -30,6 +31,20 @@ pub struct Message {
     pub content: String,
     pub tool_call: Option<ToolCall>,
     pub tool_call_id: Option<String>,
+    /// Non-text content parts riding along with a USER turn — an image
+    /// a person attached, in the OpenAI part shape (issue #209).
+    ///
+    /// Opaque `Value`s on purpose, the same decision inferenced made for
+    /// `Content::Parts`: the harness does not re-model every provider's
+    /// part schema, it passes them through. Re-modelling means a release
+    /// per new modality and a silent drop for anything unmodelled — and
+    /// a dropped image still gets a confident answer about a picture
+    /// nobody saw.
+    ///
+    /// Empty is the normal case, and an empty vec must stay
+    /// wire-identical to a message that never had the field: a plain
+    /// string `content`, which every text-only engine understands.
+    pub attachments: Vec<Value>,
 }
 
 impl Message {
@@ -57,12 +72,22 @@ impl Message {
         msg
     }
 
+    /// A user turn carrying attachments (issue #209). The words stay in
+    /// `content`; the parts ride alongside and are ordered after the
+    /// text on the wire.
+    pub fn user_with_attachments(content: impl Into<String>, attachments: Vec<Value>) -> Self {
+        let mut msg = Self::bare(Role::User, content);
+        msg.attachments = attachments;
+        msg
+    }
+
     fn bare(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
             content: content.into(),
             tool_call: None,
             tool_call_id: None,
+            attachments: Vec::new(),
         }
     }
 }
@@ -219,6 +244,16 @@ pub struct AgentConfig {
     /// over per run — which is also why sessions stay wherever the
     /// client already keeps them.
     pub prior_turns: Vec<Message>,
+    /// Non-text parts attached to THIS task by the person who typed it
+    /// (issue #209) — an image from the Assistant's composer.
+    ///
+    /// They ride on the task turn and on nothing else. Per-run rather
+    /// than per-message on purpose: the loop appends tool results by the
+    /// thousand, and there must be no path by which something the model
+    /// produced grows an image a human never showed it.
+    ///
+    /// Empty is the normal case and changes nothing on the wire.
+    pub attachments: Vec<Value>,
 }
 
 impl AgentConfig {
@@ -232,6 +267,7 @@ impl AgentConfig {
             system_prompt: FORGE_SYSTEM_PROMPT.to_string(),
             prior_turns: Vec::new(),
             skills: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 }
@@ -460,7 +496,10 @@ pub fn forge_agent_with_tools(
     let specs: Vec<ToolSpec> = providers.iter().flat_map(|p| p.specs()).collect();
     let mut history = vec![Message::system(&config.system_prompt)];
     history.extend(config.prior_turns.iter().cloned());
-    history.push(Message::user(format!("Task: {task}")));
+    history.push(Message::user_with_attachments(
+        format!("Task: {task}"),
+        config.attachments.clone(),
+    ));
     let mut verifier_output = String::new();
     for turn in 1..=config.max_turns {
         elide_stale_tool_results(&mut history, config.history_char_budget, 4);
@@ -1188,6 +1227,45 @@ mod tests {
             .filter(|m| m.role == Role::User && m.content.contains("You said you were done"))
             .count();
         assert_eq!(rejected, 2);
+    }
+
+    /// Issue #209's last mile: the attachments a surface handed in ride
+    /// on the TASK turn — the one the person typed — and on nothing
+    /// else. Prior turns replayed from a client's history stay text.
+    #[test]
+    fn attachments_ride_on_the_task_turn_and_no_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = json!({
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        });
+        let mut backend = ScriptedBackend::new(vec![AgentAction::Done("looked".into())]);
+        let config = AgentConfig {
+            max_turns: 2,
+            verifier: Verifier::None,
+            prior_turns: vec![Message::user("earlier"), Message::assistant_text("ok")],
+            attachments: vec![part.clone()],
+            ..AgentConfig::new(scratch_ledger(dir.path()))
+        };
+        forge_agent_with_tools(
+            "what is this?",
+            dir.path(),
+            &mut backend,
+            &config,
+            &[],
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let carrying: Vec<&Message> = backend
+            .last_history
+            .iter()
+            .filter(|m| !m.attachments.is_empty())
+            .collect();
+        assert_eq!(carrying.len(), 1, "exactly one turn may carry them");
+        assert_eq!(carrying[0].role, Role::User);
+        assert!(carrying[0].content.contains("what is this?"));
+        assert_eq!(carrying[0].attachments, vec![part]);
     }
 
     #[test]

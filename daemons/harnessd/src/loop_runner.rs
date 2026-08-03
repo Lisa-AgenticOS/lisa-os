@@ -90,6 +90,10 @@ pub struct Request {
     /// this one" would need answering forever. Stateless means the
     /// answer is "whoever already has it".
     pub history: Vec<forge_harness::Message>,
+    /// Non-text content parts the person attached to THIS prompt
+    /// (issue #209). Opaque and forwarded verbatim; empty is the normal
+    /// case and leaves the request byte-identical to a text-only one.
+    pub attachments: Vec<serde_json::Value>,
     pub url: String,
     pub model: Option<String>,
     pub max_turns: usize,
@@ -162,6 +166,7 @@ pub fn run(
         verifier: Verifier::None,
         system_prompt: system_prompt(&req.workspace, &req.skills_catalog),
         prior_turns: req.history,
+        attachments: req.attachments,
         ..AgentConfig::new(ledger)
     };
 

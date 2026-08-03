@@ -8,6 +8,30 @@ analyze` → iterate. Pluggable backends: local coder models, a remote
 provider, or any agent CLI over the same tool jail. Hot-reload preview and
 VLM screenshot self-inspection are still ahead.
 
+## Attachments on the task turn (#209)
+
+`AgentConfig::attachments` holds OpenAI content parts — an image a
+person attached in a surface built on this loop. They ride on the
+**task** turn and on nothing else, and `OpenAiBackend` writes that turn
+as parts with the text FIRST:
+
+```rust
+let config = AgentConfig {
+    attachments: vec![serde_json::json!({
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,…"},
+    })],
+    ..AgentConfig::new(ledger)
+};
+```
+
+Per-run rather than per-message on purpose: the loop appends tool
+results by the thousand, and there must be no path by which something
+the model produced grows an image a human never showed it. The parts are
+opaque `serde_json::Value`s and are forwarded verbatim — the same
+decision `lisa-inferenced` made for `Content::Parts`. Empty (the normal
+case) leaves the request byte-identical to a text-only one.
+
 ## What confines this loop
 
 Nobody is watching it, so the boundaries are deterministic and live in

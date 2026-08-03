@@ -6,7 +6,10 @@
 //!
 //! ```text
 //! Run(s prompt, a{sv} options) → (t run_id)
-//!     options: "model" (s), "url" (s), "trigger" (s: prompt|schedule|event)
+//!     options: "model" (s), "url" (s), "trigger" (s: prompt|schedule|event),
+//!              "history" (s: JSON [{role, content}]),
+//!              "workspace" (s: an absolute folder path),
+//!              "attachments" (s: JSON [content part, …])
 //! Cancel(t run_id)
 //! signal Tool(t run_id, s name, s detail)
 //! signal Token(t run_id, s delta)
@@ -112,6 +115,43 @@ pub fn parse_history(raw: Option<&str>) -> Vec<forge_harness::Message> {
         .collect()
 }
 
+/// Client-supplied attachments → OpenAI content parts (issue #209).
+///
+/// Shape is exactly what `lisa ask --attach` already builds:
+/// `[{"type":"image_url","image_url":{"url":"data:…"}}, …]`. The parts
+/// are OPAQUE — the daemon does not re-model a provider's part schema,
+/// it forwards it, the same decision inferenced made for
+/// `Content::Parts`.
+///
+/// Unlike `parse_history`, a broken value is REFUSED rather than
+/// dropped. Losing a prior turn costs context and the answer still
+/// arrives; losing the picture the question is about produces a
+/// confident answer about an image nobody saw, which is
+/// indistinguishable from working and therefore worse than an error.
+///
+/// The validation is deliberately shallow: an array of objects, each
+/// naming a `type`. Anything stricter would be this daemon claiming to
+/// know which modalities exist, which is the claim that goes stale.
+pub fn parse_attachments(raw: Option<&str>) -> Result<Vec<serde_json::Value>, String> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("attachments is not JSON: {e}"))?;
+    let serde_json::Value::Array(parts) = parsed else {
+        return Err("attachments must be a JSON array of content parts".into());
+    };
+    for (i, p) in parts.iter().enumerate() {
+        if !p.is_object() {
+            return Err(format!("attachment {i} is not a content part object"));
+        }
+        if !p.get("type").is_some_and(serde_json::Value::is_string) {
+            return Err(format!("attachment {i} has no `type`"));
+        }
+    }
+    Ok(parts)
+}
+
 pub struct Harness1 {
     ledger: Arc<lisa_ledger::Ledger>,
     next_id: AtomicU64,
@@ -157,6 +197,12 @@ impl Harness1 {
 
         let history = parse_history(opt_str(&options, "history").as_deref());
 
+        // Attachments are refused loudly, not dropped quietly — see
+        // `parse_attachments`. A surface that sent an unreadable one
+        // needs to hear about it while the person can still retry.
+        let attachments = parse_attachments(opt_str(&options, "attachments").as_deref())
+            .map_err(zbus::fdo::Error::InvalidArgs)?;
+
         // The working folder. Validated here, refused loudly: a bad one
         // is a mistake worth telling the person about, not a silent
         // downgrade to "no files" that leaves them wondering why the
@@ -178,6 +224,7 @@ impl Harness1 {
         let req = Request {
             prompt,
             history,
+            attachments,
             workspace: workspace.clone(),
             skills_catalog: crate::skills::catalog_lines(&skills),
             url: opt_str(&options, "url").unwrap_or_else(|| DEFAULT_URL.to_string()),
@@ -364,6 +411,53 @@ mod tests {
         ));
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].content, "good");
+    }
+
+    /// Issue #209's last mile. Absent means "a plain string", which is
+    /// today's behaviour and must stay byte-identical.
+    #[test]
+    fn no_attachments_option_means_no_parts_at_all() {
+        assert_eq!(
+            parse_attachments(None).unwrap(),
+            Vec::<serde_json::Value>::new()
+        );
+        assert_eq!(
+            parse_attachments(Some("[]")).unwrap(),
+            Vec::<serde_json::Value>::new()
+        );
+    }
+
+    #[test]
+    fn attachments_arrive_as_opaque_openai_parts() {
+        let raw = r#"[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]"#;
+        let parts = parse_attachments(Some(raw)).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+        // Verbatim: the daemon does not re-model a provider's part
+        // schema, it forwards it (see inferenced's `Content::Parts`).
+        assert_eq!(parts[0]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+    /// Unlike history, a broken attachment is REFUSED rather than
+    /// dropped. Losing a prior turn costs context; losing the picture
+    /// the question is about produces a confident answer about an image
+    /// nobody saw — indistinguishable from working.
+    #[test]
+    fn a_malformed_attachments_option_is_an_error_not_a_panic() {
+        for raw in [
+            "not json",
+            "{}",
+            "[1,2,3]",
+            r#"["a string"]"#,
+            r#"[{"no":"type"}]"#,
+            r#"[{"type":42}]"#,
+        ] {
+            let err = parse_attachments(Some(raw)).unwrap_err();
+            assert!(
+                !err.is_empty(),
+                "a refusal must say what was wrong with {raw:?}"
+            );
+        }
     }
 
     #[test]

@@ -12,7 +12,10 @@ one place the provenance rules live.
 
 ```
 Run(s prompt, a{sv} options) → (t run_id)
-    options: "model" (s), "url" (s), "trigger" (s: prompt|schedule|event)
+    options: "model" (s), "url" (s), "trigger" (s: prompt|schedule|event),
+             "history" (s: JSON [{role, content}]),
+             "workspace" (s: an absolute folder path),
+             "attachments" (s: JSON [content part, …])
 Cancel(t run_id)
 signal Tool(t run_id, s name, s detail)
 signal Token(t run_id, s delta)
@@ -22,6 +25,34 @@ signal Finished(t run_id, b ok, s summary)
 Shaped like `Overlay1`'s Ask/Token/Finished deliberately: the Assistant
 window already renders that vocabulary, so adopting the harness is a
 change of destination, not a rewrite.
+
+## Attachments (#209)
+
+`attachments` carries OpenAI content parts — the shape `lisa ask
+--attach` builds and `lisa-inferenced` accepts as `Content::Parts`:
+
+```json
+[{"type": "image_url", "image_url": {"url": "data:image/png;base64,…"}}]
+```
+
+When present, the prompt turn goes out as parts with **the person's text
+first** — a model handed the image before the question answers the
+question it invented for the image. When absent, the turn is a plain
+string, byte for byte what it always was.
+
+The parts are **opaque**: the daemon does not re-model a provider's part
+schema, it forwards it. Re-modelling means a release per new modality
+and a silent drop for anything unmodelled, and a dropped image still
+gets a confident answer about a picture nobody saw.
+
+For the same reason a malformed `attachments` value is **refused**
+(`InvalidArgs`) rather than dropped, which is the opposite of what
+`history` does. Losing a prior turn costs context and the answer still
+arrives; losing the picture the question is about is indistinguishable
+from working.
+
+Local engines refuse content parts outright (`inferenced`'s llama
+backend) — images need a `remote:` model that has the modality.
 
 ## Where it sits
 

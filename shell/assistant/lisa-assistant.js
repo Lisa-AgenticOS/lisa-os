@@ -19,10 +19,12 @@
 // (conversationMarkdown, #8).
 
 import Adw from 'gi://Adw?version=1';
+import Gdk from 'gi://Gdk?version=4.0';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk?version=4.0';
+import Pango from 'gi://Pango';
 import Soup from 'gi://Soup?version=3.0';
 
 import {
@@ -40,6 +42,9 @@ import {
     displayIndex, formatSessionTime, migrateLegacyConversation,
 } from './lib/sessions.js';
 import {toPangoMarkup} from './lib/markdown.js';
+import {
+    IMAGE_MIME_BY_EXT, imageMimeForName, attachmentsPayload, attachmentRefusal,
+} from './lib/attachments.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
@@ -101,6 +106,10 @@ class AssistantWindow {
         this._sessions = [];
         this._rows = [];        // sidebar rows, by position
         this._listUpdating = false;
+        // Images staged for the next message (#209): {name, mime, b64,
+        // texture}. Cleared on send — an attachment belongs to the
+        // message it was attached to, not to the composer.
+        this._attachments = [];
 
         this._http = new Soup.Session();
         this.window = new Adw.ApplicationWindow({
@@ -178,6 +187,25 @@ class AssistantWindow {
             hexpand: true, placeholder_text: 'Message Lisa…',
         });
         this._entry.connect('activate', () => this._send());
+        // Ctrl+V of an image (#209). The controller only claims the key
+        // when the clipboard actually holds a picture; otherwise it
+        // returns false and the entry pastes text exactly as before —
+        // stealing Ctrl+V wholesale would break the commonest thing
+        // anyone does in a text box.
+        const keys = new Gtk.EventControllerKey();
+        keys.connect('key-pressed', (_c, keyval, _code, state) => {
+            const ctrl = (state & Gdk.ModifierType.CONTROL_MASK) !== 0;
+            if (ctrl && (keyval === Gdk.KEY_v || keyval === Gdk.KEY_V))
+                return this._pasteImage();
+            return false;
+        });
+        this._entry.add_controller(keys);
+
+        this._attachBtn = new Gtk.Button({
+            icon_name: 'mail-attachment-symbolic',
+            tooltip_text: 'Attach an image',
+        });
+        this._attachBtn.connect('clicked', () => this._chooseAttachment());
         this._sendBtn = new Gtk.Button({
             label: 'Send', css_classes: ['suggested-action'],
         });
@@ -192,11 +220,22 @@ class AssistantWindow {
             orientation: Gtk.Orientation.HORIZONTAL, spacing: 6,
             margin_top: 6, margin_bottom: 12, margin_start: 12, margin_end: 12,
         });
+        composer.append(this._attachBtn);
         composer.append(this._entry);
         composer.append(this._sendBtn);
 
+        // Staged attachments, above the entry: visible, named, and
+        // removable. An attachment you cannot see is one you send by
+        // accident to a provider you did not mean to.
+        this._attachBar = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL, spacing: 6,
+            margin_top: 6, margin_start: 12, margin_end: 12,
+            visible: false,
+        });
+
         const box = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
         box.append(this._scroll);
+        box.append(this._attachBar);
         box.append(composer);
 
         const view = new Adw.ToolbarView({content: box});
@@ -488,19 +527,194 @@ class AssistantWindow {
         this._persistSession();
     }
 
+    // ---- attachments (#209) ---------------------------------------------
+    //
+    // An image reaches the model as an OpenAI content part on the user
+    // turn: the window base64s the bytes, the harness puts the person's
+    // words in front of them, and lisa-remoted rewrites the data URI for
+    // providers that want their own shape. Nothing is uploaded anywhere
+    // — the bytes ride inside the request, so there is no temporary
+    // object with a URL to leak.
+
+    /// Pick an image from disk. Filtered to what the wire carries: a
+    /// chooser that offers a .pdf we would then refuse is a worse
+    /// interaction than one that never offered it.
+    _chooseAttachment() {
+        const filter = new Gtk.FileFilter({name: 'Images'});
+        for (const mime of new Set(Object.values(IMAGE_MIME_BY_EXT)))
+            filter.add_mime_type(mime);
+        const filters = new Gio.ListStore({item_type: Gtk.FileFilter.$gtype});
+        filters.append(filter);
+        const dialog = new Gtk.FileDialog({
+            title: 'Attach an image', filters, default_filter: filter,
+        });
+        dialog.open(this.window, null, (d, res) => {
+            let file = null;
+            try {
+                file = d.open_finish(res);
+            } catch {
+                return; // dismissed
+            }
+            if (file)
+                this._attachPath(file.get_path());
+        });
+    }
+
+    /// Read a file, base64 it, stage it. Every failure says which file
+    /// and why: a picture that silently fails to attach is one the
+    /// person believes was sent.
+    _attachPath(path) {
+        if (!path)
+            return;
+        const name = path.split('/').filter(Boolean).pop() ?? path;
+        const mime = imageMimeForName(path);
+        if (!mime) {
+            this._systemNote(`Cannot attach ${name} — images only ` +
+                `(${Object.keys(IMAGE_MIME_BY_EXT).join(', ')}).`);
+            return;
+        }
+        let bytes;
+        try {
+            const [ok, contents] = GLib.file_get_contents(path);
+            if (!ok)
+                throw new Error('unreadable');
+            bytes = contents;
+        } catch (e) {
+            this._systemNote(`Could not read ${name}: ${e.message}`);
+            return;
+        }
+        let texture = null;
+        try {
+            texture = Gdk.Texture.new_from_filename(path);
+        } catch (e) {
+            // No preview, but the bytes are fine and the model can still
+            // see them — decoding is the toolkit's opinion, not the
+            // provider's.
+            logError(e, 'assistant: no thumbnail for the attachment');
+        }
+        this._addAttachment({
+            name, mime, b64: GLib.base64_encode(bytes), texture,
+        });
+    }
+
+    /// Ctrl+V. Returns true only when an image was taken off the
+    /// clipboard, so a normal text paste still reaches the entry.
+    _pasteImage() {
+        const clipboard = this.window.get_clipboard();
+        if (!clipboard.get_formats().contain_gtype(Gdk.Texture.$gtype))
+            return false;
+        clipboard.read_texture_async(null, (c, res) => {
+            try {
+                const texture = c.read_texture_finish(res);
+                if (!texture)
+                    return;
+                // PNG because it is lossless and the one encoder every
+                // GdkTexture has; the paste has no file name to inherit
+                // a format from.
+                const png = texture.save_to_png_bytes();
+                const stamp = new Date().toISOString()
+                    .replace(/[:.]/g, '-').slice(0, 19);
+                this._addAttachment({
+                    name: `pasted-${stamp}.png`,
+                    mime: 'image/png',
+                    b64: GLib.base64_encode(png.toArray()),
+                    texture,
+                });
+            } catch (e) {
+                this._systemNote(`Could not paste that image: ${e.message}`);
+            }
+        });
+        return true;
+    }
+
+    _addAttachment(item) {
+        this._attachments.push(item);
+        this._renderAttachments();
+    }
+
+    _removeAttachment(item) {
+        this._attachments = this._attachments.filter(a => a !== item);
+        this._renderAttachments();
+    }
+
+    _clearAttachments() {
+        this._attachments = [];
+        this._renderAttachments();
+    }
+
+    /// Rebuild the strip wholesale — it holds a handful of chips and
+    /// only attach/remove/send touch it.
+    _renderAttachments() {
+        let child = this._attachBar.get_first_child();
+        while (child) {
+            const next = child.get_next_sibling();
+            this._attachBar.remove(child);
+            child = next;
+        }
+        for (const item of this._attachments) {
+            const chip = new Gtk.Box({
+                orientation: Gtk.Orientation.HORIZONTAL, spacing: 6,
+                css_classes: ['card'],
+            });
+            if (item.texture) {
+                chip.append(new Gtk.Picture({
+                    paintable: item.texture,
+                    content_fit: Gtk.ContentFit.COVER,
+                    width_request: 36, height_request: 36,
+                    margin_start: 4, margin_top: 4, margin_bottom: 4,
+                }));
+            }
+            chip.append(new Gtk.Label({
+                label: item.name, css_classes: ['caption'],
+                ellipsize: Pango.EllipsizeMode.MIDDLE, max_width_chars: 20,
+                margin_start: item.texture ? 0 : 8,
+            }));
+            const drop = Gtk.Button.new_from_icon_name('window-close-symbolic');
+            drop.tooltip_text = `Remove ${item.name}`;
+            drop.valign = Gtk.Align.CENTER;
+            drop.add_css_class('flat');
+            drop.connect('clicked', () => this._removeAttachment(item));
+            chip.append(drop);
+            this._attachBar.append(chip);
+        }
+        this._attachBar.visible = this._attachments.length > 0;
+    }
+
     // ---- sending -------------------------------------------------------
 
     _send() {
         const prompt = this._entry.text.trim();
-        if (prompt === '' || this._activeQid !== null || !this._harness)
+        if (this._activeQid !== null || !this._harness)
+            return;
+        if (prompt === '' && this._attachments.length === 0)
             return;
         if (!this._model) {
             this._systemNote('Pick a model first.');
             return;
         }
+        // A local engine reads text only and lisa-inferenced refuses
+        // content parts outright — correct, and five layers away. Say it
+        // here, where the person can still change the model, rather than
+        // letting them watch a spinner turn into a daemon error (#209).
+        const picked = this._models.find(m => m.id === this._model) ??
+            {id: this._model, label: this._model};
+        const refusal = attachmentRefusal(picked, this._attachments);
+        if (refusal) {
+            this._systemNote(refusal);
+            this._scrollToBottom();
+            return;
+        }
+        if (prompt === '') {
+            this._systemNote('Add a message to send with the attachment.');
+            this._scrollToBottom();
+            return;
+        }
+        const parts = attachmentsPayload(this._attachments);
+        const attached = this._attachments;
         const history = historyPayload(this._turns);
         this._entry.text = '';
-        this._addTurn('user', prompt);
+        this._clearAttachments();
+        this._addTurn('user', prompt, undefined, attached);
         this._current = this._addTurn('assistant', '', this._model);
         this._setBusy(true);
 
@@ -524,6 +738,11 @@ class AssistantWindow {
         };
         if (this._workspace)
             options.workspace = GLib.Variant.new_string(this._workspace);
+        // Attachments travel as a JSON string, the same way history
+        // does. The daemon puts the message text in FRONT of these
+        // parts; absent, the turn stays a plain string on the wire.
+        if (parts.length > 0)
+            options.attachments = GLib.Variant.new_string(JSON.stringify(parts));
         // Sync so the run id is set before any Token signal is dispatched
         // (the main loop can't deliver a signal until this returns).
         try {
@@ -547,7 +766,12 @@ class AssistantWindow {
 
     // ---- conversation widgets ------------------------------------------
 
-    _addTurn(role, text, model) {
+    /// `attachments` is the live-session staging list for a user turn
+    /// (#209) — the thumbnails are rendered from the GdkTextures it
+    /// carries. Restored conversations pass none: the stored session
+    /// shape is `{role, text, model}`, byte for byte what harness-core's
+    /// SessionStore reads, and the image bytes are not in it.
+    _addTurn(role, text, model, attachments) {
         const isUser = role === 'user';
         const card = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL, spacing: 2,
@@ -567,6 +791,21 @@ class AssistantWindow {
         });
         setRendered(body, text);
         card.append(heading);
+        // What was sent, shown as what it was. A turn that reads "what
+        // is this?" with no picture above it is a transcript that has
+        // lost half the question.
+        for (const item of attachments ?? []) {
+            if (!item?.texture)
+                continue;
+            card.append(new Gtk.Picture({
+                paintable: item.texture,
+                content_fit: Gtk.ContentFit.CONTAIN,
+                can_shrink: true,
+                height_request: 160,
+                margin_start: 10, margin_end: 10, margin_top: 4,
+                tooltip_text: item.name,
+            }));
+        }
         card.append(body);
         this._log.append(card);
         const turn = {role, text, model: model ?? null, widget: card, body};
@@ -766,7 +1005,10 @@ class AssistantWindow {
     /// back that is as easy as giving it.
     _chooseWorkspace() {
         const dialog = new Gtk.FileDialog({title: 'Choose a working folder'});
-        dialog.select_folder(this, null, (d, res) => {
+        // The parent is the GtkWindow, not this controller: GJS cannot
+        // marshal a plain JS object where a GtkWindow is expected, so
+        // `this` here threw and the folder chooser never opened.
+        dialog.select_folder(this.window, null, (d, res) => {
             let folder = null;
             try {
                 folder = d.select_folder_finish(res);
