@@ -63,7 +63,6 @@ pub fn provenance_for_scope(scope: &str) -> &'static [&'static str] {
     }
 }
 
-/// All provenance tags the given scopes together permit.
 /// What [`ContextStore::add_document_if_changed`] did with a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddOutcome {
@@ -75,6 +74,7 @@ pub enum AddOutcome {
     ForeignSkipped,
 }
 
+/// All provenance tags the given scopes together permit.
 pub fn allowed_provenance(scopes: &[&str]) -> Vec<&'static str> {
     let mut allowed: Vec<&'static str> = scopes
         .iter()
@@ -86,8 +86,6 @@ pub fn allowed_provenance(scopes: &[&str]) -> Vec<&'static str> {
 }
 
 impl ContextStore {
-    /// Insert one document with an explicit provenance (mail/screen/web
-    /// sources; files go through `index_dir`). Chunked + FTS-indexed.
     /// Incremental, relabel-safe ingestion — what a corpus mirror (the
     /// mail indexer, #170) calls per document.
     ///
@@ -129,6 +127,8 @@ impl ContextStore {
         Ok(AddOutcome::Added)
     }
 
+    /// Insert one document with an explicit provenance (mail/screen/web
+    /// sources; files go through `index_dir`). Chunked + FTS-indexed.
     pub fn add_document(
         &self,
         source: &str,
