@@ -29,6 +29,7 @@ import {zoomStep, fitScale, fitWidthScale, step, rotate} from './lib/view.js';
 import {COLORS, normalizeRect, isClick, viewToPage, annotRect, savePathFor, unsavedLabel}
     from './lib/annotate.js';
 import {movePage, removePage, orderChanged, qpdfPageSpec} from './lib/reorder.js';
+import {looksBinary, truncateText, cardSubtitle} from './lib/peek.js';
 import {McpServer} from './lib/mcp.js';
 import {Previewer} from './lib/previewer.js';
 
@@ -54,6 +55,18 @@ try {
     Poppler = imports.gi.Poppler;
 } catch (e) {
     Poppler = null;
+}
+
+/// WebKit is optional exactly like Poppler: the html peek degrades to
+/// showing the SOURCE as text on a host without webkitgtk-6.0, rather
+/// than the app failing to start. Same synchronous accessor, same
+/// reason (the top-level-await footgun documented above).
+let WebKit = null;
+try {
+    imports.gi.versions.WebKit = '6.0';
+    WebKit = imports.gi.WebKit;
+} catch (e) {
+    WebKit = null;
 }
 
 // Launched by dbus-daemon to answer Nautilus's startup ping (see
@@ -87,6 +100,7 @@ const state = {
 
 let picture = null, drawing = null, stack = null, pageLabel = null, zoomLabel = null, titleLabel = null;
 let refreshEditUi = null, rebuildThumbs = null;
+let textView = null, webView = null, card = null;
 
 /// The poppler page at the CURRENT DISPLAY position — after reordering,
 /// display position i shows original page pageOrder[i].
@@ -129,7 +143,12 @@ function effectiveScale() {
 
 function render() {
     const scale = effectiveScale();
-    if (zoomLabel) zoomLabel.label = `${Math.round(scale * 100)}%`;
+    if (zoomLabel) {
+        zoomLabel.label = `${Math.round(scale * 100)}%`;
+        // A zoom percentage over a text peek or a file card is a
+        // number about nothing.
+        zoomLabel.visible = state.kind === 'image' || state.kind === 'document';
+    }
     if (pageLabel) {
         pageLabel.label = state.kind === 'document'
             ? `${state.pageIndex + 1} / ${state.pageOrder.length}` : '';
@@ -155,6 +174,18 @@ function render() {
     } else if (state.kind === 'document' && state.doc) {
         drawing.queue_draw();
         stack.set_visible_child_name('document');
+    } else if (state.kind === 'text') {
+        stack.set_visible_child_name('text');
+    } else if (state.kind === 'html' && webView) {
+        // WebKit scrolls internally; give it the viewport, not its
+        // (zero) natural size, or it collapses inside the scroller.
+        const vp = viewportSize();
+        webView.set_size_request(vp.width, vp.height);
+        stack.set_visible_child_name('html');
+    } else if (state.kind === 'card') {
+        const vp = viewportSize();
+        card.set_size_request(vp.width, vp.height);
+        stack.set_visible_child_name('card');
     }
 }
 
@@ -201,12 +232,53 @@ function drawPage(area, cr, _w, _h) {
 }
 
 function loadFile(path) {
-    const kind = kindOf(path);
-    if (!kind) {
-        toast(`Preview does not open ${path.split('/').pop()}`);
-        return false;
-    }
+    // Null means "unrecognised", and unrecognised gets the generic
+    // card — Nautilus sends Space for ANY selected file, and a peek
+    // tool that shows nothing has told the user their key is broken.
+    let kind = kindOf(path) ?? 'card';
+    state.textContent = null;
     try {
+        if (kind === 'text' || kind === 'html') {
+            const [okRead, bytes] = GLib.file_get_contents(path);
+            if (!okRead) throw new Error('unreadable');
+            if (looksBinary(bytes)) {
+                // A .log that is actually gzip lands on the card, not
+                // in a text view full of mojibake.
+                kind = 'card';
+            } else if (kind === 'html' && WebKit) {
+                state.htmlUri = Gio.File.new_for_path(path).get_uri();
+                webView.load_uri(state.htmlUri);
+                state.textContent = new TextDecoder().decode(bytes);
+            } else {
+                // html without WebKit shows its source — degraded and
+                // labelled, never silent.
+                if (kind === 'html') toast('WebKit is not installed — showing the HTML source');
+                kind = 'text';
+                const {text, truncated} = truncateText(new TextDecoder().decode(bytes));
+                state.textContent = text;
+                textView.buffer.set_text(text, -1);
+                if (truncated) toast('Large file — showing the first part only');
+            }
+        }
+        if (kind === 'card') {
+            const file = Gio.File.new_for_path(path);
+            const info = file.query_info(
+                'standard::display-name,standard::size,standard::content-type,standard::icon',
+                Gio.FileQueryInfoFlags.NONE, null);
+            const ctype = info.get_content_type();
+            card.set_title(info.get_display_name());
+            card.set_description(cardSubtitle(
+                ctype ? Gio.content_type_get_description(ctype) : '',
+                info.get_size()));
+            const gicon = info.get_icon();
+            const display = Gdk.Display.get_default();
+            if (gicon && display) {
+                card.paintable = Gtk.IconTheme.get_for_display(display)
+                    .lookup_by_gicon(gicon, 128, 1, Gtk.TextDirection.NONE, 0);
+            } else {
+                card.icon_name = 'text-x-generic-symbolic';
+            }
+        }
         if (kind === 'image') {
             // An SVG has no natural pixel size — rasterizing at its
             // declared viewBox showed a 16×16 icon as a dot. 2048 keeps
@@ -218,7 +290,7 @@ function loadFile(path) {
                 : GdkPixbuf.Pixbuf.new_from_file(path);
             state.doc = null;
             state.pageCount = 1;
-        } else {
+        } else if (kind === 'document') {
             if (!Poppler) {
                 toast('PDF support needs poppler-glib, which is not installed');
                 return false;
@@ -226,6 +298,10 @@ function loadFile(path) {
             state.doc = Poppler.Document.new_from_gfile(Gio.File.new_for_path(path), null, null);
             state.pixbuf = null;
             state.pageCount = state.doc.get_n_pages();
+        } else {
+            state.doc = null;
+            state.pixbuf = null;
+            state.pageCount = 1;
         }
     } catch (e) {
         // Name the file AND the reason. "Could not open" alone sends
@@ -597,6 +673,38 @@ function buildWindow() {
     stack.add_named(picture, 'image');
     stack.add_named(drawing, 'document');
 
+    // --- peek surfaces: text, html, and the generic card ------------
+    textView = new Gtk.TextView({
+        editable: false, monospace: true, cursor_visible: false,
+        wrap_mode: Gtk.WrapMode.WORD_CHAR,
+        left_margin: 16, right_margin: 16, top_margin: 12, bottom_margin: 12,
+    });
+    stack.add_named(textView, 'text');
+    if (WebKit) {
+        webView = new WebKit.WebView();
+        // A peek, not a browser: no scripts, and the only navigation
+        // ever allowed is the load we asked for — a link click in the
+        // preview does nothing rather than quietly fetching the web.
+        webView.get_settings().set_enable_javascript(false);
+        webView.connect('decide-policy', (_v, decision, decisionType) => {
+            if (decisionType === WebKit.PolicyDecisionType.NAVIGATION_ACTION ||
+                decisionType === WebKit.PolicyDecisionType.NEW_WINDOW_ACTION) {
+                const uri = decision.get_navigation_action().get_request().get_uri();
+                if (decisionType === WebKit.PolicyDecisionType.NAVIGATION_ACTION &&
+                    uri === state.htmlUri) {
+                    decision.use();
+                } else {
+                    decision.ignore();
+                }
+                return true;
+            }
+            return false;
+        });
+        stack.add_named(webView, 'html');
+    }
+    card = new Adw.StatusPage();
+    stack.add_named(card, 'card');
+
     // --- pages sidebar: thumbnails, reorder, remove -----------------
     const thumbList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
     thumbList.connect('row-activated', (_l, row) => {
@@ -741,6 +849,20 @@ const handlers = {
                 // it has read (the lesson from Surfer's extract.js).
                 truncated: text.length > cap,
             };
+        }
+        if (state.kind === 'text' || state.kind === 'html') {
+            const cap = 30000;
+            const text = state.textContent ?? '';
+            return {
+                ...base,
+                text: text.slice(0, cap),
+                truncated: text.length > cap,
+                note: state.kind === 'html' ? 'html source, not rendered text' : undefined,
+            };
+        }
+        if (state.kind === 'card') {
+            return {...base, text: null,
+                note: 'unrecognised type — name and location only'};
         }
         const {width, height} = contentSize();
         // No OCR and no vision model here. Saying so beats returning an

@@ -26,10 +26,28 @@ const IMAGE_EXTENSIONS = [
 
 const DOCUMENT_EXTENSIONS = ['pdf'];
 
+/// Text-ish files Space can peek at (slice: text/html/card). Extension
+/// lists, same reasoning as images; the binary sniff in lib/peek.js is
+/// the second gate for files that lie.
+const TEXT_EXTENSIONS = [
+    'txt', 'md', 'markdown', 'rst', 'log', 'csv', 'tsv',
+    'json', 'jsonl', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'desktop',
+    'sh', 'bash', 'zsh', 'py', 'js', 'mjs', 'ts', 'rs', 'c', 'h', 'cpp',
+    'hpp', 'css', 'go', 'rb', 'lua', 'sql', 'service', 'patch', 'diff',
+];
+
+const HTML_EXTENSIONS = ['html', 'htm', 'xhtml'];
+
 /// MIME types for the .desktop file. Generated from the same lists so
 /// the two cannot drift — a viewer registered for a type it cannot open
 /// is worse than not registering, because the file manager stops
 /// offering anything else.
+///
+/// DELIBERATELY images + pdf only, NOT text or html: the previewer
+/// (Space) peeks at more kinds than the .desktop claims. Registering
+/// text/plain or text/html would put Preview in every Open With list
+/// and risk making a peek tool the double-click default over the
+/// editor and the browser.
 /// De-duplicated, because several extensions share one type (.jpg/.jpeg/
 /// .jpe/.jfif are all image/jpeg). A .desktop that lists image/jpeg four
 /// times is not fatal, but it is the kind of sloppiness that makes a
@@ -43,12 +61,13 @@ export const MIME_TYPES = [...new Set([
     'application/pdf',
 ])];
 
-/// What kind of thing a path is, by extension: 'image', 'document', or
-/// null when Preview should not claim it.
+/// What kind of thing a path is, by extension: 'image', 'document',
+/// 'text', 'html', or null when Preview does not recognise it.
 ///
-/// Null rather than a guess. A viewer that opens an unknown file and
-/// shows a grey rectangle has told the user their file is corrupt, when
-/// what happened is that we did not recognise it.
+/// Null rather than a guess — but null no longer means "show nothing":
+/// the previewer path renders a generic file card for it, because
+/// Nautilus sends Space for ANY selected file and silence reads as
+/// broken (the lesson this app keeps re-learning).
 export function kindOf(path) {
     if (typeof path !== 'string')
         return null;
@@ -64,6 +83,10 @@ export function kindOf(path) {
         return 'image';
     if (DOCUMENT_EXTENSIONS.includes(ext))
         return 'document';
+    if (TEXT_EXTENSIONS.includes(ext))
+        return 'text';
+    if (HTML_EXTENSIONS.includes(ext))
+        return 'html';
     return null;
 }
 

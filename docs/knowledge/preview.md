@@ -110,6 +110,22 @@ tools (top-down page points, 1-based display page). There is
 deliberately no save tool — annotations land in the window and the
 human decides with Ctrl+S whether they reach disk.
 
+### Text, HTML, and the card (the peek slice)
+
+Space peeks at more than it claims: **text** files (a monospace view;
+the extension list in `lib/formats.js`, a binary sniff in `lib/peek.js`
+so a `.log` that is actually gzip lands on the card instead of a screen
+of mojibake, and a 1 MB display cap that says so out loud), **HTML**
+(WebKit, scripts OFF and every navigation except the initial load
+refused — a peek, not a browser; without webkitgtk it degrades to
+showing the source, labelled), and a **generic card** (icon, name,
+type, size) for everything else — because Nautilus sends Space for ANY
+selected file and silence reads as broken.
+
+The `.desktop` MIME list deliberately stays images + pdf: registering
+text/html would put a peek tool in every Open With list. The previewer
+accepts more kinds than the launcher claims, on purpose.
+
 ### Keys
 
 `+` `-` zoom · `0` fit (fills, even for small content) · `1` actual

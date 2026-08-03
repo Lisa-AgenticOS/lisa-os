@@ -1,0 +1,31 @@
+import {looksBinary, truncateText, humanSize, cardSubtitle} from '../lib/peek.js';
+
+let passed = 0, failed = 0;
+function ok(cond, name, got) {
+    if (cond) { passed++; console.log(`  ok    ${name}`); }
+    else { failed++; console.log(`  FAIL  ${name}${got !== undefined ? ` (got ${JSON.stringify(got)})` : ''}`); }
+}
+
+ok(!looksBinary(new TextEncoder().encode('plain text\nwith lines')), 'plain text is not binary');
+ok(looksBinary(new Uint8Array([0x1f, 0x8b, 0x00, 0x41])), 'a NUL in the head means binary');
+ok(!looksBinary(new Uint8Array(0)), 'an empty file is not binary');
+const tail = new Uint8Array(9000).fill(65); tail[8500] = 0;
+ok(!looksBinary(tail), 'a NUL past the probe window does not flip the verdict — the head decides');
+
+const short = truncateText('abc');
+ok(short.text === 'abc' && !short.truncated, 'short text passes through');
+const long = truncateText('x'.repeat(50), 10);
+ok(long.text.length === 10 && long.truncated, 'long text is cut AND says so');
+ok(truncateText(null).text === '' && !truncateText(null).truncated, 'garbage in, empty out');
+
+ok(humanSize(512) === '512 B', 'bytes stay integral', humanSize(512));
+ok(humanSize(2048) === '2.0 KiB', 'KiB with one decimal', humanSize(2048));
+ok(humanSize(5 * 1024 * 1024) === '5.0 MiB', 'MiB', humanSize(5 * 1024 * 1024));
+ok(humanSize(-1) === '' && humanSize(NaN) === '', 'invalid sizes render as nothing');
+
+ok(cardSubtitle('PNG image', 2048) === 'PNG image · 2.0 KiB', 'type and size join with a dot');
+ok(cardSubtitle('', 2048) === '2.0 KiB', 'missing type drops cleanly');
+ok(cardSubtitle('Folder', NaN) === 'Folder', 'missing size drops cleanly');
+
+console.log(`preview/peek: ${passed} passed, ${failed} failed`);
+if (failed) process.exit(1);

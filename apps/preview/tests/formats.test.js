@@ -13,7 +13,9 @@ console.log('preview/formats');
 eq(kindOf('/home/lisa/cat.webp'), 'image', 'webp is an image');
 eq(kindOf('/home/lisa/scan.PDF'), 'document', 'extension match is case-insensitive');
 eq(kindOf('/home/lisa/photo.HEIC'), 'image', 'heic is an image');
-eq(kindOf('/home/lisa/notes.txt'), null, 'an unclaimed type is null, not a guess');
+eq(kindOf('/home/lisa/notes.txt'), 'text', 'txt is text since the peek slice');
+eq(kindOf('/home/lisa/index.html'), 'html', 'html renders through WebKit');
+eq(kindOf('/home/lisa/archive.zip'), null, 'an unclaimed type is null, not a guess — the card handles it');
 eq(kindOf('/home/lisa/archive.tar.gz'), null, 'only the last extension counts');
 
 // A grey rectangle where a file should be is a bug report about the
@@ -26,7 +28,7 @@ eq(kindOf('/home/lisa/webp'), null, 'a bare name with no dot is not an image');
 // Folder browsing: sorted, numeric-aware, and the index must point at
 // the file that was actually opened.
 const {files, index} = siblings('/p/img10.png',
-    ['img2.png', 'img10.png', 'notes.txt', 'img1.png']);
+    ['img2.png', 'img10.png', 'archive.zip', 'img1.png']);
 eq(files, ['/p/img1.png', '/p/img2.png', '/p/img10.png'], 'siblings drop unopenable files and sort numerically');
 eq(index, 2, 'the opened file keeps its place in the sorted list');
 
