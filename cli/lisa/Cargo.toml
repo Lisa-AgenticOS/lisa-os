@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+# Attachment payloads for multimodal asks (`lisa ask --attach`): the
+# same version remoted pins, so the workspace resolves one copy.
+base64 = "0.22.1"
 blake3 = "1.8.5"
 # Walking the knowledge pack for sync-knowledge (#175); same version
 # as contextd so the workspace resolves one copy.

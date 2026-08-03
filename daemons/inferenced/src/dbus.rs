@@ -129,7 +129,7 @@ impl Session {
         let stream = self.engine.generate(GenerateRequest {
             messages: vec![ChatMessage {
                 role: "user".into(),
-                content: prompt,
+                content: prompt.into(),
             }],
             grammar,
             max_tokens,

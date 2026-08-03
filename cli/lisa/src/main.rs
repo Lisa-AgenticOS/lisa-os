@@ -55,6 +55,11 @@ enum Command {
         /// Run at background priority (preempted by interactive requests).
         #[arg(long)]
         background: bool,
+        /// Attach an image or audio file (repeatable). Needs a model
+        /// with the modality — a text-only engine refuses rather than
+        /// answering about something it never saw.
+        #[arg(long = "attach", value_name = "FILE")]
+        attach: Vec<PathBuf>,
     },
     /// Explain the last failed command (PLAN §5.8 Terminal):
     /// `lisa explain --exit 101 cargo build`, or pipe the output —
@@ -601,7 +606,16 @@ fn run() -> anyhow::Result<()> {
             no_stream,
             json_schema,
             background,
-        } => ask(prompt, &url, model, no_stream, json_schema, background),
+            attach,
+        } => ask(
+            prompt,
+            &url,
+            model,
+            no_stream,
+            json_schema,
+            background,
+            attach,
+        ),
         Command::Explain {
             command,
             exit,
@@ -731,6 +745,53 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
+/// One attachment as an OpenAI content part: a data: URI, so the file
+/// never has to be reachable by the provider and no temporary upload
+/// exists to leak. The kind is decided by EXTENSION and the mime is
+/// spelled explicitly — guessing "image/*" for a .wav would produce a
+/// provider-side error that reads like our bug.
+fn attachment_part(path: &std::path::Path) -> anyhow::Result<serde_json::Value> {
+    use base64::Engine as _;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let bytes =
+        std::fs::read(path).with_context(|| format!("reading attachment {}", path.display()))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let image_mime = match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    };
+    if let Some(mime) = image_mime {
+        return Ok(serde_json::json!({
+            "type": "image_url",
+            "image_url": {"url": format!("data:{mime};base64,{b64}")},
+        }));
+    }
+    // Audio rides the OpenAI input_audio part, which takes a bare
+    // base64 payload plus a format name (not a data: URI).
+    let audio_format = match ext.as_str() {
+        "wav" => Some("wav"),
+        "mp3" => Some("mp3"),
+        _ => None,
+    };
+    if let Some(format) = audio_format {
+        return Ok(serde_json::json!({
+            "type": "input_audio",
+            "input_audio": {"data": b64, "format": format},
+        }));
+    }
+    bail!(
+        "cannot attach {} — supported: png, jpg, jpeg, webp, gif, wav, mp3",
+        path.display()
+    )
+}
+
 fn ask(
     prompt: Vec<String>,
     url: &str,
@@ -738,6 +799,7 @@ fn ask(
     no_stream: bool,
     json_schema: Option<PathBuf>,
     background: bool,
+    attach: Vec<PathBuf>,
 ) -> anyhow::Result<()> {
     let mut prompt = prompt.join(" ");
     // Piped stdin becomes context, shell-pipeline style (PLAN §5.4).
@@ -752,9 +814,21 @@ fn ask(
         bail!("empty prompt — usage: lisa ask \"your question\"");
     }
 
+    // With attachments the message carries CONTENT PARTS, the shape
+    // multimodal models take images and audio in; without them it stays
+    // a plain string, which every engine understands.
+    let content = if attach.is_empty() {
+        serde_json::Value::String(prompt)
+    } else {
+        let mut parts = vec![serde_json::json!({"type": "text", "text": prompt})];
+        for path in &attach {
+            parts.push(attachment_part(path)?);
+        }
+        serde_json::Value::Array(parts)
+    };
     let mut body = serde_json::json!({
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content}],
         "stream": !no_stream,
     });
     if let Some(path) = json_schema {

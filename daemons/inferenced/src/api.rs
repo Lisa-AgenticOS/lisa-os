@@ -350,7 +350,7 @@ async fn chat_completions(
     let prompt_all = gen_req
         .messages
         .iter()
-        .map(|m| m.content.as_str())
+        .map(|m| m.text())
         .collect::<Vec<_>>()
         .join("\n");
     let started_at = std::time::Instant::now();
@@ -521,7 +521,7 @@ async fn chat_completions(
             index: 0,
             message: ChatMessage {
                 role: "assistant".into(),
-                content,
+                content: content.into(),
             },
             finish_reason: "stop",
         }],

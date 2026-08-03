@@ -137,6 +137,19 @@ impl Inner {
     /// One streaming completion request against the child; yields token
     /// deltas parsed from its OpenAI-compat SSE stream.
     async fn open_stream(&self, req: &GenerateRequest) -> Result<reqwest::Response, EngineError> {
+        // REFUSE what this engine cannot see, rather than flattening it
+        // away. A local text model handed an image would otherwise get
+        // "[image_url]" in its prompt and answer confidently about a
+        // picture nobody looked at — the worst available outcome, and
+        // indistinguishable from working. Multimodal input belongs to a
+        // model that has the modality (PLAN §5.11 remote lane).
+        if req.messages.iter().any(|m| m.content.has_non_text()) {
+            return Err(EngineError::Unavailable(
+                "this model reads text only — pick a multimodal model \
+                 (e.g. a remote: provider) for images or audio"
+                    .into(),
+            ));
+        }
         // Cap tokens even when the client doesn't: a runaway generation
         // (e.g. an unbounded grammar rule) must not hold the slot forever.
         let mut body = serde_json::json!({

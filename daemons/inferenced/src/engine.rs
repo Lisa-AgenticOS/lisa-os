@@ -70,7 +70,7 @@ impl Engine for StubEngine {
             .iter()
             .rev()
             .find(|m| m.role == "user")
-            .map(|m| m.content.clone())
+            .map(|m| m.text())
             .unwrap_or_default();
         let reply = format!(
             "[lisa-inferenced stub] You said: \u{201c}{last_user}\u{201d}. \

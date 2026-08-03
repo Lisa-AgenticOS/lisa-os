@@ -6,6 +6,14 @@ Everything under lisa <verb>: ask (pipes are context), models, and — with the 
 
 **M0 state:** ask streams from the OpenAI-compat endpoint (stdin piping works: git log | lisa ask "changelog"); models list/verify/gc/rm/pull against the local store (rm prompts before removing; data reclaimed only by explicit gc). M5 verbs fail loudly with their milestone pointer.
 
+**Attachments (#209).** `lisa ask --attach shot.png "what is this?"`
+sends the file as an OpenAI content part (a `data:` URI, so nothing is
+uploaded anywhere we do not control and no temporary URL outlives the
+request). PNG/JPEG/WebP/GIF ride `image_url`; WAV/MP3 ride
+`input_audio`. It needs a model with the modality — against a
+text-only local model the request is refused with that reason, never
+answered blind. Repeat `--attach` for several files.
+
 **Forge verbs (PLAN §5.12.1, ADR-0027):** `lisa forge --setup` installs the
 pinned Flutter SDK to `/var/lib/lisa/flutter` (sha256-pinned tarball on
 x86_64, commit-pinned checkout on aarch64); `lisa forge --flutter "…"`
