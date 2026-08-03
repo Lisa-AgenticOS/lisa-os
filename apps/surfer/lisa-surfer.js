@@ -24,6 +24,7 @@ import WebKit from 'gi://WebKit?version=6.0';
 import {resolveInput} from './lib/url.js';
 import {EXTRACT_JS, pageResult} from './lib/extract.js';
 import {McpServer} from './lib/mcp.js';
+import {navigationTarget, clickScript, fillScript} from './lib/actions.js';
 
 const HOME = 'https://duckduckgo.com';
 
@@ -227,6 +228,44 @@ function readCurrentPage() {
     });
 }
 
+/// Write-tier agent actions (#166). agentd has already escalated these
+/// through the consent surface before they reach this process — the
+/// tier lives in the manifest and the guard in agentd, never here
+/// (ADR-0029: a check reachable from inside is not a guardrail). What
+/// lives here is only the doing.
+function agentNavigate({url}) {
+    const view = currentView();
+    if (!view) return Promise.reject(new Error('no open tab'));
+    // navigationTarget throws on javascript:/data:/etc — resolveInput's
+    // refusal list, reused not re-implemented (#166).
+    const target = navigationTarget(url);
+    view.load_uri(target);
+    return Promise.resolve({navigating: target});
+}
+
+function runPageScript(script) {
+    return new Promise((resolve, reject) => {
+        const view = currentView();
+        if (!view) { reject(new Error('no open tab')); return; }
+        view.evaluate_javascript(script, -1, null, null, null, (v, res) => {
+            try {
+                const value = v.evaluate_javascript_finish(res);
+                resolve({...JSON.parse(value.to_string()), url: v.get_uri()});
+            } catch (e) {
+                reject(e);
+            }
+        });
+    });
+}
+
+function agentClick({selector}) {
+    return runPageScript(clickScript(selector));
+}
+
+function agentFill({selector, value}) {
+    return runPageScript(fillScript(selector, value));
+}
+
 /// The agent-facing selection read.
 function readSelection() {
     return new Promise((resolve, reject) => {
@@ -337,7 +376,10 @@ app.connect('activate', () => {
     newTab(ARGV[0] && resolveInput(ARGV[0]).kind === 'load' ? resolveInput(ARGV[0]).url : HOME);
     // The Agent Bus socket lives exactly as long as a window does
     // (mcp-bus defers socket activation, so presence == usability).
-    mcp = new McpServer({readCurrentPage, readSelection, screenshotCurrent});
+    mcp = new McpServer({
+        readCurrentPage, readSelection, screenshotCurrent,
+        agentNavigate, agentClick, agentFill,
+    });
     mcp.start();
 });
 app.connect('shutdown', () => mcp?.stop());

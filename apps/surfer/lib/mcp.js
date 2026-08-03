@@ -20,6 +20,14 @@ export class McpServer {
         this._tools = {
             read_page: async () => await handlers.readCurrentPage(),
             get_selection: async () => await handlers.readSelection(),
+            // Write tier (#166): the manifest declares these `write`,
+            // agentd escalates them through the consent surface, and
+            // page provenance being `web` (untrusted) makes any call
+            // that follows a read_page escalate by construction. The
+            // socket carries only what survived that gate.
+            navigate: async (args) => await handlers.agentNavigate(args ?? {}),
+            click: async (args) => await handlers.agentClick(args ?? {}),
+            fill: async (args) => await handlers.agentFill(args ?? {}),
             screenshot: async () => {
                 const shot = await handlers.screenshotCurrent();
                 // PNG bytes → a file the caller can open; raw bytes do not

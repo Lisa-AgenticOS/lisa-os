@@ -20,6 +20,43 @@
       "tier": "read",
       "description": "Screenshot the visible part of the current Surfer tab. Returns the path of a PNG file.",
       "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "navigate",
+      "tier": "write",
+      "description": "Open a URL in the current Surfer tab. Refuses javascript:, data:, vbscript: and blob: addresses. Navigation changes what the user sees and is confirmed before it happens.",
+      "input_schema": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "description": "The address to open, e.g. https://example.org/page", "maxLength": 2000 }
+        }
+      }
+    },
+    {
+      "name": "click",
+      "tier": "write",
+      "description": "Click the first element matching a CSS selector on the current page. Acts on an untrusted page in the user's logged-in session and is confirmed before it happens.",
+      "input_schema": {
+        "type": "object",
+        "required": ["selector"],
+        "properties": {
+          "selector": { "type": "string", "description": "CSS selector, e.g. button[type=submit]", "maxLength": 500 }
+        }
+      }
+    },
+    {
+      "name": "fill",
+      "tier": "write",
+      "description": "Type a value into the form field matching a CSS selector on the current page. Acts on an untrusted page in the user's logged-in session and is confirmed before it happens.",
+      "input_schema": {
+        "type": "object",
+        "required": ["selector", "value"],
+        "properties": {
+          "selector": { "type": "string", "description": "CSS selector of the field, e.g. input[name=q]", "maxLength": 500 },
+          "value": { "type": "string", "description": "The text to enter.", "maxLength": 4000 }
+        }
+      }
     }
   ]
 }

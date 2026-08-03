@@ -39,8 +39,16 @@ served over the MCP socket while a window is open, declared in
   activation, deliberately.
 - **No Widevine** (no Netflix/Spotify), **no WebExtensions** (no uBlock).
   Accepted in ADR-0037 §3; Zen stays one `lisa apps` command away.
-- **Write tools (`navigate`, `fill`) are not here yet** — Phase 6,
-  gated on the consent surface (#145) being packaged.
+- **Write tools (`navigate`, `click`, `fill`) exist** (#166) and are
+  declared `write` tier in the manifest: agentd escalates them through
+  the consent surface, and because page content is `web` provenance
+  (untrusted), any write following a `read_page` escalates by
+  construction. `navigate` goes through `lib/url.js`'s one refusal
+  list (no `javascript:`/`data:`/`vbscript:`/`blob:`); `lib/actions.js`
+  embeds selectors and values as JSON-escaped data, never as script.
+  **Not yet verified on the device**: the end-to-end acceptance (a
+  real form filled with the confirmation appearing in the consent
+  surface and the calls in the Ledger) needs the seated session.
 - **MVP**: no bookmarks, downloads, history, passwords, session restore.
 - `tests/` cover the pure modules; the window itself is verified by
   eyes on hardware.
