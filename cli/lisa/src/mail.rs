@@ -779,19 +779,52 @@ pub fn index() -> Result<()> {
 
 /// The stable identity of a Maildir message, from its path.
 ///
-/// NOT the raw filename: Maildir encodes flags in a `:2,…` suffix that
-/// CHANGES when a message is read or flagged, and mbsync appends
-/// `,U=<uid>` info. An id that moves with the flags would re-index
-/// every message the first time somebody opens it — so the id is the
-/// path relative to the Maildir root with the flags suffix stripped,
-/// under a `mail:` prefix no filesystem walk can collide with (#104's
-/// concern, answered by construction: `prune_missing` and the file
-/// walker both work on real paths, and this is not one).
+/// Three things move under a message that must not move its identity
+/// (#183, both halves found in review):
+/// - the flags suffix (`:2,S` on read, `,U=` from mbsync) — stripped,
+///   from the FILENAME only: the first version split the whole
+///   relative path on `:`, so a folder with a colon in its name
+///   collapsed every message in it to one id, each silently replacing
+///   the last;
+/// - the `new/` → `cur/` promotion the Mail app performs on first
+///   action — that directory component is dropped, or every touched
+///   message re-indexed as a duplicate of itself;
+/// - nothing else: the folder path stays, because the same message id
+///   CAN legitimately exist in two folders (a copy is two documents).
+///
+/// The `mail:` prefix keeps this namespace off the filesystem (#104 by
+/// construction).
 pub fn message_source_id(maildir: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(maildir).ok()?;
-    let rel = rel.to_string_lossy();
-    let stem = rel.split(':').next().unwrap_or(&rel);
-    Some(format!("mail:{stem}"))
+    let file = rel.file_name()?.to_string_lossy();
+    let stem = file.split(':').next().unwrap_or(&file).to_string();
+    let folder: Vec<String> = rel
+        .parent()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter(|c| c != "cur" && c != "new")
+        .collect();
+    if folder.is_empty() {
+        return Some(format!("mail:{stem}"));
+    }
+    Some(format!("mail:{}/{stem}", folder.join("/")))
+}
+
+/// Folders that must never enter retrieval (#185): Spam is a
+/// mail-delivered injection channel (rule 6 — untrusted provenance is
+/// exactly the point, but knowingly indexing a corpus that exists to
+/// be hostile is volunteering), and Trash is what the user already
+/// decided to forget. The SYNC still fetches both — the Mail app
+/// displays them; retrieval declines them.
+const UNINDEXED_FOLDERS: &[&str] = &["Spam", "Junk", "Trash"];
+
+fn folder_is_indexed(rel_dir: &Path) -> bool {
+    !rel_dir.components().any(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        UNINDEXED_FOLDERS
+            .iter()
+            .any(|f| name.eq_ignore_ascii_case(f))
+    })
 }
 
 /// The retrieval text of one message: the headers a person searches by,
@@ -846,26 +879,53 @@ fn best_body(mail: &mailparse::ParsedMail) -> Option<String> {
 }
 
 fn strip_tags(html: &str) -> String {
+    // Review (#184) caught the first version twice: it kept the TEXT
+    // of <style>/<script> elements — CSS selectors and JS landing in
+    // FTS and the embedding queue as if they were words the sender
+    // wrote, with the 64 KiB body cap spent on head CSS first — and it
+    // treated every bare `<` as a tag opener, so "if (x < 2) buy now"
+    // lost everything to the next `>`. A `<` opens a tag only when
+    // what follows could be one.
+    let lower = html.to_lowercase();
+    let bytes = html.as_bytes();
     let mut out = String::with_capacity(html.len() / 2);
-    let mut in_tag = false;
     let mut last_space = true;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            c if !in_tag => {
-                if c.is_whitespace() {
-                    if !last_space {
-                        out.push(' ');
-                        last_space = true;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let next = bytes.get(i + 1).copied().unwrap_or(b' ');
+            if next.is_ascii_alphabetic() || next == b'/' || next == b'!' || next == b'?' {
+                // A real tag. If it opens style/script, skip to the
+                // matching close tag — their content is not prose.
+                for elt in ["style", "script"] {
+                    if lower[i + 1..].starts_with(elt) {
+                        if let Some(end) = lower[i..].find(&format!("</{elt}")) {
+                            i += end;
+                        } else {
+                            return out; // unterminated: nothing after is prose
+                        }
+                        break;
                     }
-                } else {
-                    out.push(c);
-                    last_space = false;
                 }
+                match bytes[i..].iter().position(|&b| b == b'>') {
+                    Some(close) => i += close + 1,
+                    None => return out,
+                }
+                continue;
             }
-            _ => {}
+            // A bare `<`: literal text (math, code snippets in mail).
         }
+        let c = html[i..].chars().next().unwrap();
+        if c.is_whitespace() {
+            if !last_space {
+                out.push(' ');
+                last_space = true;
+            }
+        } else {
+            out.push(c);
+            last_space = false;
+        }
+        i += c.len_utf8();
     }
     out
 }
@@ -874,6 +934,10 @@ fn index_maildir(maildir: &Path) -> Result<()> {
     use lisa_contextd::acl::AddOutcome;
     let store = lisa_contextd::ContextStore::open(lisa_contextd::ContextStore::default_path())?;
     let (mut added, mut unchanged, mut foreign, mut unparsed) = (0usize, 0, 0, 0);
+    // Every id seen this walk — the mirror set. What is indexed but no
+    // longer on disk (expunged, or previously-indexed Spam/Trash from
+    // before #185) leaves retrieval at the end of the walk.
+    let mut live = std::collections::HashSet::new();
     for entry in walkdir::WalkDir::new(maildir)
         .follow_links(false)
         .into_iter()
@@ -890,9 +954,16 @@ fn index_maildir(maildir: &Path) -> Result<()> {
         if !matches!(dir, Some("cur") | Some("new")) {
             continue;
         }
+        // Spam/Junk/Trash sync for DISPLAY, never for retrieval (#185).
+        if let Ok(rel) = path.strip_prefix(maildir)
+            && !folder_is_indexed(rel.parent().unwrap_or(Path::new("")))
+        {
+            continue;
+        }
         let Some(source) = message_source_id(maildir, path) else {
             continue;
         };
+        live.insert(source.clone());
         let Ok(raw) = std::fs::read(path) else {
             continue;
         };
@@ -906,8 +977,10 @@ fn index_maildir(maildir: &Path) -> Result<()> {
             AddOutcome::ForeignSkipped => foreign += 1,
         }
     }
+    let pruned = store.prune_not_in("mail", &live)?;
     println!(
-        "mail index: {added} added, {unchanged} unchanged, {foreign} foreign-skipped, {unparsed} unparsable"
+        "mail index: {added} added, {unchanged} unchanged, {foreign} foreign-skipped, \
+         {unparsed} unparsable, {pruned} pruned"
     );
 
     // Same embedding rule as sync-knowledge (#177's lesson included:
@@ -936,18 +1009,60 @@ fn index_maildir(maildir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// #170: reading a message renames its file (`:2,` flags, mbsync's
-    /// `,U=` uid info); the retrieval identity must not move with it,
-    /// or every opened message re-indexes as a duplicate.
+    /// #170/#183: THREE renames move under a message — flag changes,
+    /// mbsync uid info, and the Mail app's new/→cur/ promotion on
+    /// first action. None may move the identity, and (the collision
+    /// half of #183) a colon in a DIRECTORY name must not collapse a
+    /// folder into one id.
     #[test]
     fn a_message_keeps_its_identity_when_flags_change() {
         let root = Path::new("/home/x/Mail");
         let unread = root.join("acct/INBOX/new/1755.M1.host,U=42");
-        let read = root.join("acct/INBOX/new/1755.M1.host,U=42:2,S");
+        let read = root.join("acct/INBOX/cur/1755.M1.host,U=42:2,S");
         let a = message_source_id(root, &unread).unwrap();
         let b = message_source_id(root, &read).unwrap();
-        assert_eq!(a, b, "flag rename must not change the id");
+        assert_eq!(a, b, "flag rename AND new/→cur/ must not change the id");
         assert!(a.starts_with("mail:"), "namespaced off the filesystem: {a}");
+        assert!(a.contains("INBOX"), "the folder stays in the id: {a}");
+
+        let m1 = message_source_id(root, &root.join("a/Re:project/cur/111.host")).unwrap();
+        let m2 = message_source_id(root, &root.join("a/Re:project/cur/222.host")).unwrap();
+        assert_ne!(m1, m2, "a colon in a directory collapsed a folder: {m1}");
+    }
+
+    /// #185: Spam/Junk/Trash sync for display and never for retrieval.
+    #[test]
+    fn hostile_and_forgotten_folders_are_not_indexed() {
+        assert!(folder_is_indexed(Path::new("acct/INBOX/cur")));
+        assert!(folder_is_indexed(Path::new("acct/Sent")));
+        for f in [
+            "acct/Spam/cur",
+            "acct/Trash/new",
+            "acct/Junk",
+            "acct/spam/cur",
+        ] {
+            assert!(!folder_is_indexed(Path::new(f)), "{f} must be excluded");
+        }
+    }
+
+    /// #184, both halves from review: style/script CONTENT is not
+    /// prose, and a bare `<` in real text is not a tag opener.
+    #[test]
+    fn strip_tags_drops_css_and_keeps_bare_angle_text() {
+        let s = strip_tags(
+            "<style>.a{color:red}</style><script>var x=1;</script><p>renew by Friday</p>",
+        );
+        assert!(!s.contains("color"), "CSS leaked into retrieval text: {s}");
+        assert!(!s.contains("var x"), "JS leaked into retrieval text: {s}");
+        assert!(s.contains("renew by Friday"), "prose lost: {s}");
+
+        let s = strip_tags("if (x < 2) buy now > later, <b>ok</b>");
+        assert!(
+            s.contains("x < 2) buy now"),
+            "a bare < swallowed the text after it: {s}"
+        );
+        assert!(s.contains("ok"));
+        assert!(!s.contains("<b>"));
     }
 
     #[test]

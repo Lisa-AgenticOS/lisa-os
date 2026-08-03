@@ -357,9 +357,17 @@ function buildWindow() {
 
     const rowFor = (page) => {
         const label = new Gtk.Label({xalign: 0, hexpand: true, ellipsize: 3 /* END */});
+        // The VIEW's title, not the page's (#189): attachTab seeds the
+        // page title with 'New Tab', so rowLabel's title argument was
+        // never empty and its host fallback was unreachable — untitled
+        // pages read "New Tab" forever with a live URI in hand. The
+        // view is the source; uri changes resync too, so a titled →
+        // untitled navigation updates instead of going stale.
+        const view = page.get_child();
         const sync = () =>
-            label.set_text(rowLabel(page.get_title(), page.get_child()?.get_uri?.() ?? ''));
-        page.connect('notify::title', sync);
+            label.set_text(rowLabel(view?.title ?? '', view?.get_uri?.() ?? ''));
+        view?.connect('notify::title', sync);
+        view?.connect('notify::uri', sync);
         sync();
         const close = new Gtk.Button({
             icon_name: 'window-close-symbolic',

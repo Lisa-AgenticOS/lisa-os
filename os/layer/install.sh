@@ -44,7 +44,20 @@ else
 fi
 
 if grep -q '^\[lisa\]' /etc/pacman.conf; then
-    say ">> [lisa] repo already configured, leaving pacman.conf untouched"
+    if [ "$LISA_REPO_URL" = "$HOSTED_REPO" ] \
+        && ! grep -A3 '^\[lisa\]' /etc/pacman.conf | grep -q "Server = $HOSTED_REPO"; then
+        # A pre-hosted install left file:// + Optional TrustAll behind;
+        # re-running this installer must MIGRATE it, not lsign a key
+        # while leaving TrustAll in charge (#187 — the reviewer's exact
+        # scenario). The markers bound the edit to our own stanza.
+        say ">> migrating existing [lisa] stanza to the hosted, signed repo"
+        sed -i "/^# BEGIN lisa layer/,/^# END lisa layer/{
+            s|^Server = .*|Server = $HOSTED_REPO|
+            s|^SigLevel = .*|SigLevel = Required|
+        }" /etc/pacman.conf
+    else
+        say ">> [lisa] repo already configured, leaving pacman.conf untouched"
+    fi
 else
     say ">> adding [lisa] repo to /etc/pacman.conf (SigLevel = $SIGLEVEL)"
     cat >>/etc/pacman.conf <<EOF

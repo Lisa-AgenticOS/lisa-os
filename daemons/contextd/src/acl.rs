@@ -85,6 +85,39 @@ pub fn allowed_provenance(scopes: &[&str]) -> Vec<&'static str> {
     allowed
 }
 
+/// The one place a document's rows are written — inside the caller's
+/// transaction, all three tables or none (#186).
+fn write_document(
+    tx: &rusqlite::Transaction,
+    source: &str,
+    provenance: &str,
+    content: &str,
+    hash: &str,
+) -> Result<(), StoreError> {
+    if let Ok(doc_id) = tx.query_row(
+        "SELECT id FROM documents WHERE source = ?1",
+        [source],
+        |r| r.get::<_, i64>(0),
+    ) {
+        tx.execute("DELETE FROM chunks WHERE doc_id = ?1", [doc_id])?;
+        tx.execute("DELETE FROM chunk_vectors WHERE doc_id = ?1", [doc_id])?;
+        tx.execute("DELETE FROM documents WHERE id = ?1", [doc_id])?;
+    }
+    tx.execute(
+        "INSERT INTO documents (source, provenance, mtime, content_hash)
+         VALUES (?1, ?2, 0, ?3)",
+        rusqlite::params![source, provenance, hash],
+    )?;
+    let doc_id = tx.last_insert_rowid();
+    for (seq, chunk) in crate::index::chunk_text(content).iter().enumerate() {
+        tx.execute(
+            "INSERT INTO chunks (content, doc_id, seq) VALUES (?1, ?2, ?3)",
+            rusqlite::params![chunk, doc_id, seq as i64],
+        )?;
+    }
+    Ok(())
+}
+
 impl ContextStore {
     /// Incremental, relabel-safe ingestion — what a corpus mirror (the
     /// mail indexer, #170) calls per document.
@@ -105,25 +138,32 @@ impl ContextStore {
             return Err(StoreError::UnknownProvenance(provenance.to_string()));
         }
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        {
-            let conn = self.conn.lock().expect("context lock");
-            let existing: Option<(String, String)> = conn
-                .query_row(
-                    "SELECT provenance, content_hash FROM documents WHERE source = ?1",
-                    [source],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .ok();
-            if let Some((ref old_provenance, ref old_hash)) = existing {
-                if old_provenance != provenance {
-                    return Ok(AddOutcome::ForeignSkipped);
-                }
-                if *old_hash == hash {
-                    return Ok(AddOutcome::Unchanged);
-                }
+        // ONE lock, ONE transaction (#186): the first version checked
+        // the hash under a lock it then released, and wrote each row in
+        // its own implicit transaction — so a crash mid-write left a
+        // truncated document whose stored hash pinned it "Unchanged"
+        // forever, and a concurrent timer + manual sync raced the
+        // check into a UNIQUE(source) abort. BEGIN IMMEDIATE + the
+        // busy_timeout in open() serialize writers instead.
+        let conn = self.conn.lock().expect("context lock");
+        let tx = conn.unchecked_transaction()?;
+        let existing: Option<(String, String)> = tx
+            .query_row(
+                "SELECT provenance, content_hash FROM documents WHERE source = ?1",
+                [source],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        if let Some((ref old_provenance, ref old_hash)) = existing {
+            if old_provenance != provenance {
+                return Ok(AddOutcome::ForeignSkipped);
+            }
+            if *old_hash == hash {
+                return Ok(AddOutcome::Unchanged);
             }
         }
-        self.add_document(source, provenance, content)?;
+        write_document(&tx, source, provenance, content, &hash)?;
+        tx.commit()?;
         Ok(AddOutcome::Added)
     }
 
@@ -140,29 +180,43 @@ impl ContextStore {
         }
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let conn = self.conn.lock().expect("context lock");
-        // Replace any prior version of this source.
-        if let Ok(doc_id) = conn.query_row(
-            "SELECT id FROM documents WHERE source = ?1",
-            [source],
-            |r| r.get::<_, i64>(0),
-        ) {
-            conn.execute("DELETE FROM chunks WHERE doc_id = ?1", [doc_id])?;
-            conn.execute("DELETE FROM chunk_vectors WHERE doc_id = ?1", [doc_id])?;
-            conn.execute("DELETE FROM documents WHERE id = ?1", [doc_id])?;
-        }
-        conn.execute(
-            "INSERT INTO documents (source, provenance, mtime, content_hash)
-             VALUES (?1, ?2, 0, ?3)",
-            rusqlite::params![source, provenance, hash],
-        )?;
-        let doc_id = conn.last_insert_rowid();
-        for (seq, chunk) in crate::index::chunk_text(content).iter().enumerate() {
-            conn.execute(
-                "INSERT INTO chunks (content, doc_id, seq) VALUES (?1, ?2, ?3)",
-                rusqlite::params![chunk, doc_id, seq as i64],
-            )?;
-        }
+        let tx = conn.unchecked_transaction()?;
+        write_document(&tx, source, provenance, content, &hash)?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Every document of `provenance` whose source is NOT in `keep`
+    /// is removed, chunks and vectors included. The mirror-pruning
+    /// primitive for corpora whose source ids are not filesystem paths
+    /// (mail's `mail:` namespace — `prune_missing` cannot see those,
+    /// which is how deleted messages stayed retrievable forever, #185).
+    pub fn prune_not_in(
+        &self,
+        provenance: &str,
+        keep: &std::collections::HashSet<String>,
+    ) -> Result<usize, StoreError> {
+        if !is_known_provenance(provenance) {
+            return Err(StoreError::UnknownProvenance(provenance.to_string()));
+        }
+        let conn = self.conn.lock().expect("context lock");
+        let tx = conn.unchecked_transaction()?;
+        let rows: Vec<(i64, String)> = tx
+            .prepare("SELECT id, source FROM documents WHERE provenance = ?1")?
+            .query_map([provenance], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut pruned = 0;
+        for (doc_id, source) in rows {
+            if keep.contains(&source) {
+                continue;
+            }
+            tx.execute("DELETE FROM chunks WHERE doc_id = ?1", [doc_id])?;
+            tx.execute("DELETE FROM chunk_vectors WHERE doc_id = ?1", [doc_id])?;
+            tx.execute("DELETE FROM documents WHERE id = ?1", [doc_id])?;
+            pruned += 1;
+        }
+        tx.commit()?;
+        Ok(pruned)
     }
 
     /// Search restricted to the provenance the granted `scopes` permit.

@@ -25,11 +25,15 @@ if [ -d /run/systemd/system ] && systemctl list-unit-files lisa-inferenced.servi
     fi
 fi
 
-installed=$(pacman -Qq lisa-inferenced lisa-modeld lisa-cli 2>/dev/null || true)
+installed=$(pacman -Qq lisa-inferenced lisa-modeld lisa-cli lisa-keyring 2>/dev/null || true)
 if [ -n "$installed" ]; then
     if confirm "Remove packages: $(echo "$installed" | tr '\n' ' ')?"; then
         # shellcheck disable=SC2086
         pacman -Rns --noconfirm $installed
+        # The lsigned trust anchor came from install.sh, so leaving it
+        # would keep trusting [lisa] signatures after the layer is gone
+        # (#188). Best effort: a file:// install never imported it.
+        pacman-key --delete 737240D11D28E109A474A8E5827E27417AF5982B 2>/dev/null || true
     fi
 else
     say ">> no lisa packages installed"
