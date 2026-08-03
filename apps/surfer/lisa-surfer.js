@@ -29,8 +29,9 @@ import {McpServer} from './lib/mcp.js';
 import {navigationTarget, clickScript, fillScript} from './lib/actions.js';
 import {rowLabel} from './lib/tablist.js';
 import {suggestionsFor} from './lib/omnibox.js';
+import {START_URI, START_PAGE_HTML, goQuery} from './lib/startpage.js';
 
-const HOME = 'https://duckduckgo.com';
+const HOME = START_URI; // the local start page (lib/startpage.js)
 
 /// Surfer's own version, which appears in the user agent. Bumped by
 /// hand: it is a product token, not a build number, and a site that
@@ -156,6 +157,23 @@ function attachTab(view, focus = true) {
     // below it (seen on the first real screenshot, 2026-07-29).
     view.set_vexpand(true);
     view.set_hexpand(true);
+    // The start page's form navigates to lisa-go:?q=… — intercepted
+    // here and routed through navigate(), the SAME resolveInput brain
+    // as the address bar, so words search and addresses navigate in
+    // both places (lib/startpage.js).
+    view.connect('decide-policy', (v, decision, type) => {
+        if (type !== WebKit.PolicyDecisionType.NAVIGATION_ACTION) return false;
+        const uri = decision.get_navigation_action()?.get_request()?.get_uri() ?? '';
+        const q = goQuery(uri);
+        if (q === null) return false;
+        decision.ignore();
+        if (q.trim()) {
+            const r = resolveInput(q);
+            if (r.kind === 'load') v.load_uri(r.url);
+            else if (r.kind === 'search' && r.url) v.load_uri(r.url);
+        }
+        return true;
+    });
     // Rail toggling resizes the content card, WebKit re-rasterizes its
     // GL surface, and the engine's backdrop for not-yet-painted frames
     // is opaque WHITE — dark pages flash bright for a frame (owner saw
@@ -172,7 +190,10 @@ function attachTab(view, focus = true) {
         if (view.title) page.set_title(view.title);
     });
     view.connect('notify::uri', () => {
-        if (tabView.get_selected_page() === page) urlBar.set_text(view.get_uri() ?? '');
+        if (tabView.get_selected_page() === page) {
+            const uri = view.get_uri() ?? '';
+            urlBar.set_text(uri.startsWith('lisa:') ? '' : uri);
+        }
     });
     view.connect('notify::estimated-load-progress', () => {
         page.set_loading(view.estimated_load_progress < 1);
@@ -212,7 +233,8 @@ function newTab(url = HOME, focus = true) {
         network_session: networkSession(),
         settings: viewSettings(),
     }), focus);
-    if (url) view.load_uri(url);
+    if (url === START_URI) view.load_html(START_PAGE_HTML, START_URI);
+    else if (url) view.load_uri(url);
     return view;
 }
 
@@ -542,8 +564,11 @@ function buildWindow() {
     const split = new Adw.OverlaySplitView({
         sidebar,
         content: contentCard,
-        min_sidebar_width: 210,
-        max_sidebar_width: 250,
+        // min == max: a RANGE lets allocation settle through
+        // intermediate widths, and every step re-rasterizes the
+        // webview. One width, one jump.
+        min_sidebar_width: 240,
+        max_sidebar_width: 240,
     });
     const newTabIcon = Gtk.Image.new_from_icon_name('tab-new-symbolic');
     const newTabFull = newTabBtn.get_child();
@@ -555,8 +580,22 @@ function buildWindow() {
         reload.set_visible(!rail);
         newTabBtn.set_child(rail ? newTabIcon : newTabFull);
         for (const entry of rows.values()) applyRail(entry);
-        split.set_min_sidebar_width(rail ? 56 : 210);
-        split.set_max_sidebar_width(rail ? 56 : 250);
+        // Neither a hard jump (stale GL frame) nor a crossfade (reads
+        // as a blink — the owner called both): SLIDE the width along an
+        // eased curve. WebKit re-rasters each frame, but each step is
+        // small and the dark backdrop hides the lag; 200ms total.
+        const from = rail ? 240 : 56;
+        const to = rail ? 56 : 240;
+        const anim = new Adw.TimedAnimation({
+            widget: split,
+            value_from: from, value_to: to, duration: 200,
+            easing: Adw.Easing.EASE_OUT_CUBIC,
+            target: Adw.CallbackAnimationTarget.new((v) => {
+                split.set_min_sidebar_width(v);
+                split.set_max_sidebar_width(v);
+            }),
+        });
+        anim.play();
     };
     collapseBtn.connect('clicked', () => setRail(!rail));
     win.set_content(split);
@@ -565,7 +604,8 @@ function buildWindow() {
     // the gate in os/repo-tools/check-tokens.py sanctions every hex
     // here).
     const css = new Gtk.CssProvider();
-    css.load_from_string(`
+    const styleMgr = Adw.StyleManager.get_default();
+    const loadCss = () => css.load_from_string(`
         window { background: mix(#4F378B, #1B1917, 0.72); } /* tokens: violet-700 into dark-base */
         .lisa-sidebar { background: transparent; }
         .lisa-urlbar {
@@ -585,10 +625,15 @@ function buildWindow() {
         .lisa-suggest row { border-radius: 8px; padding: 2px; }
         .lisa-suggest row:hover { background: alpha(#9B7BE8, 0.25); } /* token: violet-300 */
         .lisa-content-card {
-            background: #FFFFFF; /* token: surface */
+            /* tokens: dark-base / surface — the card follows the
+               scheme; a white card in a dark session was the bug the
+               owner saw as "opens white". */
+            background: ${styleMgr.dark ? '#1B1917' : '#FFFFFF'};
             border-radius: 14px;
         }
     `);
+    loadCss();
+    styleMgr.connect('notify::dark', loadCss);
     Gtk.StyleContext.add_provider_for_display(
         win.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
