@@ -403,16 +403,30 @@ function loadFile(path) {
     rebuildThumbs?.();
 
     // Folder browsing, best-effort: an unreadable directory costs the
-    // ← → keys, not the file the user actually asked for.
+    // ← → keys, not the file the user actually asked for. Capped (#206)
+    // for the same reason the folder card caps its count — a peek at a
+    // file INSIDE a 100k-entry directory must not hang on enumeration;
+    // past the cap, browsing degrades to the single file (a PARTIAL
+    // sibling list would make ← → skip files invisibly, which is worse
+    // than not browsing).
     try {
         const dir = Gio.File.new_for_path(path).get_parent();
         const en = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
         const names = [];
         let info;
-        while ((info = en.next_file(null)) !== null) names.push(info.get_name());
-        const sib = siblings(path, names);
-        state.files = sib.files;
-        state.fileIndex = sib.index;
+        let capped = false;
+        while ((info = en.next_file(null)) !== null) {
+            names.push(info.get_name());
+            if (names.length >= 5000) { capped = true; break; }
+        }
+        if (capped) {
+            state.files = [path];
+            state.fileIndex = 0;
+        } else {
+            const sib = siblings(path, names);
+            state.files = sib.files;
+            state.fileIndex = sib.index;
+        }
     } catch (e) {
         state.files = [path];
         state.fileIndex = 0;
@@ -620,10 +634,13 @@ function pageToPixbuf(page, dpi) {
     cr.$dispose?.();
     const [fd, tmp] = GLib.file_open_tmp('lisa-preview-export-XXXXXX.png');
     GLib.close(fd);
-    surface.writeToPNG(tmp);
-    const pb = GdkPixbuf.Pixbuf.new_from_file(tmp);
-    GLib.unlink(tmp);
-    return pb;
+    try {
+        surface.writeToPNG(tmp);
+        return GdkPixbuf.Pixbuf.new_from_file(tmp);
+    } finally {
+        // Unreachable-on-throw cleanup is a leak (#203).
+        GLib.unlink(tmp);
+    }
 }
 
 function savePixbuf(pb, path, formatKey) {
@@ -634,6 +651,18 @@ function savePixbuf(pb, path, formatKey) {
 /// Export the current view. Images convert from the PRISTINE pixbuf
 /// (never the checkerboarded view copy); documents rasterize the
 /// displayed page, or every page into a chosen folder.
+/// A dialog dismissal is silence; anything else is an error the user
+/// must SEE (#202) — the old catch-all swallowed real save failures as
+/// dismissals.
+function dialogDismissed(e) {
+    try {
+        if (e instanceof GLib.Error &&
+            e.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED))
+            return true;
+    } catch (err) { /* fall through to the string check */ }
+    return /dismiss/i.test(String(e?.message ?? ''));
+}
+
 function runExport(formatKey, ext, allPages) {
     if (state.kind === 'image' && state.origPixbuf) {
         const dialog = new Gtk.FileDialog({initial_name: exportName(state.path, ext)});
@@ -641,9 +670,12 @@ function runExport(formatKey, ext, allPages) {
             try {
                 const file = src.save_finish(res);
                 if (!file) return;
-                savePixbuf(state.origPixbuf, file.get_path(), formatKey);
+                if (!savePixbuf(state.origPixbuf, file.get_path(), formatKey))
+                    throw new Error(`the ${formatKey} writer refused the file`);
                 toast(`Exported ${file.get_basename()}`);
-            } catch (e) { /* dismissed */ }
+            } catch (e) {
+                if (!dialogDismissed(e)) toast(`Export failed: ${e.message}`);
+            }
         });
         return;
     }
@@ -655,24 +687,58 @@ function runExport(formatKey, ext, allPages) {
             try {
                 const file = src.save_finish(res);
                 if (!file) return;
-                savePixbuf(pageToPixbuf(docPage(), 150), file.get_path(), formatKey);
+                if (!savePixbuf(pageToPixbuf(docPage(), 150), file.get_path(), formatKey))
+                    throw new Error(`the ${formatKey} writer refused the file`);
                 toast(`Exported ${file.get_basename()}`);
-            } catch (e) { /* dismissed */ }
+            } catch (e) {
+                if (!dialogDismissed(e)) toast(`Export failed: ${e.message}`);
+            }
         });
         return;
     }
     const dialog = new Gtk.FileDialog();
     dialog.select_folder(win, null, (src, res) => {
+        let dir;
         try {
-            const dir = src.select_folder_finish(res);
-            if (!dir) return;
-            const names = pageExportNames(state.path, ext, state.pageOrder.length);
-            state.pageOrder.forEach((orig, i) => {
-                const pb = pageToPixbuf(state.doc.get_page(orig), 150);
-                savePixbuf(pb, `${dir.get_path()}/${names[i]}`, formatKey);
-            });
-            toast(`Exported ${names.length} pages to ${dir.get_basename()}`);
-        } catch (e) { /* dismissed */ }
+            dir = src.select_folder_finish(res);
+        } catch (e) {
+            if (!dialogDismissed(e)) toast(`Export failed: ${e.message}`);
+            return;
+        }
+        if (!dir) return;
+        // One page per main-loop tick (#204): a 90-page export must not
+        // freeze the window, and each pixbuf dies before the next is
+        // born. Existing files are skipped and counted, never silently
+        // overwritten (#202) — the folder was picked, not each name.
+        const names = pageExportNames(state.path, ext, state.pageOrder.length);
+        const order = state.pageOrder.slice();
+        const doc = state.doc;
+        let i = 0, done = 0, skipped = 0, failed = 0;
+        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            if (i >= order.length) {
+                const parts = [`Exported ${done} page${done === 1 ? '' : 's'}`];
+                if (skipped) parts.push(`${skipped} existed — skipped`);
+                if (failed) parts.push(`${failed} FAILED`);
+                toast(`${parts.join(' · ')} (${dir.get_basename()})`);
+                return GLib.SOURCE_REMOVE;
+            }
+            const target = `${dir.get_path()}/${names[i]}`;
+            try {
+                if (GLib.file_test(target, GLib.FileTest.EXISTS)) {
+                    skipped++;
+                } else if (savePixbuf(pageToPixbuf(doc.get_page(order[i]), 150),
+                    target, formatKey)) {
+                    done++;
+                } else {
+                    failed++;
+                }
+            } catch (e) {
+                failed++;
+                logError(e, `export page ${i + 1}`);
+            }
+            i++;
+            return GLib.SOURCE_CONTINUE;
+        });
     });
 }
 
@@ -730,11 +796,16 @@ function placeSignature(vx, vy) {
     const sig = loadSignature();
     const page = docPage();
     if (!sig || !page) return false;
-    const [, phh] = page.get_size();
+    const [pww, phh] = page.get_size();
     const p = viewToPage({x: vx, y: vy}, effectiveScale());
     const size = stampSize(sig);
+    // Clamp into the page (#205): signatures go in bottom-right
+    // corners, and a stamp past the MediaBox is half-clipped in every
+    // other reader the PDF ever meets.
+    const x = Math.max(0, Math.min(p.x, pww - size.width));
+    const y = Math.max(0, Math.min(p.y, phh - size.height));
     const r = annotRect(
-        {x1: p.x, y1: p.y, x2: p.x + size.width, y2: p.y + size.height}, phh);
+        {x1: x, y1: y, x2: x + size.width, y2: y + size.height}, phh);
     const annot = Poppler.AnnotStamp.new(state.doc, popplerRect(r));
     annot.set_custom_image(signatureSurface(sig, size.width, size.height));
     page.add_annot(annot);
