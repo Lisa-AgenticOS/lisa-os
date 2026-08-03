@@ -49,3 +49,27 @@ export function cardSubtitle(typeDescription, sizeBytes) {
     if (size) parts.push(size);
     return parts.join(' · ');
 }
+
+/// A folder's card line. `capped` means the enumeration stopped early
+/// (a 100k-entry directory must not hang a peek): the count is then a
+/// floor and says so; the size is omitted because a partial sum
+/// presented as THE size is a lie.
+export function folderSubtitle(count, capped, sizeBytes) {
+    const items = capped
+        ? `${count}+ items`
+        : `${count} item${count === 1 ? '' : 's'}`;
+    if (capped) return items;
+    const size = humanSize(sizeBytes);
+    return size ? `${items} · ${size}` : items;
+}
+
+/// Media duration (microseconds, as Gtk.MediaStream reports it) -> a
+/// clock string. Zero/unknown renders as nothing rather than 0:00.
+export function mediaClock(us) {
+    if (!Number.isFinite(us) || us <= 0) return '';
+    const s = Math.round(us / 1e6);
+    const m = Math.floor(s / 60), sec = s % 60;
+    const h = Math.floor(m / 60);
+    if (h > 0) return `${h}:${String(m % 60).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    return `${m}:${String(sec).padStart(2, '0')}`;
+}

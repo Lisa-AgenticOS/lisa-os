@@ -1,4 +1,5 @@
-import {looksBinary, truncateText, humanSize, cardSubtitle} from '../lib/peek.js';
+import {looksBinary, truncateText, humanSize, cardSubtitle, folderSubtitle, mediaClock}
+    from '../lib/peek.js';
 
 let passed = 0, failed = 0;
 function ok(cond, name, got) {
@@ -26,6 +27,16 @@ ok(humanSize(-1) === '' && humanSize(NaN) === '', 'invalid sizes render as nothi
 ok(cardSubtitle('PNG image', 2048) === 'PNG image · 2.0 KiB', 'type and size join with a dot');
 ok(cardSubtitle('', 2048) === '2.0 KiB', 'missing type drops cleanly');
 ok(cardSubtitle('Folder', NaN) === 'Folder', 'missing size drops cleanly');
+
+ok(folderSubtitle(12, false, 3.5 * 1024 * 1024) === '12 items · 3.5 MiB', 'folder card: items and size', folderSubtitle(12, false, 3.5 * 1024 * 1024));
+ok(folderSubtitle(1, false, 100) === '1 item · 100 B', 'singular item');
+ok(folderSubtitle(1000, true, 999999) === '1000+ items',
+    'a capped count is a floor and drops the size — a partial sum presented as THE size is a lie');
+ok(folderSubtitle(0, false, NaN) === '0 items', 'empty folder, no size');
+
+ok(mediaClock(83 * 1e6) === '1:23', 'seconds render as m:ss', mediaClock(83 * 1e6));
+ok(mediaClock(3723 * 1e6) === '1:02:03', 'hours render as h:mm:ss', mediaClock(3723 * 1e6));
+ok(mediaClock(0) === '' && mediaClock(NaN) === '', 'unknown duration renders as nothing');
 
 console.log(`preview/peek: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

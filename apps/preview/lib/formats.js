@@ -38,6 +38,14 @@ const TEXT_EXTENSIONS = [
 
 const HTML_EXTENSIONS = ['html', 'htm', 'xhtml'];
 
+/// Media Space can play (#200). Every container/codec here maps to a
+/// GStreamer plugin VERIFIED on the reference image 2026-08-03
+/// (isomp4, matroska, ogg, vorbis, opus, flac, mpg123, wavparse,
+/// openh264+libav, vpx) — the list is grounded in what the machine
+/// decodes, not in what a file manager might send.
+const AUDIO_EXTENSIONS = ['flac', 'm4a', 'mp3', 'oga', 'ogg', 'opus', 'wav'];
+const VIDEO_EXTENSIONS = ['m4v', 'mkv', 'mov', 'mp4', 'webm'];
+
 /// MIME types for the .desktop file. Generated from the same lists so
 /// the two cannot drift — a viewer registered for a type it cannot open
 /// is worse than not registering, because the file manager stops
@@ -87,6 +95,10 @@ export function kindOf(path) {
         return 'text';
     if (HTML_EXTENSIONS.includes(ext))
         return 'html';
+    if (AUDIO_EXTENSIONS.includes(ext))
+        return 'audio';
+    if (VIDEO_EXTENSIONS.includes(ext))
+        return 'video';
     return null;
 }
 

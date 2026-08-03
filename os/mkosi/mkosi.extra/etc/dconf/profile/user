@@ -1,0 +1,6 @@
+# dconf profile for regular users: their own settings first, then the
+# Lisa system defaults (db/local.d, compiled to /etc/dconf/db/local by
+# `dconf update` in mkosi.postinst.chroot). Defaults, not locks — no
+# locks/ directory ships, so everything here is user-overridable.
+user-db:user
+system-db:local

@@ -29,7 +29,7 @@ import {zoomStep, fitScale, fitWidthScale, step, rotate} from './lib/view.js';
 import {COLORS, normalizeRect, isClick, viewToPage, annotRect, savePathFor, unsavedLabel}
     from './lib/annotate.js';
 import {movePage, removePage, orderChanged, qpdfPageSpec} from './lib/reorder.js';
-import {looksBinary, truncateText, cardSubtitle} from './lib/peek.js';
+import {looksBinary, truncateText, cardSubtitle, folderSubtitle, mediaClock} from './lib/peek.js';
 import {McpServer} from './lib/mcp.js';
 import {Previewer} from './lib/previewer.js';
 
@@ -106,6 +106,18 @@ const state = {
 let picture = null, drawing = null, stack = null, pageLabel = null, zoomLabel = null, titleLabel = null;
 let refreshEditUi = null, rebuildThumbs = null;
 let textView = null, webView = null, card = null;
+let video = null, audioPage = null, audioControls = null;
+
+// No "is there a media backend" pre-check, deliberately: on Arch the
+// GStreamer backend is linked INTO libgtk-4 itself (no module dir
+// exists — a file-probe for one wrongly declared media unsupported on
+// the reference device). If a platform truly lacks a backend,
+// Gtk.MediaFile reports it through notify::error and the toast says
+// what it said.
+function stopMedia() {
+    try { state.media?.set_playing(false); } catch (e) { /* gone */ }
+    state.media = null;
+}
 
 /// The poppler page at the CURRENT DISPLAY position — after reordering,
 /// display position i shows original page pageOrder[i].
@@ -191,6 +203,14 @@ function render() {
         const vp = viewportSize();
         card.set_size_request(vp.width, vp.height);
         stack.set_visible_child_name('card');
+    } else if (state.kind === 'video') {
+        const vp = viewportSize();
+        video.set_size_request(vp.width, vp.height);
+        stack.set_visible_child_name('video');
+    } else if (state.kind === 'audio') {
+        const vp = viewportSize();
+        audioPage.set_size_request(vp.width, vp.height);
+        stack.set_visible_child_name('audio');
     }
 }
 
@@ -240,8 +260,10 @@ function loadFile(path) {
     // Null means "unrecognised", and unrecognised gets the generic
     // card — Nautilus sends Space for ANY selected file, and a peek
     // tool that shows nothing has told the user their key is broken.
-    let kind = kindOf(path) ?? 'card';
+    const isDir = GLib.file_test(path, GLib.FileTest.IS_DIR);
+    let kind = isDir ? 'card' : (kindOf(path) ?? 'card');
     state.textContent = null;
+    stopMedia();
     try {
         if (kind === 'text' || kind === 'html') {
             const [okRead, bytes] = GLib.file_get_contents(path);
@@ -270,19 +292,49 @@ function loadFile(path) {
             const info = file.query_info(
                 'standard::display-name,standard::size,standard::content-type,standard::icon',
                 Gio.FileQueryInfoFlags.NONE, null);
-            const ctype = info.get_content_type();
             card.set_title(info.get_display_name());
-            card.set_description(cardSubtitle(
-                ctype ? Gio.content_type_get_description(ctype) : '',
-                info.get_size()));
+            if (isDir) {
+                // Folder cards count their children, capped so a
+                // 100k-entry directory cannot hang a peek (#200).
+                let count = 0, bytes = 0, capped = false;
+                const en = file.enumerate_children('standard::size',
+                    Gio.FileQueryInfoFlags.NONE, null);
+                let child;
+                while ((child = en.next_file(null)) !== null) {
+                    count++;
+                    bytes += child.get_size();
+                    if (count >= 1000) { capped = true; break; }
+                }
+                card.set_description(folderSubtitle(count, capped, bytes));
+            } else {
+                const ctype = info.get_content_type();
+                card.set_description(cardSubtitle(
+                    ctype ? Gio.content_type_get_description(ctype) : '',
+                    info.get_size()));
+            }
             const gicon = info.get_icon();
             const display = Gdk.Display.get_default();
             if (gicon && display) {
                 card.paintable = Gtk.IconTheme.get_for_display(display)
                     .lookup_by_gicon(gicon, 128, 1, Gtk.TextDirection.NONE, 0);
             } else {
-                card.icon_name = 'text-x-generic-symbolic';
+                card.icon_name = isDir ? 'folder-symbolic' : 'text-x-generic-symbolic';
             }
+        }
+        if (kind === 'audio' || kind === 'video') {
+            state.media = Gtk.MediaFile.new_for_filename(path);
+            state.media.connect('notify::error', () => {
+                const err = state.media?.get_error();
+                if (err) toast(`Cannot play ${path.split('/').pop()}: ${err.message}`);
+            });
+            if (kind === 'video') {
+                video.set_media_stream(state.media);
+            } else {
+                audioPage.set_title(path.split('/').pop());
+                audioControls.set_media_stream(state.media);
+            }
+            // Autoplay IS the Space gesture — Quick Look plays.
+            state.media.set_playing(true);
         }
         if (kind === 'image') {
             // An SVG has no natural pixel size — rasterizing at its
@@ -293,6 +345,16 @@ function loadFile(path) {
             state.pixbuf = path.toLowerCase().endsWith('.svg')
                 ? GdkPixbuf.Pixbuf.new_from_file_at_size(path, 2048, 2048)
                 : GdkPixbuf.Pixbuf.new_from_file(path);
+            // Transparency gets a checkerboard baked under it — a
+            // black symbolic icon over the dark theme was invisible on
+            // the device. composite_color_simple is pixbuf's own
+            // checkerboard renderer; the checks zoom with the image,
+            // which is what says "this is transparency", not texture.
+            if (state.pixbuf.get_has_alpha()) {
+                state.pixbuf = state.pixbuf.composite_color_simple(
+                    state.pixbuf.get_width(), state.pixbuf.get_height(),
+                    GdkPixbuf.InterpType.NEAREST, 255, 16, 0x3d3d3d, 0x4d4d4d);
+            }
             state.doc = null;
             state.pageCount = 1;
         } else if (kind === 'document') {
@@ -728,6 +790,15 @@ function buildWindow() {
     }
     card = new Adw.StatusPage();
     stack.add_named(card, 'card');
+    // Media (#200): Gtk.Video for pictures-with-time, a StatusPage with
+    // bare controls for audio — both driven by one Gtk.MediaFile.
+    video = new Gtk.Video({autoplay: true});
+    stack.add_named(video, 'video');
+    audioControls = new Gtk.MediaControls({halign: Gtk.Align.CENTER, width_request: 360});
+    audioPage = new Adw.StatusPage({icon_name: 'audio-x-generic-symbolic'});
+    audioPage.set_child(audioControls);
+    stack.add_named(audioPage, 'audio');
+    win.connect('close-request', () => { stopMedia(); return false; });
 
     // --- pages sidebar: thumbnails, reorder, remove -----------------
     const thumbList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
@@ -825,8 +896,13 @@ function buildWindow() {
             // Space toggles the peek closed again (Nautilus only gets
             // to send its close toggle while Files keeps focus, and it
             // does not — this window takes it). A file opened normally
-            // keeps Space as page-forward, like any reader.
+            // keeps Space as page-forward — except media, where Space
+            // is play/pause like every player ever.
             if (state.quickLook) { win.close(); return true; }
+            if ((state.kind === 'audio' || state.kind === 'video') && state.media) {
+                state.media.set_playing(!state.media.get_playing());
+                return true;
+            }
             goPage(+1); return true;
         case Gdk.KEY_Escape:
             if (state.quickLook) { win.close(); return true; }
@@ -897,7 +973,12 @@ const handlers = {
         }
         if (state.kind === 'card') {
             return {...base, text: null,
-                note: 'unrecognised type — name and location only'};
+                note: 'unrecognised type or folder — name and location only'};
+        }
+        if (state.kind === 'audio' || state.kind === 'video') {
+            const clock = mediaClock(state.media?.get_duration() ?? 0);
+            return {...base, text: null, duration: clock || null,
+                note: 'media metadata only — Preview does not transcribe'};
         }
         const {width, height} = contentSize();
         // No OCR and no vision model here. Saying so beats returning an

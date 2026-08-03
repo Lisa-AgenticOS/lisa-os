@@ -126,6 +126,24 @@ The `.desktop` MIME list deliberately stays images + pdf: registering
 text/html would put a peek tool in every Open With list. The previewer
 accepts more kinds than the launcher claims, on purpose.
 
+### Media and folders (#200)
+
+Space plays **audio** (flac/m4a/mp3/oga/ogg/opus/wav — bare controls
+on a status page) and **video** (m4v/mkv/mov/mp4/webm — `Gtk.Video`,
+autoplay, because autoplay IS the Space gesture). Every extension maps
+to a GStreamer plugin verified on the image; the GTK media backend is
+LINKED INTO libgtk-4 on Arch — there is no module or package for it,
+which is why there is deliberately no backend pre-check (a file-probe
+for a module dir wrongly declared media unsupported on the device).
+If a platform truly lacks a backend, `Gtk.MediaFile` reports it via
+`notify::error` and the toast repeats what it said. Space in app
+manners is play/pause for media; in quick-look manners it still
+closes. **Folders** get the card with a child count (enumeration caps
+at 1000 — "1000+ items" — and a capped count drops the size, because
+a partial sum presented as THE size is a lie). Transparent images get
+a checkerboard baked under them (`composite_color_simple`); the checks
+zoom with the image, which is what says "this is transparency".
+
 ### Keys
 
 `+` `-` zoom · `0` fit (fills, even for small content) · `1` actual

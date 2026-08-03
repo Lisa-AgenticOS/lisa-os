@@ -16,6 +16,10 @@ eq(kindOf('/home/lisa/photo.HEIC'), 'image', 'heic is an image');
 eq(kindOf('/home/lisa/notes.txt'), 'text', 'txt is text since the peek slice');
 eq(kindOf('/home/lisa/index.html'), 'html', 'html renders through WebKit');
 eq(kindOf('/home/lisa/archive.zip'), null, 'an unclaimed type is null, not a guess — the card handles it');
+eq(kindOf('/home/lisa/song.mp3'), 'audio', 'mp3 is audio (#200)');
+eq(kindOf('/home/lisa/talk.OPUS'), 'audio', 'audio extension match is case-insensitive');
+eq(kindOf('/home/lisa/clip.mp4'), 'video', 'mp4 is video');
+eq(kindOf('/home/lisa/clip.webm'), 'video', 'webm is video — vpx is on the image');
 eq(kindOf('/home/lisa/archive.tar.gz'), null, 'only the last extension counts');
 
 // A grey rectangle where a file should be is a bug report about the

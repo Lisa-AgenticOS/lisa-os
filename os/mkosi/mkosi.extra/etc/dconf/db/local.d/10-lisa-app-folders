@@ -1,0 +1,17 @@
+# The app grid, Launchpad-style: real apps at the top level, the
+# technical inventory in a Utilities folder — the same shape macOS
+# gives it. Every id below was enumerated on the reference device
+# (2026-08-03, Gio.AppInfo.get_all + should_show under GNOME) — no
+# guessed entries; an id that stops existing simply does not render.
+# These are defaults, not locks: users can drag apps out of the
+# folder and dconf keeps their arrangement.
+#
+# Top level after this: Files, Mail, Surfer, Preview, Lisa Assistant,
+# Ledger, Settings, Zen Browser.
+[org/gnome/desktop/app-folders]
+folder-children=['Utilities']
+
+[org/gnome/desktop/app-folders/folders/Utilities]
+name='Utilities'
+translate=false
+apps=['bssh.desktop', 'bvnc.desktop', 'avahi-discover.desktop', 'org.gnome.Console.desktop', 'org.gnome.Extensions.desktop', 'org.fcitx.Fcitx5.desktop', 'fcitx5-configtool.desktop', 'org.fcitx.fcitx5-migrator.desktop', 'lstopo.desktop', 'kbd-layout-viewer5.desktop', 'qv4l2.desktop', 'qvidcap.desktop', 'vim.desktop', 'org.gnome.ColorProfileViewer.desktop', 'org.freedesktop.IBus.Setup.desktop']
