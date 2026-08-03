@@ -572,30 +572,50 @@ function buildWindow() {
     });
     const newTabIcon = Gtk.Image.new_from_icon_name('tab-new-symbolic');
     const newTabFull = newTabBtn.get_child();
-    const setRail = (on) => {
-        rail = on;
-        urlBar.set_visible(!rail);
-        back.set_visible(!rail);
-        fwd.set_visible(!rail);
-        reload.set_visible(!rail);
-        newTabBtn.set_child(rail ? newTabIcon : newTabFull);
+    // Width constraints accept updates only in one order per
+    // direction: shrinking sets min first, growing sets max first.
+    // The first animated attempt set min before max EVERY tick, so
+    // every grow step tripped min>max, GTK clamped silently, and the
+    // expand never happened — a clean journal, because a clamp is not
+    // an error. This is the one place widths change; keep it that way.
+    const setSidebarWidth = (w) => {
+        if (w <= split.get_min_sidebar_width()) {
+            split.set_min_sidebar_width(w);
+            split.set_max_sidebar_width(w);
+        } else {
+            split.set_max_sidebar_width(w);
+            split.set_min_sidebar_width(w);
+        }
+    };
+
+    const showExtras = (visible) => {
+        urlBar.set_visible(visible);
+        back.set_visible(visible);
+        fwd.set_visible(visible);
+        reload.set_visible(visible);
+        newTabBtn.set_child(visible ? newTabFull : newTabIcon);
         for (const entry of rows.values()) applyRail(entry);
-        // Neither a hard jump (stale GL frame) nor a crossfade (reads
-        // as a blink — the owner called both): SLIDE the width along an
-        // eased curve. WebKit re-rasters each frame, but each step is
-        // small and the dark backdrop hides the lag; 200ms total.
-        const from = rail ? 240 : 56;
-        const to = rail ? 56 : 240;
-        const anim = new Adw.TimedAnimation({
+    };
+
+    let railAnim = null;
+    const setRail = (on) => {
+        if (rail === on) return;
+        rail = on;
+        railAnim?.pause();
+        // Collapsing hides the wide chrome first; expanding reveals it
+        // only once the width is there — text sliding under a growing
+        // edge reads as clutter, ellipsis or not.
+        if (rail) showExtras(false);
+        railAnim = new Adw.TimedAnimation({
             widget: split,
-            value_from: from, value_to: to, duration: 200,
+            value_from: rail ? 240 : 56,
+            value_to: rail ? 56 : 240,
+            duration: 220,
             easing: Adw.Easing.EASE_OUT_CUBIC,
-            target: Adw.CallbackAnimationTarget.new((v) => {
-                split.set_min_sidebar_width(v);
-                split.set_max_sidebar_width(v);
-            }),
+            target: Adw.CallbackAnimationTarget.new(setSidebarWidth),
         });
-        anim.play();
+        if (!rail) railAnim.connect('done', () => showExtras(true));
+        railAnim.play();
     };
     collapseBtn.connect('clicked', () => setRail(!rail));
     win.set_content(split);
