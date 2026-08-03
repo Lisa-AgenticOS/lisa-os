@@ -25,6 +25,13 @@ on:
     # the release up automatically.
     - cron: "0 4 * * 1"
 
+# Queue, never cancel: two releases interleaving `gh release create`
+# is how you get a half-published version, and killing a build that has
+# already uploaded assets leaves the release worse than not running.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -38,7 +45,7 @@ jobs:
     # image's fuller root.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Compute version
         id: ver
         run: echo "ver=$(date -u +%Y%m%d).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
@@ -69,7 +76,7 @@ jobs:
       # move, and the kernel tarball is sha256-pinned, so neither of these
       # can serve stale bytes without something noticing.
       - name: Restore download caches (pacman + pinned kernel tarball)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .ci-cache/pacman
@@ -103,7 +110,7 @@ jobs:
         id: week
         run: echo "w=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
       - name: Cache built third-party packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ci-cache/pkgs
           # EVERY PKGBUILD reachable through use_cached must be hashed

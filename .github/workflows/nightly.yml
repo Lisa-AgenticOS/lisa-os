@@ -16,11 +16,20 @@ on:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
+# The default token is broader than any job here needs — none of them
+# call the API or push anything (release.yml is the only writer, and
+# declares contents: write for its `gh release create`).
+permissions:
+  contents: read
+
 jobs:
   image:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Expose /dev/kvm
         run: |
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; else echo "no KVM; QEMU will fall back to TCG"; fi
@@ -604,7 +613,7 @@ jobs:
       # The ENTRY is still not installed — that is issue #23's separate
       # sd-boot default-selection problem, not a missing file.
       - name: Upload image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lisa-image
           path: os/mkosi/lisa*.raw
@@ -622,7 +631,7 @@ jobs:
     needs: image
     steps:
       - name: Download built image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lisa-image
       - name: Stage A/B demo UKIs in the ESP (mtools, no rebuild)
@@ -713,9 +722,9 @@ jobs:
       # Checkout FIRST: actions/checkout cleans the workspace, which would
       # delete a previously downloaded artifact. It is needed at all only
       # because the scenario is a local composite action.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Download built image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lisa-image
       - uses: ./.github/actions/ab-sysupdate
@@ -735,9 +744,9 @@ jobs:
     timeout-minutes: 40
     needs: image
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Download built image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lisa-image
       - uses: ./.github/actions/ab-sysupdate
@@ -760,7 +769,7 @@ jobs:
     needs: image
     steps:
       - name: Download built image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: lisa-image
       - name: Expose /dev/kvm

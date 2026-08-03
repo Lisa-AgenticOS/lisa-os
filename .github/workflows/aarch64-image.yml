@@ -31,6 +31,12 @@ on:
     - cron: "0 4 * * 0"
   workflow_dispatch:
 
+# The default token is broader than any job here needs — none of them
+# call the API or push anything (release.yml is the only writer, and
+# declares contents: write for its `gh release create`).
+permissions:
+  contents: read
+
 jobs:
   image:
     runs-on: ubuntu-24.04-arm
@@ -39,7 +45,7 @@ jobs:
     # even starts the image build, on a 4-vCPU runner.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Expose /dev/kvm
         run: |
           # KVM availability on arm64 hosted runners is unconfirmed until
@@ -298,7 +304,7 @@ jobs:
             | tee boot-console.log
           grep -q "Welcome to" boot-console.log
       - name: Upload image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lisa-image-aarch64
           path: os/mkosi/lisa*.raw

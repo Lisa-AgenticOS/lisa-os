@@ -12,12 +12,18 @@ on:
         required: false
         default: 'lisa lisa-inferenced lisa-agentd lisa-remoted lisa-contextd'
 
+# The default token is broader than any job here needs — none of them
+# call the API or push anything (release.yml is the only writer, and
+# declares contents: write for its `gh release create`).
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build release binaries
         env:
           # Via env, not ${{ }} inline: a dispatch input interpolated
@@ -35,7 +41,7 @@ jobs:
           done
           ls -la out/
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lisa-linux-x86_64
           path: out/*

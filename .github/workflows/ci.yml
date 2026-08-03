@@ -8,11 +8,26 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# The default token is broader than any job here needs — none of them
+# call the API or push anything (release.yml is the only writer, and
+# declares contents: write for its `gh release create`).
+# A newer push supersedes the run in flight; letting both finish just
+# spends minutes to learn the same thing twice.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   # Per-job path filtering (ADR-0006): docs-only commits skip the heavy
   # jobs; the layer e2e additionally reacts to os/** changes.
   changes:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       layer: ${{ steps.filter.outputs.layer }}
@@ -22,8 +37,8 @@ jobs:
       llama: ${{ steps.filter.outputs.llama }}
       zen: ${{ steps.filter.outputs.zen }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -72,10 +87,13 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -87,10 +105,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The portal's caller-identity tests need a real message broker:
@@ -109,11 +130,14 @@ jobs:
   # is the closest base the runner can host.
   portal-identity:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     container: debian:trixie
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: apt-get update && apt-get install -y dbus curl build-essential pkg-config
       - run: dbus-daemon --version | head -1
       - uses: dtolnay/rust-toolchain@stable
@@ -132,10 +156,13 @@ jobs:
   # under node here, gjs on the image, jsc on macOS dev hosts.
   shell-tests:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.shell == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: |
           for t in shell/*/tests/*.test.js; do
             echo "== $t"
@@ -147,10 +174,13 @@ jobs:
   # unit tests.
   ime-build:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 25
     needs: changes
     if: needs.changes.outputs.ime == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build addon + run protocol tests in Arch
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
@@ -178,7 +208,7 @@ jobs:
     if: needs.changes.outputs.gnome_panel == 'true'
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: makepkg gnome-control-center-lisa in Arch
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
@@ -208,7 +238,7 @@ jobs:
     if: needs.changes.outputs.gnome_panel == 'true'
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: makepkg gnome-control-center-lisa in Arch Linux ARM
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
@@ -235,7 +265,7 @@ jobs:
     if: needs.changes.outputs.llama == 'true'
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: makepkg llama.cpp in Arch
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
@@ -263,7 +293,7 @@ jobs:
     if: needs.changes.outputs.llama == 'true'
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: makepkg llama.cpp in Arch Linux ARM
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
@@ -300,7 +330,7 @@ jobs:
     if: needs.changes.outputs.zen == 'true'
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: makepkg zen-browser in Arch Linux ARM
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
@@ -354,7 +384,7 @@ jobs:
     if: needs.changes.outputs.zen == 'true'
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build the x86_64 payload and check its shape
         run: |
           set -o pipefail
@@ -400,10 +430,13 @@ jobs:
   # against the OpenAI-compat endpoint.
   openai-compat:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p lisa-inferenced
@@ -421,10 +454,13 @@ jobs:
   # serves loopback under its unit sandbox while outbound is blocked.
   egress:
     runs-on: ubuntu-latest
+    # A hung job otherwise burns the 6-hour default. Sized from
+    # measured runs (the fast CI jobs finish inside a minute).
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p lisa-inferenced
@@ -438,7 +474,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.layer == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Start Arch container with systemd
         run: |
           # --privileged: the runner's default seccomp/AppArmor confinement
