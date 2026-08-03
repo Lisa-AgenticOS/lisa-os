@@ -2777,29 +2777,44 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
             }
             let pack_hash = hasher.finalize().to_hex().to_string();
 
+            // The hash gates the INDEXING only. Embedding runs on every
+            // sync regardless — the review (#177) caught the first
+            // version early-returning on an unchanged hash, which made
+            // its own printed advice ("rerun after lisa models get") a
+            // no-op: the rerun hit the stamp and left the chunks
+            // pending until the next image happened to change the pack.
             const STAMP_APP: &str = "dev.lisaos.knowledge";
             if store.memory_get(STAMP_APP, "pack_hash")? == Some(pack_hash.clone()) {
                 println!("knowledge pack unchanged — already indexed");
-                return Ok(());
+            } else {
+                let report = store.index_dir_as(&dir, "system")?;
+                // A pack is a MIRROR of its directory: what an upgrade
+                // renamed or removed must leave the store too, or the
+                // model keeps answering from the previous image's docs
+                // (#178).
+                let pruned = store.prune_missing("system")?;
+                println!(
+                    "knowledge pack: indexed {} file(s) ({} chunks), {} unchanged, {} pruned",
+                    report.indexed, report.chunks, report.skipped_unchanged, pruned
+                );
+                store.memory_set(STAMP_APP, "pack_hash", &pack_hash)?;
             }
-            let report = store.index_dir_as(&dir, "system")?;
-            println!(
-                "knowledge pack: indexed {} file(s) ({} chunks), {} unchanged",
-                report.indexed, report.chunks, report.skipped_unchanged
-            );
             // Embed ONLY with the model-backed embedder. Backfilling
             // with the hash fallback would mix vector spaces in one
             // store — cosine between a hash vector and a model vector
             // is noise that LOOKS like ranking — so a machine without
-            // the model leaves the chunks pending and the next sync
-            // after `lisa models get` picks them up.
+            // the model leaves the chunks pending, and THIS line is the
+            // recovery path: the first sync after `lisa models get`
+            // embeds them, unchanged hash or not.
             let chosen = lisa_contextd::embed::resolve();
             if chosen.kind == "inferenced" {
                 let n = store.embed_pending(chosen.embedder.as_ref())?;
-                println!(
-                    "embedded {n} chunk(s) (model: {})",
-                    chosen.model.as_deref().unwrap_or("daemon default")
-                );
+                if n > 0 {
+                    println!(
+                        "embedded {n} chunk(s) (model: {})",
+                        chosen.model.as_deref().unwrap_or("daemon default")
+                    );
+                }
             } else {
                 println!(
                     "not embedding: no model-backed embedder (chunks stay pending; \
@@ -2807,7 +2822,6 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
                     lisa_contextd::embed::EMBEDDING_MODEL
                 );
             }
-            store.memory_set(STAMP_APP, "pack_hash", &pack_hash)?;
         }
         ContextCmd::Search {
             query,

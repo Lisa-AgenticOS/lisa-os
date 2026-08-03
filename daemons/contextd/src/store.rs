@@ -43,6 +43,13 @@ impl ContextStore {
         }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Two session-start units (contextd itself and
+        // lisa-knowledge-sync) open this store unordered, and since the
+        // porter migration (#176) open() can be a WRITER. Without a
+        // busy timeout the loser of that race gets an immediate
+        // SQLITE_BUSY on exactly the first boot after an upgrade —
+        // found in review (#179) before it found a device.
+        conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS documents (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,

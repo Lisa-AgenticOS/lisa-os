@@ -120,6 +120,42 @@ impl ContextStore {
     /// accepted into unreadability), and all the foreign-row
     /// protections apply relative to it: a `system` walk will not
     /// relabel a `file` document any more than the reverse.
+    /// Remove every document of `provenance` whose source no longer
+    /// exists on disk, with its chunks and vectors (#178).
+    ///
+    /// The walk only ever adds and refreshes, so a corpus that is a
+    /// MIRROR of a directory — the knowledge pack — needs this after
+    /// each sync or a doc renamed/removed by an upgrade stays
+    /// retrievable forever, and the model answers from the previous
+    /// image's documentation. Keyed on the filesystem, not on a
+    /// remembered list: the store's own sources are the only inventory
+    /// that cannot drift from the store.
+    pub fn prune_missing(&self, provenance: &str) -> Result<usize, StoreError> {
+        if !crate::acl::is_known_provenance(provenance) {
+            return Err(StoreError::UnknownProvenance(provenance.to_string()));
+        }
+        let conn = self.conn.lock().expect("context lock");
+        let mut stmt = conn.prepare("SELECT id, source FROM documents WHERE provenance = ?1")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([provenance], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+        let mut pruned = 0;
+        for (doc_id, source) in rows {
+            if Path::new(&source).exists() {
+                continue;
+            }
+            // All three tables, same as reindex learned the hard way
+            // (#105): leaving vectors behind is residual content that
+            // survives its own deletion.
+            conn.execute("DELETE FROM chunks WHERE doc_id = ?1", [doc_id])?;
+            conn.execute("DELETE FROM chunk_vectors WHERE doc_id = ?1", [doc_id])?;
+            conn.execute("DELETE FROM documents WHERE id = ?1", [doc_id])?;
+            pruned += 1;
+        }
+        Ok(pruned)
+    }
+
     pub fn index_dir_as(&self, root: &Path, provenance: &str) -> Result<IndexReport, StoreError> {
         if !crate::acl::is_known_provenance(provenance) {
             return Err(StoreError::UnknownProvenance(provenance.to_string()));
@@ -353,6 +389,53 @@ mod tests {
                 .is_some_and(|h| h.source.ends_with("invoice.md")),
             "porter stemming must let 'invoice' match 'invoices': {hits:?}"
         );
+    }
+
+    /// #178: a pack is a mirror — a doc the upgrade removed must leave
+    /// the store, chunks and vectors included, while docs of OTHER
+    /// provenance at missing paths are untouched (prune is scoped).
+    #[test]
+    fn a_removed_pack_doc_is_pruned_with_its_vectors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.md"), "the update process explained").unwrap();
+        std::fs::write(
+            dir.path().join("gone.md"),
+            "documentation for a removed app",
+        )
+        .unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        store.index_dir_as(dir.path(), "system").unwrap();
+        store
+            .embed_pending(&crate::embed::HashEmbedder::default())
+            .unwrap();
+
+        // POSITIVE CONTROL: while the file exists, prune removes
+        // nothing — otherwise the assertion below passes for a prune
+        // that deletes everything.
+        assert_eq!(store.prune_missing("system").unwrap(), 0);
+        assert!(!store.search("removed app", 3).unwrap().is_empty());
+
+        std::fs::remove_file(dir.path().join("gone.md")).unwrap();
+        assert_eq!(store.prune_missing("system").unwrap(), 1);
+        assert!(
+            store.search("removed app", 3).unwrap().is_empty(),
+            "the removed doc must be unfindable"
+        );
+        assert!(
+            !store.search("update process", 3).unwrap().is_empty(),
+            "the surviving doc must be untouched"
+        );
+        // Vectors went with it — the residual-content lesson (#105).
+        let conn = store.conn.lock().unwrap();
+        let orphans: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM chunk_vectors v
+                 LEFT JOIN documents d ON d.id = v.doc_id WHERE d.id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 0, "pruning left orphaned vectors");
     }
 
     /// A store created before the porter tokenizer migrates in place on

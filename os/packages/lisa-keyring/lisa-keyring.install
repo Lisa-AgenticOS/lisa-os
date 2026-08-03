@@ -5,7 +5,18 @@
 
 post_install() {
     if [ -d /etc/pacman.d/gnupg ]; then
-        pacman-key --populate lisa || :
+        # NOT `|| :` — the review (#180) called that what it is: a
+        # silent no-import that stays invisible for months and then
+        # bricks the update path the day [lisa] flips to SigLevel
+        # Required. A failed populate must be a failed scriptlet with
+        # the recovery command in front of the person who saw it.
+        if ! pacman-key --populate lisa; then
+            echo ">>> ERROR: pacman-key --populate lisa FAILED." >&2
+            echo ">>>        Until it succeeds, signed [lisa] packages will be" >&2
+            echo ">>>        REFUSED once SigLevel becomes Required." >&2
+            echo ">>>        Fix and rerun:  pacman-key --populate lisa" >&2
+            return 1
+        fi
     else
         # An image build populates at first boot / via its own
         # pacman-key --init step; say so instead of failing the
