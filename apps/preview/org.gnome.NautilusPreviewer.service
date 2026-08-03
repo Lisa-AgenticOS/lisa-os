@@ -1,8 +1,11 @@
 # Space-to-preview in Files, when Preview is not already running.
 #
-# Nautilus calls org.gnome.NautilusPreviewer2 on Space; without an
-# activation file the call fails whenever the app happens to be closed,
-# which is most of the time and is exactly when the user wants it.
+# The name is VERSIONLESS on purpose: nautilus 50.2.2 dials
+# "org.gnome.NautilusPreviewer" (the 2 is only in the interface), and it
+# ping-gates the name at startup — if the ping fails, every Space press
+# is dropped before any call is made. That ping also AUTO-STARTS us
+# headless at the first Files launch; --previewer-service tells the app
+# to register and wait rather than present an empty window at login.
 [D-BUS Service]
-Name=org.gnome.NautilusPreviewer2
-Exec=/usr/bin/lisa-app preview/lisa-preview.js
+Name=org.gnome.NautilusPreviewer
+Exec=/usr/bin/lisa-app preview/lisa-preview.js --previewer-service

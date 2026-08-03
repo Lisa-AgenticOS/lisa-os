@@ -50,9 +50,23 @@ the door was missing.
 
 Select a file in Files and press Space — the macOS Quick Look gesture.
 Nautilus does not implement quick preview itself: on Space it calls
-whoever owns `org.gnome.NautilusPreviewer2`. That is how GNOME Sushi
-works, and Sushi is **not** installed on this image, which is why Space
-did nothing at all before this app existed.
+whoever owns **`org.gnome.NautilusPreviewer`** — the versionless name;
+only the *interface* carries the 2 (nautilus 50.2.2
+`src/nautilus-previewer.c:43` appends `PROFILE`, which is empty in
+release builds). That is how GNOME Sushi works, and Sushi is **not**
+installed on this image, which is why Space did nothing at all before
+this app existed.
+
+The first slice shipped owning `org.gnome.NautilusPreviewer2` — wrong,
+and invisibly so: Nautilus pings the versionless name at startup, and
+when the ping fails it marks the previewer unavailable and drops every
+Space press *before making any call*. Nothing reaches any journal. The
+fix is the name; the lesson is that the proof must be Nautilus's own
+call path, not a hand-built `busctl` call to our own name.
+
+That startup ping auto-starts the service. `--previewer-service` (set
+only by the activation file) suppresses the first `activate` present,
+so login gets a resident headless previewer instead of an empty window.
 
 `lib/previewer-protocol.js` holds the names and the toggle rule (pure,
 tested); `lib/previewer.js` owns the bus name. The signature is not

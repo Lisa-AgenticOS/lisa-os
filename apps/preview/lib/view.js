@@ -27,16 +27,20 @@ export function zoomStep(current, direction) {
 
 /// The scale that fits `content` inside `viewport`, honouring rotation.
 ///
-/// Never enlarges past 1: a 16×16 favicon blown up to fill a 4K window
-/// is not "fit", it is a blur. macOS Preview does the same, and the
-/// reason is the same.
-export function fitScale(content, viewport, rotation = 0) {
+/// By default this never enlarges past 1: a 16×16 favicon blown up to
+/// fill a 4K window on OPEN is not "fit", it is a blur. But when the
+/// user explicitly asks (the Fit button, the 0 key) `enlarge` is true
+/// and small content genuinely fills the viewport — pressing Fit on a
+/// tiny icon and watching nothing happen reads as broken, and was
+/// reported as exactly that on the device.
+export function fitScale(content, viewport, rotation = 0, enlarge = false) {
     const quarterTurn = ((rotation % 360) + 360) % 360 % 180 !== 0;
     const w = quarterTurn ? content.height : content.width;
     const h = quarterTurn ? content.width : content.height;
     if (!(w > 0 && h > 0 && viewport.width > 0 && viewport.height > 0))
         return 1;
-    return Math.min(viewport.width / w, viewport.height / h, 1);
+    const scale = Math.min(viewport.width / w, viewport.height / h);
+    return enlarge ? scale : Math.min(scale, 1);
 }
 
 /// The scale that fills the viewport's width — "fit width", the one

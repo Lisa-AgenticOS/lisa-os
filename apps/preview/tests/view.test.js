@@ -20,6 +20,10 @@ ok(zoomStep(0.73, -1) === 0.67, 'stepping down from an off-ladder fit ratio move
 
 ok(near(fitScale({width: 200, height: 100}, {width: 100, height: 100}), 0.5), 'fit uses the tighter axis');
 ok(near(fitScale({width: 16, height: 16}, {width: 4000, height: 4000}), 1), 'fit never enlarges — a blown-up favicon is not a fit');
+ok(near(fitScale({width: 16, height: 16}, {width: 4000, height: 4000}, 0, true), 250),
+    'explicit fit (the button, the 0 key) DOES enlarge — Fit doing nothing on a small icon reads as broken');
+ok(near(fitScale({width: 200, height: 100}, {width: 100, height: 100}, 0, true), 0.5),
+    'enlarge changes nothing when content is already bigger than the viewport');
 ok(near(fitScale({width: 200, height: 100}, {width: 100, height: 100}, 90), 0.5),
     'a quarter turn swaps the axes for fit');
 ok(near(fitScale({width: 0, height: 0}, {width: 100, height: 100}), 1), 'a zero-sized page does not divide by zero');

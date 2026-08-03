@@ -382,11 +382,14 @@ package_lisa-shell() {
         "$pkgdir/usr/share/applications/app.lisaos.Preview.desktop"
     install -Dm644 apps/preview/app.lisaos.Preview.json \
         "$pkgdir/usr/share/lisa/apps/app.lisaos.Preview.json"
-    # Space-to-preview in Files: Nautilus calls this name, and without
-    # the activation file the call fails whenever Preview is closed —
-    # which is most of the time and exactly when it is wanted.
-    install -Dm644 apps/preview/org.gnome.NautilusPreviewer2.service \
-        "$pkgdir/usr/share/dbus-1/services/org.gnome.NautilusPreviewer2.service"
+    # Space-to-preview in Files: Nautilus dials the VERSIONLESS name
+    # (the 2 is only in the interface — nautilus 50.2.2
+    # src/nautilus-previewer.c:43) and ping-gates it at startup, so
+    # owning the wrong name means Space is dropped silently. The old
+    # org.gnome.NautilusPreviewer2.service shipped in ≤20260803.68 is
+    # dead weight the image replaces wholesale on update.
+    install -Dm644 apps/preview/org.gnome.NautilusPreviewer.service \
+        "$pkgdir/usr/share/dbus-1/services/org.gnome.NautilusPreviewer.service"
     install -Dm644 apps/surfer/app.lisaos.Surfer.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.Surfer.desktop"
     install -Dm644 apps/surfer/app.lisaos.Surfer.json \

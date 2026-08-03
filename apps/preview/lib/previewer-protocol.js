@@ -18,9 +18,18 @@
 //         g_variant_new ("(ssbs)", uri, window_handle,
 //                        close_if_already_visible, activation_token);
 //
-// `NautilusPreviewer` (no 2) is the legacy name and takes an X11 window
-// id where this takes a handle string; we implement only the current
-// one, and say so rather than shipping a half-working legacy path.
+// THE BUS NAME HAS NO "2" IN IT — only the interface does. This was
+// gotten wrong once and cost a silent Space key on the device:
+// nautilus 50.2.2 (src/nautilus-previewer.c:43) builds the name as
+//     "org.gnome.NautilusPreviewer" PROFILE
+// where PROFILE is empty in release builds ("Devel" in devel builds) —
+// the versioned name org.gnome.NautilusPreviewer2 is dialed by NOBODY;
+// the "2" lives only in the interface. And the failure is invisible by
+// design: at startup Nautilus pings the versionless name, and when the
+// ping fails it marks the previewer unavailable and every later Space
+// press returns before making any call — nothing in any journal.
+// Verified on the device 2026-08-03: owning the "2" name, Space
+// produced zero bus traffic; owning the versionless one, it activates.
 
 const IFACE_XML = `
 <node>
@@ -36,7 +45,7 @@ const IFACE_XML = `
   </interface>
 </node>`;
 
-export const BUS_NAME = 'org.gnome.NautilusPreviewer2';
+export const BUS_NAME = 'org.gnome.NautilusPreviewer';
 export const OBJECT_PATH = '/org/gnome/NautilusPreviewer';
 export {IFACE_XML};
 

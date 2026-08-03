@@ -23,8 +23,12 @@ eq(showFileAction('file:///a.png', {uri: 'file:///a.png', visible: true}, false)
 
 // The names Nautilus actually calls. Wrong here = the key silently does
 // nothing, which is indistinguishable from the feature not existing.
-ok(BUS_NAME === 'org.gnome.NautilusPreviewer2', 'the bus name is the v2 one Nautilus 50 calls');
-ok(OBJECT_PATH === '/org/gnome/NautilusPreviewer', 'the object path has no 2 in it — deliberately');
+// Nautilus release builds append an empty PROFILE to both: the name and
+// path are versionless; only the INTERFACE is NautilusPreviewer2
+// (nautilus 50.2.2 src/nautilus-previewer.c:43-44). The "2" name was
+// shipped once and Space died silently — Nautilus ping-gates it.
+ok(BUS_NAME === 'org.gnome.NautilusPreviewer', 'the bus name is versionless — Nautilus never dials the 2');
+ok(OBJECT_PATH === '/org/gnome/NautilusPreviewer', 'the object path is versionless too');
 
 console.log(`preview/previewer: ${pass} passed, ${fail} failed`);
 if (fail) throw new Error(`${fail} failed`);

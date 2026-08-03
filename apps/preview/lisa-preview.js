@@ -53,6 +53,15 @@ try {
     Poppler = null;
 }
 
+// Launched by dbus-daemon to answer Nautilus's startup ping (see
+// org.gnome.NautilusPreviewer.service): register the previewer name and
+// wait. The first activate is GApplication's own from run() — presenting
+// there would flash an empty window at every login. Later activates are
+// real launches and present normally.
+const serviceLaunch = ARGV.includes('--previewer-service');
+const argv = ARGV.filter(a => a !== '--previewer-service');
+let suppressPresent = serviceLaunch;
+
 const app = new Adw.Application({
     application_id: 'app.lisaos.Preview',
     // Without HANDLES_OPEN, GTK routes `preview file.png` to activate()
@@ -83,13 +92,22 @@ function contentSize() {
 
 function viewportSize() {
     if (!win) return {width: 800, height: 600};
+    let w = win.get_width(), h = win.get_height();
+    // Before the first allocation both are 0 — and the previewer-service
+    // path loads a file BEFORE present(), so fitting against a 1×1
+    // viewport showed a 16×16 icon at 6% on the device. The default
+    // size is the truth until the window has one of its own.
+    if (w === 0 || h === 0) { w = win.default_width; h = win.default_height; }
     // Subtract the header bar; an image "fitted" to the whole window is
     // always a scrollbar taller than the space it has.
-    return {width: Math.max(1, win.get_width() - 24), height: Math.max(1, win.get_height() - 96)};
+    return {width: Math.max(1, w - 24), height: Math.max(1, h - 96)};
 }
 
 function effectiveScale() {
     if (state.fitMode === 'fit') return fitScale(contentSize(), viewportSize(), state.rotation);
+    // 'fill' is the EXPLICIT fit — the button, the 0 key — and may
+    // enlarge; 'fit' is the on-open default and never does.
+    if (state.fitMode === 'fill') return fitScale(contentSize(), viewportSize(), state.rotation, true);
     if (state.fitMode === 'width') return fitWidthScale(contentSize(), viewportSize(), state.rotation);
     return state.zoom;
 }
@@ -156,7 +174,14 @@ function loadFile(path) {
     }
     try {
         if (kind === 'image') {
-            state.pixbuf = GdkPixbuf.Pixbuf.new_from_file(path);
+            // An SVG has no natural pixel size — rasterizing at its
+            // declared viewBox showed a 16×16 icon as a dot. 2048 keeps
+            // vectors crisp through a full-window fit; raster formats
+            // keep their true size (upscaling THEM is the blur fitScale
+            // refuses by default).
+            state.pixbuf = path.toLowerCase().endsWith('.svg')
+                ? GdkPixbuf.Pixbuf.new_from_file_at_size(path, 2048, 2048)
+                : GdkPixbuf.Pixbuf.new_from_file(path);
             state.doc = null;
             state.pageCount = 1;
         } else {
@@ -236,7 +261,7 @@ function buildWindow() {
     const zoomIn = new Gtk.Button({icon_name: 'zoom-in-symbolic', tooltip_text: 'Zoom in (+)'});
     zoomIn.connect('clicked', () => setZoom(zoomStep(effectiveScale(), +1)));
     const fit = new Gtk.Button({icon_name: 'zoom-fit-best-symbolic', tooltip_text: 'Fit (0)'});
-    fit.connect('clicked', () => { state.fitMode = 'fit'; render(); });
+    fit.connect('clicked', () => { state.fitMode = 'fill'; render(); });
     const rot = new Gtk.Button({icon_name: 'object-rotate-right-symbolic', tooltip_text: 'Rotate (R)'});
     rot.connect('clicked', () => { state.rotation = rotate(state.rotation, 90); render(); });
     zoomLabel = new Gtk.Label({label: '100%', width_chars: 5});
@@ -265,7 +290,7 @@ function buildWindow() {
         switch (keyval) {
         case Gdk.KEY_plus: case Gdk.KEY_equal: setZoom(zoomStep(effectiveScale(), +1)); return true;
         case Gdk.KEY_minus: setZoom(zoomStep(effectiveScale(), -1)); return true;
-        case Gdk.KEY_0: state.fitMode = 'fit'; render(); return true;
+        case Gdk.KEY_0: state.fitMode = 'fill'; render(); return true;
         case Gdk.KEY_1: setZoom(1); return true;
         case Gdk.KEY_w: if (ctrl) { win.close(); return true; } break;
         case Gdk.KEY_o: if (ctrl) { chooseFile(); return true; } break;
@@ -281,6 +306,14 @@ function buildWindow() {
     // Re-fit on resize, but only in a fit mode: recomputing while the
     // user is at a chosen zoom would fight them.
     win.connect('notify::default-width', () => { if (state.fitMode !== 'free') render(); });
+    // ...and once the window first maps: the default-size fit above is
+    // an estimate, and the real allocation lands only after present().
+    win.connect('map', () => {
+        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            if (state.fitMode !== 'free') render();
+            return GLib.SOURCE_REMOVE;
+        });
+    });
     return win;
 }
 
@@ -359,10 +392,15 @@ app.connect('open', (_a, files) => {
     win.present();
     if (path) loadFile(path);
 });
-app.connect('activate', () => { ensureUi(); win.present(); render(); });
+app.connect('activate', () => {
+    ensureUi();
+    if (suppressPresent) { suppressPresent = false; return; }
+    win.present();
+    render();
+});
 app.connect('shutdown', () => {
     try { mcp?.stop(); } catch (e) { /* exiting */ }
     try { previewer?.stop(); } catch (e) { /* exiting */ }
 });
 
-app.run([imports.system.programInvocationName, ...ARGV]);
+app.run([imports.system.programInvocationName, ...argv]);
