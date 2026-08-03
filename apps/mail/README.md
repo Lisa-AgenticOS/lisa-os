@@ -21,7 +21,7 @@ So the Agent Bus tools are half the point:
 | tool | tier | returns |
 |---|---|---|
 | `search_mail` | read | summaries — subject, sender, date, group, preview |
-| `read_message` | read | one message in full, by the id `search_mail` gave |
+| `read_message` | read | one message in full, by the id `search_mail` gave, plus a list of what is attached (name, type, size) |
 
 **Everything they emit is tagged `mail` provenance**, on the JSON-RPC
 envelope *and* inside the payload — agentd unwraps `content[0].text` and
@@ -83,7 +83,8 @@ every channel carries `Expunge None` and `Remove None`.
 
 | file | what |
 |---|---|
-| `lib/rfc822.js` | headers, encoded words, addresses, readable body. Pure, total — malformed input yields something empty, never an exception |
+| `lib/rfc822.js` | headers, encoded words, addresses, readable body, the MIME part walk and transfer decoding. Pure, total — malformed input yields something empty, never an exception |
+| `lib/attachments.js` | what is attached, what its bytes are, and what it is safe to call the file. Pure |
 | `lib/maildir.js` | filename flags, listing, ids, path containment, previews |
 | `lib/smart.js` | which pile a message goes in |
 | `lib/actions.js` | what the buttons do, as arithmetic on filenames |
@@ -92,7 +93,68 @@ every channel carries `Expunge None` and `Remove None`.
 | `lib/settings.js` | what the settings page is allowed to say. Pure |
 | `lisa-mail.js` | the window; thin over the above |
 
-`just shell-test` runs the pure half — 46 cases, on any dev host.
+`just shell-test` runs the pure half — 112 cases, on any dev host.
+
+## Attachments
+
+A message with a PDF invoice used to look exactly like a message without
+one. The parser walked the MIME tree, decoded every leaf as text, kept
+the `text/plain` and `text/html` parts and dropped the rest — so the
+invoice that said *"Dokumenti është bashkëngjitur si PDF"* was a message
+telling you to open a file the reader had thrown away (#211, #169).
+
+Now every non-body part is listed under the sender, with its name, its
+declared type and its size, and three things you can do with it:
+
+| action | what happens |
+|---|---|
+| **Save As…** | a `Gtk.FileDialog` — **you** choose the directory; the sender's filename is only the suggested name |
+| **Open** (Enter, or the button) | the file is written to a private temp directory and handed to **Preview**, by desktop id |
+| **Space** | the same quick look Files has — the transient peek, toggled closed by pressing Space again |
+
+Space goes through `org.gnome.NautilusPreviewer` — the *versionless* bus
+name; only the interface carries the `2` — with
+`CloseIfAlreadyVisible: true`, which is what makes it a toggle. The
+constants come from `apps/preview/lib/previewer-protocol.js` rather than
+being spelled again here, because that name has been gotten wrong once
+already and the wrong one produces no bus traffic at all.
+
+**Space is owned by the attachment list and nothing else.** The key
+controller is attached to that list, so it is only on the event's path
+while focus is inside it: Space in the message list, in the search entry
+or in any text field behaves exactly as it did. It runs in the capture
+phase (GtkListBox has its own Space binding) with one explicit
+exception — a focused Save or Open button keeps Space, because that is
+how a button is pressed from the keyboard.
+
+**Open and Space are different actions.** Open launches Preview proper,
+which stays in the dock; Space is the transient peek, which does not.
+
+### The filename is the sender's, and is treated that way
+
+`safeFilename` (`lib/attachments.js`) takes the basename, drops NUL,
+control characters and bidi overrides, refuses a name that is only dots,
+drops a leading dot, and caps the length while keeping the extension.
+`../../.ssh/authorized_keys` becomes `authorized_keys`. Nothing is ever
+written to a sender-chosen path: the target is either a directory the
+person picked in a file dialog or a directory this app just made with
+`make_tmp`, and the temp path is checked to be inside it afterwards.
+The declared MIME type is a claim too, so it is reduced to the token
+characters a MIME type may contain before it is put in a label.
+
+Extraction is bounded: at most 64 MB per part, and a message file over
+128 MB is not read at all. A malformed part decodes to whatever its
+valid characters said rather than throwing, and the walk stops at six
+levels and two hundred parts, because forty nested multiparts are a
+cheap thing to send.
+
+### The bytes are for the person, not for the model
+
+`read_message` reports **what** is attached — filename, type, size — and
+never the contents. An agent asked "is the invoice attached?" can answer
+it and point at Preview, which is where a document gets read; a
+summariser that could be handed a PDF is one that can be handed anything
+a sender likes.
 
 ## Settings
 
@@ -221,8 +283,19 @@ A real preferences page, not only the diagnostic it started as.
   returns `changed: false` with a reason rather than a cheerful ok.
 - **No threading.** Messages are listed individually. `References` and
   `In-Reply-To` are parsed and unused.
-- **No attachments.** MIME parts other than the readable body are
-  ignored — not listed, not saved.
+- ~~No attachments.~~ **Done (#211, #169):** listed, saved, opened in
+  Preview, and quick-looked with Space — see *Attachments* above. Three
+  things it still does not do:
+  - **`cid:` inline images do not render in the HTML body.** The
+    reading pane resolves nothing from the message's own parts, so a
+    newsletter's inline logo is a broken image, exactly as it was
+    before. Those parts are parsed and kept out of the attachment list
+    (they are body imagery, not files); connecting them to the WebView
+    needs a custom URI scheme handler and is its own change (#169).
+  - **Nothing is sent with an attachment.** `lib/compose.js` builds a
+    single-part message; Reply and Forward carry text only.
+  - **Attachment contents are not indexed into contextd** (#170 indexed
+    message bodies; the documents inside them are a separate issue).
 - **No search index.** `search_mail` scans folders; fine for thousands
   of messages, not for hundreds of thousands. The contextd path (§5.3,
   proper indexing with embeddings) is the answer when it matters.

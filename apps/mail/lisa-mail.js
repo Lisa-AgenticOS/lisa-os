@@ -50,6 +50,20 @@ import {buildMessage, forwardFields, messageIdFor, replyFields} from './lib/comp
 import {msmtpArgv, sendOutcome, sentFilename} from './lib/send.js';
 import {McpServer} from './lib/mcp.js';
 import {linkAction} from './lib/links.js';
+import {
+    attachmentBytes as partBytes, attachments, listedAttachments, safeFilename,
+} from './lib/attachments.js';
+
+// Preview is a sibling app in the same tree — `lisa-app` resolves
+// `mail/lisa-mail.js` and `preview/lisa-preview.js` under one base, and
+// the PKGBUILD copies both, so this relative path is the same in a
+// checkout and on the image. Importing beats copying: the previewer's
+// bus name has already been gotten wrong once (a "2" that belongs only
+// on the interface, see lib/previewer-protocol.js), and what Preview can
+// render is a list that changes when Preview changes.
+import {BUS_NAME as PREVIEWER_NAME, OBJECT_PATH as PREVIEWER_PATH}
+    from '../preview/lib/previewer-protocol.js';
+import {kindOf} from '../preview/lib/formats.js';
 
 import {
     CONFIG_NAME, accountRows, parseConfig, resolveMaildir, serializeConfig,
@@ -177,6 +191,37 @@ function readFile(path) {
         return new TextDecoder('utf-8').decode(bytes);
     } catch {
         return '';
+    }
+}
+
+/// The largest message file an attachment is extracted from.
+///
+/// A bound on the window, not on mail: a 256 MB message is not a
+/// message anyone is reading, and decoding one would freeze the app
+/// while it tried.
+const MAX_MESSAGE_BYTES = 128 * 1024 * 1024;
+
+/// A file as one character per byte.
+///
+/// Latin-1 is the only decoding that is a bijection on bytes, which is
+/// what an attachment needs: the parser only ever looks at ASCII
+/// (boundaries, headers, base64), and the part bodies come back out
+/// with every byte intact. `null` when the file cannot be read or is
+/// larger than the bound above — the caller says so rather than
+/// pretending the attachment was empty.
+function readFileAsBytes(path) {
+    try {
+        const [ok, bytes] = GLib.file_get_contents(path);
+        if (!ok || bytes.length > MAX_MESSAGE_BYTES)
+            return null;
+        let out = '';
+        // In chunks: `String.fromCharCode.apply` on a multi-megabyte
+        // array blows the argument limit on every engine.
+        for (let i = 0; i < bytes.length; i += 8192)
+            out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+        return out;
+    } catch {
+        return null;
     }
 }
 
@@ -349,8 +394,13 @@ class Store {
         return out;
     }
 
-    /// One message, fully parsed.
-    message(folder, unique) {
+    /// Where one message's file is, or null.
+    ///
+    /// Split out of `message()` so the attachment reader finds the same
+    /// file by the same rule. Two lookups with two ideas of which file a
+    /// message id names is how an attachment ends up coming from the
+    /// wrong message.
+    locate(folder, unique) {
         for (const dir of ['cur', 'new']) {
             for (const e of listDir(`${this.root}/${folder}/${dir}`)) {
                 // Compare SANITISED to sanitised. `startsWith` against
@@ -360,34 +410,67 @@ class Store {
                 if (!uniqueMatchesId(parseFilename(e.name, dir).unique, unique))
                     continue;
                 const path = messagePath(this.root, folder, dir, e.name);
-                if (!path)
-                    continue;
-                const raw = readFile(path);
-                const {headerText, body} = splitMessage(raw);
-                const headers = parseHeaders(headerText);
-                const meta = parseFilename(e.name, dir);
-                return {
-                    folder,
-                    id: `${folder}/${unique}`,
-                    // The ACTION shape as well as the reading shape:
-                    // flagChange/moveTo need the filename, the dir and
-                    // the current flags, and returning only the reading
-                    // fields is why the write tools could not act on
-                    // what read_message could find (#167).
-                    filename: e.name, dir,
-                    seen: meta.seen, flagged: meta.flagged,
-                    from: parseAddress(headers.get('from')),
-                    to: headers.get('to'),
-                    subject: decodeSubject(headers.get('subject')),
-                    date: headers.get('date'),
-                    body: bodyOf(raw, body),
-                    // The HTML as sent, for the window. Tools never see
-                    // this: a model is handed `body`, which is prose.
-                    html: renderableBody(raw).html,
-                };
+                if (path)
+                    return {path, dir, name: e.name};
             }
         }
         return null;
+    }
+
+    /// One message, fully parsed.
+    message(folder, unique) {
+        const found = this.locate(folder, unique);
+        if (!found)
+            return null;
+        const raw = readFile(found.path);
+        const {headerText, body} = splitMessage(raw);
+        const headers = parseHeaders(headerText);
+        const meta = parseFilename(found.name, found.dir);
+        return {
+            folder,
+            id: `${folder}/${unique}`,
+            unique,
+            // The ACTION shape as well as the reading shape:
+            // flagChange/moveTo need the filename, the dir and
+            // the current flags, and returning only the reading
+            // fields is why the write tools could not act on
+            // what read_message could find (#167).
+            filename: found.name, dir: found.dir,
+            seen: meta.seen, flagged: meta.flagged,
+            from: parseAddress(headers.get('from')),
+            to: headers.get('to'),
+            subject: decodeSubject(headers.get('subject')),
+            date: headers.get('date'),
+            body: bodyOf(raw, body),
+            // The HTML as sent, for the window. Tools never see
+            // this: a model is handed `body`, which is prose.
+            html: renderableBody(raw).html,
+            // What is attached: metadata only, and only the parts worth
+            // showing (lib/attachments.js). The BYTES are fetched on
+            // demand by `attachmentBytes` — putting a 4 MB PDF in every
+            // parsed message would undo the reason `summary()` reads
+            // only the head of a file.
+            attachments: listedAttachments(attachments(raw)),
+        };
+    }
+
+    /// The bytes of one attachment, read from the message file on
+    /// demand.
+    ///
+    /// Read as Latin-1 rather than UTF-8, and that is not a detail: a
+    /// message file is a byte stream, and `readFile`'s UTF-8 decode
+    /// turns every invalid sequence into U+FFFD. base64 survives that
+    /// (it is ASCII), an `8bit` or `binary` part does not — it would
+    /// save a corrupt file that still opens far enough to look like the
+    /// app's fault.
+    attachmentBytes(folder, unique, path) {
+        const found = this.locate(folder, unique);
+        if (!found)
+            return null;
+        const raw = readFileAsBytes(found.path);
+        if (raw === null)
+            return null;
+        return partBytes(raw, path);
     }
 }
 
@@ -435,6 +518,20 @@ let currentAccountName = null;
 let openMessageFull = null;
 let readerActions = null;
 let openMessage = null;
+/// The window, for the file dialogs the attachment bar puts up.
+let mainWindow = null;
+/// The attachment bar: hidden on a message with nothing attached.
+let attachmentBox = null;
+let attachmentList = null;
+/// Attachments already written to a temp file, keyed by message id and
+/// part path.
+///
+/// Load-bearing for the Space gesture, not an optimisation: the peek
+/// toggles closed when it is shown the URI it is already showing
+/// (`CloseIfAlreadyVisible`), so a second press must hand it the SAME
+/// path. Extracting into a fresh temp directory each time would swap
+/// the peek for an identical copy of itself and never close.
+const attachmentFiles = new Map();
 
 const app = new Adw.Application({application_id: APP_ID});
 
@@ -603,6 +700,7 @@ function clearReader() {
     readerFrom.set_label('');
     readerBody.buffer.set_text('', -1);
     allowRemote = loadConfig().showRemoteImages !== false;
+    buildAttachments({attachments: []});
     if (readerStack)
         readerStack.set_visible_child_name('text');
     if (readerActions) {
@@ -658,6 +756,278 @@ function renderBody(full) {
     readerHtml.load_html(htmlDocument(full.html), null);
     readerStack.set_visible_child_name('html');
     remoteBanner?.set_revealed(!allowRemote && hasRemoteContent(full.html));
+}
+
+// ---------------------------------------------------------------------
+// Attachments (#211, #169).
+//
+// Before this, a message with a PDF invoice looked exactly like a
+// message without one: `collectParts` decoded every leaf as text and
+// `renderableBody` kept the two it could read. The invoice said
+// "Dokumenti është bashkëngjitur si PDF" and the reader had thrown the
+// document away.
+//
+// Three things happen here and nothing else does:
+//
+//   **Save As…** — a Gtk.FileDialog, so the directory is chosen by the
+//   person. The sender's filename is a suggestion in the name field and
+//   nothing more; `safeFilename` has already taken the basename off it.
+//
+//   **Open** — Preview, the app, by its desktop id. NOT the system's
+//   default handler: `Gtk.show_uri` on a file a stranger emailed hands
+//   an arbitrary type to whatever claims it, and "attachment.pdf.desktop"
+//   is not a document. Preview opens images, PDFs, media and text, and
+//   says so about anything else.
+//
+//   **Space** — the quick look Files already has, via the same
+//   `org.gnome.NautilusPreviewer` interface (apps/preview/lib/
+//   previewer-protocol.js). A transient peek, not the app.
+//
+// The bytes never go to a model. `read_message` lists what is attached —
+// name, type, size — and stops there.
+// ---------------------------------------------------------------------
+
+/// Say something in the reading pane's banner.
+///
+/// The banner is the only notice surface this window has (there is no
+/// toast overlay — checked, after writing `toast?.(…)` here and finding
+/// that is a ReferenceError rather than the no-op the `?.` suggests).
+function showNotice(text) {
+    if (!remoteBanner) {
+        log(`mail: ${text}`);
+        return;
+    }
+    remoteBanner.set_title(text);
+    remoteBanner.set_revealed(true);
+}
+
+/// Rebuild the attachment bar for the open message.
+function buildAttachments(full) {
+    if (!attachmentList)
+        return;
+    let child = attachmentList.get_first_child();
+    while (child) {
+        const next = child.get_next_sibling();
+        attachmentList.remove(child);
+        child = next;
+    }
+    const items = full.attachments ?? [];
+    attachmentBox.set_visible(items.length > 0);
+    if (items.length === 0)
+        return;
+
+    const icons = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
+    for (const att of items) {
+        const name = safeFilename(att.filename, att.mimeType);
+        const row = new Adw.ActionRow({
+            // ESCAPED, because AdwPreferencesRow renders its title as
+            // Pango markup and the sender wrote this name: a filename of
+            // `<b>x</b>.pdf` is not a formatting instruction. Escaping
+            // rather than `use-markup: false` so this does not depend on
+            // which libadwaita is installed.
+            title: GLib.markup_escape_text(att.filename || name, -1),
+            subtitle: GLib.markup_escape_text(
+                `${att.mimeType} · ${GLib.format_size(att.size)}`, -1),
+            activatable: true,
+            // What Preview can actually render, asked of Preview's own
+            // list rather than claimed here (apps/preview/lib/
+            // formats.js). An unrecognised type still peeks — it gets
+            // the generic file card, name, type and size — and saying
+            // so beats a person pressing Space and wondering.
+            tooltip_text: kindOf(name)
+                ? 'Space to quick look, Enter to open in Preview'
+                : 'Preview has no viewer for this type — Space shows a file card',
+        });
+        row._attachment = att;
+
+        const buttons = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL, spacing: 4, valign: Gtk.Align.CENTER,
+        });
+        for (const spec of [
+            {icon: 'document-save-as-symbolic', label: 'Save As…',
+                tip: 'Save this attachment', run: () => saveAttachment(att)},
+            {icon: 'document-open-symbolic', label: 'Open',
+                tip: 'Open in Preview', run: () => openAttachment(att)},
+        ]) {
+            // Same fallback as the toolbar: an icon name that does not
+            // resolve gives an empty button, which is indistinguishable
+            // from no button.
+            const known = icons?.has_icon(spec.icon);
+            const button = new Gtk.Button({
+                ...(known ? {icon_name: spec.icon} : {label: spec.label}),
+                tooltip_text: spec.tip,
+                css_classes: ['flat'],
+            });
+            button.connect('clicked', () => spec.run());
+            buttons.append(button);
+        }
+        row.add_suffix(buttons);
+        attachmentList.append(row);
+    }
+}
+
+/// Write one attachment to a private temp directory, and return the
+/// path.
+///
+/// THE ONE EXTRACTION ROUTE. Open and Space both come here, so there is
+/// a single place where a sender's filename meets a filesystem — and
+/// that place builds the path out of a directory this app just made and
+/// a name `safeFilename` has already reduced to a basename. The parent
+/// check afterwards is belt and braces: if a name ever slipped a
+/// separator past the sanitiser, the file would land outside the
+/// directory we made and this refuses instead.
+function materialise(att) {
+    const key = `${openMessage?.folder}/${openMessage?.unique}#${att.path.join('.')}`;
+    const cached = attachmentFiles.get(key);
+    if (cached && GLib.file_test(cached, GLib.FileTest.EXISTS))
+        return cached;
+
+    const bytes = attachmentBytesOf(att);
+    if (!bytes)
+        return null;
+    try {
+        const dir = GLib.Dir.make_tmp('lisa-mail-XXXXXX');
+        const path = GLib.build_filenamev([dir, safeFilename(att.filename, att.mimeType)]);
+        if (Gio.File.new_for_path(path).get_parent()?.get_path() !== dir) {
+            showNotice('That attachment has a filename this app will not write.');
+            return null;
+        }
+        // PRIVATE: 0600. A stranger's attachment in a world-readable
+        // temp file is a stranger's attachment in everyone's temp file.
+        Gio.File.new_for_path(path).replace_contents(
+            bytes, null, false, Gio.FileCreateFlags.PRIVATE, null);
+        attachmentFiles.set(key, path);
+        return path;
+    } catch (e) {
+        showNotice(`Could not unpack that attachment: ${e.message}`);
+        return null;
+    }
+}
+
+function attachmentBytesOf(att) {
+    if (!openMessage) {
+        showNotice('No message is open.');
+        return null;
+    }
+    const bytes = store.attachmentBytes(openMessage.folder, openMessage.unique, att.path);
+    if (!bytes || bytes.length === 0) {
+        showNotice('That attachment could not be read from the message file.');
+        return null;
+    }
+    return bytes;
+}
+
+/// Save As… — the person chooses the directory; we only suggest a name.
+function saveAttachment(att) {
+    const bytes = attachmentBytesOf(att);
+    if (!bytes)
+        return;
+    const dialog = new Gtk.FileDialog({
+        title: 'Save attachment',
+        initial_name: safeFilename(att.filename, att.mimeType),
+        modal: true,
+    });
+    const downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD);
+    if (downloads)
+        dialog.set_initial_folder(Gio.File.new_for_path(downloads));
+    dialog.save(mainWindow, null, (source, result) => {
+        try {
+            const file = source.save_finish(result);
+            if (!file)
+                return;
+            file.replace_contents(bytes, null, false, Gio.FileCreateFlags.NONE, null);
+            showNotice(`Saved ${file.get_basename()}`);
+        } catch (e) {
+            // Cancelling a dialog is not an error worth a banner.
+            if (!dialogDismissed(e))
+                showNotice(`Could not save: ${e.message}`);
+        }
+    });
+}
+
+/// Did the person just close the dialog?
+///
+/// Cancelling is not a failure and must not raise a banner. Asked of
+/// the error domain first, with the message as a fallback — the same
+/// two-step Preview uses, because the domain check needs a GError and
+/// not every binding hands one over.
+function dialogDismissed(e) {
+    try {
+        if (typeof e?.matches === 'function')
+            return e.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED);
+    } catch {
+        // Fall through to the message check.
+    }
+    return /dismiss/i.test(String(e?.message ?? ''));
+}
+
+/// Open — hand the file to Preview, the app.
+function openAttachment(att) {
+    const path = materialise(att);
+    if (!path)
+        return;
+    try {
+        const info = Gio.DesktopAppInfo.new('app.lisaos.Preview.desktop');
+        if (!info) {
+            showNotice('Preview is not installed, so there is nothing to open this with.');
+            return;
+        }
+        info.launch([Gio.File.new_for_path(path)], null);
+    } catch (e) {
+        showNotice(`Could not open that attachment: ${e.message}`);
+    }
+}
+
+/// Space — the transient peek, the same one Files gets.
+///
+/// `CloseIfAlreadyVisible: true` is what makes Space a toggle: the peek
+/// closes when it is shown the URI it is already showing. The bus name
+/// is VERSIONLESS and only the interface carries the "2" — owning the
+/// versioned name produced zero bus traffic on the device, which is why
+/// the constants are imported from lib/previewer-protocol.js rather than
+/// spelled again here.
+function peekAttachment(att) {
+    const path = materialise(att);
+    if (!path)
+        return;
+    const uri = Gio.File.new_for_path(path).get_uri();
+    try {
+        Gio.DBus.session.call(
+            PREVIEWER_NAME, PREVIEWER_PATH, 'org.gnome.NautilusPreviewer2', 'ShowFile',
+            new GLib.Variant('(ssbs)', [uri, '', true, '']),
+            null, Gio.DBusCallFlags.NONE, 5000, null,
+            (bus, result) => {
+                try {
+                    bus.call_finish(result);
+                } catch (e) {
+                    showNotice(`Quick look is unavailable: ${e.message}`);
+                }
+            });
+    } catch (e) {
+        showNotice(`Quick look is unavailable: ${e.message}`);
+    }
+}
+
+/// Remove the temp copies this session made.
+///
+/// Only the paths in `attachmentFiles` — every one of them a file this
+/// app wrote into a directory it created with `make_tmp` — and the
+/// directory that held it. Nothing recursive, nothing from a name a
+/// sender chose.
+function clearAttachmentFiles() {
+    for (const path of attachmentFiles.values()) {
+        try {
+            const file = Gio.File.new_for_path(path);
+            const dir = file.get_parent();
+            file.delete(null);
+            if (dir && GLib.path_get_basename(dir.get_path()).startsWith('lisa-mail-'))
+                dir.delete(null);
+        } catch {
+            // A temp file that has already gone is not a problem worth
+            // reporting on the way out.
+        }
+    }
+    attachmentFiles.clear();
 }
 
 function buildWebView() {
@@ -896,6 +1266,7 @@ function showMessage(msg) {
     // the last one's permission to phone home.
     allowRemote = loadConfig().showRemoteImages !== false;
     openMessageFull = full;
+    buildAttachments(full);
     renderBody(full);
 }
 
@@ -1011,6 +1382,8 @@ app.connect('activate', () => {
         application: app, title: 'Mail',
         default_width: display.width, default_height: display.height,
     });
+    // The file dialogs the attachment bar puts up need a parent.
+    mainWindow = window;
 
     // Pane 1: folders. Populated by reloadFolders() once the rest of
     // the window exists — it selects a row, which loads a folder, which
@@ -1101,6 +1474,62 @@ app.connect('activate', () => {
     });
     readerBox.append(readerTitle);
     readerBox.append(readerFrom);
+
+    // The attachment bar, under the sender and above the body — where
+    // every mail client puts it, and where it is visible before you
+    // start reading a message that says "see attached".
+    attachmentList = new Gtk.ListBox({
+        selection_mode: Gtk.SelectionMode.SINGLE,
+        css_classes: ['boxed-list'],
+    });
+    // Enter (or a double click) opens; the buttons in the row do the
+    // same two things for a mouse.
+    attachmentList.connect('row-activated', (_l, row) => {
+        if (row?._attachment)
+            openAttachment(row._attachment);
+    });
+    // WHICH WIDGET OWNS SPACE, exactly.
+    //
+    // The controller is on the attachment list, so it is only ever on
+    // the event's path while focus is INSIDE that list — a key press in
+    // the message list, in the search entry, or in any text field never
+    // reaches it. Space keeps doing what it does today everywhere else
+    // in this window.
+    //
+    // CAPTURE phase, deliberately: GtkListBox binds Space to its own
+    // cursor-row handling, and a bubble-phase controller would arrive
+    // after the list had already consumed the key. Capturing means one
+    // explicit exception has to be made rather than inherited — a
+    // focused Save/Open button keeps Space, because GtkButton binds it
+    // to activate and stealing it would break the keyboard path to the
+    // two actions in the row.
+    const attachmentKeys = new Gtk.EventControllerKey({
+        propagation_phase: Gtk.PropagationPhase.CAPTURE,
+    });
+    attachmentKeys.connect('key-pressed', (_c, keyval) => {
+        if (keyval !== Gdk.KEY_space)
+            return false;
+        const focus = mainWindow?.get_focus?.() ?? null;
+        if (focus instanceof Gtk.Button)
+            return false;
+        // The row the person is on: the focused one, or the selected one
+        // when focus is on the list itself.
+        let node = focus;
+        while (node && node._attachment === undefined)
+            node = node.get_parent?.() ?? null;
+        const att = node?._attachment ?? attachmentList.get_selected_row()?._attachment;
+        if (!att)
+            return false;
+        peekAttachment(att);
+        return true;
+    });
+    attachmentList.add_controller(attachmentKeys);
+    attachmentBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL, margin_top: 6, margin_bottom: 6, visible: false,
+    });
+    attachmentBox.append(attachmentList);
+    readerBox.append(attachmentBox);
+
     const readerScroll = new Gtk.ScrolledWindow({child: readerBody, vexpand: true});
 
     // Two ways to show a body, chosen per message: the TextView for
@@ -1172,6 +1601,9 @@ app.connect('activate', () => {
     mcp.start();
     window.connect('close-request', () => {
         mcp.stop();
+        // The temp copies of attachments go with the window. Somebody
+        // else's invoice should not outlive the app that unpacked it.
+        clearAttachmentFiles();
         return false;
     });
 
@@ -1477,6 +1909,19 @@ function readMessage({id = ''} = {}) {
         id: msg.id, folder: msg.folder, subject: msg.subject,
         from: msg.from.address, from_name: msg.from.name, to: msg.to, date: msg.date,
         body: msg.body,
+        // WHAT is attached, never the attachment. A model is handed
+        // `body`, which is prose; the bytes of a file a stranger sent
+        // are not prose and are not summarised here. Listing them is
+        // what lets an assistant answer "is the invoice attached?" and
+        // point at Preview, which is where a document gets read
+        // (#211). Filenames are the sender's, so they arrive
+        // sanitised — a model that has read one is a model that can be
+        // asked to repeat it into a path.
+        attachments: (msg.attachments ?? []).map((a) => ({
+            filename: safeFilename(a.filename, a.mimeType),
+            mime_type: a.mimeType,
+            size: a.size,
+        })),
     };
 }
 
