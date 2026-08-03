@@ -36,6 +36,20 @@ lisa update --reboot</code></pre>
       <p v-if="!releases.length">Could not reach the GitHub API just now — see <a :href="`${repo}/releases`">the releases page on GitHub</a>.</p>
     </section>
 
+    <section class="sec anchor">
+      <h2>The <code>[lisa]</code> package repo</h2>
+      <p>Already on Arch (or Omarchy)? Lisa's components are ordinary pacman packages in a <strong>signed</strong> repo — the same packages the OS image is assembled from. Add it and install what you want:</p>
+      <pre><code><span class="c"># /etc/pacman.conf — signatures are published; SigLevel goes
+# Required once the keyring package has shipped in the image.</span>
+[lisa]
+SigLevel = Optional TrustAll
+Server = https://github.com/Lisa-AgenticOS/lisa-packages/releases/download/current
+
+<span class="c"># then</span>
+sudo pacman -Sy lisa-cli lisa-apps lisa-desktop</code></pre>
+      <p>Signing key: <em>Lisa OS Package Signing</em>, fingerprint <code>7372&nbsp;40D1&nbsp;1D28&nbsp;E109&nbsp;A474&nbsp;A8E5&nbsp;827E&nbsp;2741&nbsp;7AF5&nbsp;982B</code> — public key <a href="https://github.com/Lisa-AgenticOS/lisa-packages/blob/main/lisa-packages.gpg.asc">in the repo</a>. Each package is built by CI in <a href="https://github.com/Lisa-AgenticOS/lisa-desktop">its</a> <a href="https://github.com/Lisa-AgenticOS/lisa-apps">own</a> <a href="https://github.com/Lisa-AgenticOS/lisa-os">repo</a> and indexed by <a href="https://github.com/Lisa-AgenticOS/lisa-packages">lisa-packages</a> (ADR-0039).</p>
+    </section>
+
     <section v-if="releases.length" class="sec anchor">
       <h2>All releases</h2>
       <p>The ten most recent. Verify every download against the release's <code>SHA256SUMS</code>.</p>
