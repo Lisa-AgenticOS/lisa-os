@@ -5,8 +5,9 @@
 // shell/assistant. The engine is the webkitgtk-6.0 the image already
 // ships; this file is chrome around it.
 //
-// Structure: Adw.TabView owns the per-tab WebViews (drag reordering,
-// the overview, close buttons — GNOME's, not reimplemented). The pure
+// Structure: Adw.TabView owns the per-tab WebViews; the strip that
+// SHOWS them is a Zen/Arc-style collapsible sidebar (#182) — rows in a
+// ListBox bound to the TabView's pages, Ctrl+S to toggle. The pure
 // modules own the decisions: lib/url.js decides what the address bar
 // means, lib/extract.js (via evaluate_javascript) reads pages for the
 // agent, lib/mcp.js serves the Agent Bus socket while a window is open.
@@ -25,6 +26,7 @@ import {resolveInput} from './lib/url.js';
 import {EXTRACT_JS, pageResult} from './lib/extract.js';
 import {McpServer} from './lib/mcp.js';
 import {navigationTarget, clickScript, fillScript} from './lib/actions.js';
+import {rowLabel} from './lib/tablist.js';
 
 const HOME = 'https://duckduckgo.com';
 
@@ -345,13 +347,94 @@ function buildWindow() {
         if (tabView.get_n_pages() === 0) win.close();
         return true;
     });
-    const tabBar = new Adw.TabBar({view: tabView, autohide: false});
+    // Zen/Arc-shaped: tabs live in a collapsible SIDEBAR, not a strip
+    // (#182). Adw.TabView stays the model — rows below are only a
+    // different presentation of the same pages, so drag-out, agent tab
+    // handles and close-page semantics are untouched.
+    const tabList = new Gtk.ListBox({css_classes: ['navigation-sidebar', 'lisa-tablist']});
+    tabList.set_selection_mode(Gtk.SelectionMode.SINGLE);
+    const rows = new Map(); // Adw.TabPage → Gtk.ListBoxRow
+
+    const rowFor = (page) => {
+        const label = new Gtk.Label({xalign: 0, hexpand: true, ellipsize: 3 /* END */});
+        const sync = () =>
+            label.set_text(rowLabel(page.get_title(), page.get_child()?.get_uri?.() ?? ''));
+        page.connect('notify::title', sync);
+        sync();
+        const close = new Gtk.Button({
+            icon_name: 'window-close-symbolic',
+            css_classes: ['flat', 'circular'],
+            valign: Gtk.Align.CENTER,
+        });
+        close.connect('clicked', () => tabView.close_page(page));
+        const box = new Gtk.Box({spacing: 8, margin_top: 4, margin_bottom: 4});
+        box.append(label);
+        box.append(close);
+        const row = new Gtk.ListBoxRow({child: box});
+        // Middle-click closes, the way every tab strip has always worked.
+        const mid = new Gtk.GestureClick({button: 2});
+        mid.connect('pressed', () => tabView.close_page(page));
+        row.add_controller(mid);
+        return row;
+    };
+
+    tabView.connect('page-attached', (_tv, page) => {
+        const row = rowFor(page);
+        rows.set(page, row);
+        tabList.append(row);
+    });
+    tabView.connect('page-detached', (_tv, page) => {
+        const row = rows.get(page);
+        if (row) tabList.remove(row);
+        rows.delete(page);
+    });
+    tabView.connect('notify::selected-page', () => {
+        const row = rows.get(tabView.get_selected_page());
+        if (row && tabList.get_selected_row() !== row)
+            tabList.select_row(row);
+    });
+    tabList.connect('row-selected', (_l, row) => {
+        if (!row) return;
+        for (const [page, r] of rows) {
+            if (r === row && tabView.get_selected_page() !== page)
+                tabView.set_selected_page(page);
+        }
+    });
+
+    const newTabBtn = new Gtk.Button({
+        child: new Adw.ButtonContent({icon_name: 'tab-new-symbolic', label: 'New Tab'}),
+        css_classes: ['flat'],
+        margin_start: 6, margin_end: 6, margin_bottom: 6,
+    });
+    newTabBtn.connect('clicked', () => newTab());
+
+    const scroller = new Gtk.ScrolledWindow({child: tabList, vexpand: true});
+    const sidebar = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
+    sidebar.append(scroller);
+    sidebar.append(newTabBtn);
 
     const toolbar = new Adw.ToolbarView();
     toolbar.add_top_bar(header);
-    toolbar.add_top_bar(tabBar);
     toolbar.set_content(tabView);
-    win.set_content(toolbar);
+
+    const split = new Adw.OverlaySplitView({
+        sidebar,
+        content: toolbar,
+        min_sidebar_width: 200,
+        max_sidebar_width: 240,
+    });
+    win.set_content(split);
+
+    // The active row carries the brand accent (tokens: violet-500 —
+    // the gate in os/repo-tools/check-tokens.py sanctions every hex
+    // here).
+    const css = new Gtk.CssProvider();
+    css.load_from_string(`
+        .lisa-tablist row:selected { background: alpha(#6D45C9, 0.18); }
+        .lisa-tablist row:selected label { color: #6D45C9; font-weight: 600; }
+    `);
+    Gtk.StyleContext.add_provider_for_display(
+        win.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     // Shortcuts: the three everyone's hands already know.
     const add = (accel, fn) => {
@@ -366,6 +449,7 @@ function buildWindow() {
         if (page) tabView.close_page(page);
     });
     add('<Control>l', () => urlBar.grab_focus());
+    add('<Control>s', () => split.set_show_sidebar(!split.get_show_sidebar()));
 
     win.present();
 }

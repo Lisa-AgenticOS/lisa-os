@@ -49,6 +49,12 @@ served over the MCP socket while a window is open, declared in
   **Not yet verified on the device**: the end-to-end acceptance (a
   real form filled with the confirmation appearing in the consent
   surface and the calls in the Ledger) needs the seated session.
+- **Sidebar tabs (#182 v1)**: vertical tab list in a collapsible left
+  sidebar (Ctrl+S), Zen/Arc-shaped; active row carries violet-500.
+  Structure and function are device-verified (app runs, journal clean,
+  agent tools work through the rebuilt window); **how it LOOKS is
+  not** — GNOME 50 refuses remote screenshots, so the first seated
+  session judges it. Reorder-by-drag and favicons are follow-ups.
 - **MVP**: no bookmarks, downloads, history, passwords, session restore.
 - `tests/` cover the pure modules; the window itself is verified by
   eyes on hardware.
