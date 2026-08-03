@@ -317,6 +317,9 @@ function loadFile(path) {
     state.annots = [];
     state.tool = null;
     state.drag = null;
+    // Every load starts in app manners; the previewer's onShow flips
+    // this AFTER loadFile, so only the Space gesture gets the toggle.
+    state.quickLook = false;
     state.pageOrder = kind === 'document'
         ? Array.from({length: state.pageCount}, (_, i) => i) : [];
     refreshEditUi?.();
@@ -796,7 +799,18 @@ function buildWindow() {
         case Gdk.KEY_b: if (state.kind === 'document') { boxBtn.active = !boxBtn.active; return true; } break;
         case Gdk.KEY_p: if (state.kind === 'document') { pagesBtn.active = !pagesBtn.active; return true; } break;
         case Gdk.KEY_r: state.rotation = rotate(state.rotation, 90); render(); return true;
-        case Gdk.KEY_Right: case Gdk.KEY_Page_Down: case Gdk.KEY_space: goPage(+1); return true;
+        case Gdk.KEY_space:
+            // Quick Look manners, but only for windows Space opened:
+            // Space toggles the peek closed again (Nautilus only gets
+            // to send its close toggle while Files keeps focus, and it
+            // does not — this window takes it). A file opened normally
+            // keeps Space as page-forward, like any reader.
+            if (state.quickLook) { win.close(); return true; }
+            goPage(+1); return true;
+        case Gdk.KEY_Escape:
+            if (state.quickLook) { win.close(); return true; }
+            break;
+        case Gdk.KEY_Right: case Gdk.KEY_Page_Down: goPage(+1); return true;
         case Gdk.KEY_Left: case Gdk.KEY_Page_Up: goPage(-1); return true;
         case Gdk.KEY_bracketright: goFile(+1); return true;
         case Gdk.KEY_bracketleft: goFile(-1); return true;
@@ -937,7 +951,11 @@ function ensureUi() {
                 // A URI with no local path is a remote or virtual file.
                 // Refusing by name beats opening an empty window.
                 if (!path) { toast(`Preview cannot open ${uri}`); return; }
-                if (loadFile(path)) win.present();
+                if (loadFile(path)) {
+                    // Space opened this window; Space closes it again.
+                    state.quickLook = true;
+                    win.present();
+                }
             },
             onClose: () => win?.close(),
             isVisible: () => !!win?.get_visible(),

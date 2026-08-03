@@ -130,6 +130,12 @@ previous/next file · `N` note · `H` highlight · `B` box · `P` pages ·
 `Ctrl+S` save edited copy · `Ctrl+Z` undo annotation ·
 `Ctrl+O` open · `Ctrl+W` close
 
+`Space` depends on how the window opened — Quick Look manners: a
+window Space opened is CLOSED by Space (and Escape), the full toggle;
+a file opened normally keeps Space as page-forward like any reader.
+The distinction exists because this window takes focus, so Nautilus
+never gets to send its own close toggle.
+
 ## How to extend
 
 Add a tool: implement it in `handlers` (lisa-preview.js), wire the name
