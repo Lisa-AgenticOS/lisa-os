@@ -5,6 +5,29 @@ fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
 "where are we on it" companion. **Last updated: 2026-08-02.**
 
+## 2026-08-03 — v20260803.64 shipped and device-verified; ADRs reconciled
+
+- **v33 (20260803.64) cut, iMac updated, zero failed units.** First
+  release publishing the FULL package set (20 pkgs incl. lisa-keyring);
+  `[lisa]` republished — **24 signed packages**: the complete OS is now
+  pacman-installable.
+- **#176 closed on device evidence**: both original queries pass on
+  the real (migrated) store. En route, a new field-only bug —
+  llama-server's 512-token physical batch refused ~700-token chunk
+  embeds (stub-based CI could never see it) — fixed with -ub/-b 2048,
+  verified via a user-scope override before landing.
+- **#175 verified in the field**: pack indexed at session start,
+  embedded with the real model, and `--scope system` answers "how do I
+  summon the assistant" semantically. The #177 recovery path proved
+  itself: chunks waited pending, then backfilled.
+- **ADR sweep**: five stale statuses corrected (0011, 0012, 0037,
+  0038, 0039), four new ADRs (0041 signing/custody, 0042 field
+  keyring policy, 0043 knowledge-through-retrieval, 0044 retrieval
+  receipts), index caught up to 44. ADR-0038's mechanism corrected
+  against the 50.3 source: the UI JS is compiled in — the fork
+  iterates by rebuild, not file copy; step 2 grounded in
+  lisa-desktop#1.
+
 ## 2026-08-03 overnight — recall, knowledge, trust anchor, browser hands
 
 - **#176 landed**: porter stemming (with in-place store migration) +
