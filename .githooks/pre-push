@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Enforce the CLAUDE.md rule mechanically: no push without a green lint.
 # Enable once per clone:  git config core.hooksPath .githooks
+#
+# `just lint`, not a hand-picked subset: this hook used to run only
+# fmt+clippy, and on 2026-08-03 a workflow with a syntax-breaking
+# apostrophe — exactly what check-workflow-quoting exists to catch —
+# pushed straight through it. A gate that runs some of the checks
+# reads as "the checks passed".
 set -euo pipefail
-echo ">> pre-push: cargo fmt --check + clippy -D warnings"
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
+echo ">> pre-push: just lint (fmt, clippy, workflow/unit/slot/model/token gates)"
+just lint
