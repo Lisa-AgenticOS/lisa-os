@@ -86,7 +86,19 @@ async fn embeddings(State(state): State<AppState>, Json(req): Json<serde_json::V
             input_hash: blake3::hash(texts.join("\n").as_bytes())
                 .to_hex()
                 .to_string(),
-            preview: preview_of(&texts.join(" | ")),
+            // SHAPE, NOT CONTENT (#207). A prompt preview is the user's
+            // own sentence; an embed batch is whatever is being indexed
+            // — during a mail backfill this copied 160 characters of
+            // every private message into an append-only store that
+            // cannot take it back. The hash above still identifies the
+            // batch; the Ledger's question here is "how much was
+            // embedded?", not "what did it say?".
+            preview: format!(
+                "{} text{} ({} bytes)",
+                texts.len(),
+                if texts.len() == 1 { "" } else { "s" },
+                texts.iter().map(String::len).sum::<usize>()
+            ),
             status: "started".into(),
             ..Default::default()
         },
