@@ -411,7 +411,7 @@ function buildWindow() {
     // handles and close-page semantics are untouched.
     const tabList = new Gtk.ListBox({css_classes: ['navigation-sidebar', 'lisa-tablist']});
     tabList.set_selection_mode(Gtk.SelectionMode.SINGLE);
-    const rows = new Map(); // Adw.TabPage → Gtk.ListBoxRow
+    const rows = new Map(); // Adw.TabPage → {row, label, close, favicon}
 
     const rowFor = (page) => {
         const label = new Gtk.Label({xalign: 0, hexpand: true, ellipsize: 3 /* END */});
@@ -453,28 +453,29 @@ function buildWindow() {
         const mid = new Gtk.GestureClick({button: 2});
         mid.connect('pressed', () => tabView.close_page(page));
         row.add_controller(mid);
-        return row;
+        return {row, label, close, favicon};
     };
 
     tabView.connect('page-attached', (_tv, page) => {
-        const row = rowFor(page);
-        rows.set(page, row);
-        tabList.append(row);
+        const entry = rowFor(page);
+        rows.set(page, entry);
+        applyRail(entry);
+        tabList.append(entry.row);
     });
     tabView.connect('page-detached', (_tv, page) => {
-        const row = rows.get(page);
-        if (row) tabList.remove(row);
+        const entry = rows.get(page);
+        if (entry) tabList.remove(entry.row);
         rows.delete(page);
     });
     tabView.connect('notify::selected-page', () => {
-        const row = rows.get(tabView.get_selected_page());
-        if (row && tabList.get_selected_row() !== row)
-            tabList.select_row(row);
+        const entry = rows.get(tabView.get_selected_page());
+        if (entry && tabList.get_selected_row() !== entry.row)
+            tabList.select_row(entry.row);
     });
     tabList.connect('row-selected', (_l, row) => {
         if (!row) return;
-        for (const [page, r] of rows) {
-            if (r === row && tabView.get_selected_page() !== page)
+        for (const [page, entry] of rows) {
+            if (entry.row === row && tabView.get_selected_page() !== page)
                 tabView.set_selected_page(page);
         }
     });
@@ -496,8 +497,18 @@ function buildWindow() {
     });
 
     // Bottom mini-bar, reference-shaped: just the things that exist —
-    // a sidebar toggle. Spaces and downloads join when THEY exist
+    // the rail toggle. Spaces and downloads join when THEY exist
     // (rule 10 applies to buttons too).
+    //
+    // COLLAPSE MEANS RAIL, NEVER GONE (owner, at the machine, having
+    // hidden the sidebar with no visible way back): the sidebar
+    // narrows to a favicon column with this toggle still in it. The
+    // way back must live inside the thing that shrank.
+    let rail = false;
+    const applyRail = (entry) => {
+        entry.label.set_visible(!rail);
+        entry.close.set_visible(!rail);
+    };
     const collapseBtn = Gtk.Button.new_from_icon_name('sidebar-show-symbolic');
     collapseBtn.add_css_class('flat');
     const bottomBar = new Gtk.Box({margin_start: 8, margin_end: 8, margin_bottom: 8, margin_top: 4});
@@ -523,7 +534,20 @@ function buildWindow() {
         min_sidebar_width: 210,
         max_sidebar_width: 250,
     });
-    collapseBtn.connect('clicked', () => split.set_show_sidebar(!split.get_show_sidebar()));
+    const newTabIcon = Gtk.Image.new_from_icon_name('tab-new-symbolic');
+    const newTabFull = newTabBtn.get_child();
+    const setRail = (on) => {
+        rail = on;
+        urlBar.set_visible(!rail);
+        back.set_visible(!rail);
+        fwd.set_visible(!rail);
+        reload.set_visible(!rail);
+        newTabBtn.set_child(rail ? newTabIcon : newTabFull);
+        for (const entry of rows.values()) applyRail(entry);
+        split.set_min_sidebar_width(rail ? 56 : 210);
+        split.set_max_sidebar_width(rail ? 56 : 250);
+    };
+    collapseBtn.connect('clicked', () => setRail(!rail));
     win.set_content(split);
 
     // The active row carries the brand accent (tokens: violet-500 —
@@ -570,7 +594,7 @@ function buildWindow() {
         if (page) tabView.close_page(page);
     });
     add('<Control>l', () => urlBar.grab_focus());
-    add('<Control>s', () => split.set_show_sidebar(!split.get_show_sidebar()));
+    add('<Control>s', () => setRail(!rail));
 
     win.present();
 }
