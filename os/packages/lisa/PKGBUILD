@@ -101,6 +101,11 @@ package_lisa-ime() {
     )
     cd "$pkgbase-$pkgver"
     DESTDIR="$pkgdir" cmake --install build-ime
+    # Quiet boots (#191): hide fcitx5's once-per-boot "install the
+    # kimpanel extension" tip on GNOME Wayland. See the file's header;
+    # a user's own notifications.conf overrides this wholesale.
+    install -Dm644 ime/fcitx5-lisa/notifications.conf \
+        "$pkgdir/etc/xdg/fcitx5/conf/notifications.conf"
 
     # Make fcitx5 start with the session and be the input method GTK/Qt
     # apps talk to. Shipping the addon without this produces the worst
