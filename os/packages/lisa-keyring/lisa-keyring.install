@@ -1,0 +1,19 @@
+# Import the [lisa] signing key into pacman's live keyring on install
+# and upgrade — the files in /usr/share/pacman/keyrings are inert until
+# populated, and a keyring package that does not populate is the worst
+# kind of installed-but-does-nothing.
+
+post_install() {
+    if [ -d /etc/pacman.d/gnupg ]; then
+        pacman-key --populate lisa || :
+    else
+        # An image build populates at first boot / via its own
+        # pacman-key --init step; say so instead of failing the
+        # transaction inside a chroot with no keyring.
+        echo ">>> pacman keyring not initialized; run 'pacman-key --init && pacman-key --populate lisa'"
+    fi
+}
+
+post_upgrade() {
+    post_install
+}

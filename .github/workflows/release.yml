@@ -310,6 +310,11 @@ jobs:
               # mechanism" while the file sits there looking installed.
               sudo -u builder bash -c "cd /build/os/packages/cyrus-sasl-xoauth2 && makepkg -s --noconfirm"
               cp /build/os/packages/cyrus-sasl-xoauth2/cyrus-sasl-xoauth2-*.pkg.tar.* /build/repo-out/
+              # The [lisa] trust anchor (ADR-0039): the signing public
+              # key into pacman keyring form. check() verifies the
+              # committed key still carries the pinned fingerprint.
+              sudo -u builder bash -c "cd /build/os/packages/lisa-keyring && makepkg -s --noconfirm"
+              cp /build/os/packages/lisa-keyring/lisa-keyring-*.pkg.tar.* /build/repo-out/
               # Our forked gnome-control-center: stock 50.3 + the native
               # Intelligence panel (ADR-0012). -s installs its makedepends;
               # it takes the gnome-control-center name so the local repo
@@ -392,6 +397,10 @@ jobs:
                    # the addon.
                    lisa-ime
                    cyrus-sasl-xoauth2
+                   # The [lisa] repo trust anchor: once devices carry
+                   # this, SigLevel for [lisa] can flip to Required
+                   # (ADR-0039; custody in lisa-packages README).
+                   lisa-keyring
                    llama.cpp
                    # Voice (PLAN §5.7.5): the ear and the mouth. Neither
                    # is in Arch — see the build steps above. piper pulls

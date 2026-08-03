@@ -1,0 +1,54 @@
+# Maintainer: Lisa OS project <https://github.com/Lisa-AgenticOS/lisa-os>
+# The trust anchor for the [lisa] pacman repo (ADR-0039, #171):
+# installs the package-signing public key into pacman's keyring the
+# same way archlinux-keyring does, so SigLevel for [lisa] can flip
+# from Optional to Required once this package has reached devices.
+#
+# The committed .pub here is a COPY of the canonical one in
+# Lisa-AgenticOS/lisa-packages (lisa-packages.pub) — public-key
+# material, immutable content, verified by fingerprint below. check()
+# fails if the copy ever stops being the key it claims to be.
+#
+# Key: Lisa OS Package Signing <packages@lisaos.dev>
+# Fingerprint: 737240D11D28E109A474A8E5827E27417AF5982B
+# Custody: private half in lisa-packages' Actions secret + the owner's
+# password manager (see lisa-packages README).
+
+pkgname=lisa-keyring
+pkgver=20260803
+pkgrel=1
+pkgdesc="Lisa OS package signing keyring for the [lisa] repo"
+arch=(any)
+url="https://github.com/Lisa-AgenticOS/lisa-packages"
+license=(GPL-2.0-only)
+depends=(pacman)
+makedepends=(gnupg)
+install=lisa-keyring.install
+source=(lisa-packages.pub lisa-keyring.install)
+sha256sums=('SKIP' 'SKIP')
+
+_fpr=737240D11D28E109A474A8E5827E27417AF5982B
+
+build() {
+    # pacman-key --populate reads the binary keyring form.
+    gpg --dearmor < lisa-packages.pub > lisa.gpg
+    # Trust file: "<fingerprint>:4:" marks the key fully trusted for
+    # the pacman keyring, exactly as archlinux-keyring ships its own.
+    printf '%s:4:\n' "$_fpr" > lisa-trusted
+    : > lisa-revoked
+}
+
+check() {
+    # The copy must BE the key the fingerprint names — a swapped or
+    # corrupted key file dies here, not on a device refusing every package.
+    gpg --show-keys --with-colons lisa-packages.pub | grep -q "^fpr:::::::::$_fpr:" || {
+        echo "lisa-packages.pub does not carry fingerprint $_fpr" >&2
+        return 1
+    }
+}
+
+package() {
+    install -Dm644 lisa.gpg "$pkgdir/usr/share/pacman/keyrings/lisa.gpg"
+    install -Dm644 lisa-trusted "$pkgdir/usr/share/pacman/keyrings/lisa-trusted"
+    install -Dm644 lisa-revoked "$pkgdir/usr/share/pacman/keyrings/lisa-revoked"
+}
