@@ -97,6 +97,19 @@ class OverlayWidget extends St.BoxLayout {
             can_focus: true,
         });
         this._entry.clutter_text.connect('activate', () => this._ask());
+        // Two speeds, deliberately: Enter opens the conversation in the
+        // Assistant (where a follow-up is possible), Ctrl+Enter answers
+        // right here for the questions whose answer is three words and
+        // needs no window (#210).
+        this._entry.clutter_text.connect('key-press-event', (_a, event) => {
+            const sym = event.get_key_symbol();
+            const ctrl = (event.get_state() & Clutter.ModifierType.CONTROL_MASK) !== 0;
+            if (ctrl && (sym === Clutter.KEY_Return || sym === Clutter.KEY_KP_Enter)) {
+                this._askInline();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
         this.add_child(this._entry);
 
         this._scroll = new St.ScrollView({style_class: 'lisa-overlay-scroll'});
@@ -184,7 +197,61 @@ class OverlayWidget extends St.BoxLayout {
         return true;
     }
 
+    /// Enter hands the prompt to the Assistant, Spotlight-style (#210).
+    ///
+    /// This surface used to stream an answer inline — and then had
+    /// nowhere to put your reply, so anything needing a second
+    /// sentence died here (seen on the device: the model answered
+    /// "how can I help?" into a box that could not hear the answer).
+    /// A launcher that opens the real conversation is honest about
+    /// what it is; the streaming lane stays for callers that want a
+    /// one-shot answer (Summon with a prompt, `lisa ask`).
     _ask() {
+        const prompt = this._entry.get_text().trim();
+        if (prompt === '')
+            return;
+        this._entry.set_text('');
+        this._handOff(prompt);
+        return;
+    }
+
+    _handOff(prompt) {
+        const app = Shell.AppSystem.get_default()
+            .lookup_app('app.lisaos.Assistant.desktop');
+        if (!app) {
+            this._footer.text = 'the assistant app is not installed';
+            return;
+        }
+        // The action, not just activate(): GTK starts the app if it is
+        // not running and delivers `ask` either way, so a cold start
+        // and a warm one take the same path.
+        Gio.DBus.session.call(
+            'app.lisaos.Assistant', '/app/lisaos/Assistant', 'org.gtk.Actions',
+            'Activate',
+            new GLib.Variant('(sava{sv})', ['ask', [new GLib.Variant('s', prompt)], {}]),
+            null, Gio.DBusCallFlags.NONE, 5000, null,
+            (conn, res) => {
+                try {
+                    conn.call_finish(res);
+                } catch (e) {
+                    // Not running and not activatable through the bus:
+                    // fall back to launching it, then retry once.
+                    app.activate();
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 700, () => {
+                        Gio.DBus.session.call(
+                            'app.lisaos.Assistant', '/app/lisaos/Assistant',
+                            'org.gtk.Actions', 'Activate',
+                            new GLib.Variant('(sava{sv})',
+                                ['ask', [new GLib.Variant('s', prompt)], {}]),
+                            null, Gio.DBusCallFlags.NONE, 5000, null, null);
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
+            });
+        this._hide();
+    }
+
+    _askInline() {
         const prompt = this._entry.get_text().trim();
         if (prompt === '')
             return;

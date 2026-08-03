@@ -1,0 +1,17 @@
+# Keys, Lisa's way (#210).
+#
+# The bare Super key does NOT open the overview. On stock GNOME it is
+# the one key that fires on release with no chord, which makes it easy
+# to hit by accident — and it spends the most reachable key on the
+# system on a screen most people pass straight through. Lisa gives
+# that key back: Super+A still shows all apps (GNOME's own default),
+# the bottom-right hot corner still opens the overview, and
+# Super+Shift+Space summons the assistant.
+#
+# Defaults, not locks: no locks/ directory ships, so anyone who wants
+# the overview back sets overlay-key to 'Super' and keeps it.
+[org/gnome/mutter]
+overlay-key=''
+
+[org/gnome/shell/keybindings]
+toggle-application-view=['<Super>a']

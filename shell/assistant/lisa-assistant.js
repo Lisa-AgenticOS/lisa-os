@@ -109,6 +109,9 @@ class AssistantWindow {
             default_width: 980,
             default_height: 760,
         });
+        // The action handler reaches the controller through the window
+        // GTK hands it back (app.activeWindow is a GtkWindow, not this).
+        this.window.__lisa = this;
 
         const header = new Adw.HeaderBar();
         this._title = new Adw.WindowTitle({
@@ -322,6 +325,40 @@ class AssistantWindow {
         if (this._turns.length === 0)
             return;             // already on a blank conversation
         this._showSession(newSession(), []);
+    }
+
+    /// The Spotlight hand-off (#210): start a FRESH conversation and
+    /// send `prompt` in it.
+    ///
+    /// Always a new session, never an append: the overlay's box is
+    /// empty every time it opens, so what you type there is a new
+    /// thought — silently continuing yesterday's thread would carry
+    /// context the person cannot see.
+    ///
+    /// The send is deferred to an idle tick because the model list may
+    /// still be loading when the action arrives (a cold start goes
+    /// activate -> window -> action within the same frame), and _send
+    /// refuses without a model. One retry window, then it gives up
+    /// with a visible note rather than looping.
+    askInNewSession(prompt) {
+        const text = String(prompt ?? '').trim();
+        if (text === '')
+            return;
+        if (this._activeQid === null && this._turns.length > 0)
+            this._showSession(newSession(), []);
+        this._entry.text = text;
+        let tries = 0;
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 120, () => {
+            if (this._model) {
+                this._send();
+                return GLib.SOURCE_REMOVE;
+            }
+            if (++tries > 25) {          // ~3 s
+                this._systemNote('No model available yet — press Send when one appears.');
+                return GLib.SOURCE_REMOVE;
+            }
+            return GLib.SOURCE_CONTINUE;
+        });
     }
 
     /// Make `info` the open conversation and render `turns` into the log.
@@ -806,4 +843,30 @@ const app = new Adw.Application({application_id: APP_ID});
 app.connect('activate', () => {
     (app.activeWindow ?? new AssistantWindow(app).window).present();
 });
+
+/// `ask(prompt)` — the Spotlight hand-off (#210).
+///
+/// The overlay is a one-shot surface by construction: it streams an
+/// answer and then has nowhere to put your reply, which is exactly
+/// what made it useless for anything that needed a second sentence.
+/// So it stops being a chat and becomes a LAUNCHER: type, Enter, and
+/// the conversation opens here — in a NEW session, never appended to
+/// whatever was on screen, because the thing you just typed into an
+/// empty box is a new thought, not a continuation.
+///
+/// A GAction rather than a CLI flag: the shell can call it over
+/// org.gtk.Actions on an app that may not be running yet, and GTK
+/// starts it, which is the whole activation contract.
+const askAction = new Gio.SimpleAction({
+    name: 'ask',
+    parameter_type: new GLib.VariantType('s'),
+});
+askAction.connect('activate', (_a, param) => {
+    const prompt = param?.deepUnpack() ?? '';
+    const win = app.activeWindow?.__lisa ?? new AssistantWindow(app);
+    win.window.present();
+    win.askInNewSession(prompt);
+});
+app.add_action(askAction);
+
 app.run([]);
