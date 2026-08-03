@@ -72,6 +72,10 @@ function networkSession() {
     // and the alternative is being tracked across every site you open.
     session.get_cookie_manager().set_accept_policy(
         WebKit.CookieAcceptPolicy.NO_THIRD_PARTY);
+    // Sidebar favicons (#182): get_favicon() returns null forever
+    // unless the favicon database is switched on — the rows would show
+    // the fallback globe and nothing would ever say why.
+    session.get_website_data_manager().set_favicons_enabled(true);
     return session;
 }
 
@@ -326,14 +330,23 @@ function buildWindow() {
     });
     urlBar.connect('activate', () => navigate(urlBar.get_text()));
 
-    const newBtn = Gtk.Button.new_from_icon_name('tab-new-symbolic');
-    newBtn.connect('clicked', () => newTab());
-
-    const header = new Adw.HeaderBar({title_widget: urlBar});
-    header.pack_start(back);
-    header.pack_start(fwd);
-    header.pack_start(reload);
-    header.pack_end(newBtn);
+    // Zen/Arc anatomy (#182 v2, from the owner's references): the
+    // SIDEBAR owns navigation and the address bar; there is no top
+    // header at all, and the page floats as a rounded card in the
+    // tinted frame. WindowHandle keeps the chrome draggable without a
+    // HeaderBar; WindowControls keeps close/minimize.
+    const navRow = new Gtk.Box({spacing: 2, margin_start: 6, margin_end: 6, margin_top: 6});
+    navRow.append(back);
+    navRow.append(fwd);
+    navRow.append(reload);
+    const navSpacer = new Gtk.Box({hexpand: true});
+    navRow.append(navSpacer);
+    navRow.append(new Gtk.WindowControls({side: Gtk.PackType.END}));
+    urlBar.add_css_class('lisa-urlbar');
+    urlBar.set_margin_start(10);
+    urlBar.set_margin_end(10);
+    urlBar.set_margin_top(6);
+    urlBar.set_margin_bottom(4);
 
     tabView = new Adw.TabView({vexpand: true, hexpand: true});
     tabView.connect('notify::selected-page', () => {
@@ -364,10 +377,21 @@ function buildWindow() {
         // view is the source; uri changes resync too, so a titled →
         // untitled navigation updates instead of going stale.
         const view = page.get_child();
-        const sync = () =>
+        const favicon = new Gtk.Image({
+            icon_name: 'web-browser-symbolic',
+            pixel_size: 16,
+        });
+        const sync = () => {
             label.set_text(rowLabel(view?.title ?? '', view?.get_uri?.() ?? ''));
+            // webkit6 hands a Gdk.Texture directly; null between
+            // navigations, so the globe holds the slot.
+            const tex = view?.get_favicon?.();
+            if (tex) favicon.set_from_paintable(tex);
+            else favicon.set_from_icon_name('web-browser-symbolic');
+        };
         view?.connect('notify::title', sync);
         view?.connect('notify::uri', sync);
+        view?.connect('notify::favicon', sync);
         sync();
         const close = new Gtk.Button({
             icon_name: 'window-close-symbolic',
@@ -376,6 +400,7 @@ function buildWindow() {
         });
         close.connect('clicked', () => tabView.close_page(page));
         const box = new Gtk.Box({spacing: 8, margin_top: 4, margin_bottom: 4});
+        box.append(favicon);
         box.append(label);
         box.append(close);
         const row = new Gtk.ListBoxRow({child: box});
@@ -410,27 +435,50 @@ function buildWindow() {
     });
 
     const newTabBtn = new Gtk.Button({
-        child: new Adw.ButtonContent({icon_name: 'tab-new-symbolic', label: 'New Tab'}),
-        css_classes: ['flat'],
-        margin_start: 6, margin_end: 6, margin_bottom: 6,
+        child: new Adw.ButtonContent({icon_name: 'tab-new-symbolic', label: 'New Tab', halign: Gtk.Align.START}),
+        css_classes: ['flat', 'lisa-newtab'],
+        margin_start: 8, margin_end: 8,
     });
     newTabBtn.connect('clicked', () => newTab());
 
+    const top = new Gtk.WindowHandle({
+        child: (() => {
+            const b = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
+            b.append(navRow);
+            b.append(urlBar);
+            return b;
+        })(),
+    });
+
+    // Bottom mini-bar, reference-shaped: just the things that exist —
+    // a sidebar toggle. Spaces and downloads join when THEY exist
+    // (rule 10 applies to buttons too).
+    const collapseBtn = Gtk.Button.new_from_icon_name('sidebar-show-symbolic');
+    collapseBtn.add_css_class('flat');
+    const bottomBar = new Gtk.Box({margin_start: 8, margin_end: 8, margin_bottom: 8, margin_top: 4});
+    bottomBar.append(collapseBtn);
+
     const scroller = new Gtk.ScrolledWindow({child: tabList, vexpand: true});
-    const sidebar = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
+    const sidebar = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, css_classes: ['lisa-sidebar']});
+    sidebar.append(top);
     sidebar.append(scroller);
     sidebar.append(newTabBtn);
+    sidebar.append(bottomBar);
 
-    const toolbar = new Adw.ToolbarView();
-    toolbar.add_top_bar(header);
-    toolbar.set_content(tabView);
+    // The page as a floating rounded card inside the tinted frame.
+    const contentCard = new Gtk.Box({
+        css_classes: ['lisa-content-card'],
+        margin_top: 10, margin_end: 10, margin_bottom: 10,
+    });
+    contentCard.append(tabView);
 
     const split = new Adw.OverlaySplitView({
         sidebar,
-        content: toolbar,
-        min_sidebar_width: 200,
-        max_sidebar_width: 240,
+        content: contentCard,
+        min_sidebar_width: 210,
+        max_sidebar_width: 250,
     });
+    collapseBtn.connect('clicked', () => split.set_show_sidebar(!split.get_show_sidebar()));
     win.set_content(split);
 
     // The active row carries the brand accent (tokens: violet-500 —
@@ -438,8 +486,25 @@ function buildWindow() {
     // here).
     const css = new Gtk.CssProvider();
     css.load_from_string(`
-        .lisa-tablist row:selected { background: alpha(#6D45C9, 0.18); }
-        .lisa-tablist row:selected label { color: #6D45C9; font-weight: 600; }
+        window { background: mix(#4F378B, #1B1917, 0.72); } /* tokens: violet-700 into dark-base */
+        .lisa-sidebar { background: transparent; }
+        .lisa-urlbar {
+            border-radius: 10px;
+            background: alpha(#FFF1E9, 0.08); /* token: warm-white */
+            color: #FFF1E9;
+            border: none;
+            min-height: 30px;
+        }
+        .lisa-tablist { background: transparent; }
+        .lisa-tablist row { border-radius: 10px; margin: 1px 8px; color: alpha(#FFF1E9, 0.82); }
+        .lisa-tablist row:hover { background: alpha(#FFF1E9, 0.07); }
+        .lisa-tablist row:selected { background: alpha(#9B7BE8, 0.28); } /* token: violet-300 */
+        .lisa-tablist row:selected label { color: #FFF1E9; font-weight: 600; }
+        .lisa-newtab { color: alpha(#FFF1E9, 0.65); border-radius: 10px; }
+        .lisa-content-card {
+            background: #FFFFFF; /* token: surface */
+            border-radius: 14px;
+        }
     `);
     Gtk.StyleContext.add_provider_for_display(
         win.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
