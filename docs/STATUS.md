@@ -5,6 +5,27 @@ fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
 "where are we on it" companion. **Last updated: 2026-08-02.**
 
+## 2026-08-03 later — mail joins retrieval; Track L installs from the signed index; Surfer grows
+
+- **#170 landed**: `lisa mail sync` indexes the Maildir into the
+  context store (`mail` provenance, model-only embedding, flag-rename-
+  stable identity, #104 relabel refusal via new add_document_if_changed).
+  No writable ingestion API — the CLI indexes in-process, deliberately.
+  End-to-end locally; device run rides the next runtime payload.
+- **#171 step 4 (Track L): DONE** — install.sh defaults to the hosted
+  signed index, trust-first (pinned key → SigLevel Required → verified
+  installs), proven zero-config in a clean x86_64 container ending in
+  a working `lisa --version`. Image-build consumption deferred with
+  the chicken-and-egg reasoning recorded on the issue.
+- **Surfer**: Zen/Arc sidebar tabs shipped (#182 v1 — running on the
+  iMac as surfer-dev, awaiting seated eyes); headless-browsing design
+  recorded (#181: tools-not-argv, ephemeral contexts, scoped grants).
+- **#89 closed**: the Zen migration is complete and field-verified;
+  checkbox dispositions recorded (skip-path proof consciously not run,
+  mechanism shipped; #44 still needs a human and speakers).
+- **v20260803.65 on the iMac**, field batch-size override removed —
+  the stock spawn embeds oversized chunks (verified).
+
 ## 2026-08-03 — v20260803.64 shipped and device-verified; ADRs reconciled
 
 - **v33 (20260803.64) cut, iMac updated, zero failed units.** First
