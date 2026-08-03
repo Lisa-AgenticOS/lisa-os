@@ -85,6 +85,18 @@ impl Inner {
             .arg("--embeddings")
             .arg("--pooling")
             .arg("mean")
+            // The PHYSICAL batch must hold the longest single embedding
+            // input: llama-server refuses any input larger than -ub
+            // outright ("input (608 tokens) is too large to process",
+            // seen on the device 2026-08-03 for a ~2 KiB contextd
+            // chunk against the default 512). contextd chunks cap at
+            // 2×CHUNK_TARGET = 2 KiB ≈ 700 tokens; 2048 covers that
+            // with headroom for CJK-dense text, and costs memory only
+            // proportional to what a request actually uses.
+            .arg("--ubatch-size")
+            .arg("2048")
+            .arg("--batch-size")
+            .arg("2048")
             // Render the model's own chat template: without this the
             // server ignores `tools` and never emits OpenAI tool_calls,
             // so agent surfaces (forge, agentd) read every reply as
