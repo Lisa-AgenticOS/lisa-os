@@ -5,6 +5,38 @@ fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
 "where are we on it" companion. **Last updated: 2026-08-02.**
 
+## 2026-08-03 overnight — recall, knowledge, trust anchor, browser hands
+
+- **#176 landed**: porter stemming (with in-place store migration) +
+  vector fallthrough — a query sharing no words with a document can
+  now find it; both device failures are tests, all three mechanisms
+  mutation-verified. Device verification rides the next release.
+- **#175 phase 1**: the OS knowledge pack — docs/knowledge generated
+  from curated READMEs (lint-gated), `system` provenance (read-tier,
+  ACL-tested), `lisa context sync-knowledge` (content-hash change
+  detection, model-only embedding), session-start unit, shipped in
+  lisa-cli.
+- **lisa-keyring**: the [lisa] signing key in pacman keyring form,
+  built+installed+populated in a container ([full] trust); release
+  builds it, image installs it — SigLevel flips to Required one
+  release after devices take it.
+- **#166**: Surfer write tools (navigate/click/fill) — write tier,
+  consent-escalated by agentd; navigate reuses the one URL refusal
+  list; selectors/values embedded as data (the test caught
+  JSON.stringify passing `<`). Device acceptance needs the seated
+  session.
+- **Signing + publishing**: the [lisa] index is now SIGNED end to end
+  (key custody: lisa-packages Actions secret + owner password
+  manager; pubkey committed). lisaos.dev updated with the split, the
+  repo stanza, and dated ship entries; deployed to lisa-dev.common.al.
+- **Two defects of my own caught by my own gates tonight**: a red
+  `just lint` escaped through a piped exit code (pre-push hook now
+  runs the whole gate and later blocked exactly that class), and the
+  README edit → stale knowledge pack was caught by the new pack gate.
+- **Waiting on a human at the iMac**: keyring unlock (mail chain);
+  then #168's send round trip. And the signing master key should move
+  to the password manager (~/lisa-package-signing-key.asc).
+
 ## 2026-08-03 — the [lisa] index is live (#171 steps 1–3)
 
 - `lisa-desktop` and `lisa-apps` tagged **v0.1.0**; their CI builds,
