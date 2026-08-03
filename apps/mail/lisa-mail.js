@@ -870,7 +870,21 @@ function applyMove(fromFolder, change, toFolder) {
 function showMessage(msg) {
     openMessage = msg;
     buildToolbar(msg);
-    const full = store.message(msg.folder, msg.unique) ?? msg;
+    // `?? msg` used to be silent, and that silence WAS the bug (#210):
+    // a list row carries subject and sender but no body, so a failed
+    // lookup filled the header and left the pane empty — indis-
+    // tinguishable from an empty message, and impossible to report.
+    // A reader that cannot find the file on disk must say so.
+    const loaded = store.message(msg.folder, msg.unique);
+    const full = loaded ?? {
+        ...msg,
+        body: `Could not read this message from the Maildir.\n\n` +
+              `folder: ${msg.folder}\nid: ${msg.unique}\n\n` +
+              `The list row was built from the index, so the message ` +
+              `exists — the file lookup under the folder above did not ` +
+              `match it.`,
+        html: null,
+    };
     readerTitle.set_label(full.subject ?? '');
     // Both halves of the sender, always: a display name is
     // attacker-controlled, and `"security@yourbank.com" <evil@x.test>`
