@@ -149,6 +149,36 @@ Deliberately staged, so the fork is reversible until the point it is not:
 5. **Replace the overview** with the prompt's expanded state, retiring
    `shell/launcher`'s separate search-provider path.
 
+## Mechanism, corrected (2026-08-03, before any code)
+
+Verified against the gnome-shell **50.3** source (the exact version the
+device runs) at the start of step 2, because two of this ADR's
+mechanism assumptions predate GNOME 45's ESM migration:
+
+- **The UI JS is compiled into the binary.** `js-resources` is an
+  embedded gresource; the installed `.gresource` files on the device
+  are theme/icons/dbus-services only. The `GNOME_SHELL_JS` env var
+  still exists (`shell-global.c`) but feeds the legacy `imports`
+  search path, not the ESM entry (`resource:///org/gnome/shell/ui/init.js`,
+  hardcoded in `main.c`).
+- **Therefore "iterates on the real device by copying files" is wrong
+  for the core shell.** The JS is still the seam — the fork's delta
+  remains JavaScript, upstream C stays untouched — but every iteration
+  is a package rebuild, not an scp. The good news is symmetrical: the
+  tree's imports are relative (`./`, `../misc/`), so our JS drops into
+  the build unchanged in structure.
+- **Step 1 of Mechanism changes accordingly**: not a git subtree of
+  the JS, but the `gnome-control-center-lisa` discipline scaled up —
+  the PKGBUILD in `lisa-desktop` pins the upstream **50.3 tarball**
+  (sha256
+  `450458c44a26d25a9b84288e12b9005d4c5c44648cfc6b790be19a05de7f1735`),
+  carries the JS delta, and rebuilds. A subtree becomes worth its
+  weight when the delta outgrows patch review, same trigger as before.
+
+The decision itself is unchanged — this is the "cost model changes →
+amend, don't reinterpret" clause firing at the cheapest possible
+moment: before the first line of fork code.
+
 ## What would change this
 
 - **If step 2 takes more than a few weeks**, the fork is more expensive
