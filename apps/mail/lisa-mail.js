@@ -671,6 +671,11 @@ function buildWebView() {
         enable_developer_extras: false,
     });
     const view = new WebKit.WebView({settings, vexpand: true});
+    // The widget's own backdrop, not just the document's: without this
+    // the WebView paints the GTK dark surface for the fraction of a
+    // second before the document's white lands, and any margin outside
+    // the page box stays dark forever (#211).
+    view.set_background_color(new Gdk.RGBA({red: 1, green: 1, blue: 1, alpha: 1}));
 
     view.connect('decide-policy', (_v, decision, type) => {
         if (type === WebKit.PolicyDecisionType.NAVIGATION_ACTION) {
@@ -744,10 +749,19 @@ function htmlDocument(body) {
           img, table { max-width: 100% !important; height: auto; }
           pre { white-space: pre-wrap; }
           a { color: #6D45C9; } /* token: violet-500 */
-          @media (prefers-color-scheme: dark) {
-            body { background: transparent; color: #FFF1E9; } /* token: warm-white */
-            a { color: #9B7BE8; } /* token: violet-300 */
-          }
+          /* NO dark-mode inversion, deliberately (#211).
+             Email HTML is authored for a WHITE canvas — that assumption
+             is universal, and senders set their own inline colours
+             against it. This used to render on a transparent background
+             in dark mode, so an invoice whose inline colours are a
+             near-black on a pale card, with no background set on the
+             outer wrapper, painted dark text onto our dark surface: the
+             message looked EMPTY (seen on the device, Negenet invoice
+             F-2026-0007). A reader that hides mail is worse than one
+             that looks unfashionable, and every other mail client makes
+             the same call: the message renders on paper, the app chrome
+             around it stays dark. */
+          body { background: #FFFFFF; color: #2B2320; } /* token: ink-900 */
         </style></head><body>${body}</body></html>`;
 }
 
