@@ -1,0 +1,16 @@
+# D-Bus activation for the Assistant (#210).
+#
+# The Spotlight hand-off calls `ask` on this name from the launcher and
+# from the overlay. Without this file the call fails whenever the app
+# happens to be closed — which is most of the time, and exactly when
+# someone is starting a new conversation. Same lesson as the Files
+# previewer: an activation contract that only works when the app is
+# already running is not an activation contract.
+#
+# --gapplication-service is GApplication's own service mode: register
+# the bus name, run the main loop, and DO NOT present a window until an
+# action or activation says so — so a cold `ask` opens exactly one
+# window, with the conversation already in it.
+[D-BUS Service]
+Name=app.lisaos.Assistant
+Exec=/usr/bin/lisa-app assistant/lisa-assistant.js --gapplication-service

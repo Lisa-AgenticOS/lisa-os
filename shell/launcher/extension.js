@@ -36,8 +36,10 @@ const FILE_HITS = 5;
 // UI-control surface of the assistant overlay (§5.7.1), owned by its
 // frontend — see shell/overlay-extension. Kept as literal strings so
 // this extension directory stays self-contained.
-const OVERLAY_UI_BUS = 'dev.lisaos.Overlay1.UI';
-const OVERLAY_UI_PATH = '/dev/lisaos/Overlay1/UI';
+// The Assistant owns conversations; the Ask lane opens one there
+// (#210). GApplication's action surface, so a cold app starts.
+const ASSISTANT_BUS = 'app.lisaos.Assistant';
+const ASSISTANT_PATH = '/app/lisaos/Assistant';
 
 class LisaSearchProvider {
     constructor(extension) {
@@ -91,7 +93,7 @@ class LisaSearchProvider {
                 return {
                     id,
                     name: `Ask Lisa: “${parsed.query}”`,
-                    description: 'Start an assistant session · Enter opens the overlay',
+                    description: 'Enter opens a new conversation in the Assistant',
                     createIcon: size => new St.Icon({
                         gicon: new Gio.FileIcon({
                             file: this._extension.dir.get_child('lisa-mark.svg'),
@@ -132,21 +134,31 @@ class LisaSearchProvider {
         }
     }
 
-    // Spotlight-style handoff: the overview closes and the assistant
-    // overlay opens with the query already submitted. The UI name is
-    // owned by the overlay *frontend* (shell/overlay-extension); if it
-    // is not running there is nothing to summon, so tell the user.
+    // Spotlight handoff: the overview closes and the CONVERSATION
+    // opens in the Assistant, in a fresh session (#210).
+    //
+    // This used to route through the overlay's Summon, which streamed
+    // a one-shot answer into a box with nowhere to type a reply — and
+    // now that the overlay hands off too, going through it would just
+    // flash a window open and closed on the way. So the launcher calls
+    // the Assistant directly and the overlay stays what it is: the
+    // keyboard-summoned twin of this lane, not a relay.
+    //
+    // The GAction activates the app if it is not running, which is why
+    // this needs no "is it up?" check; a genuine failure (not
+    // installed) still tells the user rather than doing nothing.
     _summonOverlay(query) {
         Gio.DBus.session.call(
-            OVERLAY_UI_BUS, OVERLAY_UI_PATH, OVERLAY_UI_BUS, 'Summon',
-            new GLib.Variant('(sa{sv})', [query, {}]), null,
-            Gio.DBusCallFlags.NONE, -1, null, (conn, res) => {
+            ASSISTANT_BUS, ASSISTANT_PATH, 'org.gtk.Actions', 'Activate',
+            new GLib.Variant('(sava{sv})',
+                ['ask', [new GLib.Variant('s', query)], {}]),
+            null, Gio.DBusCallFlags.NONE, 5000, null, (conn, res) => {
                 try {
                     Gio.DBus.session.call_finish(res);
                 } catch (e) {
-                    logError(e, 'overlay summon failed');
-                    Main.notify('Lisa assistant unavailable',
-                        'The overlay extension (lisa-overlay@lisa-os.org) is not running.');
+                    logError(e, 'assistant handoff failed');
+                    Main.notify('Lisa Assistant unavailable',
+                        'Could not open a conversation — is the assistant installed?');
                 }
             });
     }

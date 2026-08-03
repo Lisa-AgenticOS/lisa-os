@@ -414,6 +414,12 @@ package_lisa-shell() {
         "$pkgdir/usr/share/lisa/manifests/app.lisaos.Mail.json"
     install -Dm644 shell/assistant/app.lisaos.Assistant.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.Assistant.desktop"
+    # D-Bus activation (#210): the Spotlight hand-off calls `ask` on
+    # this name from the launcher and the overlay, and without the
+    # service file that call fails whenever the app is closed — which
+    # is exactly when a new conversation is being started.
+    install -Dm644 shell/assistant/app.lisaos.Assistant.service \
+        "$pkgdir/usr/share/dbus-1/services/app.lisaos.Assistant.service"
     install -Dm644 shell/assistant/lisa-assistant-symbolic.svg \
         "$pkgdir/usr/share/icons/hicolor/scalable/apps/lisa-assistant-symbolic.svg"
     # App icons. Surfer wears the robot-surfer artwork (user-chosen,
