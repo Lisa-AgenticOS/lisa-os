@@ -367,30 +367,59 @@ impl ContextStore {
     /// after `index_dir` (incremental — re-runs only touch new chunks).
     /// Returns how many chunks were embedded.
     pub fn embed_pending(&self, embedder: &dyn Embedder) -> Result<usize, StoreError> {
-        let conn = self.conn.lock().expect("context lock");
-        let mut stmt = conn.prepare(
-            "SELECT c.doc_id, c.seq, c.content
-             FROM chunks c
-             LEFT JOIN chunk_vectors v ON v.doc_id = c.doc_id AND v.seq = c.seq
-             WHERE v.doc_id IS NULL",
-        )?;
-        let pending: Vec<(i64, i64, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<Result<_, _>>()?;
-        drop(stmt);
-        if pending.is_empty() {
-            return Ok(0);
+        self.embed_pending_batched(embedder, 64)
+    }
+
+    /// The batch size exists because the first real mailbox proved it
+    /// must: 31,845 pending chunks went out as ONE /v1/embeddings POST
+    /// — megabytes of JSON — and llama-server hung up (broken pipe,
+    /// device, 2026-08-04). Stub-served tests can never see that.
+    /// Vectors land per batch inside a transaction, so an interrupted
+    /// run keeps everything embedded so far and resumes where it
+    /// stopped; the connection lock is released between batches so a
+    /// minutes-long backfill does not starve readers.
+    pub fn embed_pending_batched(
+        &self,
+        embedder: &dyn Embedder,
+        batch: usize,
+    ) -> Result<usize, StoreError> {
+        let batch = batch.max(1);
+        let mut done = 0usize;
+        loop {
+            let pending: Vec<(i64, i64, String)> = {
+                let conn = self.conn.lock().expect("context lock");
+                let mut stmt = conn.prepare(
+                    "SELECT c.doc_id, c.seq, c.content
+                     FROM chunks c
+                     LEFT JOIN chunk_vectors v ON v.doc_id = c.doc_id AND v.seq = c.seq
+                     WHERE v.doc_id IS NULL
+                     LIMIT ?1",
+                )?;
+                stmt.query_map([batch as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<Result<_, _>>()?
+            };
+            if pending.is_empty() {
+                return Ok(done);
+            }
+            let texts: Vec<String> = pending.iter().map(|(_, _, c)| c.clone()).collect();
+            let vectors = embedder.embed(&texts)?;
+            {
+                let conn = self.conn.lock().expect("context lock");
+                let tx = conn.unchecked_transaction()?;
+                for ((doc_id, seq, _), vec) in pending.iter().zip(vectors.iter()) {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO chunk_vectors (doc_id, seq, dim, vec)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        rusqlite::params![doc_id, seq, vec.len() as i64, vec_to_blob(vec)],
+                    )?;
+                }
+                tx.commit()?;
+            }
+            done += pending.len();
+            if done.is_multiple_of(6400) {
+                tracing::info!(embedded = done, "embedding backfill progress");
+            }
         }
-        let texts: Vec<String> = pending.iter().map(|(_, _, c)| c.clone()).collect();
-        let vectors = embedder.embed(&texts)?;
-        for ((doc_id, seq, _), vec) in pending.iter().zip(vectors.iter()) {
-            conn.execute(
-                "INSERT OR REPLACE INTO chunk_vectors (doc_id, seq, dim, vec)
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![doc_id, seq, vec.len() as i64, vec_to_blob(vec)],
-            )?;
-        }
-        Ok(pending.len())
     }
 
     /// Hybrid search: FTS5 (BM25) prefilter → cosine rerank → blended
@@ -802,6 +831,47 @@ mod tests {
             hits[0].source.ends_with("cell.md"),
             "hybrid should rank the biology chunk first: {hits:?}"
         );
+    }
+
+    /// #the-31k-lesson: pending chunks embed in BATCHES — one request
+    /// per batch, resumable, never one giant POST. The counting stub
+    /// asserts the request count.
+    #[test]
+    fn embedding_backfill_batches_and_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("d{i}.md")),
+                format!("document number {i}"),
+            )
+            .unwrap();
+        }
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        store.index_dir(dir.path()).unwrap();
+
+        struct Counting(std::sync::atomic::AtomicUsize);
+        impl Embedder for Counting {
+            fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, StoreError> {
+                assert!(
+                    texts.len() <= 2,
+                    "batch leaked: {} texts in one request",
+                    texts.len()
+                );
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+            }
+        }
+        let counter = Counting(std::sync::atomic::AtomicUsize::new(0));
+        let n = store.embed_pending_batched(&counter, 2).unwrap();
+        assert_eq!(n, 5, "all pending embedded");
+        assert_eq!(
+            counter.0.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "5 chunks at batch=2 is exactly 3 requests"
+        );
+        // Resumability: nothing pending → zero requests.
+        assert_eq!(store.embed_pending_batched(&counter, 2).unwrap(), 0);
+        assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[test]
