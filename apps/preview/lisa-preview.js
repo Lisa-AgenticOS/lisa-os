@@ -528,7 +528,17 @@ function buildWindow() {
         for (const [btn, name] of tools) btn.active = doc && state.tool === name;
     };
 
-    picture = new Gtk.Picture({can_shrink: false, halign: Gtk.Align.CENTER, valign: Gtk.Align.CENTER});
+    // can_shrink MUST be true: false means "never render smaller than
+    // the content", so for content larger than the window every zoom
+    // and fit written via set_size_request was silently ignored
+    // downward — seen on the device as a 2048px-rasterized SVG pinned
+    // at 100% while the label claimed 33%. With shrink allowed, the
+    // size request is the single authority and CONTAIN scales into it.
+    picture = new Gtk.Picture({
+        can_shrink: true,
+        content_fit: Gtk.ContentFit.CONTAIN,
+        halign: Gtk.Align.CENTER, valign: Gtk.Align.CENTER,
+    });
     drawing = new Gtk.DrawingArea({halign: Gtk.Align.CENTER, valign: Gtk.Align.CENTER});
     drawing.set_draw_func(drawPage);
 
