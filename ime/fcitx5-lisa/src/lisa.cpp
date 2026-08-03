@@ -17,8 +17,15 @@
 //
 // Second gesture: double-tap a bare Shift key → summon the Lisa
 // assistant overlay (dev.lisaos.Overlay1.UI.Summon with an empty
-// prompt — ADR-0016 names). The IM layer is the one place that sees
-// keys in every app, so the gesture works everywhere. Detection lives
+// prompt — ADR-0016 names). The IM layer sees keys in every app that
+// ROUTES to it — which on stock GNOME Wayland means GTK3, Qt and
+// XWayland clients, not Wayland-native GTK4 apps and not the shell:
+// mutter keeps zwp_input_method_v2 to itself, so fcitx5's waylandim
+// addon loads and unloads again on every start (#208, measured on the
+// device 2026-08-03 — the detector and the Summon call were proven
+// working by injecting taps through fcitx's own D-Bus frontend). A
+// system-wide gesture belongs to the compositor fork; Super+Shift+Space
+// is the summon that works everywhere today. Detection lives
 // in doubleshift.{h,cpp} (pure, unit-tested); this file only
 // translates KeyEvents and makes the fire-and-forget D-Bus call via
 // fcitx5's own dbus addon — asynchronous, never blocking the key path.
