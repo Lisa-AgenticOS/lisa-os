@@ -27,6 +27,7 @@
 // so they are the last thing that should be written inline.
 
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import St from 'gi://St';
@@ -42,6 +43,7 @@ import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.j
 import {Dash} from 'resource:///org/gnome/shell/ui/dash.js';
 
 import {bottomRightBarriers, bottomRightOf, dockPlacement, showAppsAction} from './lib/layout.js';
+import {activeIconName, candidatePaths, shouldUseActive} from './lib/stateicon.js';
 
 /// Gap between the dock and the bottom edge of the screen. The dock
 /// floats; it does not sit in the corner.
@@ -315,9 +317,60 @@ export default class LisaDesktopExtension extends Extension {
 
         this._installHotCorners();
         this._reorderPanel();
+        this._installStateIcons();
+    }
+
+    /// State-dependent app icons (#190, lib/stateicon.js): an app that
+    /// ships `<icon>-active` in hicolor gets it drawn while RUNNING —
+    /// Surfer meditates on the beach until it opens, then it surfs.
+    ///
+    /// `create_icon_texture` is patched on the prototype because it is
+    /// the one funnel every shell surface draws app icons through
+    /// (dash, overview grid, alt-tab); painting only the dock would
+    /// leave the same app wearing two faces at once.
+    _installStateIcons() {
+        this._variantCache = new Map();
+        const ext = this;
+        this._origCreateIcon = Shell.App.prototype.create_icon_texture;
+        const orig = this._origCreateIcon;
+        Shell.App.prototype.create_icon_texture = function (size) {
+            const name = activeIconName(this.get_id());
+            if (name && shouldUseActive(this.get_state(), ext._activeVariantExists(name)))
+                return new St.Icon({gicon: new Gio.ThemedIcon({name}), icon_size: size});
+            return orig.call(this, size);
+        };
+        // Repaint the dash entry when an app with a variant changes
+        // state; other surfaces (grid, alt-tab) rebuild their icons on
+        // every open and need no push.
+        this._connect(Shell.AppSystem.get_default(), 'app-state-changed', (_s, app) => {
+            const name = activeIconName(app.get_id());
+            if (!name || !this._activeVariantExists(name)) return;
+            for (const item of this._dock?.dash?._box?.get_children() ?? []) {
+                const child = item.child;
+                if (child?.app === app) child.icon?.update?.();
+            }
+        });
+    }
+
+    /// Does `<name>` exist in hicolor? Answered with file checks
+    /// (lib/stateicon.js lists the candidates) because St's icon lookup
+    /// cannot say "missing" — it falls back to a generic instead. The
+    /// answer is cached per name: it is asked on every icon paint.
+    _activeVariantExists(name) {
+        if (this._variantCache.has(name)) return this._variantCache.get(name);
+        const dirs = [GLib.get_user_data_dir(), ...GLib.get_system_data_dirs()];
+        const exists = candidatePaths(name, dirs)
+            .some(p => Gio.File.new_for_path(p).query_exists(null));
+        this._variantCache.set(name, exists);
+        return exists;
     }
 
     disable() {
+        if (this._origCreateIcon) {
+            Shell.App.prototype.create_icon_texture = this._origCreateIcon;
+            this._origCreateIcon = null;
+        }
+        this._variantCache = null;
         this._restorePanel();
         this._signals?.forEach(([obj, id]) => obj.disconnect(id));
         this._signals = null;

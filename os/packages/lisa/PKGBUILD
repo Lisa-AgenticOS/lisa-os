@@ -407,11 +407,16 @@ package_lisa-shell() {
     install -Dm644 shell/assistant/lisa-assistant-symbolic.svg \
         "$pkgdir/usr/share/icons/hicolor/scalable/apps/lisa-assistant-symbolic.svg"
     # App icons. Surfer wears the robot-surfer artwork (user-chosen,
-    # 2026-08-03), squircle-masked at the brand corner radius; the
-    # token-violet SVG it replaced stays in apps/surfer/icons/ as the
-    # symbolic-style fallback source. Mail keeps the violet family.
+    # 2026-08-03), squircle-masked at the brand corner radius — TWO
+    # states: meditating on flat water when closed, riding the wave
+    # while running. The -active variant is the opt-in the desktop
+    # extension looks for (#190, shell/desktop lib/stateicon.js). The
+    # token-violet SVG stays in apps/surfer/icons/ as the source for a
+    # future symbolic variant. Mail keeps the violet family.
     install -Dm644 apps/surfer/icons/app.lisaos.Surfer.png \
         "$pkgdir/usr/share/icons/hicolor/512x512/apps/app.lisaos.Surfer.png"
+    install -Dm644 apps/surfer/icons/app.lisaos.Surfer-active.png \
+        "$pkgdir/usr/share/icons/hicolor/512x512/apps/app.lisaos.Surfer-active.png"
     install -Dm644 apps/mail/icons/app.lisaos.Mail.svg \
         "$pkgdir/usr/share/icons/hicolor/scalable/apps/app.lisaos.Mail.svg"
     # AI settings launcher entry (§5.11). Also the target the native

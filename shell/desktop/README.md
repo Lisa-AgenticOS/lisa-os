@@ -129,6 +129,24 @@ both directions flip to `NEGATIVE_*`. The tests pin that mirroring, and
 that a dock is clamped on-screen and centred on the monitor it belongs
 to rather than on the primary.
 
+### State-dependent app icons
+
+An app that ships an icon named `<icon>-active` in hicolor gets it
+drawn wherever the shell paints its icon **while the app is running**
+(#190, the state half). Surfer opts in: a meditating robot on flat
+water when closed, riding the wave while open. There is no per-app code
+here — the variant's existence in the icon theme is the opt-in.
+
+Mechanics: `Shell.App.create_icon_texture` is patched on the prototype
+(the one funnel the dash, the overview grid and alt-tab all draw
+through; painting only the dock would leave one app wearing two faces),
+the swap decision and the candidate paths live pure in
+`lib/stateicon.js` (tested: STARTING deliberately keeps the idle icon,
+so a launch that dies never leaves a lying "active" icon), existence is
+answered by file checks because St's icon lookup cannot say "missing" —
+it falls back to a generic — and `app-state-changed` repaints the dash
+entry. `disable()` restores the original method.
+
 ## How to extend it
 
 - **The prompt field** (ADR-0035 §2) belongs in the same panel as the
