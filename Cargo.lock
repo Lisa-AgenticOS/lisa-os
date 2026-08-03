@@ -1298,6 +1298,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "ureq",
+ "walkdir",
  "zbus",
  "zstd",
 ]
