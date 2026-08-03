@@ -114,12 +114,6 @@ impl ContextStore {
         self.index_dir_as(root, "file")
     }
 
-    /// The same walk, writing under a caller-chosen provenance — the OS
-    /// knowledge pack indexes as `system` (#175). The tag must be one
-    /// the ACL knows (#104: an unknown tag is refused rather than
-    /// accepted into unreadability), and all the foreign-row
-    /// protections apply relative to it: a `system` walk will not
-    /// relabel a `file` document any more than the reverse.
     /// Remove every document of `provenance` whose source no longer
     /// exists on disk, with its chunks and vectors (#178).
     ///
@@ -156,6 +150,12 @@ impl ContextStore {
         Ok(pruned)
     }
 
+    /// The same walk, writing under a caller-chosen provenance — the OS
+    /// knowledge pack indexes as `system` (#175). The tag must be one
+    /// the ACL knows (#104: an unknown tag is refused rather than
+    /// accepted into unreadability), and all the foreign-row
+    /// protections apply relative to it: a `system` walk will not
+    /// relabel a `file` document any more than the reverse.
     pub fn index_dir_as(&self, root: &Path, provenance: &str) -> Result<IndexReport, StoreError> {
         if !crate::acl::is_known_provenance(provenance) {
             return Err(StoreError::UnknownProvenance(provenance.to_string()));
