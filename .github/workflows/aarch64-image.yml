@@ -76,7 +76,7 @@ jobs:
               # Vulkan backend (#193); it enumerates zero devices in a VM
               # and runs on CPU, so aarch64 keeps the same PKGBUILD.
               pacman -S --noconfirm --needed base-devel rust git glib2 cmake fcitx5 devtools \
-                vulkan-headers shaderc vulkan-icd-loader
+                vulkan-headers shaderc vulkan-icd-loader spirv-headers
               pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
 
               # --- Lisa packages, natively on aarch64 (issue #28) --------

@@ -36,8 +36,11 @@ license=(MIT)
 depends=(gcc-libs glibc vulkan-icd-loader)
 optdepends=('vulkan-radeon: GPU inference on AMD (RADV ICD)'
             'vulkan-intel: GPU inference on Intel (ANV ICD)')
-# shaderc: glslc, which ggml-vulkan uses to compile its shaders at build.
-makedepends=(cmake git vulkan-headers shaderc)
+# shaderc: glslc, which ggml-vulkan uses to compile its shaders at
+# build. spirv-headers: ggml-vulkan's CMake find_package()s it
+# separately — shaderc does not pull it in, and the first Vulkan build
+# died on exactly that.
+makedepends=(cmake git vulkan-headers shaderc spirv-headers)
 options=(!debug)
 source=("git+https://github.com/ggml-org/llama.cpp.git#tag=${pkgver}")
 b2sums=('SKIP')
