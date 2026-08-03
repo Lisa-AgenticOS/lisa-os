@@ -38,3 +38,14 @@ export function candidatePaths(iconName, dataDirs) {
 export function shouldUseActive(state, variantExists) {
     return state === 2 && !!variantExists;
 }
+
+/// Transient peeks: app ids whose windows are quick-look panels, not
+/// apps the user is "running" — they never appear in the dock's
+/// running list, exactly as macOS keeps the Quick Look panel out of
+/// its Dock. The id split happens app-side (Preview's Space instance
+/// runs as app.lisaos.PreviewPeek, a NoDisplay .desktop).
+export const TRANSIENT_PEEK_APPS = ['app.lisaos.PreviewPeek.desktop'];
+
+export function isTransientPeek(desktopId) {
+    return TRANSIENT_PEEK_APPS.includes(desktopId);
+}

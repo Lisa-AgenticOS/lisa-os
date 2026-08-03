@@ -79,7 +79,12 @@ const argv = ARGV.filter(a => a !== '--previewer-service');
 let suppressPresent = serviceLaunch;
 
 const app = new Adw.Application({
-    application_id: 'app.lisaos.Preview',
+    // The Space gesture runs as its OWN app id (app.lisaos.PreviewPeek,
+    // a NoDisplay .desktop): the shell can then treat a peek as a
+    // transient — no dock presence, filtered by the Lisa desktop — and
+    // a peek never unifies with a real Preview instance, exactly the
+    // macOS Quick-Look-panel vs Preview-app split.
+    application_id: serviceLaunch ? 'app.lisaos.PreviewPeek' : 'app.lisaos.Preview',
     // Without HANDLES_OPEN, GTK routes `preview file.png` to activate()
     // with the argument silently dropped — the app opens empty and the
     // user assumes the file is broken.
@@ -592,6 +597,21 @@ function buildWindow() {
     saveBtn.connect('clicked', saveEdited);
     const undoBtn = new Gtk.Button({icon_name: 'edit-undo-symbolic', tooltip_text: 'Undo annotation (Ctrl+Z)'});
     undoBtn.connect('clicked', undoAnnot);
+    // Promote a peek into the real app, macOS-style: the button hands
+    // the file to app.lisaos.Preview (a separate app id, so it gets
+    // its own dock presence) and the peek closes behind it.
+    const openWith = new Gtk.Button({label: 'Open with Preview', css_classes: ['suggested-action']});
+    openWith.connect('clicked', () => {
+        try {
+            const info = Gio.DesktopAppInfo.new('app.lisaos.Preview.desktop');
+            if (info && state.path)
+                info.launch([Gio.File.new_for_path(state.path)], null);
+        } catch (e) {
+            logError(e, 'lisa-preview open-with');
+        }
+        win.close();
+    });
+    header.pack_end(openWith);
     header.pack_end(saveBtn);
     header.pack_end(undoBtn);
     header.pack_end(pagesBtn);
@@ -603,6 +623,7 @@ function buildWindow() {
         pagesBtn.visible = doc;
         saveBtn.visible = isDirty();
         undoBtn.visible = state.annots.length > 0;
+        openWith.visible = !!state.quickLook;
         if (!doc) { pagesBtn.active = false; state.tool = null; }
         for (const [btn, name] of tools) btn.active = doc && state.tool === name;
     };
@@ -954,6 +975,20 @@ function ensureUi() {
                 if (loadFile(path)) {
                     // Space opened this window; Space closes it again.
                     state.quickLook = true;
+                    refreshEditUi?.();
+                    // Size the panel to the content, Quick-Look-style:
+                    // a portrait PDF gets a portrait window, capped to
+                    // most of the monitor.
+                    const {width: cw, height: ch} = contentSize();
+                    if (cw > 0 && ch > 0) {
+                        const mon = Gdk.Display.get_default()
+                            ?.get_monitors()?.get_item(0);
+                        const geo = mon?.get_geometry() ?? {width: 1600, height: 1000};
+                        const s = Math.min((geo.width * 0.9 - 24) / cw,
+                            (geo.height * 0.85 - 96) / ch);
+                        win.set_default_size(
+                            Math.round(cw * s) + 24, Math.round(ch * s) + 96);
+                    }
                     win.present();
                 }
             },

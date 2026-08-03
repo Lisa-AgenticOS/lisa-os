@@ -1,0 +1,12 @@
+[Desktop Entry]
+# The quick-look half of Preview (Space in Files). A separate desktop
+# id so the shell can tell a transient peek from the real app: this one
+# is NoDisplay and the Lisa dock filters it out of running apps — a
+# peek is not an app you are running, exactly as macOS treats the
+# Quick Look panel. Icon and name resolve so alt-tab still shows
+# something honest.
+Type=Application
+Name=Preview
+Icon=app.lisaos.Preview
+Exec=/usr/bin/lisa-app preview/lisa-preview.js --previewer-service %U
+NoDisplay=true

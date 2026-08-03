@@ -43,7 +43,7 @@ import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.j
 import {Dash} from 'resource:///org/gnome/shell/ui/dash.js';
 
 import {bottomRightBarriers, bottomRightOf, dockPlacement, showAppsAction} from './lib/layout.js';
-import {activeIconName, candidatePaths, shouldUseActive} from './lib/stateicon.js';
+import {activeIconName, candidatePaths, shouldUseActive, isTransientPeek} from './lib/stateicon.js';
 
 /// Gap between the dock and the bottom edge of the screen. The dock
 /// floats; it does not sit in the corner.
@@ -339,6 +339,14 @@ export default class LisaDesktopExtension extends Extension {
                 return new St.Icon({gicon: new Gio.ThemedIcon({name}), icon_size: size});
             return orig.call(this, size);
         };
+        // Transient peeks (lib/stateicon.js) never join the running
+        // list: a quick-look panel is not an app you are running, and
+        // the dash is the only consumer of get_running the user sees.
+        this._origGetRunning = Shell.AppSystem.prototype.get_running;
+        const origRunning = this._origGetRunning;
+        Shell.AppSystem.prototype.get_running = function () {
+            return origRunning.call(this).filter(a => !isTransientPeek(a.get_id()));
+        };
         // Repaint the dash entry when an app with a variant changes
         // state; other surfaces (grid, alt-tab) rebuild their icons on
         // every open and need no push.
@@ -369,6 +377,10 @@ export default class LisaDesktopExtension extends Extension {
         if (this._origCreateIcon) {
             Shell.App.prototype.create_icon_texture = this._origCreateIcon;
             this._origCreateIcon = null;
+        }
+        if (this._origGetRunning) {
+            Shell.AppSystem.prototype.get_running = this._origGetRunning;
+            this._origGetRunning = null;
         }
         this._variantCache = null;
         this._restorePanel();

@@ -147,6 +147,18 @@ answered by file checks because St's icon lookup cannot say "missing" —
 it falls back to a generic — and `app-state-changed` repaints the dash
 entry. `disable()` restores the original method.
 
+### Transient peeks stay out of the dock
+
+A quick-look panel is not an app you are running: Preview's Space
+instance runs under its own NoDisplay id (`app.lisaos.PreviewPeek`),
+and `Shell.AppSystem.get_running` is patched to drop ids
+`lib/stateicon.js` lists as transient — so the dock never grows a
+Preview icon for a peek, exactly as macOS keeps the Quick Look panel
+out of its Dock. Alt-tab still shows the window (with Preview's icon,
+resolved through the NoDisplay .desktop), because a visible window you
+cannot reach is worse than a crowded switcher. `disable()` restores
+the original method.
+
 ## How to extend it
 
 - **The prompt field** (ADR-0035 §2) belongs in the same panel as the

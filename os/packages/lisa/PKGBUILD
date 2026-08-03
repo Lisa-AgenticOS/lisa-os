@@ -386,6 +386,11 @@ package_lisa-shell() {
         "$pkgdir/usr/share/applications/app.lisaos.Preview.desktop"
     install -Dm644 apps/preview/app.lisaos.Preview.json \
         "$pkgdir/usr/share/lisa/apps/app.lisaos.Preview.json"
+    # The quick-look app id (NoDisplay): Space runs Preview under
+    # app.lisaos.PreviewPeek so the desktop can keep peeks out of the
+    # dock; this file is how the shell resolves that id to an icon.
+    install -Dm644 apps/preview/app.lisaos.PreviewPeek.desktop \
+        "$pkgdir/usr/share/applications/app.lisaos.PreviewPeek.desktop"
     # Space-to-preview in Files: Nautilus dials the VERSIONLESS name
     # (the 2 is only in the interface — nautilus 50.2.2
     # src/nautilus-previewer.c:43) and ping-gates it at startup, so

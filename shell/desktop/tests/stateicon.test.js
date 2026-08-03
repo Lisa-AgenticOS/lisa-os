@@ -1,4 +1,4 @@
-import {activeIconName, candidatePaths, shouldUseActive} from '../lib/stateicon.js';
+import {activeIconName, candidatePaths, shouldUseActive, isTransientPeek} from '../lib/stateicon.js';
 
 let passed = 0, failed = 0;
 function ok(cond, name, got) {
@@ -25,6 +25,10 @@ ok(!shouldUseActive(1, true),
     'STARTING keeps the idle icon — a launch that dies must not leave a lying active icon');
 ok(shouldUseActive(2, true), 'running with a variant swaps');
 ok(!shouldUseActive(2, false), 'running without a variant keeps the stock icon');
+
+ok(isTransientPeek('app.lisaos.PreviewPeek.desktop'), 'the Preview peek is a transient — no dock presence');
+ok(!isTransientPeek('app.lisaos.Preview.desktop'), 'the real Preview app IS a dock citizen');
+ok(!isTransientPeek('app.lisaos.Surfer.desktop'), 'other apps are untouched');
 
 console.log(`desktop/stateicon: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

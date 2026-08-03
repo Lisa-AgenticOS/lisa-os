@@ -140,6 +140,14 @@ a file opened normally keeps Space as page-forward like any reader.
 The distinction exists because this window takes focus, so Nautilus
 never gets to send its own close toggle.
 
+Quick-look windows go further (the macOS panel split): they run under
+their own app id — `app.lisaos.PreviewPeek`, a NoDisplay .desktop —
+so the Lisa dock keeps them out of the running list; they size
+themselves to the content (a portrait PDF gets a portrait panel,
+capped to most of the monitor); and the header grows an **Open with
+Preview** button that hands the file to the real app id (its own dock
+presence, app manners) and closes the peek behind it.
+
 ## How to extend
 
 Add a tool: implement it in `handlers` (lisa-preview.js), wire the name
