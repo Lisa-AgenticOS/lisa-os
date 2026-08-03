@@ -2,10 +2,16 @@
 # lisa-inferenced (PLAN §5.1). Not in Arch's official repos, so we build
 # it from source into the image. MIT-licensed.
 #
-# CPU build, portable across x86_64 (GGML_NATIVE=OFF → no -march=native,
-# so the same binary runs on any release target; Gemma-1B runs fine on
-# CPU). A Vulkan/AMD variant for the iMac's Radeon is a follow-up
-# (-DGGML_VULKAN=ON + vulkan deps).
+# CPU-portable build (GGML_NATIVE=OFF → no -march=native, so the same
+# binary runs on any release target) with the Vulkan backend compiled in
+# (#193): the iMac18,2's Radeon Pro 555 embeds at several times the
+# i5-7500's ~750 tok/s, and a 94k-chunk mail backfill measured ~24 h on
+# CPU alone. Offload is llama-server's own default (-ngl auto at this
+# tag): it takes what fits VRAM and leaves the rest on CPU, so no spawn
+# flags change. On hosts with no usable Vulkan device (QEMU/CI, VMs)
+# ggml enumerates zero devices and runs on CPU exactly as before — the
+# backend needs an ICD at runtime (vulkan-radeon on the reference
+# hardware, via the image package set), only the loader is linked.
 #
 # aarch64 (ADR-0021, issue #28): same source build, same flags — no
 # per-arch cmake delta is needed. Read from ggml's own cmake at this very
@@ -22,13 +28,16 @@
 # GGML_BACKEND_DL=ON + shared libs, which changes what package() ships).
 pkgname=llama.cpp
 pkgver=b10093
-pkgrel=1
+pkgrel=2
 pkgdesc="LLM inference in C/C++ — llama-server, the Lisa OS local engine"
 arch=(x86_64 aarch64)
 url="https://github.com/ggml-org/llama.cpp"
 license=(MIT)
-depends=(gcc-libs glibc)
-makedepends=(cmake git)
+depends=(gcc-libs glibc vulkan-icd-loader)
+optdepends=('vulkan-radeon: GPU inference on AMD (RADV ICD)'
+            'vulkan-intel: GPU inference on Intel (ANV ICD)')
+# shaderc: glslc, which ggml-vulkan uses to compile its shaders at build.
+makedepends=(cmake git vulkan-headers shaderc)
 options=(!debug)
 source=("git+https://github.com/ggml-org/llama.cpp.git#tag=${pkgver}")
 b2sums=('SKIP')
@@ -37,6 +46,7 @@ build() {
   cmake -B build -S llama.cpp \
     -DCMAKE_BUILD_TYPE=Release \
     -DGGML_NATIVE=OFF \
+    -DGGML_VULKAN=ON \
     -DGGML_BACKEND_DL=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLAMA_CURL=OFF \

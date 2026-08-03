@@ -141,8 +141,11 @@ jobs:
               # codec module build (ADR-0024). Preinstalled so its makepkg
               # can run with -d, and so the PKGBUILD can compare the
               # installed headers against its kernel pin.
+              # vulkan-headers + shaderc: the llama.cpp Vulkan backend
+              # (#193) — headers to compile against, glslc for its
+              # shaders; vulkan-icd-loader is its link-time libvulkan.
               pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake devtools \
-                linux-headers bc fcitx5
+                linux-headers bc fcitx5 vulkan-headers shaderc vulkan-icd-loader
 
               # A cached git source is keyed by DIRECTORY NAME, never
               # by remote, and the cache step falls back to restore-keys

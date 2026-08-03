@@ -72,7 +72,11 @@ jobs:
               # lisa-shell'\''s makedepends (build-packages.sh runs makepkg
               # without -s), cmake for llama.cpp, devtools for arch-meson
               # (the forked gnome-control-center). All present on ALARM.
-              pacman -S --noconfirm --needed base-devel rust git glib2 cmake fcitx5 devtools
+              # vulkan-headers/shaderc/vulkan-icd-loader: the llama.cpp
+              # Vulkan backend (#193); it enumerates zero devices in a VM
+              # and runs on CPU, so aarch64 keeps the same PKGBUILD.
+              pacman -S --noconfirm --needed base-devel rust git glib2 cmake fcitx5 devtools \
+                vulkan-headers shaderc vulkan-icd-loader
               pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
 
               # --- Lisa packages, natively on aarch64 (issue #28) --------
