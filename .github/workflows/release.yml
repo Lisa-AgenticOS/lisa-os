@@ -206,7 +206,13 @@ jobs:
               # it is rebuilt.
               use_cached() {
                 local name=$1 f probe bad bin
-                f=$(ls -1 /pkgcache/$name-[0-9]*.pkg.tar.* 2>/dev/null | head -1)
+                # NOT a digit-anchored glob: the llama.cpp pkgver is
+                # b10093, so $name-[0-9]* never matched it and the
+                # cache-reuse this function exists for was silently
+                # dead for exactly that package (#194). The open glob
+                # needs the -debug- filter or head -1 can pick a debug
+                # split package over the real one.
+                f=$(ls -1 /pkgcache/$name-*.pkg.tar.* 2>/dev/null | grep -v -- "-debug-" | head -1)
                 [ -n "$f" ] || return 1
                 probe=$(mktemp -d)
                 if ! bsdtar -xf "$f" -C "$probe" 2>/dev/null; then

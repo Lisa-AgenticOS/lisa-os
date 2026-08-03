@@ -244,6 +244,10 @@ function loadFile(path) {
     state.pageOrder = kind === 'document'
         ? Array.from({length: state.pageCount}, (_, i) => i) : [];
     refreshEditUi?.();
+    // Rebuild (or clear) the pages sidebar: stale rows pin the OLD
+    // document's PopplerPage refs in their draw funcs, and a click on
+    // one indexes past the new order (#196).
+    rebuildThumbs?.();
 
     // Folder browsing, best-effort: an unreadable directory costs the
     // ← → keys, not the file the user actually asked for.
@@ -396,7 +400,10 @@ function applyOrder(next) {
 /// Annotations are already applied to the in-memory document, so
 /// poppler saves them; a changed page order needs qpdf on top (poppler
 /// cannot reorder or delete pages), staged through a temp file.
+let saveInFlight = false;
+
 function saveEdited() {
+    if (saveInFlight) { toast('Already saving'); return; }
     if (!isDirty()) { toast('Nothing to save'); return; }
     let names = [];
     try {
@@ -411,36 +418,45 @@ function saveEdited() {
         toast('Page reordering needs qpdf, which is not installed');
         return;
     }
+    const annotsAtSave = state.annots.length;
     try {
         if (!reordered) {
             state.doc.save(Gio.File.new_for_path(target).get_uri());
-            afterSave(target);
+            afterSave(target, annotsAtSave);
             return;
         }
-        const tmp = GLib.build_filenamev([GLib.get_tmp_dir(),
-            `lisa-preview-${GLib.get_monotonic_time()}.pdf`]);
+        // O_EXCL temp file (#197): a predictable /tmp name is a symlink
+        // target someone else can plant. file_open_tmp creates it
+        // atomically; poppler then overwrites the real file we own.
+        const [fd, tmp] = GLib.file_open_tmp('lisa-preview-XXXXXX.pdf');
+        GLib.close(fd);
         state.doc.save(Gio.File.new_for_path(tmp).get_uri());
+        saveInFlight = true;
         const proc = Gio.Subprocess.new(
             ['qpdf', tmp, '--pages', '.', qpdfPageSpec(state.pageOrder), '--', target],
             Gio.SubprocessFlags.STDERR_PIPE);
         proc.communicate_utf8_async(null, null, (p, res) => {
+            saveInFlight = false;
             let stderr = '';
             try { [, , stderr] = p.communicate_utf8_finish(res); } catch (e) { /* below */ }
             GLib.unlink(tmp);
-            if (p.get_successful()) afterSave(target);
+            if (p.get_successful()) afterSave(target, annotsAtSave);
             else toast(`qpdf failed: ${(stderr || 'unknown error').trim().slice(0, 120)}`);
         });
     } catch (e) {
+        saveInFlight = false;
         toast(`Could not save: ${e.message}`);
     }
 }
 
-function afterSave(target) {
-    // Open the copy that was just written: its state is clean, the
-    // result is on screen, and the untouched original stays behind on
-    // disk. Staying on the original with a lingering "unsaved" badge
-    // for changes that ARE saved (in the copy) reads as a failed save.
+function afterSave(target, annotsAtSave) {
     toast(`Saved ${target.split('/').pop()}`);
+    // Annotations added WHILE qpdf ran are only in this window —
+    // reloading would silently discard them (#197). Keep working state
+    // in that case; otherwise open the copy that was just written: its
+    // state is clean, the result is on screen, and the untouched
+    // original stays behind on disk.
+    if (state.annots.length !== annotsAtSave) return;
     loadFile(target);
 }
 
@@ -574,13 +590,18 @@ function buildWindow() {
     // --- pages sidebar: thumbnails, reorder, remove -----------------
     const thumbList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
     thumbList.connect('row-activated', (_l, row) => {
-        state.pageIndex = row.get_index();
+        const i = row.get_index();
+        if (i < 0 || i >= state.pageOrder.length) return;
+        state.pageIndex = i;
         render();
     });
     rebuildThumbs = () => {
         let child;
         while ((child = thumbList.get_first_child()) !== null) thumbList.remove(child);
-        if (state.kind !== 'document') return;
+        // Rows are built only while the sidebar is shown — clearing is
+        // what releases stale page refs; building 400 thumbnails behind
+        // a closed sidebar is waste.
+        if (state.kind !== 'document' || !pagesBtn.active) return;
         state.pageOrder.forEach((orig, i) => {
             const page = state.doc.get_page(orig);
             const [pw, ph] = page.get_size();
@@ -695,12 +716,16 @@ const handlers = {
         if (!state.path) return {error: 'nothing open'};
         const base = {path: state.path, name: state.path.split('/').pop(), kind: state.kind};
         if (state.kind === 'document' && state.doc) {
-            const page = state.doc.get_page(state.pageIndex);
+            // The DISPLAYED page — after a reorder, state.pageIndex is a
+            // display position, and reading the same-numbered original
+            // page silently hands the agent a different page than the
+            // one on screen (#195).
+            const page = docPage();
             const text = page.get_text() ?? '';
             const cap = 30000;
             return {
                 ...base,
-                page: state.pageIndex + 1, pages: state.pageCount,
+                page: state.pageIndex + 1, pages: state.pageOrder.length,
                 text: text.slice(0, cap),
                 // A truncation the model cannot see is a page it thinks
                 // it has read (the lesson from Surfer's extract.js).
@@ -719,29 +744,42 @@ const handlers = {
     /// save tool: annotations land in the window and the human decides
     /// with Ctrl+S whether they reach disk.
     async addNote({page, x, y, text}) {
-        if (state.kind !== 'document' || !state.doc)
-            return {error: 'no document open'};
-        const idx = (page ?? 1) - 1;
-        if (idx < 0 || idx >= state.pageOrder.length)
-            return {error: `page ${page} out of range 1..${state.pageOrder.length}`};
+        const idx = displayPageIndex(page);
+        if (idx.error) return idx;
         if (typeof text !== 'string' || !text.trim())
             return {error: 'text is required'};
-        noteOnPage(state.doc.get_page(state.pageOrder[idx]), Number(x) || 0, Number(y) || 0, text.trim());
-        return {ok: true, page, unsaved: state.annots.length};
+        const done = noteOnPage(state.doc.get_page(state.pageOrder[idx.value]),
+            finiteOr(x, 0), finiteOr(y, 0), text.trim());
+        return done ? {ok: true, page: idx.value + 1, unsaved: state.annots.length}
+            : {error: 'annotation was not added'};
     },
 
     async highlight({page, x1, y1, x2, y2}) {
-        if (state.kind !== 'document' || !state.doc)
-            return {error: 'no document open'};
-        const idx = (page ?? 1) - 1;
-        if (idx < 0 || idx >= state.pageOrder.length)
-            return {error: `page ${page} out of range 1..${state.pageOrder.length}`};
-        const rect = normalizeRect({x: Number(x1) || 0, y: Number(y1) || 0},
-            {x: Number(x2) || 0, y: Number(y2) || 0});
-        rectOnPage(state.doc.get_page(state.pageOrder[idx]), rect, 'highlight');
-        return {ok: true, page, unsaved: state.annots.length};
+        const idx = displayPageIndex(page);
+        if (idx.error) return idx;
+        const rect = normalizeRect({x: finiteOr(x1, 0), y: finiteOr(y1, 0)},
+            {x: finiteOr(x2, 0), y: finiteOr(y2, 0)});
+        const done = rectOnPage(state.doc.get_page(state.pageOrder[idx.value]), rect, 'highlight');
+        return done ? {ok: true, page: idx.value + 1, unsaved: state.annots.length}
+            : {error: 'annotation was not added'};
     },
 };
+
+/// `page` from the wire -> a validated 0-based display index, or the
+/// error to return. `1.5` and `"abc"` must land HERE, not inside
+/// poppler as get_page(undefined) surfacing a marshalling error (#198).
+function displayPageIndex(page) {
+    if (state.kind !== 'document' || !state.doc)
+        return {error: 'no document open'};
+    const p = page === undefined ? 1 : page;
+    if (!Number.isInteger(p) || p < 1 || p > state.pageOrder.length)
+        return {error: `page must be an integer 1..${state.pageOrder.length}`};
+    return {value: p - 1};
+}
+
+function finiteOr(n, fallback) {
+    return Number.isFinite(n) ? n : fallback;
+}
 
 /// The Agent Bus socket lives exactly as long as a window does
 /// (mcp-bus defers socket activation, so presence == usability).

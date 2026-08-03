@@ -316,7 +316,11 @@ package_lisa-shell() {
     # substrate (context search, ledger reads — CLAUDE.md rule 7);
     # libqalculate ships qalc, the launcher's calculator lane (§5.7.2:
     # math routes to qalc, never the model).
-    depends=(gjs libadwaita lisa-cli libqalculate)
+    # poppler-glib renders Preview's PDFs and qpdf applies its page
+    # reordering — NAMED here, not inherited transitively, so Track L
+    # installs carry them too (#199, the ADR-0034 lesson: a capability
+    # that arrives as someone else's accident disappears the same way).
+    depends=(gjs libadwaita lisa-cli libqalculate poppler-glib qpdf)
     optdepends=('gnome-shell: overlay + launcher Shell extensions (GNOME 46+)')
     cd "$pkgbase-$pkgver"
 
