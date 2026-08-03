@@ -435,6 +435,56 @@ impl Engine for RemoteEngine {
             ))
         })
     }
+
+    /// The agent-surface lane: one non-streaming round-trip with the
+    /// body passed through verbatim — `tools` and `tool_calls`
+    /// included. The broker already forwards `tools` to every
+    /// OpenAI-compat provider (proxy.rs); this engine only had the
+    /// typed streaming lane, so every harness chat against a remote
+    /// model died on the trait's "tool calling is not supported"
+    /// default — seen on the device as the Assistant answering
+    /// `backend: http status: 400` for any cloud model (2026-08-03).
+    fn raw_chat(
+        &self,
+        mut body: serde_json::Value,
+    ) -> BoxFuture<'static, Result<serde_json::Value, EngineError>> {
+        let socket = self.socket.clone();
+        let provider = self.provider.clone();
+        let model = self.model.clone();
+        Box::pin(async move {
+            // The provider-side id, not the `remote:` alias the caller
+            // used; and no streaming — this lane is request/response.
+            body["model"] = serde_json::Value::String(model);
+            body["stream"] = serde_json::Value::Bool(false);
+            let payload = body.to_string();
+            let request = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\n\
+                 Host: lisa-remoted\r\n\
+                 x-lisa-provider: {provider}\r\n\
+                 x-lisa-scopes: prompt\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n{payload}",
+                payload.len(),
+            );
+            let mut io = UnixStream::connect(&socket).await.map_err(|e| {
+                unavailable(format!(
+                    "lisa-remoted socket {}: {e} — is the broker running? \
+                     (systemctl start lisa-remoted)",
+                    socket.display()
+                ))
+            })?;
+            io.write_all(request.as_bytes())
+                .await
+                .map_err(|e| unavailable(format!("remoted write: {e}")))?;
+            let head = read_head(&mut io).await?;
+            let bytes = read_body(&mut io, &head).await?;
+            if !head.status_ok {
+                return Err(error_from_body(&bytes));
+            }
+            serde_json::from_slice(&bytes).map_err(|e| unavailable(format!("remoted json: {e}")))
+        })
+    }
 }
 
 /// Wraps any EngineProvider: intercepts `remote:` model names and routes
@@ -644,6 +694,82 @@ mod tests {
         assert_eq!(items[0].as_ref().unwrap(), "hal");
         let err = items[1].as_ref().unwrap_err().to_string();
         assert!(err.contains("ended before [DONE]"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn raw_chat_forwards_tools_verbatim_and_returns_the_completion() {
+        // The regression this guards: the harness attaches Agent-Bus
+        // `tools` to every chat, and RemoteEngine used to fall back to
+        // the trait's refusal — every cloud model in the Assistant died.
+        let dir = std::env::temp_dir().join(format!("lisa-rawchat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("remoted.sock");
+        let _ = std::fs::remove_file(&sock);
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            let body_start = loop {
+                let n = s.read(&mut buf).await.unwrap();
+                assert!(n > 0, "client closed before a full request arrived");
+                got.extend_from_slice(&buf[..n]);
+                if let Some(i) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&got[..i]);
+                    let cl: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    if got.len() - (i + 4) >= cl {
+                        break i + 4;
+                    }
+                }
+            };
+            let head = String::from_utf8_lossy(&got[..body_start]).to_string();
+            let body: serde_json::Value = serde_json::from_slice(&got[body_start..]).unwrap();
+            let reply = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"function":{"name":"read_document","arguments":"{}"}}]}}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len(),
+            );
+            s.write_all(resp.as_bytes()).await.unwrap();
+            (head, body)
+        });
+        let engine = RemoteEngine {
+            socket: sock,
+            provider: "fireworks".into(),
+            model: "accounts/fireworks/models/inkling".into(),
+        };
+        let out = engine
+            .raw_chat(serde_json::json!({
+                "model": "remote:fireworks:accounts/fireworks/models/inkling",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function":
+                    {"name": "read_document", "parameters": {"type": "object"}}}],
+                "stream": true,
+            }))
+            .await
+            .unwrap();
+        let (head, body) = server.await.unwrap();
+        assert!(head.contains("x-lisa-provider: fireworks"), "{head}");
+        assert_eq!(
+            body["tools"].as_array().unwrap().len(),
+            1,
+            "tools pass through verbatim"
+        );
+        assert_eq!(body["stream"], false, "the raw lane is request/response");
+        assert_eq!(
+            body["model"], "accounts/fireworks/models/inkling",
+            "provider-side id, not the remote: alias"
+        );
+        assert!(
+            out["choices"][0]["message"]["tool_calls"].is_array(),
+            "the completion comes back intact"
+        );
     }
 
     #[tokio::test]
