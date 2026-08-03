@@ -70,11 +70,22 @@ function sanitise(s) {
 /// that is the same message `search_mail` would have listed under that
 /// id — a collision means two files whose names differ only in
 /// punctuation, which Maildir uniqueness already rules out in practice.
+///
+/// BOTH SPELLINGS OF THE WANTED SIDE MATCH, and that is the whole of
+/// #210. There are two callers, not one: the tools pass the sanitised
+/// id fragment, and the *window* passes `unique` straight off the disk,
+/// because a list row is built by `listFolder` from `parseFilename`
+/// output. Comparing sanitised-disk against a raw wanted made every GUI
+/// lookup miss — `showMessage` then fell back to the list row, which
+/// carries no body, so every message on the reference device opened to
+/// an empty reading pane. Sanitising the wanted side too is idempotent
+/// (the output alphabet is already [A-Za-z0-9._-]), so an id that was
+/// sanitised once still compares equal, and the raw form now does too.
 export function uniqueMatchesId(diskUnique, idUnique) {
     const wanted = String(idUnique ?? '');
     if (!wanted)
         return false;
-    return sanitise(diskUnique) === wanted;
+    return sanitise(diskUnique) === sanitise(wanted);
 }
 
 /// Turn `folder`, `dir` and a filename into a path under `root`, or

@@ -32,6 +32,21 @@ test('a plain alphanumeric name still matches — the case that hid the bug', ()
     assert(uniqueMatchesId('123.abc', '123.abc'));
 });
 
+test('the RAW unique part matches too — the window passes that one (#210)', () => {
+    // The other caller, and the one nobody wrote a test for. The window's
+    // list rows carry `unique` straight off the disk (listFolder keeps
+    // `parseFilename`'s output verbatim), so `showMessage` asks for
+    // `...lisa,U=8407` while the tools ask for `...lisa_U_8407`.
+    //
+    // Sanitising both sides fixed the tool path (#167) and broke this
+    // one: every GUI lookup returned null, `showMessage` fell back to
+    // the list row, and the row has no body — so EVERY message opened
+    // to an empty reading pane on the reference device. Both spellings
+    // name the same file and both must match.
+    assert(uniqueMatchesId(REAL_UNIQUE, REAL_UNIQUE),
+        'the window hands back the raw unique part it read off the disk');
+});
+
 test('a different message does not match', () => {
     assert(!uniqueMatchesId('1785529483.3297_1.lisa,U=9999', '1785529483.3297_1.lisa_U_8407'));
     assert(!uniqueMatchesId('', 'anything'));
