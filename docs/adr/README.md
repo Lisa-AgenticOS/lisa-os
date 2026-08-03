@@ -133,3 +133,4 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0042](0042-field-device-keyring-policy.md) — The field device runs a blank login keyring (and why that is honest)
 - [ADR-0043](0043-the-model-knows-the-os-through-retrieval.md) — The model knows the OS through retrieval, never through the prompt
 - [ADR-0044](0044-retrieval-receipts.md) — Retrieval receipts: contextd vouches for what it returned (proposed)
+- [ADR-0045](0045-calver-for-the-image-semver-for-the-contracts.md) — CalVer for the image, SemVer for the contracts
