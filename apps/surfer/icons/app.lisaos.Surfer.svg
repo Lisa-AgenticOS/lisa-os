@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Surfer app icon (#182). Every color is a branding token:
+     violet-700 #4F378B, violet-500 #6D45C9, violet-300 #9B7BE8,
+     warm-white #FFF1E9, dark text-secondary #B7ABA3, dark-base #1B1917. -->
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6D45C9"/>
+      <stop offset="1" stop-color="#4F378B"/>
+    </linearGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF1E9"/>
+      <stop offset="0.55" stop-color="#E7DED8"/>
+      <stop offset="1" stop-color="#B7ABA3"/>
+    </linearGradient>
+    <linearGradient id="deck" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFF1E9" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#FFF1E9" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+    <clipPath id="squircle">
+      <rect x="16" y="16" width="480" height="480" rx="118"/>
+    </clipPath>
+  </defs>
+
+  <!-- background squircle, two-tone like a split wave -->
+  <g clip-path="url(#squircle)">
+    <rect x="16" y="16" width="480" height="480" fill="url(#bg)"/>
+    <rect x="16" y="16" width="240" height="480" fill="#4F378B" opacity="0.45"/>
+    <!-- faint arc, the brand wallpaper's gesture -->
+    <path d="M -40 420 Q 256 300 552 430 L 552 512 L -40 512 Z"
+          fill="#9B7BE8" opacity="0.10"/>
+  </g>
+
+  <!-- board shadow -->
+  <g transform="rotate(-34 256 256)">
+    <ellipse cx="262" cy="278" rx="86" ry="196" fill="#1B1917" opacity="0.35" filter="url(#soft)"/>
+  </g>
+
+  <g transform="rotate(-34 256 256)">
+    <!-- surfboard: pointed nose and tail -->
+    <path d="M 256 62
+             C 312 118 330 196 330 260
+             C 330 330 306 402 256 450
+             C 206 402 182 330 182 260
+             C 182 196 200 118 256 62 Z"
+          fill="url(#board)" stroke="#4F378B" stroke-width="10"/>
+    <!-- deck sheen -->
+    <path d="M 256 78
+             C 300 126 314 194 314 254
+             C 314 268 313 282 311 296
+             C 276 268 240 240 214 200
+             C 222 152 234 110 256 78 Z"
+          fill="url(#deck)" opacity="0.55"/>
+    <!-- stringer -->
+    <line x1="256" y1="70" x2="256" y2="442" stroke="#4F378B" stroke-width="6" opacity="0.55"/>
+    <!-- contour lines toward the tail -->
+    <path d="M 200 330 C 226 352 288 352 312 330" fill="none" stroke="#4F378B" stroke-width="6" opacity="0.30"/>
+    <path d="M 208 368 C 230 388 284 388 306 368" fill="none" stroke="#4F378B" stroke-width="6" opacity="0.30"/>
+
+    <!-- the S, glowing violet -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M 296 172
+               C 296 138 216 138 216 180
+               C 216 224 298 232 298 282
+               C 298 330 210 330 208 292"
+            stroke="#9B7BE8" stroke-width="30" opacity="0.55" filter="url(#glow)"/>
+      <path d="M 296 172
+               C 296 138 216 138 216 180
+               C 216 224 298 232 298 282
+               C 298 330 210 330 208 292"
+            stroke="#6D45C9" stroke-width="18"/>
+      <path d="M 296 172
+               C 296 138 216 138 216 180
+               C 216 224 298 232 298 282
+               C 298 330 210 330 208 292"
+            stroke="#9B7BE8" stroke-width="7"/>
+    </g>
+  </g>
+</svg>
