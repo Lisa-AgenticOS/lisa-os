@@ -1,6 +1,6 @@
 # ADR-0039: The split, and the package index that makes it work
 
-- Status: **accepted** (decision 2026-08-02, project owner)
+- Status: **accepted; executed through the index going live** — repos extracted, per-repo packages built by CI, [lisa] hosted, SIGNED, and pacman-verified from a clean machine (2026-08-03, lisa-os#171). Open: step 4 (image consumes [lisa]), steps 5-6 (integration test, removal)
 - Date: 2026-08-02
 - Relates: ADR-0006 (monorepo with staged extraction), ADR-0020 (app
   update channel decoupled from the image), ADR-0034 (install/update

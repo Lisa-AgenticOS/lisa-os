@@ -1,6 +1,6 @@
 # ADR-0011: Lisa Ambient — the always-on, wake-word-free assistant
 
-- **Status:** accepted (design; implementation staged)
+- **Status:** accepted (design only; NO implementation as of 2026-08-03 — #158 tracks the gap. "Implementation staged" meant "planned in stages", and read as "partially built", which it never was)
 - **Date:** 2026-07-23
 
 ## Context

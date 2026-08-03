@@ -125,3 +125,11 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0034](0034-lisa-dev-user-scope-tooling.md) — `lisa dev`: developer tooling in the user's home, rootless (proposed)
 - [ADR-0035](0035-the-desktop-is-a-prompt.md) — The desktop is a prompt: a floating dock-prompt, no top bar (proposed)
 - [ADR-0036](0036-an-assistant-that-acts-on-its-own.md) — An assistant that acts on its own: triggers, trust, and what happens when nobody is watching (proposed)
+- [ADR-0037](0037-the-browser-is-a-lisa-app.md) — Browser: the web becomes an agent surface, not a vendored binary (Surfer)
+- [ADR-0038](0038-lisa-desktop-a-hard-fork-of-gnome-shell.md) — Lisa Desktop: a hard fork of GNOME Shell (not Mutter)
+- [ADR-0039](0039-the-split-and-the-package-index.md) — The split, and the `[lisa]` package index that makes it work
+- [ADR-0040](0040-docs-live-with-the-code-no-docs-repo.md) — Docs live with the code; lisaos.dev renders them; no docs repo
+- [ADR-0041](0041-package-signing-and-the-trust-chain.md) — Package signing and the trust chain (key custody, two-phase SigLevel)
+- [ADR-0042](0042-field-device-keyring-policy.md) — The field device runs a blank login keyring (and why that is honest)
+- [ADR-0043](0043-the-model-knows-the-os-through-retrieval.md) — The model knows the OS through retrieval, never through the prompt
+- [ADR-0044](0044-retrieval-receipts.md) — Retrieval receipts: contextd vouches for what it returned (proposed)

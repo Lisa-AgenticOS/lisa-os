@@ -1,6 +1,6 @@
 # ADR-0038: Lisa Desktop — a hard fork of GNOME Shell
 
-- Status: **accepted** (decision 2026-08-02, project owner; no code yet)
+- Status: **accepted**; sequencing step 1 (design tokens + lint gate) implemented 2026-08-03; mechanism corrected against the 50.3 source the same day (see below); step 2 grounded in lisa-desktop#1
 - Date: 2026-08-02
 - Relates: ADR-0001 (Arch base), ADR-0012 (control-center panel),
   ADR-0035 (the desktop is a prompt), PLAN §3 (desktop environment

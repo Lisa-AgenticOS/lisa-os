@@ -1,6 +1,6 @@
 # ADR-0012 — A native "Intelligence" panel in a forked gnome-control-center
 
-Status: accepted (2026-07-23)
+Status: accepted (2026-07-23); implemented — the panel ships in the image and runs on the device (v25+), including provider OAuth
 Relates to: PLAN §5.3 (Settings panel), §5.11 (providers), §8 (local
 model fit); ADR-0008 (remoted); supersedes the standalone-only settings
 plan for the AI surface.
