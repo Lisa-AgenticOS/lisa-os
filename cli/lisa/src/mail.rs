@@ -756,12 +756,215 @@ pub fn sync() -> Result<()> {
     if !status.success() {
         bail!("mbsync exited with {status}");
     }
+    // New mail goes straight into retrieval (#170): index-on-sync is
+    // the issue's own incrementality requirement, and doing it here —
+    // in-process, same as sync-knowledge — means no writable D-Bus
+    // ingestion surface exists for something else to poison.
+    index_maildir(&paths.maildir)?;
+    Ok(())
+}
+
+/// `lisa mail index`: the first backfill, and re-runs.
+pub fn index() -> Result<()> {
+    let home = home()?;
+    let paths = Paths::new(&home, None);
+    if !paths.maildir.exists() {
+        bail!(
+            "no Maildir at {} — run `lisa mail setup` and `lisa mail sync` first",
+            paths.maildir.display()
+        );
+    }
+    index_maildir(&paths.maildir)
+}
+
+/// The stable identity of a Maildir message, from its path.
+///
+/// NOT the raw filename: Maildir encodes flags in a `:2,…` suffix that
+/// CHANGES when a message is read or flagged, and mbsync appends
+/// `,U=<uid>` info. An id that moves with the flags would re-index
+/// every message the first time somebody opens it — so the id is the
+/// path relative to the Maildir root with the flags suffix stripped,
+/// under a `mail:` prefix no filesystem walk can collide with (#104's
+/// concern, answered by construction: `prune_missing` and the file
+/// walker both work on real paths, and this is not one).
+pub fn message_source_id(maildir: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(maildir).ok()?;
+    let rel = rel.to_string_lossy();
+    let stem = rel.split(':').next().unwrap_or(&rel);
+    Some(format!("mail:{stem}"))
+}
+
+/// The retrieval text of one message: the headers a person searches by,
+/// then the best body the message offers.
+pub fn message_text(raw: &[u8]) -> Option<String> {
+    use mailparse::MailHeaderMap as _;
+    let parsed = mailparse::parse_mail(raw).ok()?;
+    let get = |name: &str| parsed.headers.get_first_value(name).unwrap_or_default();
+    let body = best_body(&parsed).unwrap_or_default();
+    // 64 KiB of body is plenty for retrieval: past that it is
+    // newsletters and quoted history, and chunking cost grows for
+    // recall that does not.
+    let body: String = body.chars().take(64 * 1024).collect();
+    let text = format!(
+        "From: {}\nTo: {}\nSubject: {}\nDate: {}\n\n{}",
+        get("From"),
+        get("To"),
+        get("Subject"),
+        get("Date"),
+        body.trim()
+    );
+    Some(text)
+}
+
+/// text/plain wins; an HTML-only message gets its tags stripped —
+/// crude, but retrieval wants words, not markup, and real HTML
+/// fidelity already lives in the Mail app's WebKit view.
+fn best_body(mail: &mailparse::ParsedMail) -> Option<String> {
+    if mail.subparts.is_empty() {
+        let ctype = mail.ctype.mimetype.to_ascii_lowercase();
+        if ctype == "text/plain" {
+            return mail.get_body().ok();
+        }
+        if ctype == "text/html" {
+            let html = mail.get_body().ok()?;
+            let stripped = strip_tags(&html);
+            return Some(stripped);
+        }
+        return None;
+    }
+    // multipart: prefer a plain part anywhere, else the first html.
+    let mut html = None;
+    for part in &mail.subparts {
+        if let Some(text) = best_body(part) {
+            if part.ctype.mimetype.eq_ignore_ascii_case("text/plain") || !part.subparts.is_empty() {
+                return Some(text);
+            }
+            html.get_or_insert(text);
+        }
+    }
+    html
+}
+
+fn strip_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    let mut last_space = true;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => {
+                if c.is_whitespace() {
+                    if !last_space {
+                        out.push(' ');
+                        last_space = true;
+                    }
+                } else {
+                    out.push(c);
+                    last_space = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn index_maildir(maildir: &Path) -> Result<()> {
+    use lisa_contextd::acl::AddOutcome;
+    let store = lisa_contextd::ContextStore::open(lisa_contextd::ContextStore::default_path())?;
+    let (mut added, mut unchanged, mut foreign, mut unparsed) = (0usize, 0, 0, 0);
+    for entry in walkdir::WalkDir::new(maildir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        // Only message directories: cur/ (seen) and new/ (arrived).
+        // tmp/ is mbsync's scratch and everything else is metadata.
+        let dir = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str());
+        if !matches!(dir, Some("cur") | Some("new")) {
+            continue;
+        }
+        let Some(source) = message_source_id(maildir, path) else {
+            continue;
+        };
+        let Ok(raw) = std::fs::read(path) else {
+            continue;
+        };
+        let Some(text) = message_text(&raw) else {
+            unparsed += 1;
+            continue;
+        };
+        match store.add_document_if_changed(&source, "mail", &text)? {
+            AddOutcome::Added => added += 1,
+            AddOutcome::Unchanged => unchanged += 1,
+            AddOutcome::ForeignSkipped => foreign += 1,
+        }
+    }
+    println!(
+        "mail index: {added} added, {unchanged} unchanged, {foreign} foreign-skipped, {unparsed} unparsable"
+    );
+
+    // Same embedding rule as sync-knowledge (#177's lesson included:
+    // embedding runs whether or not anything was added, so pending
+    // chunks backfill the first time a model is present).
+    let chosen = lisa_contextd::embed::resolve();
+    if chosen.kind == "inferenced" {
+        let n = store.embed_pending(chosen.embedder.as_ref())?;
+        if n > 0 {
+            println!(
+                "embedded {n} chunk(s) (model: {})",
+                chosen.model.as_deref().unwrap_or("daemon default")
+            );
+        }
+    } else {
+        println!(
+            "not embedding: no model-backed embedder (chunks stay pending; \
+             rerun after `lisa models get {}`)",
+            lisa_contextd::embed::EMBEDDING_MODEL
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #170: reading a message renames its file (`:2,` flags, mbsync's
+    /// `,U=` uid info); the retrieval identity must not move with it,
+    /// or every opened message re-indexes as a duplicate.
+    #[test]
+    fn a_message_keeps_its_identity_when_flags_change() {
+        let root = Path::new("/home/x/Mail");
+        let unread = root.join("acct/INBOX/new/1755.M1.host,U=42");
+        let read = root.join("acct/INBOX/new/1755.M1.host,U=42:2,S");
+        let a = message_source_id(root, &unread).unwrap();
+        let b = message_source_id(root, &read).unwrap();
+        assert_eq!(a, b, "flag rename must not change the id");
+        assert!(a.starts_with("mail:"), "namespaced off the filesystem: {a}");
+    }
+
+    #[test]
+    fn message_text_prefers_plain_and_strips_html_only_mail() {
+        let plain = b"From: a@example.test\r\nSubject: Fatura F-2026-0007\r\n\r\nquarterly invoice attached\r\n";
+        let text = message_text(plain).unwrap();
+        assert!(text.contains("Subject: Fatura F-2026-0007"));
+        assert!(text.contains("quarterly invoice attached"));
+
+        let html = b"From: a@example.test\r\nSubject: h\r\nContent-Type: text/html\r\n\r\n<div><b>pay</b> the <i>bill</i></div>\r\n";
+        let text = message_text(html).unwrap();
+        assert!(
+            text.contains("pay the bill"),
+            "tags stripped, words kept: {text}"
+        );
+        assert!(!text.contains('<'), "no markup in retrieval text: {text}");
+    }
 
     fn account() -> Account {
         Account {

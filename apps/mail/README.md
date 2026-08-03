@@ -226,6 +226,11 @@ A real preferences page, not only the diagnostic it started as.
 - **No search index.** `search_mail` scans folders; fine for thousands
   of messages, not for hundreds of thousands. The contextd path (§5.3,
   proper indexing with embeddings) is the answer when it matters.
-- **Not indexed into contextd yet**, so mail does not appear in
-  `[my stuff]` retrieval — only through these tools. That is the next
-  step and it needs an ingestion API contextd does not have.
+- **Indexed into contextd** (#170): `lisa mail sync` indexes new
+  messages into the context store under `mail` provenance (and
+  `lisa mail index` backfills), so retrieval can answer "the email
+  about the parking permit" — semantically, with the real embedder.
+  The ACL holds: an app with only `documents.read` never sees a mail
+  chunk. No writable D-Bus ingestion API exists, deliberately — the
+  CLI indexes in-process, so there is no surface for another app to
+  poison. Attachment *contents* are not indexed (their own issue).

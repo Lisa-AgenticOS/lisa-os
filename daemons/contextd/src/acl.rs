@@ -64,6 +64,17 @@ pub fn provenance_for_scope(scope: &str) -> &'static [&'static str] {
 }
 
 /// All provenance tags the given scopes together permit.
+/// What [`ContextStore::add_document_if_changed`] did with a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddOutcome {
+    Added,
+    Unchanged,
+    /// The source is already owned by a DIFFERENT provenance (#104):
+    /// refused rather than relabeled, and counted so the caller can
+    /// say so.
+    ForeignSkipped,
+}
+
 pub fn allowed_provenance(scopes: &[&str]) -> Vec<&'static str> {
     let mut allowed: Vec<&'static str> = scopes
         .iter()
@@ -77,6 +88,47 @@ pub fn allowed_provenance(scopes: &[&str]) -> Vec<&'static str> {
 impl ContextStore {
     /// Insert one document with an explicit provenance (mail/screen/web
     /// sources; files go through `index_dir`). Chunked + FTS-indexed.
+    /// Incremental, relabel-safe ingestion — what a corpus mirror (the
+    /// mail indexer, #170) calls per document.
+    ///
+    /// Unlike [`add_document`], this: skips unchanged content by hash
+    /// (an indexer re-walking ten thousand messages must cost ten
+    /// thousand hash compares, not ten thousand rewrites and
+    /// re-embeds), and REFUSES to replace a document another
+    /// provenance owns — the #104 rule, which add_document predates
+    /// and does not enforce.
+    pub fn add_document_if_changed(
+        &self,
+        source: &str,
+        provenance: &str,
+        content: &str,
+    ) -> Result<AddOutcome, StoreError> {
+        if !is_known_provenance(provenance) {
+            return Err(StoreError::UnknownProvenance(provenance.to_string()));
+        }
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        {
+            let conn = self.conn.lock().expect("context lock");
+            let existing: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT provenance, content_hash FROM documents WHERE source = ?1",
+                    [source],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+            if let Some((ref old_provenance, ref old_hash)) = existing {
+                if old_provenance != provenance {
+                    return Ok(AddOutcome::ForeignSkipped);
+                }
+                if *old_hash == hash {
+                    return Ok(AddOutcome::Unchanged);
+                }
+            }
+        }
+        self.add_document(source, provenance, content)?;
+        Ok(AddOutcome::Added)
+    }
+
     pub fn add_document(
         &self,
         source: &str,
@@ -170,6 +222,57 @@ impl ContextStore {
 mod tests {
     use super::*;
     use crate::store::StoreError;
+
+    /// #170's ingestion path: unchanged content is a no-op, changed
+    /// content re-indexes, and a source another provenance owns is
+    /// REFUSED (#104 — add_document predates that rule; the _if_changed
+    /// variant enforces it).
+    #[test]
+    fn if_changed_skips_unchanged_and_refuses_relabels() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+
+        assert_eq!(
+            store
+                .add_document_if_changed("mail:a/INBOX/1", "mail", "the parking permit renewal")
+                .unwrap(),
+            AddOutcome::Added
+        );
+        assert_eq!(
+            store
+                .add_document_if_changed("mail:a/INBOX/1", "mail", "the parking permit renewal")
+                .unwrap(),
+            AddOutcome::Unchanged
+        );
+        assert_eq!(
+            store
+                .add_document_if_changed("mail:a/INBOX/1", "mail", "edited body")
+                .unwrap(),
+            AddOutcome::Added
+        );
+        // A different provenance may not steal the source — refused,
+        // and the original survives intact.
+        assert_eq!(
+            store
+                .add_document_if_changed("mail:a/INBOX/1", "file", "impostor")
+                .unwrap(),
+            AddOutcome::ForeignSkipped
+        );
+        let hits = store.search_scoped("edited", &["mail"], 3).unwrap();
+        assert!(
+            !hits.is_empty(),
+            "original mail doc must survive the impostor"
+        );
+        // And the scope wall holds: documents.read never sees mail.
+        assert!(
+            store
+                .search_scoped("parking permit", &["documents"], 3)
+                .unwrap()
+                .iter()
+                .all(|h| h.provenance != "mail"),
+            "documents scope must not surface mail chunks"
+        );
+    }
 
     fn mixed_store() -> (tempfile::TempDir, ContextStore) {
         let dir = tempfile::tempdir().unwrap();
