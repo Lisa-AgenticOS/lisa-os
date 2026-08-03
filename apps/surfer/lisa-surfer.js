@@ -18,6 +18,7 @@
 
 import Adw from 'gi://Adw?version=1';
 import Gtk from 'gi://Gtk?version=4.0';
+import Gdk from 'gi://Gdk?version=4.0';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import WebKit from 'gi://WebKit?version=6.0';
@@ -155,6 +156,16 @@ function attachTab(view, focus = true) {
     // below it (seen on the first real screenshot, 2026-07-29).
     view.set_vexpand(true);
     view.set_hexpand(true);
+    // Rail toggling resizes the content card, WebKit re-rasterizes its
+    // GL surface, and the engine's backdrop for not-yet-painted frames
+    // is opaque WHITE — dark pages flash bright for a frame (owner saw
+    // it as flicker on collapse/expand). Painting the backdrop in the
+    // scheme's own tone makes those frames invisible.
+    const rgba = new Gdk.RGBA();
+    rgba.parse(Adw.StyleManager.get_default().dark
+        ? '#1B1917'   /* token: dark-base */
+        : '#FFFFFF'); /* token: surface */
+    view.set_background_color(rgba);
     const page = tabView.append(view);
     page.set_title('New Tab');
     view.connect('notify::title', () => {
