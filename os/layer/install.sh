@@ -2,9 +2,11 @@
 # Lisa Layer installer (Track L, ADR-0003): the Lisa stack on stock Arch
 # or Omarchy — no custom image required. Root required (pacman).
 #
-# Repo source: set LISA_REPO_URL (e.g. file:///path/to/repo built by
-# os/repo-tools/build-packages.sh). The hosted, signed repo lands in M1;
-# until then SigLevel is Optional for explicitly local repos.
+# Repo source: the hosted, SIGNED [lisa] index by default (ADR-0039,
+# ADR-0041) — live since 2026-08-03. Set LISA_REPO_URL to override with
+# a local build (os/repo-tools/build-packages.sh); local repos stay
+# SigLevel Optional, the hosted one is verified against the lisa-keyring
+# trust anchor and ends at SigLevel Required.
 set -euo pipefail
 
 say() { printf '%s\n' "$*"; }
@@ -12,27 +14,53 @@ die() { say "error: $*" >&2; exit 1; }
 
 [ -f /etc/arch-release ] || die "the Lisa Layer targets Arch Linux (including Omarchy)."
 [ "$(id -u)" -eq 0 ] || die "run as root (pacman needs it): sudo $0"
-[ -n "${LISA_REPO_URL:-}" ] || die "LISA_REPO_URL is not set.
-The hosted repo is not live yet (M1). Build locally instead:
-  os/repo-tools/build-packages.sh /srv/lisa-repo
-  sudo LISA_REPO_URL=file:///srv/lisa-repo $0"
+HOSTED_REPO="https://github.com/Lisa-AgenticOS/lisa-packages/releases/download/current"
+LISA_REPO_URL="${LISA_REPO_URL:-$HOSTED_REPO}"
+
+HOSTED_KEY_URL="https://raw.githubusercontent.com/Lisa-AgenticOS/lisa-packages/main/lisa-packages.gpg.asc"
+LISA_FPR="737240D11D28E109A474A8E5827E27417AF5982B"
+
+if [ "$LISA_REPO_URL" = "$HOSTED_REPO" ]; then
+    # Trust FIRST, repo second: the signing key arrives over the same
+    # TLS-to-GitHub the packages would anyway, gets locally signed
+    # against the pinned fingerprint, and the stanza starts at
+    # Required — no package is ever installed unverified. (SigLevel
+    # Optional would not have helped bootstrap: it forgives a MISSING
+    # signature, not one it cannot verify, and ours exist.)
+    say ">> importing the [lisa] signing key (fingerprint $LISA_FPR)"
+    # Unconditional: --init is idempotent, and a gnupg dir EXISTING is
+    # not the same as one holding the master secret key --lsign-key
+    # signs with (a half-initialized dir fails exactly there).
+    pacman-key --init
+    tmpkey=$(mktemp)
+    curl -fsSL "$HOSTED_KEY_URL" -o "$tmpkey"
+    pacman-key --add "$tmpkey"
+    rm -f "$tmpkey"
+    pacman-key --lsign-key "$LISA_FPR"
+    SIGLEVEL="Required"
+else
+    # A local build (file://) has no signatures; say so in the stanza.
+    SIGLEVEL="Optional TrustAll"
+fi
 
 if grep -q '^\[lisa\]' /etc/pacman.conf; then
     say ">> [lisa] repo already configured, leaving pacman.conf untouched"
 else
-    say ">> adding [lisa] repo to /etc/pacman.conf"
+    say ">> adding [lisa] repo to /etc/pacman.conf (SigLevel = $SIGLEVEL)"
     cat >>/etc/pacman.conf <<EOF
 
 # BEGIN lisa layer (added by os/layer/install.sh; removed by uninstall.sh)
 [lisa]
-SigLevel = Optional TrustAll
+SigLevel = $SIGLEVEL
 Server = $LISA_REPO_URL
 # END lisa layer
 EOF
 fi
 
 say ">> installing lisa-inferenced lisa-modeld lisa-cli (full -Syu: partial upgrades break Arch)"
-pacman -Syu --noconfirm lisa-inferenced lisa-modeld lisa-cli
+EXTRA=""
+[ "$LISA_REPO_URL" = "$HOSTED_REPO" ] && EXTRA="lisa-keyring"
+pacman -Syu --noconfirm lisa-inferenced lisa-modeld lisa-cli $EXTRA
 
 if [ -d /run/systemd/system ]; then
     say ">> enabling lisa-inferenced.service"
