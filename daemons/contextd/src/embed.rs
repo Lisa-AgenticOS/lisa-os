@@ -335,6 +335,15 @@ fn normalize(v: &mut [f32]) {
     }
 }
 
+/// One query, one vector — both hybrid paths embed the query exactly
+/// once, up front, whether or not the lexical prefilter found anything
+/// (#176's fallthrough needs the vector precisely when it found
+/// nothing).
+fn embed_query(embedder: &dyn Embedder, query: &str) -> Result<Vec<f32>, StoreError> {
+    let mut v = embedder.embed(std::slice::from_ref(&query.to_string()))?;
+    Ok(v.remove(0))
+}
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
@@ -396,8 +405,23 @@ impl ContextStore {
         limit: usize,
     ) -> Result<Vec<Hit>, StoreError> {
         // Pull a generous lexical candidate set to rerank.
-        let candidates = self.search(query, limit.max(20) * 3)?;
-        self.rerank(query, candidates, embedder, limit)
+        let mut candidates = self.search(query, limit.max(20) * 3)?;
+        let qvec = embed_query(embedder, query)?;
+        // Fallthrough (#176): when lexical search cannot fill the ask,
+        // the vectors get their chance directly. Without this, a query
+        // sharing no words with a document can NEVER surface it — the
+        // prefilter returns nothing and there is nothing to rerank,
+        // which on the device turned "bills from the internet provider"
+        // into zero results against an indexed, embedded invoice.
+        // Brute force is fine at this scale: the vectors live as SQLite
+        // blobs and a full scan of a few thousand is milliseconds
+        // (sqlite-vec remains the later optimization, same as the
+        // schema comment says).
+        if candidates.len() < limit {
+            let extra = self.vector_candidates(&qvec, &candidates, None, limit)?;
+            candidates.extend(extra);
+        }
+        self.rerank(&qvec, candidates, limit)
     }
 
     /// The same blend, over an ACL-filtered candidate set.
@@ -414,23 +438,91 @@ impl ContextStore {
         embedder: &dyn Embedder,
         limit: usize,
     ) -> Result<Vec<Hit>, StoreError> {
-        let candidates = self.search_scoped(query, scopes, limit.max(20) * 3)?;
-        self.rerank(query, candidates, embedder, limit)
+        let mut candidates = self.search_scoped(query, scopes, limit.max(20) * 3)?;
+        let qvec = embed_query(embedder, query)?;
+        // Same fallthrough as search_hybrid, with the ACL applied to
+        // the vector scan too: a disallowed chunk must not become a
+        // candidate through the vector door when the lexical door
+        // already refused it (the orthogonality this function's doc
+        // comment exists to defend).
+        if candidates.len() < limit {
+            let extra = self.vector_candidates(&qvec, &candidates, Some(scopes), limit)?;
+            candidates.extend(extra);
+        }
+        self.rerank(&qvec, candidates, limit)
+    }
+
+    /// Top-`k` chunks by cosine against `qvec`, excluding sources
+    /// already among `have`, optionally restricted to `scopes`
+    /// (provenance values). Score is 0.0 — bm25's "no lexical match at
+    /// all" — so in the blend these compete on similarity alone and a
+    /// lexical hit of equal similarity always outranks them.
+    fn vector_candidates(
+        &self,
+        qvec: &[f32],
+        have: &[Hit],
+        scopes: Option<&[&str]>,
+        k: usize,
+    ) -> Result<Vec<Hit>, StoreError> {
+        let seen: std::collections::HashSet<&str> =
+            have.iter().map(|h| h.source.as_str()).collect();
+        let conn = self.conn.lock().expect("context lock");
+        let mut stmt = conn.prepare(
+            "SELECT d.source, d.provenance, c.content, v.vec
+             FROM chunk_vectors v
+             JOIN documents d ON d.id = v.doc_id
+             JOIN chunks c ON c.doc_id = v.doc_id AND c.seq = v.seq",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+            ))
+        })?;
+
+        let mut best: std::collections::HashMap<String, (f64, Hit)> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (source, provenance, content, blob) = row?;
+            if seen.contains(source.as_str()) {
+                continue;
+            }
+            if let Some(allowed) = scopes
+                && !allowed.contains(&provenance.as_str())
+            {
+                continue;
+            }
+            let cos = cosine(qvec, &blob_to_vec(&blob)) as f64;
+            let snippet: String = content.chars().take(160).collect();
+            let hit = Hit {
+                source: source.clone(),
+                provenance,
+                snippet,
+                score: 0.0,
+            };
+            match best.get(&source) {
+                Some((prev, _)) if *prev >= cos => {}
+                _ => {
+                    best.insert(source, (cos, hit));
+                }
+            }
+        }
+        let mut ranked: Vec<(f64, Hit)> = best.into_values().collect();
+        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(ranked.into_iter().take(k).map(|(_, h)| h).collect())
     }
 
     fn rerank(
         &self,
-        query: &str,
+        qvec: &[f32],
         candidates: Vec<Hit>,
-        embedder: &dyn Embedder,
         limit: usize,
     ) -> Result<Vec<Hit>, StoreError> {
         if candidates.is_empty() {
             return Ok(candidates);
         }
-        let qvec = embedder.embed(std::slice::from_ref(&query.to_string()))?;
-        let qvec = &qvec[0];
-
         let conn = self.conn.lock().expect("context lock");
         // Best BM25 magnitude for normalization (bm25 is negative; more
         // negative = better).
@@ -725,5 +817,114 @@ mod tests {
             .unwrap();
         assert!(!hits.is_empty());
         assert!(hits[0].source.ends_with("a.md"));
+    }
+
+    /// An embedder whose notion of similarity is a lookup table: any
+    /// text containing a key maps to that key's vector. Deterministic
+    /// semantic neighborhoods for tests, with none of HashEmbedder's
+    /// token-overlap accidents.
+    struct TableEmbedder(Vec<(&'static str, Vec<f32>)>);
+    impl Embedder for TableEmbedder {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, StoreError> {
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    self.0
+                        .iter()
+                        .find(|(k, _)| t.contains(k))
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_else(|| vec![0.0, 0.0, 1.0])
+                })
+                .collect())
+        }
+    }
+
+    /// #176, reproduced from the reference device: an indexed, embedded
+    /// document containing "quarterly invoices from Negenet" returned
+    /// ZERO hits for "bills from the internet provider" — no lexical
+    /// overlap, so the BM25 prefilter produced no candidates and the
+    /// vectors never got a chance. The fallthrough gives them one.
+    #[test]
+    fn a_query_sharing_no_words_still_finds_its_document() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("invoice.md"),
+            "Fatura: quarterly invoices from Negenet arrive by email.",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("soup.md"),
+            "A recipe for lentil soup with cumin.",
+        )
+        .unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        store.index_dir(dir.path()).unwrap();
+
+        let embedder = TableEmbedder(vec![
+            ("invoices", vec![1.0, 0.0, 0.0]),
+            ("bills", vec![0.9, 0.1, 0.0]), // near the invoice doc
+            ("lentil", vec![0.0, 1.0, 0.0]),
+        ]);
+        store.embed_pending(&embedder).unwrap();
+
+        // POSITIVE CONTROL first: prove this query really has no
+        // lexical path, or the assertion below proves nothing about
+        // the fallthrough.
+        assert!(
+            store
+                .search("bills from the internet provider", 5)
+                .unwrap()
+                .is_empty(),
+            "the control failed: lexical search found something, so this \
+             test would pass without the fallthrough"
+        );
+
+        let hits = store
+            .search_hybrid("bills from the internet provider", &embedder, 3)
+            .unwrap();
+        assert!(
+            hits.first()
+                .is_some_and(|h| h.source.ends_with("invoice.md")),
+            "the vector fallthrough must surface the invoice doc: {hits:?}"
+        );
+    }
+
+    /// The ACL is not bypassable through the vector door: the same
+    /// zero-overlap query with a scope that excludes the document's
+    /// provenance must stay empty.
+    #[test]
+    fn the_vector_fallthrough_respects_scopes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("invoice.md"),
+            "Fatura: quarterly invoices from Negenet arrive by email.",
+        )
+        .unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        store.index_dir(dir.path()).unwrap(); // provenance: file
+
+        let embedder = TableEmbedder(vec![
+            ("invoices", vec![1.0, 0.0, 0.0]),
+            ("bills", vec![0.9, 0.1, 0.0]),
+        ]);
+        store.embed_pending(&embedder).unwrap();
+
+        // Allowed scope → found through the fallthrough.
+        let allowed = store
+            .search_hybrid_scoped("bills from the internet provider", &["file"], &embedder, 3)
+            .unwrap();
+        assert!(
+            !allowed.is_empty(),
+            "positive control: scope 'file' finds it"
+        );
+
+        // Disallowed scope → the vector door is shut too.
+        let denied = store
+            .search_hybrid_scoped("bills from the internet provider", &["mail"], &embedder, 3)
+            .unwrap();
+        assert!(
+            denied.is_empty(),
+            "a chunk outside the scope surfaced through the vector scan: {denied:?}"
+        );
     }
 }

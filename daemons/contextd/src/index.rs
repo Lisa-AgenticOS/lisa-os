@@ -318,6 +318,79 @@ mod tests {
         assert!(hits[0].snippet.contains("[mitochondria]"));
     }
 
+    /// #176, first half, reproduced from the reference device: a
+    /// document saying "quarterly invoices" returned nothing for the
+    /// query "quarterly invoice" — FTS5's default tokenizer does no
+    /// stemming and MATCH terms are ANDed. The porter tokenizer makes
+    /// singular find plural (and -ing, -ed, and the rest).
+    #[test]
+    fn singular_query_finds_the_plural_document() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("invoice.md"),
+            "Fatura: quarterly invoices from Negenet arrive by email.",
+        )
+        .unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        store.index_dir(dir.path()).unwrap();
+
+        let hits = store.search("quarterly invoice", 3).unwrap();
+        assert!(
+            hits.first()
+                .is_some_and(|h| h.source.ends_with("invoice.md")),
+            "porter stemming must let 'invoice' match 'invoices': {hits:?}"
+        );
+    }
+
+    /// A store created before the porter tokenizer migrates in place on
+    /// open: same rows, better recall, vectors untouched (they key on
+    /// (doc_id, seq), which the rebuild preserves verbatim).
+    #[test]
+    fn a_pre_porter_store_is_rebuilt_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ctx.db");
+
+        // Hand-build the OLD schema — default tokenizer — with one
+        // document and one chunk, exactly as a pre-#176 store held them.
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL, provenance TEXT NOT NULL,
+                    mtime INTEGER NOT NULL, content_hash TEXT NOT NULL,
+                    UNIQUE(source));
+                 CREATE VIRTUAL TABLE chunks USING fts5(
+                    content, doc_id UNINDEXED, seq UNINDEXED);
+                 INSERT INTO documents (source, provenance, mtime, content_hash)
+                    VALUES ('/old/invoice.md', 'file', 0, 'h');
+                 INSERT INTO chunks (content, doc_id, seq)
+                    VALUES ('quarterly invoices from Negenet', 1, 0);",
+            )
+            .unwrap();
+            // POSITIVE CONTROL: under the old tokenizer the singular
+            // really does miss — otherwise the assertion below would
+            // pass with the migration deleted.
+            let n: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM chunks WHERE chunks MATCH '\"quarterly\" AND \"invoice\"'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "control failed: old tokenizer matched the singular");
+        }
+
+        let store = ContextStore::open(&db).unwrap();
+        // The migrated table answers the singular, and the old content
+        // survived the rebuild.
+        let hits = store.search("quarterly invoice", 3).unwrap();
+        assert!(
+            hits.first().is_some_and(|h| h.source == "/old/invoice.md"),
+            "migration must rebuild with porter and keep the rows: {hits:?}"
+        );
+    }
+
     #[test]
     fn reindex_skips_unchanged_and_updates_changed() {
         let dir = tempfile::tempdir().unwrap();

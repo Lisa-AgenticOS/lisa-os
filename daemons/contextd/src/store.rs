@@ -52,10 +52,16 @@ impl ContextStore {
                 content_hash TEXT NOT NULL,
                 UNIQUE(source)
             );
+            -- porter: 'invoice' must match 'invoices'. Reproduced on the
+            -- reference device (#176): an indexed, embedded document
+            -- containing 'quarterly invoices' returned NOTHING for the
+            -- query 'quarterly invoice', because FTS5's default
+            -- tokenizer does no stemming and MATCH terms are ANDed.
             CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
                 content,
                 doc_id UNINDEXED,
-                seq UNINDEXED
+                seq UNINDEXED,
+                tokenize = 'porter unicode61'
             );
             CREATE TABLE IF NOT EXISTS app_memory (
                 app_id  TEXT NOT NULL,
@@ -76,6 +82,37 @@ impl ContextStore {
                 PRIMARY KEY (doc_id, seq)
             );",
         )?;
+
+        // Migrate a pre-porter chunks table in place (#176). An FTS5
+        // tokenizer is fixed at CREATE time, so an existing store keeps
+        // its old one silently — same content, worse recall, nothing
+        // logged — unless rebuilt. The rebuild copies (content, doc_id,
+        // seq) verbatim, so chunk_vectors rows keyed on (doc_id, seq)
+        // stay valid and nothing needs re-embedding.
+        let schema: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        if !schema.contains("porter") {
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE VIRTUAL TABLE chunks_porter USING fts5(
+                     content,
+                     doc_id UNINDEXED,
+                     seq UNINDEXED,
+                     tokenize = 'porter unicode61'
+                 );
+                 INSERT INTO chunks_porter (content, doc_id, seq)
+                     SELECT content, doc_id, seq FROM chunks;
+                 DROP TABLE chunks;
+                 ALTER TABLE chunks_porter RENAME TO chunks;
+                 COMMIT;",
+            )?;
+        }
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
