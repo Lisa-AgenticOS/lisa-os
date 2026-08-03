@@ -42,6 +42,11 @@ pub enum ProxyError {
     NoEndpoint(String),
     #[error("request body must contain a messages array")]
     BadRequest,
+    /// Content this dialect cannot express. Named and REFUSED rather
+    /// than dropped: an image silently removed still gets a confident
+    /// answer about a picture nobody saw (#209).
+    #[error("{0}")]
+    Unsupported(String),
     #[error("upstream error {status}: {body}")]
     Upstream { status: u16, body: String },
     #[error("http: {0}")]
@@ -57,6 +62,74 @@ pub struct UpstreamRequest {
 }
 
 /// Render the OpenAI-shaped `body` for `spec`, authenticated with
+/// Text-only projection of an OpenAI content value — for the places
+/// Anthropic takes a plain string (the `system` block, a tool result).
+fn content_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|p| p["type"].as_str() == Some("text"))
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// OpenAI content -> Anthropic content: a bare string passes through,
+/// parts become Anthropic blocks. Anything this dialect cannot carry
+/// is an ERROR, never a silent drop — the whole point of #209.
+fn anthropic_content(content: &Value) -> Result<Value, ProxyError> {
+    let Value::Array(parts) = content else {
+        return Ok(Value::String(content_text(content)));
+    };
+    let mut blocks: Vec<Value> = Vec::new();
+    for part in parts {
+        match part["type"].as_str() {
+            Some("text") => blocks.push(json!({
+                "type": "text",
+                "text": part["text"].as_str().unwrap_or_default(),
+            })),
+            Some("image_url") => {
+                let url = part["image_url"]["url"].as_str().unwrap_or_default();
+                // data:<mime>;base64,<payload> — the shape `lisa ask
+                // --attach` produces, and the only one that keeps the
+                // bytes off any third-party host.
+                if let Some(rest) = url.strip_prefix("data:")
+                    && let Some((mime, payload)) = rest.split_once(";base64,")
+                {
+                    blocks.push(json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": payload,
+                        },
+                    }));
+                } else if url.starts_with("http") {
+                    blocks.push(json!({
+                        "type": "image",
+                        "source": {"type": "url", "url": url},
+                    }));
+                } else {
+                    return Err(ProxyError::Unsupported(
+                        "image_url must be a data: URI or an http(s) URL".into(),
+                    ));
+                }
+            }
+            other => {
+                return Err(ProxyError::Unsupported(format!(
+                    "Anthropic cannot carry a `{}` content part — send it to a \
+                     provider that supports the modality",
+                    other.unwrap_or("(untyped)")
+                )));
+            }
+        }
+    }
+    Ok(Value::Array(blocks))
+}
+
 /// `credential`.
 pub fn build_upstream(
     spec: &ProviderSpec,
@@ -117,7 +190,10 @@ pub fn build_upstream(
             let mut turns: Vec<Value> = Vec::new();
             for m in messages {
                 let role = m["role"].as_str().unwrap_or("user");
-                let content = m["content"].as_str().unwrap_or_default().to_string();
+                // Parts (images) survive for user/assistant turns;
+                // system and tool_result take the text projection,
+                // which is all Anthropic accepts there.
+                let content = content_text(&m["content"]);
                 match role {
                     "system" | "developer" => system_parts.push(content),
                     // A tool RESULT. Anthropic carries these as a user
@@ -155,7 +231,10 @@ pub fn build_upstream(
                             None => turns.push(json!({"role": "assistant", "content": content})),
                         }
                     }
-                    _ => turns.push(json!({"role": "user", "content": content})),
+                    _ => turns.push(json!({
+                        "role": "user",
+                        "content": anthropic_content(&m["content"])?,
+                    })),
                 }
             }
             let mut out = json!({
@@ -528,6 +607,76 @@ mod tests {
             up.body.get("lisa_priority").is_none(),
             "Lisa extensions stripped"
         );
+    }
+
+    #[test]
+    fn openai_compat_carries_content_parts_untouched() {
+        // Fireworks/Inkling take the OpenAI shape as-is: the image must
+        // arrive exactly as the caller built it.
+        let sp = spec("fireworks");
+        let body = json!({
+            "model": "accounts/fireworks/models/inkling",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ]}],
+        });
+        let req = build_upstream(&sp, "k", &body).unwrap();
+        let sent = &req.body;
+        assert_eq!(
+            sent["messages"][0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AAA"
+        );
+    }
+
+    #[test]
+    fn anthropic_converts_an_image_part_into_a_base64_block() {
+        // The Messages API has its own shape; content.as_str() on an
+        // array used to yield "" — the image AND the question vanished,
+        // and the model answered about nothing (#209).
+        let sp = spec("anthropic");
+        let body = json!({
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ]}],
+        });
+        let req = build_upstream(&sp, "k", &body).unwrap();
+        let sent = &req.body;
+        let content = &sent["messages"][0]["content"];
+        assert_eq!(content[0]["text"], "what is this?", "the question survives");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "AAA");
+    }
+
+    #[test]
+    fn anthropic_refuses_a_modality_it_cannot_carry() {
+        let sp = spec("anthropic");
+        let body = json!({
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": [
+                {"type": "input_audio", "input_audio": {"data": "AAA", "format": "wav"}},
+            ]}],
+        });
+        let err = build_upstream(&sp, "k", &body).unwrap_err().to_string();
+        assert!(
+            err.contains("input_audio"),
+            "the refusal names the part: {err}"
+        );
+    }
+
+    #[test]
+    fn a_plain_string_message_is_unchanged_for_anthropic() {
+        let sp = spec("anthropic");
+        let body = json!({
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "hello"}],
+        });
+        let req = build_upstream(&sp, "k", &body).unwrap();
+        let sent = &req.body;
+        assert_eq!(sent["messages"][0]["content"], "hello");
     }
 
     #[test]
