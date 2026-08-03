@@ -33,6 +33,14 @@ export function isIdentity(order) {
     return order.every((page, i) => page === i);
 }
 
+/// Whether the order differs from the document. NOT just isIdentity:
+/// removing the LAST page leaves [0,1] from a 3-page document — an
+/// identity permutation of the wrong length, and treating it as
+/// unchanged would silently drop the deletion at save.
+export function orderChanged(order, pageCount) {
+    return order.length !== pageCount || !isIdentity(order);
+}
+
 /// qpdf's --pages selection, 1-based, consecutive runs compressed to
 /// ranges: [2,0,1] -> "3,1-2". Compression is not cosmetic — a
 /// 400-page document with one page moved is two ranges, not 400 comma

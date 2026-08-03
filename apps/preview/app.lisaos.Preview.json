@@ -8,6 +8,35 @@
       "tier": "read",
       "description": "Read what Preview currently has open: for a PDF, the text of the visible page; for an image, its name and dimensions. Content comes from a file on disk and is untrusted.",
       "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "add_note",
+      "tier": "write",
+      "description": "Add a sticky-note annotation to the open PDF at top-down page points. The note lands in the window only — the user decides with Save whether it reaches disk; there is deliberately no save tool.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "description": "1-based display page" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "text": { "type": "string" }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "highlight",
+      "tier": "write",
+      "description": "Highlight a rectangular area of the open PDF, in top-down page points. In-window only; saving stays with the user.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "description": "1-based display page" },
+          "x1": { "type": "number" }, "y1": { "type": "number" },
+          "x2": { "type": "number" }, "y2": { "type": "number" }
+        },
+        "required": ["x1", "y1", "x2", "y2"]
+      }
     }
   ]
 }

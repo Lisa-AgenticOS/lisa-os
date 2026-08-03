@@ -26,6 +26,9 @@ import Gio from 'gi://Gio';
 
 import {kindOf, siblings} from './lib/formats.js';
 import {zoomStep, fitScale, fitWidthScale, step, rotate} from './lib/view.js';
+import {COLORS, normalizeRect, isClick, viewToPage, annotRect, savePathFor, unsavedLabel}
+    from './lib/annotate.js';
+import {movePage, removePage, orderChanged, qpdfPageSpec} from './lib/reorder.js';
 import {McpServer} from './lib/mcp.js';
 import {Previewer} from './lib/previewer.js';
 
@@ -75,16 +78,28 @@ const state = {
     path: null, kind: null, rotation: 0, zoom: 1, fitMode: 'fit',
     pageIndex: 0, pageCount: 1, doc: null, pixbuf: null,
     files: [], fileIndex: -1,
+    // Slice 2 (annotation + page order). `annots` holds what has been
+    // applied to the in-memory document, for undo and the dirty count;
+    // `pageOrder` is display order over ORIGINAL page indices; `drag`
+    // is the live marquee in widget coordinates while one is in flight.
+    annots: [], tool: null, pageOrder: [], drag: null,
 };
 
 let picture = null, drawing = null, stack = null, pageLabel = null, zoomLabel = null, titleLabel = null;
+let refreshEditUi = null, rebuildThumbs = null;
+
+/// The poppler page at the CURRENT DISPLAY position — after reordering,
+/// display position i shows original page pageOrder[i].
+function docPage() {
+    if (!state.doc || !state.pageOrder.length) return null;
+    return state.doc.get_page(state.pageOrder[state.pageIndex]);
+}
 
 function contentSize() {
     if (state.kind === 'image' && state.pixbuf)
         return {width: state.pixbuf.get_width(), height: state.pixbuf.get_height()};
     if (state.kind === 'document' && state.doc) {
-        const page = state.doc.get_page(state.pageIndex);
-        const [w, h] = page.get_size();
+        const [w, h] = docPage().get_size();
         return {width: w, height: h};
     }
     return {width: 0, height: 0};
@@ -117,11 +132,14 @@ function render() {
     if (zoomLabel) zoomLabel.label = `${Math.round(scale * 100)}%`;
     if (pageLabel) {
         pageLabel.label = state.kind === 'document'
-            ? `${state.pageIndex + 1} / ${state.pageCount}` : '';
+            ? `${state.pageIndex + 1} / ${state.pageOrder.length}` : '';
         pageLabel.visible = state.kind === 'document';
     }
-    if (titleLabel && state.path)
-        titleLabel.label = state.path.split('/').pop();
+    if (titleLabel && state.path) {
+        titleLabel.set_title(state.path.split('/').pop());
+        titleLabel.set_subtitle(unsavedLabel(state.annots.length,
+            state.kind === 'document' && orderChanged(state.pageOrder, state.pageCount)));
+    }
 
     if (state.kind === 'image' && state.pixbuf) {
         const {width, height} = contentSize();
@@ -142,7 +160,7 @@ function render() {
 
 function drawPage(area, cr, _w, _h) {
     if (!state.doc) return;
-    const page = state.doc.get_page(state.pageIndex);
+    const page = docPage();
     const [pw, ph] = page.get_size();
     const scale = effectiveScale();
     const quarter = state.rotation % 180 !== 0;
@@ -163,6 +181,22 @@ function drawPage(area, cr, _w, _h) {
     cr.scale(scale, scale);
     page.render(cr);
     cr.restore();
+    // Live marquee while a highlight/box drag is in flight — drawn in
+    // widget space so it tracks the pointer exactly.
+    if (state.drag) {
+        const d = state.drag;
+        const c = state.tool === 'highlight'
+            ? [1, 0.85, 0.31, 0.35] : [0.43, 0.27, 0.79, 0.9];
+        cr.setSourceRGBA(...c);
+        if (state.tool === 'highlight') {
+            cr.rectangle(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+            cr.fill();
+        } else {
+            cr.setLineWidth(2);
+            cr.rectangle(d.x1, d.y1, d.x2 - d.x1, d.y2 - d.y1);
+            cr.stroke();
+        }
+    }
     cr.$dispose?.();
 }
 
@@ -204,6 +238,12 @@ function loadFile(path) {
     state.pageIndex = 0;
     state.rotation = 0;
     state.fitMode = 'fit';
+    state.annots = [];
+    state.tool = null;
+    state.drag = null;
+    state.pageOrder = kind === 'document'
+        ? Array.from({length: state.pageCount}, (_, i) => i) : [];
+    refreshEditUi?.();
 
     // Folder browsing, best-effort: an unreadable directory costs the
     // ← → keys, not the file the user actually asked for.
@@ -237,11 +277,172 @@ function goFile(delta) {
 
 function goPage(delta) {
     if (state.kind !== 'document') { goFile(delta); return; }
-    const next = step(state.pageIndex, state.pageCount, delta);
+    // Navigation is bounded by the DISPLAY order, which shrinks when
+    // pages are removed — not by the document's own page count.
+    const next = step(state.pageIndex, state.pageOrder.length, delta);
     if (next !== state.pageIndex) { state.pageIndex = next; render(); }
 }
 
 function setZoom(z) { state.fitMode = 'free'; state.zoom = z; render(); }
+
+// --- slice 2: annotation + page order ------------------------------
+
+function isDirty() {
+    return state.annots.length > 0 ||
+        (state.kind === 'document' && orderChanged(state.pageOrder, state.pageCount));
+}
+
+function popplerRect(r) {
+    const rect = new Poppler.Rectangle();
+    rect.x1 = r.x1; rect.y1 = r.y1; rect.x2 = r.x2; rect.y2 = r.y2;
+    return rect;
+}
+
+function popplerColor(c) {
+    const color = new Poppler.Color();
+    color.red = c.red; color.green = c.green; color.blue = c.blue;
+    return color;
+}
+
+/// A sticky note on a page, at TOP-DOWN page points — the shared core
+/// under both the click gesture and the agent tool.
+function noteOnPage(page, x, y, text) {
+    if (!page) return false;
+    const [, ph] = page.get_size();
+    const r = annotRect({x1: x, y1: y, x2: x + 22, y2: y + 22}, ph);
+    const annot = Poppler.AnnotText.new(state.doc, popplerRect(r));
+    annot.set_contents(text);
+    annot.set_color(popplerColor(COLORS.note));
+    page.add_annot(annot);
+    state.annots.push({page, annot});
+    refreshEditUi?.();
+    render();
+    return true;
+}
+
+/// A highlight or box over a TOP-DOWN page-points rect. Highlight is a
+/// real PDF text-markup annotation (quadrilaterals in PDF coords);
+/// building the quad array can fail at the GJS boxed-struct boundary,
+/// and the fallback — a yellow square outline — marks the same area
+/// honestly instead of dropping the gesture.
+function rectOnPage(page, td, tool) {
+    if (!page) return false;
+    const [, ph] = page.get_size();
+    const r = annotRect(td, ph);
+    let annot = null;
+    if (tool === 'highlight') {
+        try {
+            const mk = (x, y) => {
+                const pt = new Poppler.Point();
+                pt.x = x; pt.y = y;
+                return pt;
+            };
+            const quad = new Poppler.Quadrilateral();
+            quad.p1 = mk(r.x1, r.y2); quad.p2 = mk(r.x2, r.y2);
+            quad.p3 = mk(r.x1, r.y1); quad.p4 = mk(r.x2, r.y1);
+            annot = Poppler.AnnotTextMarkup.new_highlight(
+                state.doc, popplerRect(r), [quad]);
+            annot.set_color(popplerColor(COLORS.highlight));
+        } catch (e) {
+            logError(e, 'lisa-preview: text-markup highlight unavailable, using box');
+            annot = null;
+        }
+    }
+    if (!annot) {
+        annot = Poppler.AnnotSquare.new(state.doc, popplerRect(r));
+        annot.set_color(popplerColor(
+            tool === 'highlight' ? COLORS.highlight : COLORS.box));
+    }
+    page.add_annot(annot);
+    state.annots.push({page, annot});
+    refreshEditUi?.();
+    render();
+    return true;
+}
+
+function addNoteAt(vx, vy, text) {
+    const p = viewToPage({x: vx, y: vy}, effectiveScale());
+    return noteOnPage(docPage(), p.x, p.y, text);
+}
+
+function addRectAnnot(viewRect, tool) {
+    const scale = effectiveScale();
+    return rectOnPage(docPage(), {
+        x1: viewRect.x1 / scale, y1: viewRect.y1 / scale,
+        x2: viewRect.x2 / scale, y2: viewRect.y2 / scale,
+    }, tool);
+}
+
+function undoAnnot() {
+    const last = state.annots.pop();
+    if (!last) return;
+    try { last.page.remove_annot(last.annot); } catch (e) {
+        logError(e, 'lisa-preview undo');
+    }
+    refreshEditUi?.();
+    render();
+}
+
+function applyOrder(next) {
+    if (!next) { toast('A document needs at least one page'); return; }
+    state.pageOrder = next;
+    state.pageIndex = Math.min(state.pageIndex, next.length - 1);
+    rebuildThumbs?.();
+    refreshEditUi?.();
+    render();
+}
+
+/// Save an "(edited)" copy next to the original — never over it.
+/// Annotations are already applied to the in-memory document, so
+/// poppler saves them; a changed page order needs qpdf on top (poppler
+/// cannot reorder or delete pages), staged through a temp file.
+function saveEdited() {
+    if (!isDirty()) { toast('Nothing to save'); return; }
+    let names = [];
+    try {
+        const dir = Gio.File.new_for_path(state.path).get_parent();
+        const en = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+        let info;
+        while ((info = en.next_file(null)) !== null) names.push(info.get_name());
+    } catch (e) { /* best effort — savePathFor handles [] */ }
+    const target = savePathFor(state.path, names);
+    const reordered = orderChanged(state.pageOrder, state.pageCount);
+    if (reordered && !GLib.find_program_in_path('qpdf')) {
+        toast('Page reordering needs qpdf, which is not installed');
+        return;
+    }
+    try {
+        if (!reordered) {
+            state.doc.save(Gio.File.new_for_path(target).get_uri());
+            afterSave(target);
+            return;
+        }
+        const tmp = GLib.build_filenamev([GLib.get_tmp_dir(),
+            `lisa-preview-${GLib.get_monotonic_time()}.pdf`]);
+        state.doc.save(Gio.File.new_for_path(tmp).get_uri());
+        const proc = Gio.Subprocess.new(
+            ['qpdf', tmp, '--pages', '.', qpdfPageSpec(state.pageOrder), '--', target],
+            Gio.SubprocessFlags.STDERR_PIPE);
+        proc.communicate_utf8_async(null, null, (p, res) => {
+            let stderr = '';
+            try { [, , stderr] = p.communicate_utf8_finish(res); } catch (e) { /* below */ }
+            GLib.unlink(tmp);
+            if (p.get_successful()) afterSave(target);
+            else toast(`qpdf failed: ${(stderr || 'unknown error').trim().slice(0, 120)}`);
+        });
+    } catch (e) {
+        toast(`Could not save: ${e.message}`);
+    }
+}
+
+function afterSave(target) {
+    // Open the copy that was just written: its state is clean, the
+    // result is on screen, and the untouched original stays behind on
+    // disk. Staying on the original with a lingering "unsaved" badge
+    // for changes that ARE saved (in the copy) reads as a failed save.
+    toast(`Saved ${target.split('/').pop()}`);
+    loadFile(target);
+}
 
 function buildWindow() {
     win = new Adw.ApplicationWindow({application: app, default_width: 1000, default_height: 720});
@@ -249,7 +450,7 @@ function buildWindow() {
     win.__toasts = toasts;
 
     const header = new Adw.HeaderBar();
-    titleLabel = new Gtk.Label({label: 'Preview', ellipsize: 3});
+    titleLabel = new Adw.WindowTitle({title: 'Preview'});
     header.set_title_widget(titleLabel);
 
     const open = new Gtk.Button({icon_name: 'document-open-symbolic', tooltip_text: 'Open (Ctrl+O)'});
@@ -270,19 +471,174 @@ function buildWindow() {
     header.pack_end(pageLabel);
     header.pack_end(zoomLabel);
 
+    // --- annotation tools (documents only) --------------------------
+    const noteBtn = new Gtk.ToggleButton({label: 'Note', tooltip_text: 'Add a note (N)'});
+    const hiBtn = new Gtk.ToggleButton({label: 'Highlight', tooltip_text: 'Highlight an area (H)'});
+    const boxBtn = new Gtk.ToggleButton({label: 'Box', tooltip_text: 'Draw a box (B)'});
+    const tools = [[noteBtn, 'note'], [hiBtn, 'highlight'], [boxBtn, 'box']];
+    for (const [btn, name] of tools) {
+        btn.connect('toggled', () => {
+            if (btn.active) {
+                for (const [other] of tools) if (other !== btn) other.active = false;
+                state.tool = name;
+                // Annotating a rotated view would need a third
+                // coordinate space; resetting is honest and visible.
+                if (state.rotation) { state.rotation = 0; render(); }
+            } else if (state.tool === name) {
+                state.tool = null;
+            }
+        });
+    }
+    const toolBox = new Gtk.Box({spacing: 4, css_classes: ['linked']});
+    [noteBtn, hiBtn, boxBtn].forEach(b => toolBox.append(b));
+
+    const pagesBtn = new Gtk.ToggleButton({icon_name: 'view-grid-symbolic', tooltip_text: 'Pages (P)'});
+    const saveBtn = new Gtk.Button({icon_name: 'document-save-symbolic', tooltip_text: 'Save an edited copy (Ctrl+S)'});
+    saveBtn.connect('clicked', saveEdited);
+    const undoBtn = new Gtk.Button({icon_name: 'edit-undo-symbolic', tooltip_text: 'Undo annotation (Ctrl+Z)'});
+    undoBtn.connect('clicked', undoAnnot);
+    header.pack_end(saveBtn);
+    header.pack_end(undoBtn);
+    header.pack_end(pagesBtn);
+    header.pack_end(toolBox);
+
+    refreshEditUi = () => {
+        const doc = state.kind === 'document';
+        toolBox.visible = doc;
+        pagesBtn.visible = doc;
+        saveBtn.visible = isDirty();
+        undoBtn.visible = state.annots.length > 0;
+        if (!doc) { pagesBtn.active = false; state.tool = null; }
+        for (const [btn, name] of tools) btn.active = doc && state.tool === name;
+    };
+
     picture = new Gtk.Picture({can_shrink: false, halign: Gtk.Align.CENTER, valign: Gtk.Align.CENTER});
     drawing = new Gtk.DrawingArea({halign: Gtk.Align.CENTER, valign: Gtk.Align.CENTER});
     drawing.set_draw_func(drawPage);
+
+    // --- gestures: click places a note, drag draws highlight/box ----
+    const click = new Gtk.GestureClick({button: 1});
+    click.connect('released', (_g, _n, x, y) => {
+        if (state.tool !== 'note' || state.kind !== 'document') return;
+        const pop = new Gtk.Popover();
+        const row = new Gtk.Box({spacing: 6, margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6});
+        const entry = new Gtk.Entry({placeholder_text: 'Note…', width_chars: 28});
+        const add = new Gtk.Button({label: 'Add', css_classes: ['suggested-action']});
+        row.append(entry); row.append(add);
+        pop.set_child(row);
+        pop.set_parent(drawing);
+        const at = new Gdk.Rectangle({x: Math.round(x), y: Math.round(y), width: 1, height: 1});
+        pop.set_pointing_to(at);
+        const commit = () => {
+            const text = entry.get_text().trim();
+            pop.popdown();
+            if (text) addNoteAt(x, y, text);
+        };
+        entry.connect('activate', commit);
+        add.connect('clicked', commit);
+        pop.connect('closed', () => GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            pop.unparent(); return GLib.SOURCE_REMOVE;
+        }));
+        pop.popup();
+        entry.grab_focus();
+    });
+    drawing.add_controller(click);
+
+    const drag = new Gtk.GestureDrag({button: 1});
+    let dragStart = null;
+    drag.connect('drag-begin', (_g, x, y) => {
+        if (state.tool !== 'highlight' && state.tool !== 'box') { dragStart = null; return; }
+        dragStart = {x, y};
+    });
+    drag.connect('drag-update', (_g, dx, dy) => {
+        if (!dragStart) return;
+        state.drag = normalizeRect(dragStart, {x: dragStart.x + dx, y: dragStart.y + dy});
+        drawing.queue_draw();
+    });
+    drag.connect('drag-end', (_g, dx, dy) => {
+        if (!dragStart) return;
+        const end = {x: dragStart.x + dx, y: dragStart.y + dy};
+        const rect = normalizeRect(dragStart, end);
+        const wasClick = isClick(dragStart, end);
+        state.drag = null;
+        dragStart = null;
+        if (!wasClick) addRectAnnot(rect, state.tool);
+        else drawing.queue_draw();
+    });
+    drawing.add_controller(drag);
 
     stack = new Gtk.Stack();
     stack.add_named(picture, 'image');
     stack.add_named(drawing, 'document');
 
+    // --- pages sidebar: thumbnails, reorder, remove -----------------
+    const thumbList = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
+    thumbList.connect('row-activated', (_l, row) => {
+        state.pageIndex = row.get_index();
+        render();
+    });
+    rebuildThumbs = () => {
+        let child;
+        while ((child = thumbList.get_first_child()) !== null) thumbList.remove(child);
+        if (state.kind !== 'document') return;
+        state.pageOrder.forEach((orig, i) => {
+            const page = state.doc.get_page(orig);
+            const [pw, ph] = page.get_size();
+            const tScale = 110 / pw;
+            const thumb = new Gtk.DrawingArea({
+                content_width: 110, content_height: Math.round(ph * tScale),
+                halign: Gtk.Align.CENTER,
+            });
+            thumb.set_draw_func((_a, cr, w, h) => {
+                cr.setSourceRGB(1, 1, 1);
+                cr.rectangle(0, 0, w, h);
+                cr.fill();
+                cr.scale(tScale, tScale);
+                page.render(cr);
+                cr.$dispose?.();
+            });
+            const up = new Gtk.Button({icon_name: 'go-up-symbolic', css_classes: ['flat'], tooltip_text: 'Move up'});
+            const down = new Gtk.Button({icon_name: 'go-down-symbolic', css_classes: ['flat'], tooltip_text: 'Move down'});
+            const del = new Gtk.Button({icon_name: 'user-trash-symbolic', css_classes: ['flat'], tooltip_text: 'Remove page'});
+            up.connect('clicked', () => applyOrder(movePage(state.pageOrder, i, i - 1)));
+            down.connect('clicked', () => applyOrder(movePage(state.pageOrder, i, i + 1)));
+            del.connect('clicked', () => applyOrder(removePage(state.pageOrder, i)));
+            up.sensitive = i > 0;
+            down.sensitive = i < state.pageOrder.length - 1;
+            const btnRow = new Gtk.Box({halign: Gtk.Align.CENTER});
+            [up, down, del].forEach(b => btnRow.append(b));
+            const cell = new Gtk.Box({
+                orientation: Gtk.Orientation.VERTICAL, spacing: 2,
+                margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6,
+            });
+            cell.append(thumb);
+            cell.append(new Gtk.Label({label: `${i + 1}`, css_classes: ['dim-label', 'caption']}));
+            cell.append(btnRow);
+            thumbList.append(cell);
+        });
+    };
+    const thumbScroller = new Gtk.ScrolledWindow({
+        child: thumbList, width_request: 170,
+        hscrollbar_policy: Gtk.PolicyType.NEVER,
+    });
+    const sidebar = new Gtk.Revealer({
+        child: thumbScroller, reveal_child: false,
+        transition_type: Gtk.RevealerTransitionType.SLIDE_RIGHT,
+    });
+    pagesBtn.connect('toggled', () => {
+        if (pagesBtn.active) rebuildThumbs();
+        sidebar.reveal_child = pagesBtn.active;
+    });
+
     const scroller = new Gtk.ScrolledWindow({hexpand: true, vexpand: true, child: stack});
-    const view = new Adw.ToolbarView({content: scroller});
+    const split = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL});
+    split.append(sidebar);
+    split.append(scroller);
+    const view = new Adw.ToolbarView({content: split});
     view.add_top_bar(header);
     toasts.set_child(view);
     win.set_content(toasts);
+    refreshEditUi();
 
     const keys = new Gtk.EventControllerKey();
     keys.connect('key-pressed', (_c, keyval, _code, mods) => {
@@ -294,6 +650,12 @@ function buildWindow() {
         case Gdk.KEY_1: setZoom(1); return true;
         case Gdk.KEY_w: if (ctrl) { win.close(); return true; } break;
         case Gdk.KEY_o: if (ctrl) { chooseFile(); return true; } break;
+        case Gdk.KEY_s: if (ctrl) { saveEdited(); return true; } break;
+        case Gdk.KEY_z: if (ctrl) { undoAnnot(); return true; } break;
+        case Gdk.KEY_n: if (state.kind === 'document') { noteBtn.active = !noteBtn.active; return true; } break;
+        case Gdk.KEY_h: if (state.kind === 'document') { hiBtn.active = !hiBtn.active; return true; } break;
+        case Gdk.KEY_b: if (state.kind === 'document') { boxBtn.active = !boxBtn.active; return true; } break;
+        case Gdk.KEY_p: if (state.kind === 'document') { pagesBtn.active = !pagesBtn.active; return true; } break;
         case Gdk.KEY_r: state.rotation = rotate(state.rotation, 90); render(); return true;
         case Gdk.KEY_Right: case Gdk.KEY_Page_Down: case Gdk.KEY_space: goPage(+1); return true;
         case Gdk.KEY_Left: case Gdk.KEY_Page_Up: goPage(-1); return true;
@@ -350,6 +712,34 @@ const handlers = {
         // empty `text` field that reads as "this image contains nothing".
         return {...base, width, height, text: null,
             note: 'image metadata only — Preview does not OCR or caption'};
+    },
+
+    /// Write-tier: annotate the open document. Coordinates are TOP-DOWN
+    /// page points, `page` is the 1-based DISPLAY page. Deliberately no
+    /// save tool: annotations land in the window and the human decides
+    /// with Ctrl+S whether they reach disk.
+    async addNote({page, x, y, text}) {
+        if (state.kind !== 'document' || !state.doc)
+            return {error: 'no document open'};
+        const idx = (page ?? 1) - 1;
+        if (idx < 0 || idx >= state.pageOrder.length)
+            return {error: `page ${page} out of range 1..${state.pageOrder.length}`};
+        if (typeof text !== 'string' || !text.trim())
+            return {error: 'text is required'};
+        noteOnPage(state.doc.get_page(state.pageOrder[idx]), Number(x) || 0, Number(y) || 0, text.trim());
+        return {ok: true, page, unsaved: state.annots.length};
+    },
+
+    async highlight({page, x1, y1, x2, y2}) {
+        if (state.kind !== 'document' || !state.doc)
+            return {error: 'no document open'};
+        const idx = (page ?? 1) - 1;
+        if (idx < 0 || idx >= state.pageOrder.length)
+            return {error: `page ${page} out of range 1..${state.pageOrder.length}`};
+        const rect = normalizeRect({x: Number(x1) || 0, y: Number(y1) || 0},
+            {x: Number(x2) || 0, y: Number(y2) || 0});
+        rectOnPage(state.doc.get_page(state.pageOrder[idx]), rect, 'highlight');
+        return {ok: true, page, unsaved: state.annots.length};
     },
 };
 

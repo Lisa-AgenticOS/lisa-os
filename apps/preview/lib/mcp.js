@@ -21,6 +21,8 @@ export class McpServer {
     constructor(handlers) {
         this._tools = {
             read_document: async () => await handlers.readDocument(),
+            add_note: async (args) => await handlers.addNote(args),
+            highlight: async (args) => await handlers.highlight(args),
         };
         this._service = null;
         this._path = null;

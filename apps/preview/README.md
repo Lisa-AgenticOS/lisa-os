@@ -82,10 +82,36 @@ Space works when Preview is closed — which is most of the time, and
 exactly when it is wanted. Closing the preview exits the app; the next
 Space starts it again.
 
+### Annotation and page order (slice 2)
+
+For documents the header grows three tools — **Note** (click places a
+sticky note, typed into a popover), **Highlight** and **Box** (drag a
+marquee) — plus a pages sidebar (thumbnails with move-up/down/remove)
+and undo/save. `lib/annotate.js` owns the two coordinate spaces
+(poppler renders top-down, annotation rects are bottom-up PDF native;
+`annotRect` is the only crossing and it is tested), `lib/reorder.js`
+owns the order arithmetic and the qpdf page spec.
+
+Highlights are real PDF text-markup annotations — quadrilaterals built
+across the GJS boxed-struct boundary, verified working on the device —
+with a square-outline fallback if that marshalling ever breaks. Saving
+writes an "(edited)" copy next to the original, never over it; a
+changed page order is applied by **qpdf** at save (poppler-glib cannot
+reorder or delete pages), staged through a temp file. The saved copy is
+then opened, so the window's state is clean and the result is on
+screen.
+
+The agent can annotate too: `add_note` and `highlight` are write-tier
+tools (top-down page points, 1-based display page). There is
+deliberately no save tool — annotations land in the window and the
+human decides with Ctrl+S whether they reach disk.
+
 ### Keys
 
-`+` `-` zoom · `0` fit · `1` actual size · `R` rotate ·
-`←` `→` page (or file, for images) · `[` `]` previous/next file ·
+`+` `-` zoom · `0` fit (fills, even for small content) · `1` actual
+size · `R` rotate · `←` `→` page (or file, for images) · `[` `]`
+previous/next file · `N` note · `H` highlight · `B` box · `P` pages ·
+`Ctrl+S` save edited copy · `Ctrl+Z` undo annotation ·
 `Ctrl+O` open · `Ctrl+W` close
 
 ## How to extend
@@ -104,21 +130,28 @@ payloader while no opus *decoder* existed (#146).
 
 ## Limits
 
-- **No editing.** No annotation, no page reordering, no export or
-  format conversion, no signatures. macOS Preview does all of that;
-  this does not, yet. The scope agreed for v1 is full parity, and this
-  is the first slice of it — say "images and PDFs open, and the agent
-  can read them", not "Preview".
+- **Editing is annotation + page order, not more.** No export or format
+  conversion, no signatures, no image annotation (PDFs only), no
+  free-text or ink tools — that is slice 3. Highlight marks the dragged
+  RECTANGLE; it does not snap to text runs the way selecting text and
+  highlighting would.
+- **Page reordering needs qpdf at runtime** (in the image package set
+  from the slice-2 release onward). Without it, reorder saves refuse
+  with the tool named; annotation saves work regardless.
+- **Reorder UI is buttons, not drag.** Thumbnail drag-and-drop is a
+  follow-up; move-up/move-down/remove do the same job today.
+- **Annotating resets rotation.** A rotated view would need a third
+  coordinate mapping; picking a tool while rotated snaps back to 0°.
 - **No OCR and no vision model.** `read_document` returns PDF text and
   image *metadata*; for an image its `text` is `null` with a note
   saying why, rather than an empty string that reads as "this image
   contains nothing".
 - **Tools exist only while a window is open** — mcp-bus defers socket
   activation, deliberately.
-- **Not yet exercised through Files' double-click path.** Both halves
-  run on the reference device — an image and a PDF were opened and read
-  back over the Agent Bus — but the app is not installed there yet, so
-  the `.desktop` registration is unproven until a release carries it.
+- **Space in Files is device-verified** (2026-08-03, a real key press
+  through Nautilus's own call path — see the Space section for why the
+  bus name matters). The `.desktop` double-click path shipped in
+  20260803.66; Space required the versionless-name fix that follows it.
 
 ## Footguns, paid for once
 
