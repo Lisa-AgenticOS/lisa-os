@@ -140,6 +140,29 @@ a partial sum presented as THE size is a lie). Transparent images get
 a checkerboard baked under them (`composite_color_simple`); the checks
 zoom with the image, which is what says "this is transparency".
 
+### Export and signatures (slice 5)
+
+**Export** (Ctrl+E, images and documents): the format menu is the
+intersection of `lib/export.js`'s worthwhile five (PNG, JPEG, WebP,
+AVIF, TIFF) with what the machine's own pixbuf writers claim — asked
+at startup, never assumed. Images convert from the PRISTINE pixels
+(the transparency checkerboard is a view aid and never reaches a
+file); document pages rasterize at 150 dpi, one page to a chosen
+name or every page into a chosen folder, numbered. A same-format
+export never suggests the source filename — that invites overwriting
+the original.
+
+**Signatures** (documents): draw once in the Sign dialog (strokes,
+normalized and stored versioned in
+`~/.local/share/lisa/preview/signature.json`), then Sign › Place and
+click the page — the scrawl lands as a real `PopplerAnnotStamp` with
+a custom image (ink blue-black, rendered at 3× for zoom), so it rides
+the existing undo and save-a-copy paths like any other annotation.
+Device-verified: a stamped PDF saved, reopened, and rendered with the
+signature in place. `lib/signature.js` owns the stroke arithmetic
+(empty-canvas saves are no-ops; a degenerate scrawl cannot become a
+page-sized stamp).
+
 ### Keys
 
 `+` `-` zoom · `0` fit (fills, even for small content) · `1` actual

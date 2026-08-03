@@ -30,8 +30,12 @@ import {COLORS, normalizeRect, isClick, viewToPage, annotRect, savePathFor, unsa
     from './lib/annotate.js';
 import {movePage, removePage, orderChanged, qpdfPageSpec} from './lib/reorder.js';
 import {looksBinary, truncateText, cardSubtitle, folderSubtitle, mediaClock} from './lib/peek.js';
+import {exportFormats, saveOptions, exportName, rasterScale, pageExportNames} from './lib/export.js';
+import {normalizeStrokes, stampSize, serializeSignature, deserializeSignature} from './lib/signature.js';
 import {McpServer} from './lib/mcp.js';
 import {Previewer} from './lib/previewer.js';
+
+const Cairo = imports.cairo;
 
 /// Poppler is optional at RUNTIME, not at build time. A dev host
 /// without it should still open images rather than failing to start —
@@ -345,6 +349,9 @@ function loadFile(path) {
             state.pixbuf = path.toLowerCase().endsWith('.svg')
                 ? GdkPixbuf.Pixbuf.new_from_file_at_size(path, 2048, 2048)
                 : GdkPixbuf.Pixbuf.new_from_file(path);
+            // Exports use the pristine pixels — the checkerboard below
+            // is a VIEW aid and must never reach a saved file.
+            state.origPixbuf = state.pixbuf;
             // Transparency gets a checkerboard baked under it — a
             // black symbolic icon over the dark theme was invisible on
             // the device. composite_color_simple is pixbuf's own
@@ -595,6 +602,148 @@ function saveEdited() {
     }
 }
 
+// --- slice 5: export/convert + signatures --------------------------
+
+/// A display page rendered to a pixbuf at the export dpi. Goes through
+/// a temp PNG because that is the one lossless path cairo and pixbuf
+/// share; the temp is O_EXCL and unlinked immediately.
+function pageToPixbuf(page, dpi) {
+    const [pw, phh] = page.get_size();
+    const scale = rasterScale(dpi);
+    const w = Math.ceil(pw * scale), h = Math.ceil(phh * scale);
+    const surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, w, h);
+    const cr = new Cairo.Context(surface);
+    cr.setSourceRGB(1, 1, 1);
+    cr.paint();
+    cr.scale(scale, scale);
+    page.render(cr);
+    cr.$dispose?.();
+    const [fd, tmp] = GLib.file_open_tmp('lisa-preview-export-XXXXXX.png');
+    GLib.close(fd);
+    surface.writeToPNG(tmp);
+    const pb = GdkPixbuf.Pixbuf.new_from_file(tmp);
+    GLib.unlink(tmp);
+    return pb;
+}
+
+function savePixbuf(pb, path, formatKey) {
+    const [keys, values] = saveOptions(formatKey);
+    return pb.savev(path, formatKey, keys, values);
+}
+
+/// Export the current view. Images convert from the PRISTINE pixbuf
+/// (never the checkerboarded view copy); documents rasterize the
+/// displayed page, or every page into a chosen folder.
+function runExport(formatKey, ext, allPages) {
+    if (state.kind === 'image' && state.origPixbuf) {
+        const dialog = new Gtk.FileDialog({initial_name: exportName(state.path, ext)});
+        dialog.save(win, null, (src, res) => {
+            try {
+                const file = src.save_finish(res);
+                if (!file) return;
+                savePixbuf(state.origPixbuf, file.get_path(), formatKey);
+                toast(`Exported ${file.get_basename()}`);
+            } catch (e) { /* dismissed */ }
+        });
+        return;
+    }
+    if (state.kind !== 'document' || !state.doc) return;
+    if (!allPages) {
+        const page = state.pageOrder[state.pageIndex] + 1;
+        const dialog = new Gtk.FileDialog({initial_name: exportName(state.path, ext, page)});
+        dialog.save(win, null, (src, res) => {
+            try {
+                const file = src.save_finish(res);
+                if (!file) return;
+                savePixbuf(pageToPixbuf(docPage(), 150), file.get_path(), formatKey);
+                toast(`Exported ${file.get_basename()}`);
+            } catch (e) { /* dismissed */ }
+        });
+        return;
+    }
+    const dialog = new Gtk.FileDialog();
+    dialog.select_folder(win, null, (src, res) => {
+        try {
+            const dir = src.select_folder_finish(res);
+            if (!dir) return;
+            const names = pageExportNames(state.path, ext, state.pageOrder.length);
+            state.pageOrder.forEach((orig, i) => {
+                const pb = pageToPixbuf(state.doc.get_page(orig), 150);
+                savePixbuf(pb, `${dir.get_path()}/${names[i]}`, formatKey);
+            });
+            toast(`Exported ${names.length} pages to ${dir.get_basename()}`);
+        } catch (e) { /* dismissed */ }
+    });
+}
+
+// --- signature: one stored scrawl, stamped where the user clicks ----
+
+function signaturePath() {
+    return `${GLib.get_user_data_dir()}/lisa/preview/signature.json`;
+}
+
+function loadSignature() {
+    if (state.signature !== undefined) return state.signature;
+    try {
+        const [okRead, bytes] = GLib.file_get_contents(signaturePath());
+        state.signature = okRead
+            ? deserializeSignature(new TextDecoder().decode(bytes)) : null;
+    } catch (e) {
+        state.signature = null;
+    }
+    return state.signature;
+}
+
+function storeSignature(sig) {
+    GLib.mkdir_with_parents(GLib.path_get_dirname(signaturePath()), 0o700);
+    GLib.file_set_contents(signaturePath(), serializeSignature(sig));
+    state.signature = sig;
+}
+
+/// The stored strokes rendered to an alpha surface at 3× the stamp
+/// size, in ink blue-black — crisp through PDF zoom.
+function signatureSurface(sig, widthPt, heightPt) {
+    const scale = 3;
+    const w = Math.ceil(widthPt * scale), h = Math.ceil(heightPt * scale);
+    const surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, w, h);
+    const cr = new Cairo.Context(surface);
+    const sx = w / sig.width, sy = h / sig.height;
+    const s = Math.min(sx, sy);
+    cr.setSourceRGB(0.08, 0.09, 0.35);
+    cr.setLineWidth(2.5 * s);
+    cr.setLineCap(Cairo.LineCap.ROUND);
+    cr.setLineJoin(Cairo.LineJoin.ROUND);
+    for (const stroke of sig.strokes) {
+        stroke.forEach((p, i) => {
+            if (i === 0) cr.moveTo(p.x * s, p.y * s);
+            else cr.lineTo(p.x * s, p.y * s);
+        });
+        if (stroke.length === 1)
+            cr.lineTo(stroke[0].x * s + 0.1, stroke[0].y * s);
+        cr.stroke();
+    }
+    cr.$dispose?.();
+    return surface;
+}
+
+function placeSignature(vx, vy) {
+    const sig = loadSignature();
+    const page = docPage();
+    if (!sig || !page) return false;
+    const [, phh] = page.get_size();
+    const p = viewToPage({x: vx, y: vy}, effectiveScale());
+    const size = stampSize(sig);
+    const r = annotRect(
+        {x1: p.x, y1: p.y, x2: p.x + size.width, y2: p.y + size.height}, phh);
+    const annot = Poppler.AnnotStamp.new(state.doc, popplerRect(r));
+    annot.set_custom_image(signatureSurface(sig, size.width, size.height));
+    page.add_annot(annot);
+    state.annots.push({page, annot});
+    refreshEditUi?.();
+    render();
+    return true;
+}
+
 function afterSave(target, annotsAtSave) {
     toast(`Saved ${target.split('/').pop()}`);
     // Annotations added WHILE qpdf ran are only in this window —
@@ -673,9 +822,128 @@ function buildWindow() {
         }
         win.close();
     });
+    // --- export (slice 5): formats the MACHINE can write ------------
+    const available = exportFormats(
+        GdkPixbuf.Pixbuf.get_formats().filter(f => f.is_writable()).map(f => f.get_name()));
+    const exportBtn = new Gtk.MenuButton({
+        icon_name: 'document-save-as-symbolic', tooltip_text: 'Export (Ctrl+E)',
+    });
+    const exPop = new Gtk.Popover();
+    const exBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL, spacing: 8,
+        margin_top: 10, margin_bottom: 10, margin_start: 10, margin_end: 10,
+    });
+    const formatDrop = new Gtk.DropDown({
+        model: Gtk.StringList.new(available.map(f => f.label)),
+    });
+    const allPagesCheck = new Gtk.CheckButton({label: 'All pages'});
+    const exGo = new Gtk.Button({label: 'Export…', css_classes: ['suggested-action']});
+    exGo.connect('clicked', () => {
+        exPop.popdown();
+        const f = available[formatDrop.get_selected()];
+        if (f) runExport(f.key, f.ext, allPagesCheck.active);
+    });
+    exBox.append(formatDrop);
+    exBox.append(allPagesCheck);
+    exBox.append(exGo);
+    exPop.set_child(exBox);
+    exportBtn.set_popover(exPop);
+
+    // --- signature (slice 5): draw once, stamp anywhere -------------
+    const signBtn = new Gtk.MenuButton({label: 'Sign'});
+    const signPop = new Gtk.Popover();
+    const signBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL, spacing: 6,
+        margin_top: 10, margin_bottom: 10, margin_start: 10, margin_end: 10,
+    });
+    const placeBtn = new Gtk.Button({label: 'Place signature', css_classes: ['suggested-action']});
+    placeBtn.connect('clicked', () => {
+        signPop.popdown();
+        if (!loadSignature()) { openSignatureDialog(); return; }
+        state.tool = 'sign';
+        if (state.rotation) { state.rotation = 0; render(); }
+        refreshEditUi();
+        toast('Click the page to place your signature');
+    });
+    const drawBtn = new Gtk.Button({label: 'Draw new signature…'});
+    drawBtn.connect('clicked', () => { signPop.popdown(); openSignatureDialog(); });
+    signBox.append(placeBtn);
+    signBox.append(drawBtn);
+    signPop.set_child(signBox);
+    signBtn.set_popover(signPop);
+
+    function openSignatureDialog() {
+        const dlg = new Adw.Dialog({title: 'Draw your signature', content_width: 540});
+        const tb = new Adw.ToolbarView();
+        tb.add_top_bar(new Adw.HeaderBar());
+        const strokes = [];
+        let current = null;
+        const pad = new Gtk.DrawingArea({
+            content_width: 500, content_height: 200,
+            margin_top: 8, margin_bottom: 8, margin_start: 20, margin_end: 20,
+        });
+        pad.set_draw_func((_a, cr, w, h) => {
+            cr.setSourceRGB(1, 1, 1);
+            cr.rectangle(0, 0, w, h);
+            cr.fill();
+            cr.setSourceRGB(0.08, 0.09, 0.35);
+            cr.setLineWidth(2.5);
+            cr.setLineCap(Cairo.LineCap.ROUND);
+            cr.setLineJoin(Cairo.LineJoin.ROUND);
+            for (const s of [...strokes, current].filter(Boolean)) {
+                s.forEach((p, i) => i === 0 ? cr.moveTo(p.x, p.y) : cr.lineTo(p.x, p.y));
+                if (s.length === 1) cr.lineTo(s[0].x + 0.1, s[0].y);
+                cr.stroke();
+            }
+            cr.$dispose?.();
+        });
+        const drag = new Gtk.GestureDrag({button: 1});
+        let start = null;
+        drag.connect('drag-begin', (_g, x, y) => {
+            start = {x, y};
+            current = [{x, y}];
+            pad.queue_draw();
+        });
+        drag.connect('drag-update', (_g, dx, dy) => {
+            if (!current) return;
+            current.push({x: start.x + dx, y: start.y + dy});
+            pad.queue_draw();
+        });
+        drag.connect('drag-end', () => {
+            if (current) strokes.push(current);
+            current = null;
+            pad.queue_draw();
+        });
+        pad.add_controller(drag);
+        const row = new Gtk.Box({
+            spacing: 8, halign: Gtk.Align.END,
+            margin_bottom: 12, margin_end: 20,
+        });
+        const clear = new Gtk.Button({label: 'Clear'});
+        clear.connect('clicked', () => { strokes.length = 0; current = null; pad.queue_draw(); });
+        const save = new Gtk.Button({label: 'Save', css_classes: ['suggested-action']});
+        save.connect('clicked', () => {
+            const sig = normalizeStrokes(strokes);
+            if (!sig) { toast('Nothing drawn yet'); return; }
+            storeSignature(sig);
+            dlg.close();
+            toast('Signature saved — Sign › Place signature to use it');
+        });
+        row.append(clear);
+        row.append(save);
+        const col = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
+        col.append(pad);
+        col.append(row);
+        tb.set_content(col);
+        dlg.set_child(tb);
+        dlg.present(win);
+    }
+
     header.pack_end(openWith);
     header.pack_end(saveBtn);
     header.pack_end(undoBtn);
+    header.pack_end(exportBtn);
+    header.pack_end(signBtn);
     header.pack_end(pagesBtn);
     header.pack_end(toolBox);
 
@@ -683,6 +951,9 @@ function buildWindow() {
         const doc = state.kind === 'document';
         toolBox.visible = doc;
         pagesBtn.visible = doc;
+        signBtn.visible = doc;
+        exportBtn.visible = doc || state.kind === 'image';
+        allPagesCheck.visible = doc;
         saveBtn.visible = isDirty();
         undoBtn.visible = state.annots.length > 0;
         openWith.visible = !!state.quickLook;
@@ -707,7 +978,13 @@ function buildWindow() {
     // --- gestures: click places a note, drag draws highlight/box ----
     const click = new Gtk.GestureClick({button: 1});
     click.connect('released', (_g, _n, x, y) => {
-        if (state.tool !== 'note' || state.kind !== 'document') return;
+        if (state.kind !== 'document') return;
+        if (state.tool === 'sign') {
+            if (placeSignature(x, y)) state.tool = null;
+            refreshEditUi();
+            return;
+        }
+        if (state.tool !== 'note') return;
         const pop = new Gtk.Popover();
         const row = new Gtk.Box({spacing: 6, margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6});
         const entry = new Gtk.Entry({placeholder_text: 'Note…', width_chars: 28});
@@ -885,6 +1162,7 @@ function buildWindow() {
         case Gdk.KEY_w: if (ctrl) { win.close(); return true; } break;
         case Gdk.KEY_o: if (ctrl) { chooseFile(); return true; } break;
         case Gdk.KEY_s: if (ctrl) { saveEdited(); return true; } break;
+        case Gdk.KEY_e: if (ctrl && exportBtn.visible) { exportBtn.popup(); return true; } break;
         case Gdk.KEY_z: if (ctrl) { undoAnnot(); return true; } break;
         case Gdk.KEY_n: if (state.kind === 'document') { noteBtn.active = !noteBtn.active; return true; } break;
         case Gdk.KEY_h: if (state.kind === 'document') { hiBtn.active = !hiBtn.active; return true; } break;
