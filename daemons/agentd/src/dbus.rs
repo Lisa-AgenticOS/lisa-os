@@ -15,10 +15,11 @@
 //!     options: "actor" (s), "provenance" (as — the trigger chain;
 //!              omitted/empty = unknown = escalates, rule 6)
 //!     disposition: "executed" | "failed" | "confirm-chip" |
-//!                  "confirm-modal" | "denied"
+//!                  "confirm-modal" | "denied" | "refused"
 //! Confirm(t call_id, b approve) → (s status, s detail_json)
 //! Undo() → (s report_json)
 //! signal ConfirmationRequested(t call_id, s spec_json)
+//! signal RefusalReported(t call_id, s report_json)
 //! ```
 //!
 //! Tested over zbus p2p (no bus daemon needed → runs on macOS dev
@@ -124,8 +125,13 @@ enum SurfaceStart {
     Start,
 }
 
-fn surface_start(brokered: bool, confirmation: Confirmation, owned: bool) -> SurfaceStart {
-    if !brokered || confirmation != Confirmation::Modal {
+/// `needed` is "a human has to see something": a modal confirmation, or
+/// a refusal report (#251 — the refusal IS a dialog, it just has no
+/// approving control. Silent refusal hides an attack, and if hostile
+/// content just caused the model to attempt `rm -rf /`, that is
+/// precisely the event the owner needs to see).
+fn surface_start(brokered: bool, needed: bool, owned: bool) -> SurfaceStart {
+    if !brokered || !needed {
         SurfaceStart::NotNeeded
     } else if owned {
         SurfaceStart::AlreadyRunning
@@ -153,14 +159,14 @@ fn surface_start(brokered: bool, confirmation: Confirmation, owned: bool) -> Sur
 /// A failure here is not fatal and not a bypass: nobody owns the name,
 /// so `confirm` refuses. It is logged because "the dialog would not
 /// start" is the operator's problem to see.
-async fn start_consent_surface(conn: &zbus::Connection, confirmation: Confirmation) {
+async fn start_consent_surface(conn: &zbus::Connection, needed: bool) {
     let brokered = conn.unique_name().is_some();
     // Cheap short-circuit: do not ask the broker anything about a chip.
-    if surface_start(brokered, confirmation, false) == SurfaceStart::NotNeeded {
+    if surface_start(brokered, needed, false) == SurfaceStart::NotNeeded {
         return;
     }
     let owned = consent_name_owner(conn).await.is_some();
-    if surface_start(brokered, confirmation, owned) != SurfaceStart::Start {
+    if surface_start(brokered, needed, owned) != SurfaceStart::Start {
         return;
     }
     let (Ok(dbus), Ok(name)) = (
@@ -310,6 +316,20 @@ fn outcome_reply(outcome: &Outcome) -> (u64, String, String) {
             "denied".into(),
             serde_json::json!({"reason": reason}).to_string(),
         ),
+        // Its own disposition, not `denied` (#251). A caller that cannot
+        // tell "a person said no" from "this will never be available"
+        // will retry the second one forever, and the retry loop is what
+        // turns a refusal into a flood.
+        Outcome::Refused {
+            call_id,
+            rule,
+            reason,
+            ..
+        } => (
+            *call_id,
+            "refused".into(),
+            serde_json::json!({"rule": rule, "reason": reason}).to_string(),
+        ),
     }
 }
 
@@ -407,18 +427,30 @@ impl Agent1 {
             })
             .map_err(fdo_err)?;
         let reply = outcome_reply(&outcome);
-        if let Outcome::AwaitingConfirmation {
-            call_id,
-            confirmation,
-            spec,
-            ..
-        } = &outcome
-        {
-            // Before the signal, never after: the surface subscribes to
-            // it as it starts, and a signal emitted into an empty
-            // session is a dialog that never appears (#244).
-            start_consent_surface(conn, *confirmation).await;
-            let _ = Self::confirmation_requested(&emitter, *call_id, spec.to_string()).await;
+        match &outcome {
+            Outcome::AwaitingConfirmation {
+                call_id,
+                confirmation,
+                spec,
+                ..
+            } => {
+                // Before the signal, never after: the surface subscribes
+                // to it as it starts, and a signal emitted into an empty
+                // session is a dialog that never appears (#244).
+                start_consent_surface(conn, *confirmation == Confirmation::Modal).await;
+                let _ = Self::confirmation_requested(&emitter, *call_id, spec.to_string()).await;
+            }
+            // A refusal is REPORTED, never confirmed (#251). It goes out
+            // on its own signal, so a surface cannot mistake it for
+            // something to draw buttons on, and there is no parked call
+            // behind it for anyone to approve.
+            Outcome::Refused {
+                call_id, report, ..
+            } => {
+                start_consent_surface(conn, true).await;
+                let _ = Self::refusal_reported(&emitter, *call_id, report.to_string()).await;
+            }
+            _ => {}
         }
         Ok(reply)
     }
@@ -476,6 +508,18 @@ impl Agent1 {
         emitter: &SignalEmitter<'_>,
         call_id: u64,
         spec_json: String,
+    ) -> zbus::Result<()>;
+
+    /// Emitted when a call is REFUSED (#251). There is no parked call
+    /// behind it and no `Confirm` that can answer it: `report_json` is
+    /// for a dialog that reports, with one button and no approving
+    /// control. It carries no arguments and no command, so nothing
+    /// downstream can rebuild the refused action from it.
+    #[zbus(signal)]
+    async fn refusal_reported(
+        emitter: &SignalEmitter<'_>,
+        call_id: u64,
+        report_json: String,
     ) -> zbus::Result<()>;
 }
 
@@ -588,28 +632,33 @@ mod tests {
     #[test]
     fn a_parking_modal_starts_the_consent_surface_and_nothing_else_does() {
         use crate::tier::Confirmation;
+        let needed = |c: Confirmation| c == Confirmation::Modal;
         // A modal on a message bus with nobody owning the name: start it.
         assert_eq!(
-            surface_start(true, Confirmation::Modal, false),
+            surface_start(true, needed(Confirmation::Modal), false),
             SurfaceStart::Start
         );
         // Already up: activating again would be a second dialog.
         assert_eq!(
-            surface_start(true, Confirmation::Modal, true),
+            surface_start(true, needed(Confirmation::Modal), true),
             SurfaceStart::AlreadyRunning
         );
         // A chip is the app's own inline affordance — it is not the
         // human's dialog and must not conjure one.
         assert_eq!(
-            surface_start(true, Confirmation::Chip, false),
+            surface_start(true, needed(Confirmation::Chip), false),
             SurfaceStart::NotNeeded
         );
         // p2p (agentd's own test transport): no broker, so there is
         // nothing to ask and nothing that could be activated.
         assert_eq!(
-            surface_start(false, Confirmation::Modal, false),
+            surface_start(false, needed(Confirmation::Modal), false),
             SurfaceStart::NotNeeded
         );
+        // A refusal needs the surface too (#251): it is a dialog that
+        // reports. Silent refusal hides an attack from the one person
+        // who needs to know it happened.
+        assert_eq!(surface_start(true, true, false), SurfaceStart::Start);
     }
 
     /// Issue #244. `consent_role` failed closed *towards the permissive

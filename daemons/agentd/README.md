@@ -24,8 +24,9 @@ which is why it never belonged here, issue #58) mirrors Appendix C; the injectio
   chip, destructive → modal; any untrusted provenance in the trigger
   chain escalates one tier, and an **empty chain fails closed** (unknown
   origin is untrusted). Only `user` provenance is trusted.
-- **`bus`** — the call state machine: request → tier resolution →
-  silent execute *or* park for confirmation → confirm/deny → execute.
+- **`bus`** — the call state machine: request → **action guard** →
+  tier resolution → silent execute *or* park for confirmation →
+  confirm/deny → execute.
   Every path is ledgered (`tool.call`/`confirm`/`complete`/`deny`/
   `undo`) *before* it happens (no ledger entry, no action). Executed
   privileged calls are journaled with their resolved compensation.
@@ -57,10 +58,11 @@ RequestCall(s app_id, s tool, s args_json, a{sv} options)
     options: "actor" (s), "provenance" (as — the trigger chain;
              omitted/empty = unknown = escalates)
     disposition: "executed" | "failed" | "confirm-chip" |
-                 "confirm-modal" | "denied"
+                 "confirm-modal" | "denied" | "refused"
 Confirm(t call_id, b approve) → (s status, s detail_json)
 Undo() → (s report_json)
 signal ConfirmationRequested(t call_id, s spec_json)
+signal RefusalReported(t call_id, s report_json)
 ```
 
 Read-tier calls with a fully trusted (all-`user`) chain execute
@@ -69,6 +71,43 @@ immediately; everything else parks and emits `ConfirmationRequested`
 becomes a client of this interface, swapping its direct
 `dev.lisaos.Inference1` calls for `RequestCall` when it turns tool calls
 into agent actions.
+
+### The refused disposition (#251, #252)
+
+Before any tier is resolved, the call is judged by
+`lisa_guard::judge_action` against `(tool, arguments, grant)`. A refused
+call **is never parked** — there is no pending entry, so there is no id
+any dialog could approve. `Confirm` on it answers `UnknownCall`, exactly
+as it would for a call that was never made.
+
+That ordering is the guardrail. It is not a dialog with a scarier title;
+it is the absence of the state a dialog acts on (ADR-0029, CLAUDE.md 6a).
+
+A refusal is still **reported**, on its own signal: silent refusal hides
+an attack, and if hostile content just caused the model to attempt
+`rm -rf /`, that is precisely the event the owner needs to see. The
+report carries the rule, a reason, the provenance and an occurrence
+count — and deliberately **no arguments and no command**, because a
+copy-to-clipboard or a "run this for me" affordance is the Allow button
+rebuilt with extra steps.
+
+`refused` is a distinct disposition from `denied` on purpose: a denial is
+a person saying no this time, a refusal is an action that will never be
+available to an agent. A caller that cannot tell them apart retries the
+second one forever.
+
+Every refusal appends a `tool.refuse` Ledger entry with
+`status: "hard-no" | "out-of-scope"`, filed under the **caller** as the
+transport names it, carrying `occurrence` — so one refusal reads as an
+event and the same actor refused three times reads as an attack in
+progress, without anyone counting rows by eye (#217).
+
+The grant the verdict is measured against is built from outside the
+model's reach — `$HOME` and the uid of the process, and the trigger class
+derived from the verified chain. Nothing over D-Bus can widen it;
+`with_grant` is a constructor, not a method call. `workspace` and
+`scratch` are not yet wired from harnessd, so today every path is judged
+against the home ladder alone.
 
 ### Who may answer a parked call
 

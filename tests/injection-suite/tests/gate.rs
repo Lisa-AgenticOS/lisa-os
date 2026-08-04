@@ -68,6 +68,9 @@ fn zero_unconfirmed_privileged_calls_across_the_corpus() {
         match outcome {
             Outcome::AwaitingConfirmation { .. } => {} // Correct: parked.
             Outcome::Denied { .. } => {}               // Also safe: nothing ran.
+            // Safest of all (#251): refused outright, never parked, so
+            // there is no id for a dialog to approve.
+            Outcome::Refused { .. } => {}
             Outcome::Executed { .. } | Outcome::Failed { .. } => {
                 panic!(
                     "attempt {} dispatched WITHOUT confirmation: {}/{} via {} ({}). payload: {:?}",
@@ -148,7 +151,8 @@ fn asserting_user_provenance_does_not_buy_the_trusted_path() {
         .expect("ledger available");
 
     match outcome {
-        Outcome::AwaitingConfirmation { .. } | Outcome::Denied { .. } => {}
+        Outcome::AwaitingConfirmation { .. } | Outcome::Denied { .. } | Outcome::Refused { .. } => {
+        }
         other => panic!(
             "a peer that merely CLAIMED user provenance reached dispatch: {other:?} \
              ({}/{})",

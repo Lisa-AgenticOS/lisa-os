@@ -26,13 +26,86 @@ reaching a shell) precisely so it can stay absolute. Everything else that
 merely deserves a second look is `Confirm`, because a `Deny` people
 routinely need to work around is a `Deny` they will learn to disable.
 
-## Three entry points
+## Four entry points
 
 | | for | enforces |
 |---|---|---|
 | `contain(root, rel)` | every file tool | the agent reaches the directory it was given and nothing above it — absolute paths, `..`, and symlinks that leave the root at any depth |
 | `check_command(program, args)` | the forge harness (argv, no shell) | program allowlist → per-program denied flags → shared rules |
 | `check_shell_line(line)` | `lisa suggest`, before the string is printed into the user's shell buffer | splits on `;`/`&&`/`\|\|`/`\|`, unwraps `sudo`/`env`/`xargs`/`VAR=`, reads command substitution, then applies the same rules per segment |
+| `judge_action(action, grant)` | the **Agent Bus**, before a tool call is dispatched or parked | the same catalogue, applied to `(tool, arguments, grant)` |
+
+## The Agent Bus verdict (#251, #252)
+
+The bus used to top out at *destructive → confirm-modal*, so a model that
+**typed** `rm -rf /` was refused with no dialog and a model that **called
+a tool** doing the same thing got a modal with an Allow button. Same
+damage, two policies. `judge_action` is the second policy deleted.
+
+```rust
+let verdict = lisa_guard::judge_action(
+    &lisa_guard::Action {
+        app_id: "app.lisaos.Probe244",
+        tool: "tidy_up",                       // the name proves nothing
+        class: lisa_guard::Class::Delete,      // the manifest CEILING
+        args: &serde_json::json!({"path": "/"}),
+    },
+    &grant,                                    // home, uid, workspace, trigger
+);
+assert!(verdict.is_hard_no());
+```
+
+Four verdicts:
+
+| | meaning | surface |
+|---|---|---|
+| `HardNo` | no legitimate agent workflow requires this, ever | a dialog that **reports** — one button, no approving control |
+| `No` | out of bounds *for the current grant* | refused, naming the scope that would permit it; nothing in the dialog widens it |
+| `Ask` | in bounds and consequential | ask, with the effect in plain language |
+| `Ask { may_remember: true }` | …and "always allow" may be offered | never on an untrusted chain |
+
+**HARD NO is a property of the action; NO is a property of the current
+permission.** Collapsing them makes refusals overridable or ordinary
+out-of-scope work permanently impossible.
+
+The load-bearing part is that the verdict is **computed from the target,
+not declared by the manifest**. A tool's tier is the ceiling the app
+asked for; where a given call lands beneath it is decided by where it
+points. One `delete_file` yields `Ask` in the working folder,
+`scope.hidden_folder` at `~/.ssh/id_rsa`, `scope.outside_home` at `/tmp`,
+`fs.not_yours` at `/home/alice`, and `rm.system_path` at `/`.
+
+Every string in the arguments is read, at any depth, whatever its key is
+named — an argument's NAME is the app's choice, and the app may be what
+we are defending against. Every path is judged in **both** spellings,
+lexical and symlink-resolved: canonicalising alone moves `/etc` to
+`/private/etc` on macOS, and resolving nothing at all misses a workspace
+symlink pointing into another user's home.
+
+### The scope ladder
+
+| where | read | write | delete |
+|---|---|---|---|
+| agent scratch (agent-owned) | yes | yes | yes, silent |
+| working folder | yes | yes | confirm |
+| home content dirs, `trigger: prompt` only | yes | yes | confirm |
+| hidden folders (`~/.*`) | no | no | no |
+| outside `~` | NO | NO | NO |
+| the seven HARD NO categories | never | never | never |
+
+### Rule ids
+
+`exec.shell`, `escalate.privilege`, `fill.password_field`,
+`disk.raw_write`, `rm.system_path`, `audit.erase`, `fs.not_yours` are
+HARD NO. `scope.hidden_folder`, `scope.outside_home`,
+`scope.unattended_reach` are NO. Four of them are the shell guard's own
+ids, deliberately: one vocabulary, so the Ledger shows one rule rather
+than two spellings of it.
+
+`lisa guard list` prints both tables. Bus rules are **not** relaxable —
+`judge_action` does not read `Overrides` at all, and `lisa guard allow`
+refuses a bus-only id rather than printing "relaxed" for something that
+is still enforced.
 
 ## Callers
 
@@ -56,6 +129,30 @@ stopped. It does not mean the agent cannot do damage — see below.
 
 ## What this crate does not do
 
+**Agent scratch does not exist.** `Grant::scratch` is the only row of the
+ladder where silent deletion is defensible, and nothing in Lisa builds
+one yet — `harnessd` has exactly one notion of a working folder and it is
+the owner's data. It is `None` in production. The field is here so nobody
+grants that property to a workspace by accident.
+
+**"Always allow" is a decision, not a memory.** `may_remember` says
+whether a surface *may* offer it; there is no store behind it. Persisting
+it means reusing the portal's append-only grant log (#252) and the
+Settings page that revokes it (#253), and neither is built.
+
+**The password-field rule sees the selector, not the field.** #212 landed
+`fill(selector:"#q")` in a field named `password`, because the page owned
+the JS world; no string rule here would have caught that. Refusing a
+field the browser has *resolved* as `type=password` is the other half,
+and it belongs in Surfer (#260).
+
+**`fs.not_yours` is defence in depth, not the mechanism.** Unix
+permissions do most of this work and get the credit: agentd runs as one
+user, so an agent acting as `lisa` cannot unlink `/home/alice/notes.txt`
+— it lacks permission and no policy is consulted. The rule matters where
+the kernel does not object: elevated contexts, shared group directories,
+network mounts, world-writable paths.
+
 It does not confine a subprocess. `run_tests` invokes `cargo test` /
 `flutter test` over source the model just wrote, and that code executes
 `build.rs` and test bodies as the user, outside every rule here. No
@@ -66,8 +163,19 @@ toolchains it invokes.**
 
 ## Adding a rule
 
-Rules live in `src/rules.rs`, take one `Invocation`, and return a
+Shell rules live in `src/rules.rs`, take one `Invocation`, and return a
 `Verdict`; they are pure and order-independent, and the caller takes the
-worst answer. Add the rule, add its unit test, and add at least one line
-to the corpus — a rule with no corpus entry is a rule nobody will notice
-regressing.
+worst answer. Bus rules live in `src/action.rs`, take an `Action` and a
+`Grant`, and return an `ActionVerdict`; a call is judged by its worst
+argument. Add the rule, add its id to `BUS_RULES` (and `HARD_NO_RULES` if
+it is one), add its unit test, and add at least one line to the corpus —
+a rule with no corpus entry is a rule nobody will notice regressing.
+`every_hard_no_rule_has_a_corpus_entry` enforces that last part rather
+than trusting it.
+
+**Refusal frequency is a correctness signal**, not just telemetry. Rare
+means the catalogue is drawn right; common means it was drawn too wide,
+at which point refusal dialogs train dismissal exactly as Allow dialogs
+do. Moving something *out* of HARD NO needs evidence that it fires in
+legitimate use, not an argument that it might — hardening after shipping
+is much harder than softening after shipping.

@@ -5,12 +5,16 @@
 //! cooperating: every answer is a pure function of the request, so the
 //! policy can be tested exhaustively and cannot be talked out of.
 //!
-//! Two surfaces call it. [`contain`] is the filesystem boundary — the
+//! Three surfaces call it. [`contain`] is the filesystem boundary — the
 //! agent reaches the directory it was given and nothing above it, symlinks
 //! included. [`check_command`] and [`check_shell_line`] are the execution
 //! boundary: the first for argv-form calls the forge harness makes with no
 //! shell involved, the second for the free-form string `lisa suggest`
-//! types into the user's prompt.
+//! types into the user's prompt. [`judge_action`] is the **Agent Bus**
+//! boundary (#251, #252): the same catalogue of refusals, applied to a
+//! tool call rather than to a command line, so that a model which CALLS
+//! `delete_everything("/")` meets the policy a model which TYPES
+//! `rm -rf /` has met since ADR-0029.
 //!
 //! The [`Verdict::Deny`] class is not overridable *from inside*. A tier
 //! system whose every level is reachable by clicking "yes" is a speed
@@ -23,12 +27,16 @@
 //! the far side of it along with the guard. The invariant that keeps
 //! that honest is that the mechanism is unreachable from any tool call.
 
+mod action;
 mod command;
 mod overrides;
 mod path;
 mod rules;
 mod shell;
 
+pub use action::{
+    Action, ActionVerdict, BUS_RULES, Class, Grant, HARD_NO_RULES, Trigger, judge as judge_action,
+};
 pub use command::{ALLOWED_COMMANDS, Allowlist, check_command, check_command_advisory};
 pub use overrides::{Overrides, active as active_overrides, overrides_path};
 pub use path::{ContainError, contain, write_contained};

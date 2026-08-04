@@ -495,7 +495,7 @@ fn is_setuid_mode(arg: &str) -> bool {
     false
 }
 
-fn is_system_target(target: &str) -> bool {
+pub(crate) fn is_system_target(target: &str) -> bool {
     let t = normalize_target(target);
     if t == "/" {
         return true; // `/`, `//`, `/*`, `/.`, `/usr/..` …
@@ -518,7 +518,7 @@ fn is_system_target(target: &str) -> bool {
 /// Whether a write target lands inside the OS image (stricter than
 /// `is_system_target`: any depth counts, because writing
 /// `/etc/systemd/system/x.service` is exactly the case to stop).
-fn is_under_system_root(target: &str) -> bool {
+pub(crate) fn is_under_system_root(target: &str) -> bool {
     const IMAGE_ROOTS: &[&str] = &[
         "/etc", "/usr", "/boot", "/efi", "/bin", "/sbin", "/lib", "/lib64", "/sys", "/proc",
         "/dev", "/run",

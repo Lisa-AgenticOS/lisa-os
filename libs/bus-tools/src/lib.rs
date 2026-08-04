@@ -104,6 +104,19 @@ pub fn outcome_for(disposition: &str, detail: &str, label: &str) -> ToolOutcome 
         "executed" => ToolOutcome::ok(detail.to_string(), false),
         "failed" => ToolOutcome::err(format!("{label} failed: {detail}")),
         "denied" => ToolOutcome::err(format!("{label} denied by policy: {detail}")),
+        // Refused, not denied (#251). The distinction is worth spelling
+        // out to the model for the same reason it exists on the wire: a
+        // denial is a person saying no this time, a refusal is an action
+        // that will never be available to an agent. Telling it to stop —
+        // and that the capability belongs to the person — is what keeps
+        // a refusal from becoming a retry loop, which is how a rare,
+        // meaningful dialog turns into one people dismiss.
+        "refused" => ToolOutcome::err(format!(
+            "{label} is refused and always will be: {detail}. This is not something \
+             Lisa will do through a tool. Do not retry it and do not look for \
+             another tool that does the same thing. Tell the user what you were \
+             trying to do; if they want it, they can do it themselves."
+        )),
         "confirm-chip" | "confirm-modal" => ToolOutcome::err(format!(
             "{label} needs a person to confirm it and none is present; the call is \
              parked, not done. Do not retry it — retrying cannot make it approved. \
@@ -461,6 +474,30 @@ mod tests {
         // Junk: not tainted, not a crash.
         assert!(!result_is_web_tagged("not json"));
         assert!(!result_is_web_tagged(r#"{"result":{"provenance":"user"}}"#));
+    }
+
+    /// A refusal is not a denial and must not read as retryable (#251).
+    /// The loop cannot see the dialog, so the tool result is the only
+    /// place it learns that trying again is pointless.
+    #[test]
+    fn a_refusal_tells_the_model_to_stop_rather_than_to_try_again() {
+        let out = outcome_for(
+            "refused",
+            r#"{"rule":"rm.system_path","reason":"..."}"#,
+            "app.lisaos.Probe244::delete_everything",
+        );
+        assert!(out.text.starts_with("error:"));
+        assert!(out.text.contains("refused"));
+        assert!(
+            out.text.contains("Do not retry"),
+            "a refusal that reads as retryable produces a loop: {}",
+            out.text
+        );
+        assert!(!out.mutated);
+        // …and it is distinguishable from a denial, which IS a person
+        // saying no this once.
+        let denied = outcome_for("denied", "d", "app::t");
+        assert_ne!(denied.text, out.text);
     }
 
     /// The load-bearing one: a parked confirmation must never be answered

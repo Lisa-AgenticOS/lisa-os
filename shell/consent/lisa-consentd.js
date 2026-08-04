@@ -85,11 +85,63 @@ function describe(specJson) {
     const title = tier === 'destructive'
         ? 'Allow this destructive action?'
         : 'Allow this action?';
+    // Lead with the EFFECT when agentd computed one (#251): a person
+    // asked to approve `delete_everything` with `{"target":"/"}` is being
+    // asked to read a reverse-DNS id, a raw tool name and raw JSON — and
+    // the JSON showing the real target is the part nobody reads. The
+    // effect sentence is computed from the resolved target, so an
+    // innocuous tool name cannot disguise where the call points.
+    const effect = typeof spec.effect === 'string' && spec.effect
+        ? spec.effect
+        : '';
     return {
         title,
-        body: `${app} wants to run ${tool}.`,
+        body: effect
+            ? `${app} wants to ${effect}.`
+            : `${app} wants to run ${tool}.`,
         args,
         escalated: spec.escalated === true,
+    };
+}
+
+/// A refusal, as agentd reports it (#251). Same discipline as
+/// `describe`: only fields we recognise are rendered.
+///
+/// Note what is NOT read here, and could not be even if agentd sent it:
+/// no arguments, no command, no URI. The refusal dialog must have no
+/// path that performs, composes or copies the refused action — a
+/// copy-to-clipboard or a "fix this" button would be the Allow button
+/// rebuilt with extra steps, and the friction IS the safety.
+function describeRefusal(reportJson) {
+    let report;
+    try {
+        report = JSON.parse(reportJson);
+    } catch {
+        return {
+            title: 'Refused — this is not something Lisa will do',
+            body: 'An action was refused.',
+        };
+    }
+    const app = typeof report.app_id === 'string' ? report.app_id : 'An app';
+    const reason = typeof report.reason === 'string' ? report.reason : '';
+    const needs = typeof report.needs === 'string' ? report.needs : '';
+    const hard = report.kind === 'hard-no';
+    return {
+        title: hard
+            ? 'Refused — this is not something Lisa will do'
+            : 'Refused — outside what this run may touch',
+        body: `${app} asked to do this, and it was not done.`,
+        reason,
+        // For an out-of-scope refusal, what WOULD permit it — as a
+        // sentence, never as a control. Widening happens in Settings,
+        // reached deliberately, because `~/.local/share/lisa/` holds the
+        // Ledger and the grants themselves (#252, #253).
+        needs: hard ? '' : needs,
+        escalated: report.escalated === true,
+        // The owner's own capability, stated rather than offered.
+        footer: hard
+            ? 'If you genuinely want this, do it yourself in a terminal.'
+            : '',
     };
 }
 
@@ -106,6 +158,13 @@ class ConsentSurface {
             AGENT_BUS, AGENT_IFACE, 'ConfirmationRequested', AGENT_PATH, null,
             Gio.DBusSignalFlags.NONE,
             (_c, _s, _p, _i, _sig, params) => this._onRequested(params));
+        // A refusal arrives on its own signal, so this surface cannot
+        // mistake one for something to draw an Allow button on. There is
+        // no parked call behind it and no Confirm that could answer it.
+        this._refusalSubId = this._bus.signal_subscribe(
+            AGENT_BUS, AGENT_IFACE, 'RefusalReported', AGENT_PATH, null,
+            Gio.DBusSignalFlags.NONE,
+            (_c, _s, _p, _i, _sig, params) => this._onRefused(params));
     }
 
     Ping() {
@@ -123,6 +182,98 @@ class ConsentSurface {
         if (this._open.has(id))
             return;
         this._prompt(id, describe(specJson));
+    }
+
+    _onRefused(params) {
+        const [callId, reportJson] = params.deepUnpack();
+        const id = Number(callId);
+        if (this._open.has(id))
+            return;
+        this._report(id, describeRefusal(reportJson));
+    }
+
+    /// The refusal dialog: it REPORTS. One button, no approving control.
+    ///
+    /// Modal-ish for the same reason #251 gives: the owner should learn
+    /// immediately that outside content tried to destroy their system,
+    /// rather than find it in a log. That justification collapses if
+    /// these become common — at which point they train dismissal exactly
+    /// as Allow dialogs do, and the category was drawn too wide. So the
+    /// frequency of this window is a correctness signal for the
+    /// catalogue, not just an annoyance.
+    _report(callId, d) {
+        const win = new Adw.Window({
+            title: 'Lisa',
+            modal: false,
+            default_width: 460,
+            resizable: false,
+        });
+        this._app.hold();
+
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL,
+            spacing: 12,
+            margin_top: 18,
+            margin_bottom: 18,
+            margin_start: 18,
+            margin_end: 18,
+        });
+        const title = new Gtk.Label({label: d.title, wrap: true, xalign: 0});
+        title.add_css_class('title-2');
+        box.append(title);
+        box.append(new Gtk.Label({label: d.body, wrap: true, xalign: 0}));
+        for (const line of [d.reason, d.needs, d.footer]) {
+            if (!line)
+                continue;
+            // Not selectable, unlike the argument dump on the
+            // confirmation dialog: there is nothing here to copy, and
+            // making the refused target copyable would be the first step
+            // back towards handing someone the loaded thing.
+            const label = new Gtk.Label({label: line, wrap: true, xalign: 0});
+            label.add_css_class('dim-label');
+            box.append(label);
+        }
+        if (d.escalated) {
+            const warn = new Gtk.Label({
+                label: 'This was suggested by content from outside this machine.',
+                wrap: true,
+                xalign: 0,
+            });
+            warn.add_css_class('warning');
+            box.append(warn);
+        }
+
+        const buttons = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            spacing: 6,
+            halign: Gtk.Align.END,
+            margin_top: 6,
+        });
+        // The only control on this window. There is deliberately no
+        // second button: nothing here approves, retries, copies or
+        // widens anything, and no Confirm call is ever made from this
+        // path — agentd parked nothing, so there is nothing to answer.
+        const ok = new Gtk.Button({label: 'OK'});
+        ok.add_css_class('suggested-action');
+        buttons.append(ok);
+        box.append(buttons);
+
+        win.set_content(box);
+        this._open.set(callId, win);
+        const dismiss = () => {
+            if (!this._open.has(callId))
+                return;
+            this._open.delete(callId);
+            win.close();
+            this._app.release();
+        };
+        ok.connect('clicked', dismiss);
+        win.connect('close-request', () => {
+            dismiss();
+            return false;
+        });
+        ok.grab_focus();
+        win.present();
     }
 
     _prompt(callId, d) {
@@ -208,7 +359,11 @@ class ConsentSurface {
             answer(false);
             return false;
         });
+        // Deny holds focus (#251). If Enter activates Allow, a
+        // destructive action is one keystroke away from a person who was
+        // still typing when the dialog appeared.
         win.present();
+        deny.grab_focus();
     }
 
     _confirm(callId, approve) {

@@ -1348,6 +1348,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "lisa-guard",
  "lisa-ledger",
  "lisa-peer",
  "mcp-bus",
@@ -1388,6 +1389,7 @@ name = "lisa-guard"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

@@ -235,6 +235,25 @@ pub enum Outcome {
     /// Refused without dispatch (unknown tool, invalid args, user
     /// denial, expiry).
     Denied { call_id: u64, reason: String },
+    /// **Refused by the action guard, and never parked** (#251, #252).
+    ///
+    /// Distinct from `Denied` because the difference is the whole point
+    /// of the issue: a `Denied` call was looked at and turned down, a
+    /// `Refused` one was never offered to anybody. There is no pending
+    /// entry for it, so there is no id a dialog could approve — which is
+    /// what makes this a guardrail rather than a dialog with a scarier
+    /// title (ADR-0029, CLAUDE.md 6a).
+    ///
+    /// `report` is what the surface renders. It carries no arguments and
+    /// no command: nothing in it may perform, compose or copy the
+    /// refused action, because a "do it for me" affordance is the Allow
+    /// button rebuilt with extra steps.
+    Refused {
+        call_id: u64,
+        rule: &'static str,
+        reason: String,
+        report: Value,
+    },
 }
 
 /// Result of an `undo()` request.
@@ -352,7 +371,25 @@ pub struct AgentBus {
     /// How long a parked confirmation stays answerable. Always
     /// [`CONFIRMATION_TTL`] in production; tests shorten it.
     ttl: Duration,
+    /// What this daemon's user has granted (#252). Built from outside
+    /// the model's reach — `$HOME`, the uid, and (once harnessd hands it
+    /// over) the folder a person chose. Nothing in a tool call can
+    /// change it, which is the only reason it can be trusted as the
+    /// denominator of every scope decision.
+    grant: lisa_guard::Grant,
+    /// How many times each (caller, rule) pair has been refused (#251,
+    /// #217). One refusal is an event; the same actor refused three
+    /// times is an attack in progress, and leaving N identical rows for
+    /// somebody to notice by eye is not a signal.
+    ///
+    /// Capped, because it is keyed partly by a caller-influenced value:
+    /// a counter that grows without bound is the same denial of service
+    /// `MAX_PENDING` exists to stop.
+    refusals: Mutex<HashMap<(String, &'static str), u64>>,
 }
+
+/// How many distinct (caller, rule) pairs the refusal counter keeps.
+const MAX_REFUSAL_KEYS: usize = 1024;
 
 impl AgentBus {
     pub fn new(
@@ -369,7 +406,21 @@ impl AgentBus {
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             ttl: CONFIRMATION_TTL,
+            grant: lisa_guard::Grant::for_this_user(),
+            refusals: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Replace the grant this bus judges scope against.
+    ///
+    /// Public because the grant comes from *outside* — the session's
+    /// home and uid in production, a temporary tree in tests. It is
+    /// deliberately not settable over D-Bus: a tool call that could
+    /// widen the grant it is judged by would make the whole ladder
+    /// decorative (ADR-0030).
+    pub fn with_grant(mut self, grant: lisa_guard::Grant) -> AgentBus {
+        self.grant = grant;
+        self
     }
 
     /// Shorten the confirmation TTL. Tests only — expiry is otherwise
@@ -520,6 +571,30 @@ impl AgentBus {
             return Ok(Outcome::Denied { call_id, reason });
         }
 
+        // The action guard, BEFORE the tier machinery and before the
+        // `tool.call` trace opens (#251, #252).
+        //
+        // Order is the point. A refused call must never become a parked
+        // call, because a parked call has an id and an id is something a
+        // dialog can approve. Nothing below this line runs for a refusal:
+        // no resolution, no spec, no `ConfirmationRequested`.
+        let verdict = lisa_guard::judge_action(
+            &lisa_guard::Action {
+                app_id: &req.app_id,
+                tool: &req.tool,
+                // The manifest tier as the CEILING the app asked for —
+                // already raised to the floor its own name implies
+                // (#56). Where the call lands beneath that ceiling is
+                // decided by the target, not by this.
+                class: class_of(decl.tier),
+                args: &req.args,
+            },
+            &self.grant_for(&req.chain),
+        );
+        if verdict.is_refused() {
+            return self.refuse(call_id, &req, &decl, &verdict);
+        }
+
         let resolution = resolve(decl.tier, &req.chain);
         let start_ref = self.ledger.append(&Event {
             kind: "tool.call".into(),
@@ -542,6 +617,18 @@ impl AgentBus {
                     "app_id": req.app_id,
                     "tool": decl.name,
                     "description": decl.description,
+                    // What the call will DO, in plain language, computed
+                    // from the target rather than repeated from the
+                    // tool's own name (#251: the dialog asked people to
+                    // approve a reverse-DNS id, a raw tool name and raw
+                    // JSON, and the JSON showing the real target is the
+                    // part nobody reads).
+                    "effect": effect_of(&verdict),
+                    // Whether the surface may offer "always allow" for
+                    // this (app, class, scope) — never on an untrusted
+                    // chain (#252). There is no store behind it yet; the
+                    // flag is the decision, not the memory.
+                    "may_remember": may_remember_of(&verdict),
                     "args": req.args,
                     "tier": resolution.declared.as_str(),
                     "effective_tier": resolution.effective.as_str(),
@@ -960,6 +1047,113 @@ impl AgentBus {
         }
     }
 
+    /// The grant this call is judged against.
+    ///
+    /// Everything here comes from outside the message. The one thing the
+    /// chain decides is *reach*: #252 gives the home content directories
+    /// to runs a person typed, and lists "anything with untrusted
+    /// provenance" among the runs that get the working folder only. So a
+    /// chain that is not wholly trusted is not a prompt run, whatever
+    /// woke it up — exfiltration needs no delete, and a delete-confirm is
+    /// therefore no protection at all for a run a hostile page started.
+    fn grant_for(&self, chain: &[Provenance]) -> lisa_guard::Grant {
+        let trusted = !chain.is_empty() && chain.iter().all(Provenance::is_trusted);
+        let trigger = if trusted {
+            lisa_guard::Trigger::Prompt
+        } else {
+            lisa_guard::Trigger::Unattended
+        };
+        self.grant
+            .clone()
+            .with_trigger(trigger)
+            .with_trusted_chain(trusted)
+    }
+
+    /// Ledger a refusal and build the report the surface renders.
+    ///
+    /// The report deliberately carries **no arguments and no command**.
+    /// #251's first constraint: "do it manually" must not become a
+    /// slower Allow button, so there is nothing here to copy, re-run or
+    /// deep-link into a settings page with a loosening entry pre-filled.
+    /// The dialog says *that* the capability belongs to the person and
+    /// *where* it lives; it does not hand them the loaded thing.
+    fn refuse(
+        &self,
+        call_id: u64,
+        req: &CallRequest,
+        decl: &ToolDecl,
+        verdict: &lisa_guard::ActionVerdict,
+    ) -> Result<Outcome, BusError> {
+        let rule = verdict.rule().unwrap_or("refused");
+        let reason = verdict.reason().unwrap_or_default().to_string();
+        let hard = verdict.is_hard_no();
+        let occurrence = self.count_refusal(req.caller.as_str(), rule);
+        let escalated = req.chain.is_empty() || req.chain.iter().any(|p| !p.is_trusted());
+
+        self.ledger.append(&Event {
+            kind: "tool.refuse".into(),
+            app_id: req.actor.clone(),
+            input_hash: blake3::hash(req.args.to_string().as_bytes())
+                .to_hex()
+                .to_string(),
+            preview: preview_of(&format!("{}/{}: {reason}", req.app_id, req.tool)),
+            status: if hard { "hard-no" } else { "out-of-scope" }.into(),
+            detail: json!({
+                "rule": rule,
+                "reason": reason,
+                // Filed under the CALLER, from the transport, never the
+                // asserted `actor` label (#217, ADR-0033) — the entry
+                // exists so a repeat claimant can be found, and filing it
+                // under the label would produce a list of victims.
+                "caller": req.caller.as_str(),
+                "target": req.app_id,
+                "tool": req.tool,
+                "occurrence": occurrence,
+                "escalated": escalated,
+                "chain": req.chain.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            })
+            .to_string(),
+            ..Default::default()
+        })?;
+
+        Ok(Outcome::Refused {
+            call_id,
+            rule,
+            reason: reason.clone(),
+            report: json!({
+                "call_id": call_id,
+                "kind": if hard { "hard-no" } else { "out-of-scope" },
+                "actor": req.actor,
+                "app_id": req.app_id,
+                "tool": decl.name,
+                "description": decl.description,
+                "rule": rule,
+                "reason": reason,
+                // For an out-of-scope refusal, the scope that WOULD
+                // permit it — as information. No control in the dialog
+                // widens anything; #253's Settings page is the only
+                // place a person changes what is granted, and it is
+                // reached deliberately, not from here (#252).
+                "needs": needs_of(verdict),
+                "escalated": escalated,
+                "occurrence": occurrence,
+            }),
+        })
+    }
+
+    /// The nth time this caller has hit this rule.
+    fn count_refusal(&self, caller: &str, rule: &'static str) -> u64 {
+        let mut counts = self.refusals.lock().expect("refusals lock");
+        if counts.len() >= MAX_REFUSAL_KEYS && !counts.contains_key(&(caller.to_string(), rule)) {
+            // Full: the refusal is still ledgered, we simply stop
+            // claiming to know how many there have been.
+            return 0;
+        }
+        let n = counts.entry((caller.to_string(), rule)).or_insert(0);
+        *n += 1;
+        *n
+    }
+
     fn ledger_deny(
         &self,
         req: &CallRequest,
@@ -979,6 +1173,41 @@ impl AgentBus {
             ref_id,
             ..Default::default()
         })?)
+    }
+}
+
+/// The manifest tier as an action class. The tier is the ceiling an app
+/// asked for; where a specific call lands beneath it is decided by the
+/// target (#252).
+fn class_of(tier: crate::tier::Tier) -> lisa_guard::Class {
+    match tier {
+        crate::tier::Tier::Read => lisa_guard::Class::Read,
+        crate::tier::Tier::Write => lisa_guard::Class::Write,
+        crate::tier::Tier::Destructive => lisa_guard::Class::Delete,
+    }
+}
+
+fn effect_of(verdict: &lisa_guard::ActionVerdict) -> Option<&str> {
+    match verdict {
+        lisa_guard::ActionVerdict::Ask { effect, .. } => Some(effect),
+        _ => None,
+    }
+}
+
+fn may_remember_of(verdict: &lisa_guard::ActionVerdict) -> bool {
+    matches!(
+        verdict,
+        lisa_guard::ActionVerdict::Ask {
+            may_remember: true,
+            ..
+        }
+    )
+}
+
+fn needs_of(verdict: &lisa_guard::ActionVerdict) -> Option<&str> {
+    match verdict {
+        lisa_guard::ActionVerdict::No { needs, .. } => Some(needs),
+        _ => None,
     }
 }
 
@@ -1047,6 +1276,227 @@ mod tests {
 
     fn user() -> Vec<Provenance> {
         vec![Provenance::User]
+    }
+
+    // -----------------------------------------------------------------
+    // #251 / #252: the refused verdict on the bus.
+    // -----------------------------------------------------------------
+
+    /// #244's probe, which is where this was found: a destructive tool
+    /// whose single argument is where it points.
+    fn fixture_probe_json() -> String {
+        json!({
+            "lisa_manifest": 1,
+            "app_id": "app.lisaos.Probe244",
+            "mcp": { "transport": "unix", "activatable": true },
+            "tools": [{
+                "name": "delete_everything",
+                "tier": "destructive",
+                "description": "Delete everything under a path",
+                "input_schema": { "type": "object", "required": ["target"],
+                    "properties": { "target": {"type": "string"} } }
+            }]
+        })
+        .to_string()
+    }
+
+    struct ProbeFixture {
+        _dir: tempfile::TempDir,
+        _home_dir: tempfile::TempDir,
+        workspace: std::path::PathBuf,
+        bus: AgentBus,
+        ledger: Arc<Ledger>,
+        dispatcher: Arc<RecordingDispatcher>,
+    }
+
+    /// A bus whose grant is a temporary home this test process really
+    /// owns, with `~/dev/app` as the working folder — #252's
+    /// `~/dev/LandingPage`, one directory shorter.
+    fn probe_fixture(with_workspace: bool) -> ProbeFixture {
+        let home_dir = tempfile::tempdir().unwrap();
+        let home = home_dir.path().canonicalize().unwrap();
+        let workspace = home.join("dev/app");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(Ledger::open(dir.path().join("ledger.db")).unwrap());
+        let dispatcher = Arc::new(RecordingDispatcher::returning(json!({"ok": true})));
+        let mut registry = Registry::new();
+        registry
+            .insert(Manifest::from_json(&fixture_probe_json()).unwrap())
+            .unwrap();
+        let bus = AgentBus::new(
+            registry,
+            Arc::clone(&ledger),
+            UndoJournal::open_in_memory().unwrap(),
+            Arc::clone(&dispatcher) as Arc<dyn Dispatcher>,
+        )
+        .with_grant(lisa_guard::Grant {
+            home: Some(home),
+            // The real uid: the test process owns this temporary home,
+            // and a made-up uid would make every file in it "not yours".
+            uid: lisa_guard::Grant::for_this_user().uid,
+            workspace: with_workspace.then(|| workspace.clone()),
+            ..lisa_guard::Grant::default()
+        });
+        ProbeFixture {
+            _dir: dir,
+            _home_dir: home_dir,
+            workspace,
+            bus,
+            ledger,
+            dispatcher,
+        }
+    }
+
+    fn probe_call(target: &str) -> CallRequest {
+        call(
+            "app.lisaos.Probe244",
+            "delete_everything",
+            json!({"target": target}),
+            user(),
+        )
+    }
+
+    /// **The defect #251 was opened from.** `delete_everything` targeting
+    /// `/` reached a modal with an Allow button, and the last thing
+    /// between it and the disk was a human under time pressure.
+    ///
+    /// A refused call is not parked, so there is no id for any dialog to
+    /// approve — the guardrail is the absence of the state, not a button
+    /// nobody clicked (ADR-0029, CLAUDE.md 6a).
+    #[test]
+    fn a_refused_call_never_parks_and_no_dialog_can_approve_it() {
+        let f = probe_fixture(false);
+        let outcome = f.bus.request(probe_call("/")).unwrap();
+
+        let (call_id, rule) = match &outcome {
+            Outcome::Refused { call_id, rule, .. } => (*call_id, *rule),
+            other => panic!("`/` reached {other:?} instead of a refusal"),
+        };
+        assert_eq!(rule, "rm.system_path");
+        assert_eq!(
+            f.bus.pending_count(),
+            0,
+            "a refusal must leave nothing parked"
+        );
+        assert!(
+            matches!(
+                f.bus
+                    .confirm(call_id, true, &Answerer::alone(lisa_peer::PeerId::Direct)),
+                Err(BusError::UnknownCall(_))
+            ),
+            "a refused call must not be answerable at all"
+        );
+        assert_eq!(f.dispatcher.dispatched(), 0);
+
+        let refusals: Vec<_> = f
+            .ledger
+            .tail(100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "tool.refuse")
+            .collect();
+        assert_eq!(refusals.len(), 1, "the refusal must be ledgered");
+        assert_eq!(refusals[0].status, "hard-no");
+        assert!(refusals[0].detail.contains("rm.system_path"));
+    }
+
+    /// **The test that proves the verdict is computed, not declared.**
+    /// One tool, one declared tier, one manifest — three answers,
+    /// decided entirely by where the call points (#252).
+    #[test]
+    fn one_tool_three_verdicts_decided_by_the_target() {
+        let f = probe_fixture(true);
+        let inside = f.workspace.join("stale.txt");
+        match f.bus.request(probe_call(inside.to_str().unwrap())) {
+            Ok(Outcome::AwaitingConfirmation { .. }) => {}
+            other => panic!("an in-bounds delete should ask, got {other:?}"),
+        }
+        for (target, rule) in [
+            ("/", "rm.system_path"),
+            ("/dev/sda", "disk.raw_write"),
+            ("~/.ssh/id_rsa", "scope.hidden_folder"),
+            ("/home/alice/notes.txt", "fs.not_yours"),
+        ] {
+            match f.bus.request(probe_call(target)).unwrap() {
+                Outcome::Refused { rule: r, .. } => assert_eq!(r, rule, "for {target}"),
+                other => panic!("`{target}` reached {other:?}"),
+            }
+        }
+        assert_eq!(f.dispatcher.dispatched(), 0);
+    }
+
+    /// #251, third constraint: one refusal is an event, the same actor
+    /// refused three times is an attack in progress. The Ledger has to
+    /// say which without somebody counting rows by eye (#217).
+    #[test]
+    fn repeated_refusals_from_one_actor_are_distinguishable_from_one_offs() {
+        let f = probe_fixture(false);
+        for _ in 0..3 {
+            f.bus.request(probe_call("/")).unwrap();
+        }
+        let mut seen: Vec<u64> = f
+            .ledger
+            .tail(100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "tool.refuse")
+            .filter_map(|e| {
+                serde_json::from_str::<Value>(&e.detail)
+                    .ok()?
+                    .get("occurrence")?
+                    .as_u64()
+            })
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            vec![1, 2, 3],
+            "each refusal must know which one it is"
+        );
+    }
+
+    /// #251, first constraint: "do it manually" must not become a slower
+    /// Allow button. Nothing in the report performs, composes or copies
+    /// the refused action — no arguments, no command, no pre-filled deep
+    /// link into a page that would loosen the policy.
+    #[test]
+    fn a_refusal_report_cannot_be_used_to_rebuild_the_refused_action() {
+        let f = probe_fixture(false);
+        let report = match f.bus.request(probe_call("/")).unwrap() {
+            Outcome::Refused { report, .. } => report,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        for forbidden in ["args", "command", "argv", "input", "settings_uri", "action"] {
+            assert!(
+                report.get(forbidden).is_none(),
+                "the report carries `{forbidden}`, which is the Allow button rebuilt"
+            );
+        }
+        assert_eq!(report["kind"], "hard-no");
+        // A hard no names no scope that would permit it, because none
+        // would: that is the difference from an out-of-scope refusal.
+        assert!(report["needs"].is_null());
+        assert_eq!(report["actor"], "host");
+    }
+
+    /// An out-of-scope refusal DOES name the scope — as information. The
+    /// two must stay distinguishable, or refusals become overridable or
+    /// ordinary work becomes permanently impossible (#252).
+    #[test]
+    fn an_out_of_scope_refusal_names_the_scope_a_hard_no_does_not() {
+        let f = probe_fixture(false);
+        let report = match f.bus.request(probe_call("/tmp/anything")).unwrap() {
+            Outcome::Refused { report, .. } => report,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert_eq!(report["kind"], "out-of-scope");
+        assert_eq!(report["rule"], "scope.outside_home");
+        assert!(
+            report["needs"].as_str().is_some_and(|s| !s.is_empty()),
+            "an out-of-scope refusal must say what would permit it"
+        );
     }
 
     fn ledger_kinds(ledger: &Ledger) -> Vec<(String, String)> {
