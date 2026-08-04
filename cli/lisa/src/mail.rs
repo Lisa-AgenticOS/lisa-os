@@ -154,6 +154,68 @@ pub fn account_root(maildir: &Path, address: &str, multi: bool) -> PathBuf {
     }
 }
 
+/// The Maildir trees this config actually syncs, in declaration order.
+///
+/// Issue #224: `index_maildir` walked everything under the Maildir root
+/// and had no idea which trees the sync config owned. On the reference
+/// device that indexed the same 8,407 messages twice — once under
+/// `mail:INBOX/…` and once under `mail:<account>/INBOX/…` — because
+/// `lisa mail setup` writes a flat tree for one account and per-account
+/// trees for several, and the flat tree is orphaned rather than removed
+/// when a second account arrives. 26,117 duplicate embedding vectors,
+/// 27.7% of the whole context store, and nothing warned.
+///
+/// `add_document_if_changed` cannot see it (the two ids differ) and
+/// `prune_not_in` cannot either (both files are on disk). The only thing
+/// that knows is the config, which names each store's `Path`.
+///
+/// Pure, so the parse is testable without a Maildir. An empty result
+/// means "this config declares no stores" — deliberately distinct from
+/// "the root", so the caller can say which case it is out loud instead
+/// of quietly walking everything.
+pub fn synced_roots(mbsyncrc: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut in_maildir_store = false;
+    for line in mbsyncrc.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("MaildirStore") {
+            in_maildir_store = !rest.trim().is_empty();
+            continue;
+        }
+        // `Path` belongs to whichever store block is open; an IMAPStore
+        // has no Path, so a stray one outside a Maildir block is not a
+        // tree on this disk.
+        if let Some(rest) = line.strip_prefix("Path ")
+            && in_maildir_store
+        {
+            // Written with a trailing slash; a path is compared with
+            // `starts_with`, which is component-wise, so strip it.
+            let p = PathBuf::from(rest.trim().trim_end_matches('/'));
+            if !p.as_os_str().is_empty() && !roots.contains(&p) {
+                roots.push(p);
+            }
+        } else if line.starts_with("IMAPStore") || line.starts_with("Channel") {
+            in_maildir_store = false;
+        }
+    }
+    roots
+}
+
+/// `synced_roots` for the config on disk, or nothing if it is unreadable.
+///
+/// A missing config is not an error here: `index` already refuses a
+/// missing Maildir, and someone whose Maildir predates `lisa mail setup`
+/// should still be able to index it. The empty answer routes to the
+/// walk-everything branch, which announces itself.
+fn declared_roots(paths: &Paths) -> Vec<PathBuf> {
+    std::fs::read_to_string(&paths.config)
+        .map(|t| synced_roots(&t))
+        .unwrap_or_default()
+}
+
 /// The whole config file, as text.
 ///
 /// Pure on purpose — this is the part that is easy to get subtly wrong
@@ -760,7 +822,7 @@ pub fn sync() -> Result<()> {
     // the issue's own incrementality requirement, and doing it here —
     // in-process, same as sync-knowledge — means no writable D-Bus
     // ingestion surface exists for something else to poison.
-    index_maildir(&paths.maildir)?;
+    index_maildir(&paths.maildir, &declared_roots(&paths))?;
     Ok(())
 }
 
@@ -774,7 +836,7 @@ pub fn index() -> Result<()> {
             paths.maildir.display()
         );
     }
-    index_maildir(&paths.maildir)
+    index_maildir(&paths.maildir, &declared_roots(&paths))
 }
 
 /// The stable identity of a Maildir message, from its path.
@@ -930,10 +992,56 @@ fn strip_tags(html: &str) -> String {
     out
 }
 
-fn index_maildir(maildir: &Path) -> Result<()> {
+/// What the walk should do with one file it found.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Index,
+    /// Not in a `cur/` or `new/` — mbsync scratch, or Maildir metadata.
+    NotAMessage,
+    /// In a tree no `MaildirStore` declares (#224).
+    Orphaned,
+    /// Spam/Junk/Trash: synced for DISPLAY, never for retrieval (#185).
+    NotForRetrieval,
+}
+
+/// The whole per-file decision, pure so the walk's behaviour is testable.
+///
+/// Splitting this out is the point rather than tidiness. `synced_roots`
+/// being correct proves nothing about whether the walk consults it —
+/// "the logic is tested, the connection is not" is the defect this repo
+/// has now paid for six times (#210, #241, #244, #245, #255, #263). The
+/// loop below is a match on this function; there is no second place
+/// where a file's fate is decided.
+fn verdict(maildir: &Path, roots: &[PathBuf], path: &Path) -> Verdict {
+    // Only message directories: cur/ (seen) and new/ (arrived). tmp/ is
+    // mbsync's scratch and everything else is metadata.
+    let dir = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str());
+    if !matches!(dir, Some("cur") | Some("new")) {
+        return Verdict::NotAMessage;
+    }
+    // Outside every tree the config syncs. On the reference device that
+    // is 8,407 messages in an orphaned flat tree no MaildirStore names —
+    // the same mail as the account subtree, under different Maildir
+    // unique names, so nothing downstream could tell they were the same.
+    if !roots.is_empty() && !roots.iter().any(|r| path.starts_with(r)) {
+        return Verdict::Orphaned;
+    }
+    if let Ok(rel) = path.strip_prefix(maildir)
+        && !folder_is_indexed(rel.parent().unwrap_or(Path::new("")))
+    {
+        return Verdict::NotForRetrieval;
+    }
+    Verdict::Index
+}
+
+fn index_maildir(maildir: &Path, roots: &[PathBuf]) -> Result<()> {
     use lisa_contextd::acl::AddOutcome;
     let store = lisa_contextd::ContextStore::open(lisa_contextd::ContextStore::default_path())?;
     let (mut added, mut unchanged, mut foreign, mut unparsed) = (0usize, 0, 0, 0);
+    let mut orphaned = 0usize;
     // Every id seen this walk — the mirror set. What is indexed but no
     // longer on disk (expunged, or previously-indexed Spam/Trash from
     // before #185) leaves retrieval at the end of the walk.
@@ -945,20 +1053,13 @@ fn index_maildir(maildir: &Path) -> Result<()> {
         .filter(|e| e.file_type().is_file())
     {
         let path = entry.path();
-        // Only message directories: cur/ (seen) and new/ (arrived).
-        // tmp/ is mbsync's scratch and everything else is metadata.
-        let dir = path
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str());
-        if !matches!(dir, Some("cur") | Some("new")) {
-            continue;
-        }
-        // Spam/Junk/Trash sync for DISPLAY, never for retrieval (#185).
-        if let Ok(rel) = path.strip_prefix(maildir)
-            && !folder_is_indexed(rel.parent().unwrap_or(Path::new("")))
-        {
-            continue;
+        match verdict(maildir, roots, path) {
+            Verdict::NotAMessage | Verdict::NotForRetrieval => continue,
+            Verdict::Orphaned => {
+                orphaned += 1;
+                continue;
+            }
+            Verdict::Index => {}
         }
         let Some(source) = message_source_id(maildir, path) else {
             continue;
@@ -982,6 +1083,19 @@ fn index_maildir(maildir: &Path) -> Result<()> {
         "mail index: {added} added, {unchanged} unchanged, {foreign} foreign-skipped, \
          {unparsed} unparsable, {pruned} pruned"
     );
+    if roots.is_empty() {
+        println!(
+            "  no synced trees declared in the config — indexed everything under {}",
+            maildir.display()
+        );
+    } else if orphaned > 0 {
+        println!(
+            "  {orphaned} message(s) skipped: they sit outside the {} tree(s) the sync \
+             config declares, so nothing keeps them up to date. Remove them, or add the \
+             account back with `lisa mail setup`.",
+            roots.len()
+        );
+    }
 
     // Same embedding rule as sync-knowledge (#177's lesson included:
     // embedding runs whether or not anything was added, so pending
@@ -1243,6 +1357,74 @@ mod tests {
         // …and each fetches its own credential.
         assert!(text.contains("--account account_1785335038_0"), "{text}");
         assert!(text.contains("--account account_1785447543_1"), "{text}");
+    }
+
+    #[test]
+    fn synced_roots_are_the_trees_the_config_declares() {
+        let text = render_mbsyncrc(&[account(), second()], &paths(), &Credential::OnlineAccount);
+        assert_eq!(
+            synced_roots(&text),
+            vec![
+                PathBuf::from("/home/lisa/Mail/someone_at_example.test"),
+                PathBuf::from("/home/lisa/Mail/other_at_gmail.test"),
+            ],
+            "the roots must come from the MaildirStore Path lines, in order"
+        );
+    }
+
+    #[test]
+    fn one_account_declares_the_whole_root() {
+        // The single-account layout IS the root, so nothing under it is
+        // orphaned and the walk must not narrow. Getting this wrong
+        // would index nothing at all for the common case.
+        let text = render_mbsyncrc(&[account()], &paths(), &Credential::OnlineAccount);
+        assert_eq!(synced_roots(&text), vec![PathBuf::from("/home/lisa/Mail")]);
+    }
+
+    #[test]
+    fn a_config_that_declares_nothing_yields_nothing() {
+        // Not "yields the root": an empty answer is what lets the caller
+        // tell "no config" from "this config syncs these trees", and
+        // decide loudly rather than silently walking everything.
+        assert!(synced_roots("").is_empty());
+        assert!(synced_roots("IMAPStore x-remote\nAccount x\n").is_empty());
+    }
+
+    #[test]
+    fn the_walk_consults_the_config_it_was_given() {
+        // The connection, not the parse. `synced_roots` being right
+        // proves nothing about whether the walk asks it — which is
+        // exactly how #241, #244, #245, #255 and #263 all survived
+        // green suites. Paths verbatim from #224's device report.
+        let maildir = Path::new("/home/lisa/Mail");
+        let text = render_mbsyncrc(&[account(), second()], &paths(), &Credential::OnlineAccount);
+        let roots = synced_roots(&text);
+
+        let orphan = Path::new("/home/lisa/Mail/INBOX/cur/1785447404.2837_1.lisa");
+        assert_eq!(verdict(maildir, &roots, orphan), Verdict::Orphaned);
+
+        let live =
+            Path::new("/home/lisa/Mail/someone_at_example.test/INBOX/cur/1785762014.4419_1.lisa");
+        assert_eq!(verdict(maildir, &roots, live), Verdict::Index);
+
+        // The other two verdicts still hold inside a declared root, so
+        // narrowing the walk did not swallow #185's rule or let mbsync's
+        // scratch directory through.
+        let spam = Path::new("/home/lisa/Mail/someone_at_example.test/Spam/cur/1.lisa");
+        assert_eq!(verdict(maildir, &roots, spam), Verdict::NotForRetrieval);
+        let scratch = Path::new("/home/lisa/Mail/someone_at_example.test/INBOX/tmp/1.lisa");
+        assert_eq!(verdict(maildir, &roots, scratch), Verdict::NotAMessage);
+    }
+
+    #[test]
+    fn with_no_declared_roots_nothing_is_orphaned() {
+        // A hand-made Maildir predating `lisa mail setup` must still
+        // index. The empty-roots branch is walk-everything, and the
+        // caller announces it rather than narrowing to nothing — which
+        // would have been a silent regression for the common case.
+        let maildir = Path::new("/home/lisa/Mail");
+        let anywhere = Path::new("/home/lisa/Mail/INBOX/cur/1.lisa");
+        assert_eq!(verdict(maildir, &[], anywhere), Verdict::Index);
     }
 
     #[test]
