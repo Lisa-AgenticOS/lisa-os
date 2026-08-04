@@ -41,6 +41,7 @@ import {
     messageText, parseAddress, parseHeaders, readableBody, splitMessage,
 } from './lib/rfc822.js';
 import {ACCENTS, railEntries, railIsVisible, shouldSwitch} from './lib/rail.js';
+import {isFavourite, toggleFavourite, visibleFolders} from './lib/favourites.js';
 import {
     FOLDER_ORDER, discoverAccounts as accountsUnder, foldersIn, isMaildirFolder,
     listFolder, messageId, messagePath, parseFilename, previewOf, uniqueMatchesId,
@@ -1431,11 +1432,15 @@ function reloadFolders() {
     // alphabetically), filtered to this account's real folders. Using
     // `folders(root)` directly would order them by readdir, which is
     // whatever the filesystem felt like.
-    for (const folder of store.allFolders()) {
-        // A folder is present when the account really has one — `cur/`
-        // or `new/`, not merely a directory of that name (#222).
-        if (!isMaildirFolder(`${shown.root}/${folder}`, listDir))
-            continue;
+    //
+    // A folder is present when the account really has one — `cur/` or
+    // `new/`, not merely a directory of that name (#222).
+    const onDisk = store.allFolders()
+        .filter((f) => isMaildirFolder(`${shown.root}/${f}`, listDir));
+    // …and then only the ones this account keeps (#249). An account
+    // nobody has curated shows all of them, so this is a no-op until
+    // somebody unticks something.
+    for (const folder of visibleFolders(onDisk, loadConfig(), shown.root)) {
         folderList.append(
             folderRow(folder, shown, store.counts(shown.root, folder).unread, false));
     }
@@ -2422,6 +2427,52 @@ function openPreferences(parent) {
     });
     reading.add(remoteRow);
     page.add(reading);
+
+    // --- Folders: the curated sidebar (#249).
+    //
+    // A Maildir accumulates folders nobody chose — server-side rules
+    // leave things like Snoozed, Delegated and Boomerang-Outbox behind,
+    // and at eight accounts a sidebar that renders the disk is unusable.
+    //
+    // Every box starts TICKED, because an account nobody has curated
+    // shows everything (lib/favourites.js). A curation feature that
+    // defaults to hiding would empty every existing sidebar on upgrade,
+    // and look exactly like data loss.
+    for (const account of store.accounts) {
+        const onDisk = store.allFolders()
+            .filter((f) => isMaildirFolder(`${account.root}/${f}`, listDir));
+        if (onDisk.length === 0)
+            continue;
+        const group = new Adw.PreferencesGroup({
+            title: store.accounts.length > 1 ? `Folders — ${account.name}` : 'Folders',
+            description: 'Untick a folder to keep it out of the sidebar. It stays ' +
+                'on disk and keeps syncing; this only decides what you see.',
+        });
+        for (const folder of onDisk) {
+            const row = new Adw.SwitchRow({
+                title: folder,
+                active: isFavourite(loadConfig(), account.root, folder),
+            });
+            row.connect('notify::active', () => {
+                // Read → toggle → save. `toggleFavourite` returns a new
+                // config rather than editing this one, so a failed save
+                // leaves nothing half-applied in memory.
+                const next = toggleFavourite(
+                    loadConfig(), account.root, folder, onDisk);
+                if (!saveConfig(next)) {
+                    row.set_subtitle('Could not save this preference');
+                    return;
+                }
+                row.set_subtitle('');
+                // The sidebar is what this setting is FOR; making
+                // someone relaunch to see their own preference is how
+                // people stop trusting preferences.
+                reloadFolders();
+            });
+            group.add(row);
+        }
+        page.add(group);
+    }
 
     // --- Why there is, or is not, mail arriving.
     //
