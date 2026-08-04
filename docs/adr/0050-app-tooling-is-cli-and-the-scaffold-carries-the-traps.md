@@ -5,9 +5,11 @@
 - **Date:** 2026-08-04
 - **Related:** ADR-0047 (GJS + GTK4 is the one toolkit), ADR-0029/0030
   (the guardrail boundary), ADR-0034 (`lisa dev`, `$HOME` not root),
-  ADR-0048 (core vs. store), ADR-0049 (every app is an agent surface),
-  PLAN §5.12.1 (the Forge loop), `docs/ANATOMY-OF-AN-APP.md`
-- **Issues:** #48, #130, #218, #219, #239, #240, #241, #212, #210, #223
+  ADR-0035 (the desktop is a prompt), ADR-0048 (core vs. store),
+  ADR-0049 (every app is an agent surface), PLAN §5.12.1 (the Forge
+  loop), `docs/ANATOMY-OF-AN-APP.md`
+- **Issues:** #48, #130, #210, #212, #215, #218, #219, #223, #239, #240,
+  #241, #243
 - **Supersedes nothing.** It decides the *shape* of app-authoring tooling,
   which no ADR had claimed.
 
@@ -65,16 +67,17 @@ the tool as if it were already there (CLAUDE.md rule 10).
   `--flutter` gets `Verifier::Dart`, which reports *"the project contains
   no Dart source files yet"* (`agent.rs:125-135`) and can never converge
   on JavaScript. ADR-0047 §4 says "the Forge targets GJS"; the code still
-  scaffolds Flutter. That gap is not this ADR's to close, but it is the
-  reason the verb below is load-bearing.
+  scaffolds Flutter. Filed as **#243**. That gap is not this ADR's to
+  close, but it is the reason the checker below is load-bearing.
 - **`lisa skills` is built** (`cli/lisa/src/skills.rs`): a system-wide
   search path (`$LISA_SKILLS_DIR`, `$XDG_DATA_HOME/lisa/skills`, the
   runtime channel, `/usr/share/lisa/skills`), earlier wins on a name
   clash. `skills/build-lisa-ui-app/SKILL.md` still describes the Flutter
   lane and is being rewritten for GJS.
-- **There is no `lisa new` and no `lisa dev`.** The `Command` enum in
-  `cli/lisa/src/main.rs:33-350` has neither. Nothing in this ADR
-  describes behaviour that exists.
+- **There is no `lisa dev` verb of any kind.** The `Command` enum
+  (`cli/lisa/src/main.rs:33-350`) holds 27 verbs and `Dev` is not one of
+  them — neither #130's `install`/`shell`/`reset` nor anything in this
+  record. Nothing described below is behaviour that exists.
 - **Two writer/reader agreements are already mechanized in `cargo test`**
   — `cli/lisa/tests/apps_payload.rs` and `cli/lisa/tests/apps_launcher.rs`.
   They exist because for three releases the launcher's path list and the
@@ -95,18 +98,51 @@ No GUI, no project file, no editor plugin, no `lisa-*` helper script
   constructor without a consent callback). When the *loop* runs one as a
   verifier it is plain argv — `Command::new(program).args(args)`,
   `libs/forge-harness/src/agent.rs:136-143` — not a shell line the model
-  composed, so `lisa check` is not even reachable by the surface that has
-  leaked in four consecutive review rounds. Either way there is one entry
-  point to secure, and it is secured.
+  composed, so `lisa dev check` is not even reachable by the surface
+  that has leaked in four consecutive review rounds. Either way there is
+  one entry point to secure, and it is secured.
 - **A GUI would need a second implementation of every check**, and a
   check that exists twice is #218 again.
 - **One binary is one place to look.** `lisa doctor` already collects the
   machine's state; an app-authoring surface belongs beside it, not in a
   window.
 
-### 2. Two verbs. That is the whole surface.
+### 2. The namespace: every developer verb lives under `lisa dev`
 
-**`lisa new app <Name>`** — write a runnable app tree under `apps/<name>/`
+`lisa dev` **is** the developer tooling namespace. Not a second binary,
+not a top-level verb per tool. Four reasons, in the order that decides it:
+
+- **Rule 7 holds, and a second binary would break it.** A separate `dev`
+  command is a second command center: its own guard classification, its
+  own identity story on the bus, and a verb the model cannot find in
+  `lisa --help`. Identity is the expensive part — **#215** was the channel
+  CLI being misidentified because `default_managers()` compared a
+  `/proc/<pid>/exe` the kernel reports fully resolved against an
+  un-canonicalized symlink path, and the cost was every CLI call
+  provenance-downgraded and every write-tier tool unreachable. A second
+  binary means having that conversation twice, for no gain.
+- **The project already has this name.** Issue #130 is titled *"`lisa dev`:
+  rootless, user-scope developer tooling"*. Putting the authoring verbs
+  there means one vocabulary for people building on Lisa, rather than two
+  that drift.
+- **`lisa --help` is at 27 verbs.** `ask`, `say`, `listen`, `mail`,
+  `update` serve a person *using* the machine; authoring verbs serve
+  someone *building on* it. A group signals audience without hiding
+  anything — everything is still one binary, still in `--help`, still
+  driven by the model. The "the CLI is what the LLM drives" principle is
+  unchanged.
+- **It avoids a collision we can see coming.** Nothing today opens an app,
+  focuses a window or changes a setting — a live gap for a desktop OS
+  whose thesis is that the desktop is a prompt (ADR-0035). `lisa app open`
+  and `lisa window` are the obvious names for that. **`lisa app` is
+  therefore reserved for desktop control, not authoring.** Had scaffolding
+  taken `lisa app new`, the noun would mean both "operate an app" and
+  "author an app" — two audiences on one word, which is how a CLI stops
+  being discoverable.
+
+### 3. Two verbs. That is the whole surface.
+
+**`lisa dev new <Name>`** — write a runnable app tree under `apps/<name>/`
 (or a given directory): entry point, `lib/`, `tests/`, manifest,
 `.desktop`, README stub. It emits the decisions §7 currently asks a
 reader to remember: the `#218` own-property-and-callable dispatch, the
@@ -115,17 +151,23 @@ the spread *before* it, the no-top-level-`await` comment, and the suite
 that mutation-checks all three — the exact tests
 `ANATOMY §9` already wrote and ran.
 
-**`lisa check [path]`** — run everything mechanical over an app tree and
-exit non-zero: the app's own suite, the manifest through **agentd's own
-parser** (`daemons/agentd/src/manifest.rs`, never a second
+**`lisa dev check [path]`** — run everything mechanical over an app tree
+and exit non-zero: the app's own suite, the manifest through **agentd's
+own parser** (`daemons/agentd/src/manifest.rs`, never a second
 implementation), the install-destination check that would have caught
 #241, the entry-module checks, and `check-tokens.py`.
 
-**`lisa check` is the load-bearing one.** A generator without a checker
-produces plausible code faster. The checker is what closes the Forge
-loop, and it needs no new harness code: `Verifier::Command { program:
-"lisa", args: ["check"] }` is the arm that already exists
+**`lisa dev check` is the load-bearing one.** A generator without a
+checker produces plausible code faster. The checker is what closes the
+Forge loop, and it needs no new harness code: `Verifier::Command {
+program: "lisa", args: ["dev", "check"] }` is the arm that already exists
 (`agent.rs:110`).
+
+**The one cost of the namespace, stated plainly:** the Forge calls the
+checker in a tight write/check/fix loop, so that arm carries one extra
+argument for every iteration of every forge run. That is the whole price
+— an argv element, no behavioural difference, no extra process, nothing
+the loop can observe.
 
 #### What we rejected, and why
 
@@ -137,10 +179,10 @@ loop, and it needs no new harness code: `Verifier::Command { program:
   purpose.
 - **A `package` verb.** Per-app packaging does not exist. ADR-0048 §5:
   *"one `shell` tarball, one version — that is an updater, not a store."*
-  A `lisa package` today would either shell out to the PKGBUILD or invent
-  a format with no consumer, and documenting it would be documenting
-  intent as behaviour. Deferred until ADR-0046's catalog has something to
-  install.
+  One today would either shell out to the PKGBUILD or invent a format
+  with no consumer, and documenting it would be documenting intent as
+  behaviour. Deferred, not refused: if ADR-0046's catalog ever needs one
+  it lands as **`lisa dev package`**, in this namespace, under this ADR.
 - **An `add tool` / `add window` generator family.** One example is not a
   contract. ADR-0047 §6.3 makes the same call about widgets: pull a
   shared thing up when a second caller needs it, not before.
@@ -149,7 +191,7 @@ loop, and it needs no new harness code: `Verifier::Command { program:
   must stay true, so nothing may become a *prerequisite* of running an
   app.
 
-### 3. The check is authoritative; the scaffold and the docs derive from it
+### 4. The check is authoritative; the scaffold and the docs derive from it
 
 A scaffold, a skill and a document all describing the same app shape is
 three copies of one truth, and this repo has already paid for that
@@ -158,40 +200,49 @@ launcher spelled the same path differently for three releases.
 
 So:
 
-1. **`lisa check` is the single authority** on what a valid Lisa app is.
-   Where a rule is already enforced by shipped code — the manifest
-   grammar, the tier floor, the token gate — `lisa check` **calls that
-   code** rather than restating it.
+1. **`lisa dev check` is the single authority** on what a valid Lisa app
+   is. Where a rule is already enforced by shipped code — the manifest
+   grammar, the tier floor, the token gate — it **calls that code** rather
+   than restating it.
 2. **The scaffold is tested against the checker.** A test in
    `cli/lisa/tests/` scaffolds into a temp directory and asserts
-   `lisa check` is clean, the same way `apps_payload.rs` asserts every
+   `lisa dev check` is clean, the same way `apps_payload.rs` asserts every
    `Exec=` resolves inside the staged tree. A scaffold that emits
    something its own checker rejects is a build failure, not a surprise
    on someone's afternoon.
 3. **`skills/build-lisa-ui-app` and `ANATOMY §Checklist` stop restating
-   the rules** and instruct: scaffold, then `lisa check`. They keep the
-   *why* — the narrative in §7 is the most valuable thing in the tree and
-   is not replaceable by a linter — and drop the imperative checklist that
-   is a fourth copy waiting to drift.
+   the rules** and instruct: `lisa dev new`, then `lisa dev check`. They
+   keep the *why* — the narrative in §7 is the most valuable thing in the
+   tree and is not replaceable by a linter — and drop the imperative
+   checklist that is a fourth copy waiting to drift.
 
 That ordering is deliberate: the checker is the copy that **fails**, and
 a copy that cannot fail is the one that goes stale.
 
-### 4. This does not govern #130, and #130 does not gate it
+### 5. Two concerns, one namespace: this ADR and #130 share `lisa dev`
 
-ADR-0034 and issue #130 answer *"where does a third-party toolchain live
-on an immutable root"* — `lisa dev install mysql`, rootless podman, a
-pinned image under `$HOME`. Its phase 0 (subuid/subgid, `newuidmap`, the
-podman runtime set) landed 2026-08-01; phase 1 is not started and is
-sequenced behind manifest signing and the ADR-0033 rollout.
+`lisa dev` now holds two things that are **separate concerns sharing one
+namespace** — not one governing the other, and not two vocabularies:
 
-**Writing a Lisa app needs none of that.** `gjs`, GTK4 and Adwaita are in
-the image, and an app is interpreted source. So `lisa new` / `lisa check`
-are **separate from `lisa dev`, not a phase of it**, and inherit none of
-its sequencing. If an app author wants Postgres to develop against, that
-is `lisa dev`, unchanged and undisturbed by this record.
+| | question it answers | what it needs |
+|---|---|---|
+| **ADR-0034 / #130** — `install`, `remove`, `list`, `shell`, `reset` | *where does a third-party toolchain live on an immutable root?* | subuid/subgid, a rootless container runtime, a `/home` disk guard |
+| **This ADR** — `new`, `check` | *how do I write a Lisa app that is correct on the first try?* | nothing that is not already in the image |
 
-Two of ADR-0034's rules do carry over, because they are general:
+The distinction that matters is **sequencing, and it does not
+transfer**. #130's phase 0 (subuid/subgid, `newuidmap`, the podman
+runtime set) landed 2026-08-01; its phase 1 is not started and is
+deliberately queued behind manifest signing and the ADR-0033 rollout,
+because a developer front door onto an unclosed trust boundary is a door
+onto an unlocked house. **`lisa dev new` and `lisa dev check` inherit
+none of that.** They install nothing, run nothing of anyone else's, and
+open no door: `gjs`, GTK4 and Adwaita are in the image, and an app is
+interpreted source. Sharing a noun with a gated feature does not gate
+them, and this ADR says so explicitly so that a future session does not
+read the namespace as a queue.
+
+What the namespace *does* buy is that ADR-0034's two general rules apply
+to every verb under it, with no per-verb argument:
 
 - **`$HOME`, not root, and no `sudo` anywhere.** Nothing in these verbs
   writes outside the project directory. `escalate.privilege` is an
@@ -199,13 +250,13 @@ Two of ADR-0034's rules do carry over, because they are general:
   a carve-out would be arguing against a rule we spent a day defending.
 - **The dependency rule does *not* bind here, and this is easy to
   over-apply.** ADR-0034 §1 constrains the *install, update and recovery*
-  paths. Authoring is none of those; a developer with no `lisa check` has
-  a worse afternoon, not an unbootable machine. These verbs may therefore
-  depend on whatever serves them best — including, later, a third-party
-  JS analyzer. What they may **not** do is become load-bearing for
-  running or shipping an app.
+  paths. Authoring is none of those; a developer with no `lisa dev check`
+  has a worse afternoon, not an unbootable machine. These verbs may
+  therefore depend on whatever serves them best — including, later, a
+  third-party JS analyzer. What they may **not** do is become load-bearing
+  for running or shipping an app.
 
-### 5. Interpreted source is why one-shot is practical (ADR-0047)
+### 6. Interpreted source is why one-shot is practical (ADR-0047)
 
 ADR-0047 §4 chose GJS partly so "the Forge can produce something runnable
 without a build toolchain (#48)". This ADR is where that pays:
@@ -213,7 +264,7 @@ without a build toolchain (#48)". This ADR is where that pays:
 - **The scaffold's output runs immediately.** No `pub get`, no analyzer
   install, no cross-compile. The gap between "the model wrote a file" and
   "a person can see it" is one `gjs` invocation.
-- **The verify loop needs no toolchain**, so `lisa check` can run on a
+- **The verify loop needs no toolchain**, so `lisa dev check` can run on a
   reference iMac, in CI, and on a macOS dev host for everything that does
   not need `gi://` — the split `shell/testing/README.md:19-22` already
   requires of app code.
@@ -276,7 +327,7 @@ What a checker can honestly claim:
 
 | trap | mechanically decidable? | the honest form |
 |---|---|---|
-| **#241** manifest destination | **yes** — a build-tree check: the app's manifest `install` line must target `/usr/share/lisa/manifests`. ADR-0049's first slice asks for exactly this | a `lisa check` gate + the `cargo test` shape of `apps_payload.rs` |
+| **#241** manifest destination | **yes** — a build-tree check: the app's manifest `install` line must target `/usr/share/lisa/manifests`. ADR-0049's first slice asks for exactly this | a `lisa dev check` gate + the `cargo test` shape of `apps_payload.rs` |
 | **top-level `await`** in the entry module | **yes**, and the highest value per line — the failure emits nothing to any log | a source check on the entry module |
 | **#218** `tools[name]` | **partly**. The literal pattern is greppable; a differently-spelled equivalent is not. The durable fix is one shared module (ADR-0047 §6.1) | scaffold the guard *and* the mutation-checked test; the grep is interim |
 | **#219** socket lifecycle | **no** — proving a socket is released needs a process. A text check that all three connections are present is weak and should say so | scaffold all three; check presence, claim nothing more |
@@ -289,38 +340,49 @@ traps" would be the same defect the traps are made of.
 
 ## What would reverse this
 
-- **A compiled or second toolkit returns.** A build step makes `build`
-  and `package` verbs real work rather than ceremony, and the "no
-  toolchain" argument for one-shot generation collapses with it.
-- **Per-app packaging lands** (ADR-0048 §5, ADR-0046). Then `lisa package`
-  has a consumer and should exist. This is deferral, not rejection.
+- **A compiled or second toolkit returns.** A build step makes
+  `lisa dev build` and `lisa dev package` real work rather than ceremony,
+  and the "no toolchain" argument for one-shot generation collapses with
+  it.
+- **Per-app packaging lands** (ADR-0048 §5, ADR-0046). Then
+  `lisa dev package` has a consumer and should exist. This is deferral,
+  not rejection.
 - **The scaffold turns out not to be needed** — a harness with the
   ANATOMY document in context one-shots a clean app at a rate we would
   accept anyway. That is measurable, and nobody has measured it. If true,
-  keep `lisa check` and drop `lisa new`; the checker carries the argument,
-  the generator only carries the convenience.
+  keep `lisa dev check` and drop `lisa dev new`; the checker carries the
+  argument, the generator only carries the convenience.
 - **`libs/lisa_ui` absorbs the Agent Bus edge** (ADR-0047 §6.1). Then the
   scaffold *imports* rather than generates the #218 and #219 code, and
   those checks move to one library with one corpus entry. That shrinks
   this ADR rather than reversing it, and is the outcome to aim for.
-- **A GJS static analyzer we trust appears.** `lisa check` should call it
+- **A GJS static analyzer we trust appears.** `lisa dev check` should call it
   rather than grow its own opinions about JavaScript.
 
 ## Consequences
 
 - **We take on a checker to maintain**, and a wrong check is worse than no
-  check: it manufactures confidence. Every rule `lisa check` enforces must
-  cite the issue that produced it, the way `libs/lisa-guard`'s corpus
+  check: it manufactures confidence. Every rule `lisa dev check` enforces
+  must cite the issue that produced it, the way `libs/lisa-guard`'s corpus
   does — a check with no incident behind it is somebody's taste with an
   exit code.
+- **`lisa dev` becomes the one place a developer looks, and `lisa app` is
+  reserved.** Anything that helps someone *build on* Lisa goes under
+  `lisa dev`, including #130's toolchain verbs. The desktop-control verbs
+  that do not exist yet — open an app, focus a window, change a setting
+  (ADR-0035) — get `lisa app` / `lisa window`, and no authoring verb may
+  take that noun.
 - **The checker is a ratchet, not a proof.** It only ever contains what
   someone wrote down after a bug shipped. That is exactly its value and
   exactly its ceiling.
 - **`ANATOMY §7` keeps its narrative and loses its checklist.** The
   stories are why the rules are believed; the imperative list becomes
-  `lisa check`.
+  `lisa dev check`.
 - **The Forge gets a verifier for the toolkit ADR-0047 chose**, which it
-  does not have. Until then `lisa forge` produces Flutter or nothing.
+  does not have. Until then `lisa forge` produces Flutter or nothing —
+  filed as **#243**, whose fix is the `Verifier::Command { program:
+  "lisa", args: ["dev", "check"] }` arm named above.
 - **CI is the missing half.** App tests are wired into `just shell-test`
-  and enforced by nothing automated. `lisa check` in CI over `apps/*` is
-  what makes any of this hold for code a person edits after the loop ends.
+  and enforced by nothing automated. `lisa dev check` in CI over `apps/*`
+  is what makes any of this hold for code a person edits after the loop
+  ends.

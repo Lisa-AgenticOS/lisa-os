@@ -143,4 +143,4 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0047](0047-one-toolkit-gjs-gtk4.md) — One toolkit: GJS + GTK4/Adwaita is the default, Flutter is parked
 - [ADR-0048](0048-lisa-desktop-is-a-desktop-not-a-patched-gnome.md) — Lisa Desktop is a desktop, not a patched GNOME (write the apps; core vs. store)
 - [ADR-0049](0049-every-app-is-an-agent-surface.md) — Every app is an agent surface: install is the grant, the tier is the gate, the registry is the authority
-- [ADR-0050](0050-app-tooling-is-cli-and-the-scaffold-carries-the-traps.md) — App tooling is CLI verbs, not an IDE: `lisa new app` scaffolds, `lisa check` is the authority, and the traps become generated code
+- [ADR-0050](0050-app-tooling-is-cli-and-the-scaffold-carries-the-traps.md) — App tooling is CLI verbs, not an IDE: every developer verb lives under `lisa dev`, `lisa dev check` is the authority, and the traps become generated code
