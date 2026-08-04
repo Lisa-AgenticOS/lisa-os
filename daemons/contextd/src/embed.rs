@@ -257,6 +257,90 @@ impl Embedder for InferencedEmbedder {
     }
 }
 
+/// Wraps an embedder so a *cold* one is waited for instead of being
+/// fatal — with a budget, so the wait cannot outlive the caller.
+///
+/// `After=lisa-inferenced-dbus.service` orders start, not readiness:
+/// llama-server takes tens of seconds to load nomic-embed, so the first
+/// POST of a boot can meet a socket that accepts and then hangs up
+/// (`Broken pipe`) or is not there yet (`No such file`). Retrying that
+/// a few times costs seconds; not retrying it costs the whole pass.
+///
+/// Bounded on purpose (#192): `attempts` total tries with delays of
+/// `base_delay * 2^n`, so the worst case is arithmetic a reader can do
+/// — 5 attempts at 2s is 2+4+8+16 = 30 seconds of waiting, inside a
+/// 120-second oneshot. Only errors a wait can fix are retried; an HTTP
+/// 400 for a model that is not loaded answers just as fast the fourth
+/// time.
+pub struct RetryingEmbedder<'a> {
+    inner: &'a dyn Embedder,
+    attempts: u32,
+    base_delay: std::time::Duration,
+}
+
+impl<'a> RetryingEmbedder<'a> {
+    pub fn new(inner: &'a dyn Embedder, attempts: u32, base_delay: std::time::Duration) -> Self {
+        Self {
+            inner,
+            attempts: attempts.max(1),
+            base_delay,
+        }
+    }
+
+    /// Worst-case time this wrapper can spend asleep. The caller's
+    /// timeout budget has to be bigger than this number, and a number
+    /// is the only way to check that.
+    pub fn max_backoff(&self) -> std::time::Duration {
+        (0..self.attempts.saturating_sub(1))
+            .map(|n| self.base_delay * 2u32.saturating_pow(n))
+            .sum()
+    }
+}
+
+/// Whether waiting could plausibly change the answer. Transport-level
+/// failures against a daemon that is still starting: yes. Anything the
+/// server actually answered — a refusal, a malformed body, a count
+/// mismatch — arrives as [`std::io::ErrorKind::Other`] via `io_msg`
+/// and is not retried.
+fn is_transient(err: &StoreError) -> bool {
+    let StoreError::Io(e) = err else { return false };
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::WouldBlock
+    )
+}
+
+impl Embedder for RetryingEmbedder<'_> {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, StoreError> {
+        let mut delay = self.base_delay;
+        for attempt in 1..=self.attempts {
+            match self.inner.embed(texts) {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt < self.attempts && is_transient(&e) => {
+                    tracing::info!(
+                        attempt,
+                        of = self.attempts,
+                        wait_ms = delay.as_millis() as u64,
+                        error = %e,
+                        "the embedder is not answering yet; waiting before the next try"
+                    );
+                    std::thread::sleep(delay);
+                    delay *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("the loop returns on the last attempt")
+    }
+}
+
 fn io_err<E: std::fmt::Display>(e: E) -> StoreError {
     io_msg(&e.to_string())
 }
@@ -370,6 +454,34 @@ impl ContextStore {
         self.embed_pending_batched(embedder, 64)
     }
 
+    /// Embed the pending chunks of ONE provenance, leaving every other
+    /// queue exactly where it was.
+    ///
+    /// #192: `lisa-knowledge-sync` indexed its 28 knowledge-pack chunks
+    /// in five seconds, then called the unscoped [`Self::embed_pending`]
+    /// and inherited the ~90,000 `mail` chunks the #170 backfill had
+    /// left pending. systemd SIGTERM'd it at `TimeoutStartSec=120` —
+    /// on every boot, until the backfill happened to finish elsewhere.
+    /// A caller that owns one provenance now says so, and its runtime
+    /// is bounded by its own corpus instead of by whatever else the
+    /// store is carrying.
+    ///
+    /// The unscoped variant stays: an explicit, long-running command
+    /// like `lisa context index --embed` or the mail backfill is
+    /// *supposed* to drain the whole queue.
+    pub fn embed_pending_provenance(
+        &self,
+        embedder: &dyn Embedder,
+        provenance: &str,
+    ) -> Result<usize, StoreError> {
+        // #104's rule again: an unknown tag matches no rows, and
+        // "embedded 0 chunks" is indistinguishable from "already done".
+        if !crate::acl::is_known_provenance(provenance) {
+            return Err(StoreError::UnknownProvenance(provenance.to_string()));
+        }
+        self.embed_pending_inner(embedder, 64, Some(provenance))
+    }
+
     /// The batch size exists because the first real mailbox proved it
     /// must: 31,845 pending chunks went out as ONE /v1/embeddings POST
     /// — megabytes of JSON — and llama-server hung up (broken pipe,
@@ -383,20 +495,51 @@ impl ContextStore {
         embedder: &dyn Embedder,
         batch: usize,
     ) -> Result<usize, StoreError> {
+        self.embed_pending_inner(embedder, batch, None)
+    }
+
+    /// The shared loop. `provenance = None` is the whole store; `Some`
+    /// restricts it to one tag's documents.
+    fn embed_pending_inner(
+        &self,
+        embedder: &dyn Embedder,
+        batch: usize,
+        provenance: Option<&str>,
+    ) -> Result<usize, StoreError> {
         let batch = batch.max(1);
         let mut done = 0usize;
         loop {
             let pending: Vec<(i64, i64, String)> = {
                 let conn = self.conn.lock().expect("context lock");
-                let mut stmt = conn.prepare(
-                    "SELECT c.doc_id, c.seq, c.content
-                     FROM chunks c
-                     LEFT JOIN chunk_vectors v ON v.doc_id = c.doc_id AND v.seq = c.seq
-                     WHERE v.doc_id IS NULL
-                     LIMIT ?1",
-                )?;
-                stmt.query_map([batch as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                    .collect::<Result<_, _>>()?
+                match provenance {
+                    // Left exactly as it was: no join, so a chunk whose
+                    // document row is missing still gets a vector here.
+                    None => {
+                        let mut stmt = conn.prepare(
+                            "SELECT c.doc_id, c.seq, c.content
+                             FROM chunks c
+                             LEFT JOIN chunk_vectors v ON v.doc_id = c.doc_id AND v.seq = c.seq
+                             WHERE v.doc_id IS NULL
+                             LIMIT ?1",
+                        )?;
+                        stmt.query_map([batch as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                            .collect::<Result<_, _>>()?
+                    }
+                    Some(p) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT c.doc_id, c.seq, c.content
+                             FROM chunks c
+                             JOIN documents d ON d.id = c.doc_id
+                             LEFT JOIN chunk_vectors v ON v.doc_id = c.doc_id AND v.seq = c.seq
+                             WHERE v.doc_id IS NULL AND d.provenance = ?2
+                             LIMIT ?1",
+                        )?;
+                        stmt.query_map(rusqlite::params![batch as i64, p], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                        })?
+                        .collect::<Result<_, _>>()?
+                    }
+                }
             };
             if pending.is_empty() {
                 return Ok(done);
@@ -872,6 +1015,205 @@ mod tests {
         // Resumability: nothing pending → zero requests.
         assert_eq!(store.embed_pending_batched(&counter, 2).unwrap(), 0);
         assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// How many chunks of `provenance` still have no vector.
+    fn pending_of(store: &ContextStore, provenance: &str) -> usize {
+        let conn = store.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT count(*)
+             FROM chunks c
+             JOIN documents d ON d.id = c.doc_id
+             LEFT JOIN chunk_vectors v ON v.doc_id = c.doc_id AND v.seq = c.seq
+             WHERE v.doc_id IS NULL AND d.provenance = ?1",
+            [provenance],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap() as usize
+    }
+
+    /// #192, from the reference device: `lisa-knowledge-sync` indexed
+    /// its 28 chunks in five seconds and was then SIGTERM'd at
+    /// `TimeoutStartSec=120`, because the embed step it ran afterwards
+    /// was UNSCOPED — it inherited ~90,000 pending `mail` chunks from
+    /// the #170 backfill. A unit that owns the knowledge pack must
+    /// embed the knowledge pack, and leave every other queue exactly
+    /// where it found it.
+    #[test]
+    fn a_scoped_embed_leaves_another_provenance_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let sys = dir.path().join("pack");
+        let mail = dir.path().join("mail");
+        std::fs::create_dir_all(&sys).unwrap();
+        std::fs::create_dir_all(&mail).unwrap();
+        std::fs::write(
+            sys.join("about.md"),
+            "Lisa OS keeps local models as a system service.",
+        )
+        .unwrap();
+        for i in 0..4 {
+            std::fs::write(
+                mail.join(format!("m{i}.md")),
+                format!("mail message {i} about the quarterly invoice"),
+            )
+            .unwrap();
+        }
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        let pack = store.index_dir_as(&sys, "system").unwrap();
+        let inbox = store.index_dir_as(&mail, "mail").unwrap();
+        assert!(pack.chunks > 0 && inbox.chunks > 0, "nothing to embed");
+
+        /// Records what actually crossed the wire, so the assertion is
+        /// about the texts sent to the model and not only a count.
+        #[derive(Default)]
+        struct Recording(std::sync::Mutex<Vec<String>>);
+        impl Embedder for Recording {
+            fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, StoreError> {
+                self.0.lock().unwrap().extend(texts.iter().cloned());
+                Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+            }
+        }
+
+        let rec = Recording::default();
+        let n = store.embed_pending_provenance(&rec, "system").unwrap();
+        assert_eq!(
+            n, pack.chunks,
+            "a `system`-scoped embed reported {n} chunks for a pack of {}",
+            pack.chunks
+        );
+        let seen = rec.0.lock().unwrap().clone();
+        assert!(
+            !seen.iter().any(|t| t.contains("mail message")),
+            "the scoped embed drained another provenance's queue: {seen:?}"
+        );
+        assert_eq!(pending_of(&store, "system"), 0, "the pack stayed pending");
+        assert_eq!(
+            pending_of(&store, "mail"),
+            inbox.chunks,
+            "the mail queue moved; the knowledge sync is not its owner"
+        );
+    }
+
+    /// The other half of #192: an unknown tag is refused rather than
+    /// quietly matching nothing, which would look exactly like "the
+    /// pack was already embedded".
+    #[test]
+    fn a_scoped_embed_refuses_an_unknown_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "anything at all").unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        store.index_dir(dir.path()).unwrap();
+        let err = store
+            .embed_pending_provenance(&HashEmbedder::default(), "System")
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::UnknownProvenance(ref p) if p == "System"),
+            "expected a refusal, got: {err}"
+        );
+        assert_eq!(
+            pending_of(&store, "file"),
+            1,
+            "a refused call must not have embedded anything"
+        );
+    }
+
+    /// An embedder that fails `fails` times with `kind`, then answers.
+    struct Flaky {
+        fails: usize,
+        kind: std::io::ErrorKind,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl Flaky {
+        fn new(fails: usize, kind: std::io::ErrorKind) -> Self {
+            Self {
+                fails,
+                kind,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+    impl Embedder for Flaky {
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, StoreError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n < self.fails {
+                return Err(StoreError::Io(std::io::Error::from(self.kind)));
+            }
+            Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+        }
+    }
+
+    /// #192's original suspicion, which is real even though it is not
+    /// what killed the unit: `After=` orders start, not readiness, so
+    /// the first POST after a cold boot can meet a llama-server still
+    /// loading nomic-embed and get a broken pipe. Bounded retries turn
+    /// that into a wait; the budget is what keeps it from turning into
+    /// a hang inside a 120-second oneshot.
+    #[test]
+    fn a_cold_embedder_is_retried_within_a_bounded_budget() {
+        // The number the unit file's timeout is justified against: the
+        // knowledge sync's 5 attempts at 2s can sleep 2+4+8+16 = 30
+        // seconds and no more. A comment claiming that is a claim; this
+        // is the claim being checked.
+        assert_eq!(
+            RetryingEmbedder::new(
+                &HashEmbedder::default(),
+                5,
+                std::time::Duration::from_secs(2)
+            )
+            .max_backoff(),
+            std::time::Duration::from_secs(30),
+            "the retry budget is not what the unit file's TimeoutStartSec assumes"
+        );
+
+        let flaky = Flaky::new(2, std::io::ErrorKind::BrokenPipe);
+        let retrying = RetryingEmbedder::new(&flaky, 4, std::time::Duration::from_millis(1));
+        let out = retrying.embed(&["one".to_string()]).unwrap();
+        assert_eq!(out.len(), 1, "the retry must return the successful answer");
+        assert_eq!(flaky.calls(), 3, "expected two failures then one success");
+
+        // POSITIVE CONTROL: with more failures than the budget allows,
+        // the error must come back — otherwise this test would pass
+        // against an implementation that retries forever, which is the
+        // failure mode being avoided.
+        let stubborn = Flaky::new(99, std::io::ErrorKind::ConnectionRefused);
+        let retrying = RetryingEmbedder::new(&stubborn, 3, std::time::Duration::from_millis(1));
+        let err = retrying.embed(&["one".to_string()]).unwrap_err();
+        assert_eq!(stubborn.calls(), 3, "the attempt budget was not honoured");
+        assert!(
+            err.to_string().to_lowercase().contains("refused"),
+            "the last error must survive the retries: {err}"
+        );
+    }
+
+    /// Retry only what a wait can fix. "No such model" answers just as
+    /// fast the fourth time, and retrying it would spend the whole
+    /// budget on a certainty.
+    #[test]
+    fn a_permanent_error_is_not_retried() {
+        struct Refusing(std::sync::atomic::AtomicUsize);
+        impl Embedder for Refusing {
+            fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, StoreError> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(io_msg("embeddings returned HTTP 400: no such model"))
+            }
+        }
+        // Seconds, not milliseconds: an implementation that retries
+        // this must make the suite visibly slower, so the regression is
+        // felt and not just counted. (Mutating `is_transient` to accept
+        // everything took this test from 0.00s to 210s before it failed
+        // on the count — hence 5s rather than 30s here.)
+        let refusing = Refusing(std::sync::atomic::AtomicUsize::new(0));
+        let retrying = RetryingEmbedder::new(&refusing, 4, std::time::Duration::from_secs(5));
+        let err = retrying.embed(&["one".to_string()]).unwrap_err();
+        assert_eq!(
+            refusing.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a permanent refusal was retried"
+        );
+        assert!(err.to_string().contains("no such model"), "got: {err}");
     }
 
     #[test]

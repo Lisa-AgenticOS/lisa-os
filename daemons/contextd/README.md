@@ -20,6 +20,20 @@ Implemented and unit-tested (macOS + Linux, no daemon required):
 - **Hybrid retrieval** (`embed.rs`) — per-chunk embeddings + BM25×cosine
   blend over FTS-prefiltered candidates (sqlite-vec at scale is the later
   optimization). `embed_pending`, `search_hybrid`.
+  **Whose queue** matters as much as which embedder: `embed_pending`
+  drains *every* pending chunk in the store, which is right for an
+  explicit `lisa context index --embed` and wrong for anything with a
+  deadline. `embed_pending_provenance(embedder, "system")` embeds one
+  tag's chunks and leaves the others exactly where they were — the
+  boot-time knowledge sync owns 28 chunks and used to inherit 90,000
+  mail chunks from a backfill, which killed it at `TimeoutStartSec` on
+  every boot (#192).
+  **A cold embedder is not a failure**: `RetryingEmbedder::new(inner,
+  attempts, base_delay)` retries transport-level errors (connect
+  refused, broken pipe, unexpected EOF) with doubling backoff and a
+  budget you can compute — `max_backoff()` says how long the worst case
+  sleeps. Errors the server actually answered (HTTP 400, a malformed
+  body, a vector-count mismatch) are returned on the first try.
   **Which embedder** is decided by `embed::resolve()` and always
   reported: `InferencedEmbedder` when `lisa-inferenced`'s unix socket
   answers, `HashEmbedder` otherwise. The fallback is never quiet — a

@@ -3,6 +3,12 @@ Description=Index the OS knowledge pack into the context store (#175)
 # After the companion so that when the embedding model is present the
 # chunks embed in the same pass; without it they stay pending and the
 # next boot after `lisa models get` picks them up (sync says which).
+#
+# `After=` orders START, not readiness — llama-server needs tens of
+# seconds to load nomic-embed — so the sync retries a cold embedder with
+# bounded backoff (30s at worst) and, if it is still not answering,
+# leaves the chunks pending and exits 0. A boot that was too fast for
+# the model is not a failure worth a red unit.
 After=lisa-inferenced-dbus.service
 
 [Service]
@@ -11,7 +17,26 @@ Type=oneshot
 # touching anything — so this is one hash comparison on every boot that
 # follows an unchanged image.
 ExecStart=/usr/bin/lisa context sync-knowledge
+# 120s stays, and #192 is why it is now the right number rather than an
+# accident. Measured on the reference device (image 20260803.66): the
+# sync did its own work — hash, index 28 chunks, prune — in FIVE
+# seconds, then hung for 115 more and was SIGTERM'd here, because the
+# embed step was unscoped and inherited ~90,000 pending mail chunks
+# from the #170 backfill. The embed is scoped to `system` now, so the
+# runtime is a function of the pack (which ships in this image and is
+# small) instead of whatever else the store happens to be carrying.
+#
+# What is left inside this budget: seconds of indexing, at most 30s of
+# retry backoff, and a request per 64 chunks. What it is a backstop
+# for: a single POST to an inferenced that accepted the connection and
+# then stalled — the client sets no socket read timeout, so systemd is
+# the only bound on that one, which is why this timeout exists at all.
 TimeoutStartSec=120
 
 [Install]
+# Session start, not a timer: retrieval should be ready before the
+# person asks the assistant its first question, and the pack can only
+# have changed if the image did — i.e. across a boot. Nothing is
+# ordered after this unit, so a slow pass delays no other unit; it costs
+# only its own place in the startup transaction.
 WantedBy=default.target

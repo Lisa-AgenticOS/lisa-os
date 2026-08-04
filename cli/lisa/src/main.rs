@@ -2888,12 +2888,40 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
             // embeds them, unchanged hash or not.
             let chosen = lisa_contextd::embed::resolve();
             if chosen.kind == "inferenced" {
-                let n = store.embed_pending(chosen.embedder.as_ref())?;
-                if n > 0 {
-                    println!(
+                // SCOPED to `system` (#192). The unscoped call that
+                // stood here embedded every pending chunk in the store,
+                // so a unit whose job is a 28-chunk knowledge pack
+                // inherited the mail backfill's 90,000 and was killed
+                // at TimeoutStartSec on every boot. The recovery path
+                // above is unchanged: this still runs on an unchanged
+                // hash, and still embeds the pack's own pending chunks.
+                //
+                // RETRIED (#192) because `After=` orders start, not
+                // readiness: llama-server may still be loading
+                // nomic-embed when this fires. Bounded — 30 seconds of
+                // waiting at worst, inside the unit's 120.
+                let embedder = lisa_contextd::embed::RetryingEmbedder::new(
+                    chosen.embedder.as_ref(),
+                    5,
+                    std::time::Duration::from_secs(2),
+                );
+                match store.embed_pending_provenance(&embedder, "system") {
+                    Ok(n) if n > 0 => println!(
                         "embedded {n} chunk(s) (model: {})",
                         chosen.model.as_deref().unwrap_or("daemon default")
-                    );
+                    ),
+                    Ok(_) => {}
+                    // A cold or unreachable embedder is a condition of
+                    // the machine, not a defect: the chunks stay
+                    // pending and the next run picks them up, which is
+                    // strictly better than a failed unit that says
+                    // nothing about what to do. A store error is a real
+                    // fault and still propagates.
+                    Err(e @ lisa_contextd::StoreError::Io(_)) => println!(
+                        "not embedding: the embedder did not answer ({e}); chunks stay \
+                         pending and the next sync picks them up"
+                    ),
+                    Err(e) => return Err(e.into()),
                 }
             } else {
                 println!(
