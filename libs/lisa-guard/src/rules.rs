@@ -51,6 +51,7 @@ pub(crate) fn scan(inv: &Invocation) -> Verdict {
         package_mutation,
         network_egress,
         version_control,
+        runtime_evaluates_a_string,
     ] {
         verdict = verdict.worst(rule(inv));
         // Deny is terminal; nothing later can make the answer worse and
@@ -70,6 +71,79 @@ fn privilege_escalation(inv: &Invocation) -> Verdict {
             "escalate.privilege",
             "runs as root — an agent never escalates privilege on its own",
         );
+    }
+    Verdict::Allow
+}
+
+/// A language runtime handed a STRING is a shell with a different name.
+///
+/// #269: the Forge writes GJS apps and must be able to run one, so
+/// `gjs` and `node` are allowlisted. `gjs -c '<anything>'` is
+/// `exec.shell` in a costume — it executes arbitrary code the model
+/// composed, which is precisely what `exec.shell` exists to refuse. So
+/// the runtimes are allowed to run a FILE and never an argument.
+///
+/// This lives in `rules::scan` rather than only in the argument policy
+/// because there are two doors: `check_command` judges a typed tool
+/// call, and `check_shell_line` judges an arbitrary shell line. A rule
+/// that closed only one would leave the other open, which is how #218's
+/// dispatcher bug reached three apps.
+///
+/// The preload flags are here for the same reason and are less obvious:
+/// `node -r <module>` runs code BEFORE the entry point, so a refusal
+/// aimed only at `--eval` would miss it entirely.
+fn runtime_evaluates_a_string(inv: &Invocation) -> Verdict {
+    const RUNTIMES: &[&str] = &["gjs", "node", "nodejs"];
+    if !RUNTIMES.contains(&inv.program.as_str()) {
+        return Verdict::Allow;
+    }
+    // Both spellings of every flag, and both the separate-value and
+    // attached-value forms: `--eval x`, `--eval=x`.
+    const EVAL_FLAGS: &[&str] = &[
+        "-c",
+        "--command", // gjs
+        "-e",
+        "--eval",
+        "-p",
+        "--print", // node
+        "-r",
+        "--require", // node: runs before the entry point
+        "-I",
+        "--include-path", // gjs: seeds the module search path
+    ];
+    for arg in &inv.args {
+        let name = arg.split_once('=').map_or(arg.as_str(), |(k, _)| k);
+        if EVAL_FLAGS.contains(&name) {
+            return Verdict::deny(
+                "exec.shell",
+                format!(
+                    "`{} {name}` evaluates code given as an argument — that is a shell \
+                     with a different name. Run a file instead.",
+                    inv.program
+                ),
+            );
+        }
+    }
+    // …and the file it runs is not the system's. `check_command` already
+    // confines operands to the working directory, but that layer knows
+    // about a jail and `check_shell_line` does not — and a runtime
+    // executing `/etc/profile` is running system code with the agent's
+    // hands, which no Forge task needs. Executing is not reading: `cat
+    // /etc/profile` stays allowed.
+    for arg in &inv.args {
+        if arg.starts_with('-') {
+            continue;
+        }
+        if is_under_system_root(arg) || is_system_target(arg) {
+            return Verdict::deny(
+                "exec.shell",
+                format!(
+                    "`{} {arg}` executes a file that belongs to the system. A runtime \
+                     may run the project's own code, not the machine's.",
+                    inv.program
+                ),
+            );
+        }
     }
     Verdict::Allow
 }

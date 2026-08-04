@@ -118,23 +118,31 @@ impl ToolOutcome {
 mod run_tests_tests {
     use super::*;
 
-    /// A Lisa app's suite is a real suite, and saying "no recognized
-    /// test setup" about it teaches the model the project is malformed
-    /// (#246). Say what is actually true: the runtime is not on the
-    /// command allowlist.
+    /// A Lisa app's suite is a real suite, and it now RUNS.
+    ///
+    /// This test used to assert the honest refusal — "no JS runtime is
+    /// on the command allowlist" — which was the right answer while it
+    /// was true (#246). #269 added `gjs`/`node` under a policy that lets
+    /// a runtime run a file and never an argument, so the refusal became
+    /// a lie and this assertion had to move with it. A test pinning a
+    /// message is a test that fails when the message stops being true,
+    /// which is what it is for.
     #[test]
-    fn a_lisa_app_suite_is_named_rather_than_called_unrecognized() {
+    fn a_lisa_app_suite_is_run_rather_than_refused() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("tests")).unwrap();
+        // A suite that exits 0 on any runtime, so this asserts REACHING
+        // the runtime rather than the runtime's own opinion.
         std::fs::write(dir.path().join("tests/notes.test.js"), "// suite\n").unwrap();
         assert!(has_js_suite(dir.path()));
 
         let jail = crate::jail::Jail::new(dir.path()).unwrap();
         let out = run_tests(&jail);
-        assert!(out.is_err());
+        // Whatever the runtime says, it must not be the guard refusing
+        // the spawn or the tool calling a real suite unrecognised.
         assert!(
-            out.text.contains("tests/*.test.js"),
-            "the suite is not named: {}",
+            !out.text.contains("allowlist"),
+            "the guard refused the spawn: {}",
             out.text
         );
         assert!(
@@ -142,6 +150,22 @@ mod run_tests_tests {
             "a real suite was called unrecognized: {}",
             out.text
         );
+    }
+
+    /// The half of #269 that matters: the runtime may run a file and
+    /// never an argument. Asserted here as well as in the guard's own
+    /// corpus, because this is the caller that would notice a policy
+    /// change — the guard could relax and this tool would silently gain
+    /// a shell.
+    #[test]
+    fn the_runtime_cannot_be_asked_to_evaluate_a_string() {
+        for (program, flag) in [("gjs", "-c"), ("node", "-e"), ("node", "--eval")] {
+            let v = lisa_guard::check_command(program, &[flag, "print(1)"]);
+            assert!(
+                matches!(v, lisa_guard::Verdict::Deny { .. }),
+                "{program} {flag} was not refused: {v:?}"
+            );
+        }
     }
 
     /// …and a tree with no suite at all still says so, naming every
@@ -451,21 +475,24 @@ fn run_tests(jail: &Jail) -> ToolOutcome {
     } else if has_js_suite(root) {
         // A Lisa app (ADR-0047): `tests/*.test.js`, run by whichever JS
         // runtime the host has — the shape `just shell-test` already
-        // uses. None of `gjs`, `node` or `jsc` is in `lisa-guard`'s
-        // ALLOWED_COMMANDS, so `run_program` would refuse the spawn and
-        // the model would read a guard verdict instead of a reason.
+        // uses.
         //
-        // Said plainly rather than attempted, because a tool that
-        // reports "refused" for a suite that exists teaches the model
-        // the suite is broken. Adding the runtimes to the allowlist is a
-        // guard-policy change with its own corpus entries (CLAUDE.md 6a),
-        // not something to smuggle in from here.
-        return ToolOutcome::err(
-            "this project has a `tests/*.test.js` suite, and no JS runtime is on the \
-             command allowlist yet — so the loop cannot run it. Verify with the \
-             `lisa dev check` verifier instead, and run the suite outside the loop \
-             (`just shell-test`).",
-        );
+        // `gjs` and `node` joined `lisa-guard`'s ALLOWED_COMMANDS with
+        // #269's policy: a runtime may run a FILE and never an argument.
+        // Every eval and preload flag (`-c`, `--eval`, `-p`, `-r`, `-I`)
+        // is refused at both doors, and so is executing a file that
+        // belongs to the system. So this spawns a test file inside the
+        // jail and nothing else.
+        //
+        // `node` first: it is the runtime CI has, and `just shell-test`
+        // prefers gjs only when it is present. `run_program` reports the
+        // spawn failure if neither is installed, which is a truthful
+        // answer rather than a guard verdict about a suite that exists.
+        if which("gjs") {
+            ("gjs", &["-m"])
+        } else {
+            ("node", &["--test"])
+        }
     } else {
         return ToolOutcome::err(
             "no recognized test setup in the project (looked for `tests/*.test.js`, \
@@ -473,6 +500,16 @@ fn run_tests(jail: &Jail) -> ToolOutcome {
         );
     };
     run_program(jail, program, argv)
+}
+
+/// Is this program on `PATH`?
+///
+/// Used to pick a JS runtime rather than to decide anything about
+/// safety — the guard's allowlist is what decides that, and it does not
+/// care which of the two is installed.
+fn which(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
 /// Where the parked lane's SDK may be, most recent location first.

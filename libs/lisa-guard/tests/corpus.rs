@@ -21,6 +21,47 @@ use serde_json::json;
 /// system or a whole home, writing raw devices, escalating privilege,
 /// erasing the record, or handing the model a shell.
 const MUST_DENY: &[(&str, &str)] = &[
+    // --- A language runtime is a shell if you let it evaluate a string
+    // (#269). The Forge writes GJS apps and must be able to RUN one; it
+    // must never be able to run an argument. `gjs -c '<anything>'` is
+    // `exec.shell` with a different spelling, and so is every one of
+    // these.
+    (
+        "gjs -c 'imports.gi.GLib.spawn_command_line_sync(\"id\")'",
+        "gjs evaluating a string",
+    ),
+    (
+        "gjs --command 'print(1)'",
+        "the long spelling of the same thing",
+    ),
+    (
+        "gjs -I /etc app.js",
+        "an include path outside the jail seeds the module search",
+    ),
+    (
+        "gjs --include-path=/etc app.js",
+        "the attached-value form of the same escape",
+    ),
+    (
+        "node -e 'require(\"child_process\").exec(\"id\")'",
+        "node evaluating a string",
+    ),
+    ("node --eval 'process.exit(0)'", "the long spelling"),
+    ("node -p '1+1'", "print-eval is still eval"),
+    ("node --print '1+1'", "the long spelling of print-eval"),
+    (
+        "node -r /etc/evil.js app.js",
+        "--require preloads a module before the entry point",
+    ),
+    (
+        "node --require=/etc/evil.js app.js",
+        "the attached-value form",
+    ),
+    (
+        "gjs /etc/profile",
+        "running a FILE is fine; running one outside the jail is not",
+    ),
+    ("node /etc/profile", "same, for the other runtime"),
     // Deleting the world, in the spellings that actually get typed.
     ("rm -rf /", "the canonical one"),
     ("rm -rf /*", "glob instead of the bare root"),
@@ -374,6 +415,12 @@ const MUST_ASK: &[(&str, &str)] = &[
 /// Everyday work that must keep working. A guard that stops these is a
 /// guard people will find a way to turn off.
 const MUST_ALLOW: &[&str] = &[
+    // The whole point of #269: the Forge can run the app it just wrote,
+    // and its test suite, from inside the jail.
+    "gjs -m app.js",
+    "gjs app.js",
+    "node tests/run.js",
+    "node --test tests/",
     // #124 — a quoted human sentence is not a command line. Every one of
     // these is something somebody working on THIS repository types in a
     // normal week; the `gh issue create` line is literally how the

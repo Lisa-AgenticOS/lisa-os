@@ -30,7 +30,13 @@ use std::path::{Component, Path};
 /// binary anywhere and the loop only ever needs `cargo` (dropped in
 /// review round 1).
 pub const ALLOWED_COMMANDS: &[&str] = &[
-    "dart", "flutter", "cargo", "ls", "cat", "grep", "find", "echo", "pwd", "mkdir", "touch",
+    // `gjs`/`node`: the Forge targets GJS (ADR-0047), so it must be able
+    // to run the app it just wrote and that app's tests (#269). They are
+    // allowed to run a FILE and never an argument — `rules.rs`'s
+    // `runtime_evaluates_a_string` refuses every eval and preload flag,
+    // at both doors.
+    "gjs", "node", "dart", "flutter", "cargo", "ls", "cat", "grep", "find", "echo", "pwd", "mkdir",
+    "touch",
 ];
 
 /// What one allowlisted program is allowed to do with its own arguments.
@@ -133,6 +139,18 @@ fn policy_for(program: &str) -> ProgramPolicy {
                 "--jobs",
                 "--message-format",
             ],
+            ..DEFAULT_POLICY
+        },
+        // A runtime runs a file inside the jail. Every flag that would
+        // make it evaluate a string, or preload a module before the
+        // entry point, is refused here AND by `runtime_evaluates_a_string`
+        // — two doors, one answer (#269).
+        "gjs" => ProgramPolicy {
+            denied_flags: &["-c", "--command", "-I", "--include-path"],
+            ..DEFAULT_POLICY
+        },
+        "node" | "nodejs" => ProgramPolicy {
+            denied_flags: &["-e", "--eval", "-p", "--print", "-r", "--require"],
             ..DEFAULT_POLICY
         },
         "dart" => ProgramPolicy {
