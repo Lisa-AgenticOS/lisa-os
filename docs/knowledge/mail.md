@@ -8,9 +8,9 @@ Spec: `docs/PLAN.md` §5.3 (mail as a context source), §5.8 (apps are
 proof of the SDK). Milestone: M6. Read those before changing this
 (CLAUDE.md rule 1).
 
-Three panes — folders, a grouped message list, a reading pane. The
-layout is the one every mail client has converged on; the grouped middle
-pane is the part worth taking seriously.
+Four panes — an account rail, folders, a grouped message list, a reading
+pane. The middle two are the layout every mail client has converged on;
+the rail and the grouping are the parts worth taking seriously.
 
 ## What it is for
 
@@ -103,6 +103,58 @@ folders of whichever account the window is on, because a message id is
 `folder/message` and has nowhere to put an account. Two accounts with a
 folder of the same name are two different folders; asking across both
 would need an id shape that says which.
+
+### The account axis is a rail, not a level of the tree
+
+The sidebar used to be folder-major with accounts nested inside — INBOX
+as an expander holding one row per account. At two accounts that reads
+well. At the reference owner's **eight** it does not: INBOX becomes
+eight rows and Sent eight more, and account-major is worse at forty.
+Spark is folder-major and its sidebar is scrolled past "Recents" before
+you reach the folders you use, so inverting the nesting was never the
+fix (#248).
+
+So the account axis left the tree. A vertical rail of avatars chooses
+the account; the sidebar shows that account's folders, which is about
+five rows. The rail hides itself with one account — a chooser between
+one thing costs a column and answers nothing — and with it goes its
+divider and the settings button at its foot.
+
+Every decision the rail makes is in `lib/rail.js`, with no GTK imports,
+so it runs under `just shell-test` on any host: which accounts, the
+badge total, the initial, the colour, and whether a toggle press should
+switch. The GTK code is the drawing.
+
+Two of those are less obvious than they look:
+
+- **The badge is that account's unread total, and Spam/Junk/Trash do not
+  contribute.** A badge is a call to action; a permanent 912 from junk
+  teaches people to ignore every badge on the rail. Archive is
+  deliberately not exempt — mail you filed unread is still unread.
+- **The colour comes from the Maildir root, not the list position.**
+  Assigning by index means adding an account in the middle recolours
+  every account below it, and this rail is navigated by colour before it
+  is read. The palette is `color.account` in `branding/tokens.json` —
+  identity, never status, which is why it is a separate group from
+  `color.semantic`.
+
+### The sidebar is curated, not a rendering of the disk
+
+A Maildir accumulates folders nobody chose: server-side rules leave
+things like `Snoozed`, `Delegated` and `Boomerang-Outbox` behind. The
+Folders group in Settings is one switch per folder per account, and
+unticking keeps a folder out of the sidebar while it stays on disk and
+keeps syncing (#249).
+
+**An account nobody has curated shows everything.** That default is the
+whole design: a curation feature whose unset state is "show nothing"
+empties every existing sidebar the moment it ships, and the person it
+happens to has no way to know a setting did it. Opt-out per folder,
+never opt-in.
+
+Two floors, because a settings page that can produce an empty sidebar is
+a trap: untick everything and INBOX still shows; if there is no INBOX on
+disk either, everything comes back.
 
 ### An action lands in the account the message came from
 

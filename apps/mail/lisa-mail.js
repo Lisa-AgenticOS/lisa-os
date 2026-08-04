@@ -1939,9 +1939,37 @@ app.connect('activate', () => {
         child: accountRail, vexpand: true,
         hscrollbar_policy: Gtk.PolicyType.NEVER,
     });
+    // Settings at the rail's foot (#248). Added now rather than earlier
+    // because the page had nothing account-shaped in it until the
+    // Folders group landed (#249) — an affordance that opens a page
+    // answering none of the questions the rail raises is worse than no
+    // affordance.
+    const railSettings = new Gtk.Button({
+        icon_name: 'emblem-system-symbolic',
+        tooltip_text: 'Mail Settings',
+        css_classes: ['flat'],
+        margin_top: 4, margin_bottom: 4, margin_start: 4, margin_end: 4,
+    });
+    railSettings.connect('clicked', () => openPreferences(window));
+    const railColumn = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
+    railColumn.append(railScroller);
+    railColumn.append(new Gtk.Separator({orientation: Gtk.Orientation.HORIZONTAL}));
+    railColumn.append(railSettings);
+    // The whole column follows the rail: with one account there is no
+    // rail, and a lone gear floating in an empty strip is furniture
+    // around furniture. Settings stays reachable on Ctrl+, and in the
+    // window menu either way.
+    accountRail.bind_property('visible', railColumn, 'visible',
+        GObject.BindingFlags.SYNC_CREATE);
     const sidebarBody = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL});
-    sidebarBody.append(railScroller);
-    sidebarBody.append(new Gtk.Separator({orientation: Gtk.Orientation.VERTICAL}));
+    sidebarBody.append(railColumn);
+    // The divider belongs to the rail, not to the sidebar: left on its
+    // own with one account it is a line down the left edge dividing
+    // nothing from the folders.
+    const railDivider = new Gtk.Separator({orientation: Gtk.Orientation.VERTICAL});
+    accountRail.bind_property('visible', railDivider, 'visible',
+        GObject.BindingFlags.SYNC_CREATE);
+    sidebarBody.append(railDivider);
     sidebarBody.append(new Gtk.ScrolledWindow({
         child: folderList, vexpand: true, hexpand: true,
     }));
