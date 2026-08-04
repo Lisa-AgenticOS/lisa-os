@@ -242,7 +242,15 @@ jobs:
               note=black
               awk -v m="$M" 'BEGIN{exit !(m>0.01)}' && note=content
               case "$f" in shots/shot-*)
-                if awk -v m="$M" -v g="$G" -v b="$B" 'BEGIN{exit !(m>0.02 && b>g*1.15)}'; then
+                # Lisa's Plymouth theme is #6D45C9: r=109, g=69, b=201.
+                # BOTH blue and red exceed green, and #26's acceptance
+                # says so in as many words — "a genuinely r>g frame".
+                # The test used to check blue alone, which any plain-blue
+                # frame passes; a verdict looser than its own acceptance
+                # is a verdict that can report PRESENT for the wrong
+                # pixels.
+                if awk -v m="$M" -v r="$R" -v g="$G" -v b="$B" \
+                     'BEGIN{exit !(m>0.02 && b>g*1.15 && r>g)}'; then
                   note=violet-splash; echo PRESENT > splash.verdict
                 fi ;;
               esac
@@ -253,6 +261,39 @@ jobs:
           SPLASH=ABSENT
           [ -f splash.verdict ] && SPLASH=$(cat splash.verdict)
           echo "SPLASH: $SPLASH"
+
+          # WHY THIS IS IN THE SUMMARY AND NOT ONLY THE LOG. #26 has been
+          # through two forensics rounds, each of which had to re-derive
+          # the same facts by hand from a 14-day artifact. The remaining
+          # decision — keep `-device virtio-vga` or fall back to plain
+          # `-device VGA` so simpledrm binds — turns on ONE question: did
+          # a real DRM driver bind during the initrd, now that
+          # `virtio_gpu` rides KernelInitrdModules=? The serial log
+          # answers it and nothing was reading the answer out.
+          {
+            echo "## Boot splash (#26)"
+            echo
+            echo "**SPLASH: $SPLASH** — display device: \`virtio-vga\`"
+            echo
+            echo "### Which DRM driver bound, and when"
+            echo '```'
+            grep -iE "virtio_gpu|virtio-gpu|simpledrm|\[drm\]|plymouth" serial.log \
+              | head -40 || echo "(no drm/plymouth lines in serial.log)"
+            echo '```'
+            echo
+            echo "### Early frames"
+            echo '```'
+            head -12 shots/index.txt
+            echo '```'
+            if [ "$SPLASH" = ABSENT ]; then
+              echo
+              echo "> Every early frame is black. If the lines above show"
+              echo "> \`virtio_gpu\` binding, the module is not the problem and"
+              echo "> the next lever is \`-device VGA\` (simpledrm binds its"
+              echo "> framebuffer). If they show no DRM driver at all, the"
+              echo "> initrd module list is still the problem."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload screenshots artifact
         if: always()
         uses: actions/upload-artifact@v7
