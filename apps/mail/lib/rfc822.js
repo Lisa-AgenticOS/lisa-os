@@ -11,6 +11,47 @@
 // an app; what a reading pane and an agent tool need is the headers, one
 // readable body, and the flags — which is small enough to get right and
 // to test.
+//
+// # The input is BYTES, one character per byte
+//
+// Everything here takes a message as `messageText` produces it: a
+// string in which every character is one byte of the file. That is what
+// a message file is, and it is the only form in which `charset` can
+// still be honoured — a UTF-8 decode applied before the message has
+// said what its charset is destroys every part that was not UTF-8
+// (#232). Hand these functions an already-decoded string and the
+// non-ASCII parts of it are, at best, left alone (see `decodeText`).
+
+/// A message file's bytes as the string this module parses: ONE
+/// CHARACTER PER BYTE.
+///
+/// The byte→character step, in the one place, exported so a test can
+/// exercise it. Everything below assumes its input is a byte string,
+/// because a message file is a byte stream: the structure (boundaries,
+/// header names, base64) is ASCII, and the part bodies stay intact
+/// until `charset` says what they are.
+///
+/// The app used to do this with `new TextDecoder('utf-8')`, which is
+/// LOSSY — every byte sequence that is not valid UTF-8 becomes U+FFFD
+/// and the original is gone. That made the Latin-1 branch of
+/// `decodeBytes` unreachable and turned `charset=ISO-8859-1; 8bit`
+/// mail into `P<FFFD>rsh<FFFD>ndetje` (#232; 198 of 25,207 messages on
+/// the reference device). Latin-1 is the only decoding that is a
+/// bijection on bytes, so it is the only one that may be applied
+/// before the message has said what its charset is.
+export function messageText(bytes) {
+    const src = bytes ?? [];
+    let out = '';
+    // In chunks: `String.fromCharCode.apply` on a multi-megabyte array
+    // blows the argument limit on every engine.
+    for (let i = 0; i < src.length; i += 8192) {
+        const chunk = typeof src.subarray === 'function'
+            ? src.subarray(i, i + 8192)
+            : src.slice(i, i + 8192);
+        out += String.fromCharCode.apply(null, chunk);
+    }
+    return out;
+}
 
 /// Split a raw message into headers and body at the first blank line.
 ///
@@ -249,7 +290,11 @@ export function renderableBody(raw) {
     const parts = collectParts(headers, body);
     const plain = parts.find((p) => p.type.startsWith('text/plain') && p.text.trim());
     const html = parts.find((p) => p.type.startsWith('text/html') && p.text.trim());
-    const fallback = parts.find((p) => p.text?.trim());
+    // PROSE ONLY (#221). This was `parts.find((p) => p.text?.trim())`,
+    // which is the same defect `bodyOfPart` carried: a message whose
+    // text parts exist and are empty resolved to whatever file came
+    // next.
+    const fallback = parts.find((p) => isProse(p.type) && p.text?.trim());
     return {
         html: html ? html.text : null,
         text: plain
@@ -268,10 +313,38 @@ export function renderableBody(raw) {
 function collectParts(headers, body) {
     const out = [];
     walkParts(headers, body, [], 0, out);
-    return out.map((leaf) => ({
-        type: leaf.headers.get('content-type').toLowerCase(),
-        text: decodePart(leaf.headers, leaf.body),
-    }));
+    return out.map((leaf) => {
+        const type = leaf.headers.get('content-type').toLowerCase();
+        // A file is not decoded into text at all. Cheaper — a 20 MB PDF
+        // is not turned into a 20 MB string to be discarded — and it
+        // means the binary is not sitting in a list somebody might
+        // later `find` through (#221).
+        return {type, text: isProse(type) ? decodePart(leaf.headers, leaf.body) : ''};
+    });
+}
+
+/// Which decoded parts may stand in as a message's readable body.
+///
+/// **text/\***, and a part that declares no Content-Type at all — RFC
+/// 2045 says that is `text/plain`. A nested **multipart/\*** counts
+/// too, because the recursion has already applied this same rule one
+/// level down: that is how a `multipart/alternative` inside a
+/// `multipart/mixed` still supplies the body of an invoice mail, and
+/// dropping it would have been the regression a naive "text/* only"
+/// filter introduced.
+///
+/// Everything else is a FILE, and the whole of #221 is that the
+/// fallback did not ask. `decoded.find((d) => d.text?.trim())` has no
+/// type filter, so ordinary "here is the document" mail — where the
+/// text parts exist and are EMPTY — resolved to the PDF, the JPEG or
+/// the .docx. Measured on the reference device: 117 of 25,207 messages,
+/// 90 MB of decoded binary, a `read_message` body of 3,145,615
+/// characters starting `PK\x03\x04`, and `%PDF-1.4 %Ǭ… /FlateDecode`
+/// in the message list's preview column. The bytes of a file a stranger
+/// sent are not prose and this module must not hand them out as any.
+function isProse(type) {
+    const t = String(type ?? '').trim();
+    return t === '' || t.startsWith('text/') || t.startsWith('multipart/');
 }
 
 /// How deep the part tree is walked, and how many leaves are kept.
@@ -555,7 +628,40 @@ function decodePart(headers, body) {
     if (enc === 'quoted-printable')
         return decodeBytes(
             quotedPrintableBytes(body.replace(/=\r?\n/g, '')), charsetOf(headers));
-    return body;
+    return decodeText(body, charsetOf(headers));
+}
+
+/// Charset-decode a part that was sent as-is — `7bit`, `8bit`, `binary`
+/// or nothing declared.
+///
+/// This branch used to return the body untouched, which was only ever
+/// right because the app had already run the whole file through a lossy
+/// UTF-8 decode (#232). Now the file arrives as bytes (`messageText`),
+/// so this is where an 8bit part learns what its bytes mean.
+///
+/// Two shapes pass through unchanged, both deliberate:
+///
+///   - **pure ASCII**, which every charset here agrees on, and which is
+///     the overwhelming majority of parts — skipping the decode keeps a
+///     megabyte body a slice rather than a million concatenations;
+///   - **a string containing a character above U+00FF**, which cannot
+///     have come out of a byte. That means the caller handed us
+///     characters rather than bytes, and decoding them a second time is
+///     exactly the corruption this function exists to prevent.
+function decodeText(body, charset) {
+    const text = String(body ?? '');
+    // eslint-disable-next-line no-control-regex
+    if (!/[\u0080-\u00ff]/.test(text) || /[^\u0000-\u00ff]/.test(text))
+        return text;
+    return decodeBytes(bytesOf(text), charset);
+}
+
+/// A byte string back to the bytes it stands for.
+function bytesOf(text) {
+    const out = new Array(text.length);
+    for (let i = 0; i < text.length; i++)
+        out[i] = text.charCodeAt(i) & 0xff;
+    return out;
 }
 
 function bodyOfPart(headers, body, depth = 0) {
@@ -580,19 +686,33 @@ function bodyOfPart(headers, body, depth = 0) {
         const html = decoded.find((d) => d.type.startsWith('text/html'));
         if (html?.text?.trim())
             return htmlToText(html.text);
-        const any = decoded.find((d) => d.text?.trim());
+        // PROSE ONLY (#221) — see `isProse`. Without the filter this
+        // line handed back the first non-empty leaf whatever it was,
+        // and a message whose text parts are present and empty is
+        // ordinary "here is the file" mail.
+        const any = decoded.find((d) => isProse(d.type) && d.text?.trim());
         return any ? any.text : '';
     }
 
-    let text = body;
+    // A LEAF. The same question, and it was not asked here either: a
+    // single-part message that IS a document — no multipart wrapper,
+    // just `Content-Type: application/pdf` — decoded straight into the
+    // reading pane, the preview column and `read_message`.
+    const type = headers.get('content-type').toLowerCase();
+    if (!isProse(type))
+        return '';
+
     const enc = headers.get('content-transfer-encoding').toLowerCase();
+    let text;
     if (enc === 'base64')
         text = decodeBytes(base64Bytes(body), charsetOf(headers));
     else if (enc === 'quoted-printable')
         text = decodeBytes(
             quotedPrintableBytes(body.replace(/=\r?\n/g, '')), charsetOf(headers));
+    else
+        text = decodeText(body, charsetOf(headers));
 
-    if (headers.get('content-type').toLowerCase().startsWith('text/html'))
+    if (type.startsWith('text/html'))
         return htmlToText(text);
     return text;
 }

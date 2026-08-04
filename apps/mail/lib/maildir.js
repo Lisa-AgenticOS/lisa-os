@@ -16,6 +16,90 @@
 // If nothing syncs, it is empty, and the app says that rather than
 // pretending to be offline.
 
+/// Is this directory a Maildir folder?
+///
+/// It holds `cur/` or `new/`. Nothing else is a folder — not a
+/// directory that merely sits where a folder would, which is what the
+/// sidebar used to assume and how two ACCOUNTS ended up drawn as two
+/// empty folders (#222).
+///
+/// `listDir(path) -> [{name, isDir}]` is injected, so the whole layout
+/// question is answerable without a filesystem.
+export function isMaildirFolder(path, listDir) {
+    return listDir(path).some((e) => e.isDir && (e.name === 'cur' || e.name === 'new'));
+}
+
+/// Folders, in the order a person thinks of them rather than
+/// alphabetically: the inbox, then what you sent, then the rest.
+export const FOLDER_ORDER = ['INBOX', 'Sent', 'Drafts', 'Archive', 'Spam', 'Trash'];
+
+/// The folders of one account root.
+///
+/// Every subdirectory used to qualify. On the reference device that put
+/// `flakerimi_at_basecode.al` and `flakerimi_at_gmail.com` in the
+/// sidebar as folders containing nothing, next to an INBOX that was not
+/// theirs.
+export function foldersIn(root, listDir) {
+    const found = listDir(root)
+        .filter((e) => e.isDir && !e.name.startsWith('.'))
+        .filter((e) => isMaildirFolder(`${root}/${e.name}`, listDir))
+        .map((e) => e.name);
+    const known = FOLDER_ORDER.filter((f) => found.includes(f));
+    const rest = found.filter((f) => !FOLDER_ORDER.includes(f)).sort();
+    return [...known, ...rest];
+}
+
+/// The accounts a Maildir root holds, and the subtree each one owns.
+///
+/// Two layouts exist: `lisa mail setup` writes a flat tree for one
+/// account (`~/Mail/INBOX`) and a per-account tree for several
+/// (`~/Mail/you_at_example.com/INBOX`). Detection is by structure, not
+/// by config — a directory holding `cur/` is a folder, and a directory
+/// holding folders is an account.
+///
+/// **BOTH AT ONCE IS THE REAL DEVICE STATE, not a corner case** (#222).
+/// This returned on the first flat folder it saw, so a root containing
+/// an old flat tree *and* two account subtrees answered
+/// `[{name:'Mail', root:'~/Mail'}]`: both real accounts were invisible,
+/// 24,456 messages were unreachable, and the 8,407 on screen were a
+/// leftover tree whose Message-IDs are duplicates of the live one.
+/// `search_mail` answered out of it and Sent/Drafts were written into
+/// it.
+///
+/// Order is deliberate: **named accounts first**, because the store
+/// opens on the first one and live mail is what a person means. The
+/// loose folders at the root come last, as an account named plainly,
+/// and NOTHING IS MOVED OR DELETED — an app that decides your mail is
+/// stale and tidies it away is not a mail client. Deciding what an
+/// orphan tree is for is the owner's call; showing it honestly is ours.
+export function discoverAccounts(root, listDir, {label = null} = {}) {
+    const dirs = listDir(root).filter((e) => e.isDir && !e.name.startsWith('.'));
+    const nested = [];
+    let flat = false;
+    for (const d of dirs) {
+        const path = `${root}/${d.name}`;
+        // A folder belongs to the root itself…
+        if (isMaildirFolder(path, listDir)) {
+            flat = true;
+            continue;
+        }
+        // …and a directory of folders is somebody's account.
+        if (listDir(path).some((e) => e.isDir && isMaildirFolder(`${path}/${e.name}`, listDir)))
+            nested.push({name: d.name.replace('_at_', '@'), root: path});
+    }
+    if (!flat)
+        return nested;
+    // The sync config names the account when the flat tree is all there
+    // is. When it is not, that name belongs to one of the subtrees, and
+    // two accounts with one name is worse than the bug being fixed:
+    // `use(name)` takes the first match, so the orphan would keep being
+    // served under the live account's name.
+    let name = nested.length === 0 ? (label || 'Mail') : 'Mail';
+    while (nested.some((a) => a.name === name))
+        name = `${name} (root)`;
+    return [...nested, {name, root}];
+}
+
 /// Flags live in the filename after `:2,` — `S`een, `R`eplied,
 /// `F`lagged, `T`rashed, `D`raft, `P`assed. A message in `new/` has no
 /// flag section at all and is unread by definition.

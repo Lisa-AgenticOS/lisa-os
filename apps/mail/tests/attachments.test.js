@@ -17,7 +17,9 @@ import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js'
 import {
     attachmentBytes, attachments, listedAttachments, safeFilename,
 } from '../lib/attachments.js';
-import {decodeTransfer, decodedSize, headerParam, leafParts} from '../lib/rfc822.js';
+import {
+    MAX_PART_BYTES, decodeTransfer, decodedSize, headerParam, leafParts, messageText,
+} from '../lib/rfc822.js';
 
 /// Bytes as one char per byte, so a test can assert on content without
 /// depending on TextDecoder (the macOS jsc runner has no Web APIs).
@@ -277,6 +279,64 @@ test('an enormous part is bounded rather than allowed to eat the window', () => 
     const bytes = decodeTransfer(huge, 'base64', {maxBytes: 1024});
     assertEq(bytes.length, 1024);
     assertEq(latin1(bytes).slice(0, 6), 'AAAAAA');
+});
+
+test('an attachment past the bound is refused, never silently truncated (#238)', () => {
+    // `decodedSize` is uncapped and `decodeTransfer` stops at the
+    // bound, and NOTHING compared them: the row said 71,303,169 bytes
+    // and Save As wrote 67,108,864 of them, with no error anywhere.
+    // Silently writing three quarters of somebody's file is the worst
+    // failure in this app — the file opens far enough to look like
+    // their problem.
+    const pdf = attachments(INVOICE)[0];
+    assertEq(pdf.size, 396);
+    const short = attachmentBytes(INVOICE, pdf.path, {maxBytes: 100});
+    assert(short === null,
+        `a bound it cannot meet must be a refusal, got ${short?.length} bytes of a PDF`);
+    // Exactly the size it declares is not "past" anything.
+    assertEq(attachmentBytes(INVOICE, pdf.path, {maxBytes: 396}).length, 396);
+    assertEq(attachmentBytes(INVOICE, pdf.path).length, 396);
+});
+
+test('the DEFAULT bound is the one a real attachment crosses (#238)', () => {
+    // The old test passed `maxBytes` explicitly, so the bound that
+    // actually ships was never crossed by anything. This part is one
+    // byte over it, sent as-is — the shape a phone's video attachment
+    // arrives in.
+    // Concatenated rather than joined, and built once: this fixture is
+    // 64 MiB and a suite that copies it four times is a suite nobody
+    // runs.
+    const raw = 'Content-Type: video/mp4; name="clip.mp4"\r\n' +
+        'Content-Transfer-Encoding: binary\r\n' +
+        'Content-Disposition: attachment; filename="clip.mp4"\r\n\r\n' +
+        'x'.repeat(MAX_PART_BYTES + 1);
+    const [att] = attachments(raw);
+    assertEq(att.size, MAX_PART_BYTES + 1, 'the row shows the whole file');
+    const bytes = attachmentBytes(raw, att.path);
+    assert(bytes === null, `saving must refuse rather than write ${bytes?.length} of ${att.size}`);
+});
+
+test('the size in the row is the number of bytes that get written', () => {
+    // The invariant behind #238, asserted over every part of a real
+    // message rather than one of them: what is listed is what is saved,
+    // or nothing is.
+    for (const att of attachments(INVOICE)) {
+        const bytes = attachmentBytes(INVOICE, att.path);
+        assertEq(bytes.length, att.size, `${att.filename} lied about its size`);
+    }
+    // …and the count is BYTES, not characters. `ë` is two bytes on the
+    // wire, and every earlier fixture was ASCII, where the two numbers
+    // coincide and the assertion proved nothing.
+    const raw = messageText(new Uint8Array([
+        ...'Content-Type: text/plain; charset=utf-8; name="n.txt"\r\n'.split('')
+            .map((c) => c.charCodeAt(0)),
+        ...'Content-Disposition: attachment; filename="n.txt"\r\n\r\n'.split('')
+            .map((c) => c.charCodeAt(0)),
+        0x50, 0xc3, 0xab, 0x72, // P ë r
+    ]));
+    const [note] = attachments(raw);
+    assertEq(note.size, 4, 'four bytes, three characters');
+    assertEq(attachmentBytes(raw, note.path).length, 4);
 });
 
 test('a malformed message is parsed, not thrown at', () => {

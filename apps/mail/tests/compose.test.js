@@ -5,6 +5,8 @@ import {
     buildMessage, encodeHeaderValue, forwardFields, forwardSubject,
     messageIdFor, quoteBody, referencesFor, replyFields, replySubject,
 } from '../lib/compose.js';
+import {messageView} from '../lib/message.js';
+import {messageText} from '../lib/rfc822.js';
 
 const base = {
     from: 'me@example.test', to: 'you@example.test',
@@ -74,6 +76,51 @@ test('a long body is wrapped — an over-long line is an SMTP rejection', () => 
     const body = msg.split('\r\n\r\n')[1];
     for (const line of body.split('\r\n'))
         assert(line.length <= 76, `line too long: ${line.length}`);
+});
+
+// A message as it is on disk — the ONLY honest fixture for a reply.
+//
+// #223 is what a hand-built fixture hides. `replyFields` reads
+// `message.messageId` and `message.references`; nothing in this app
+// ever set either, `headers.get('message-id')` was called nowhere, and
+// `?? ''` swallowed the absence — so every reply this app has ever
+// composed had no In-Reply-To and no References and threaded nowhere.
+// The test below passed anyway, because it supplied both fields by
+// hand. That is exactly the shape of #210, and the reason this suite
+// now starts from bytes and runs the app's own producer over them.
+const PARENT = messageText(new Uint8Array([...[
+    'From: "Ana Doe" <ana@example.test>\r\n',
+    'To: me@example.test\r\n',
+    'Subject: Invoice\r\n',
+    'Date: Fri, 1 Aug 2026 09:00:00 +0200\r\n',
+    'Message-ID: <orig@x>\r\n',
+    'References: <older@x>\r\n',
+    'Content-Type: text/plain; charset=utf-8\r\n',
+    '\r\n',
+    'the total is 10\r\n',
+].join('')].map((s) => [...s].map((c) => c.charCodeAt(0))).flat()));
+
+test('a reply threads, because the producer supplies the thread (#223)', () => {
+    const message = messageView(PARENT, {folder: 'INBOX', unique: '1.a'});
+    assertEq(message.messageId, '<orig@x>', 'the app reads Message-ID at all');
+    const f = replyFields(message, 'me@example.test');
+    assertEq(f.inReplyTo, '<orig@x>');
+    const msg = buildMessage({...base, ...f, from: 'me@example.test'});
+    assert(msg.includes('In-Reply-To: <orig@x>'), msg.split('\r\n\r\n')[0]);
+    assert(msg.includes('References: <older@x> <orig@x>'), msg.split('\r\n\r\n')[0]);
+    // …and the reply quotes what the message actually said, which needs
+    // the same object: a list row carries a preview and no body.
+    assert(f.body.includes('> the total is 10'), f.body);
+});
+
+test('a message with only In-Reply-To still starts a References chain', () => {
+    // Plenty of mailers send one and not the other. RFC 5322 §3.6.4:
+    // the parent's In-Reply-To is the chain when there is no References.
+    const raw = messageText(new Uint8Array(
+        [...'Message-ID: <b@x>\r\nIn-Reply-To: <a@x>\r\n\r\nhi\r\n'].map((c) => c.charCodeAt(0))));
+    const f = replyFields(messageView(raw), 'me@example.test');
+    assertEq(f.inReplyTo, '<b@x>');
+    assertEq(referencesFor(f.inReplyTo, f.references), '<a@x> <b@x>');
 });
 
 test('reply prefills the sender, the subject and the thread', () => {

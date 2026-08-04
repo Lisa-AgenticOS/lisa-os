@@ -22,6 +22,34 @@
 
 import {flagChange, moveTo} from './actions.js';
 
+/// Folders the READ tools do not serve (#237, and #185 before it).
+///
+/// The same list `lisa mail index` refuses (`cli/lisa/src/mail.rs`,
+/// `UNINDEXED_FOLDERS`), for the same reason it gave: Spam is a corpus
+/// that exists to be hostile, and knowingly feeding it to a model is
+/// volunteering; Trash is what the person already decided to forget.
+/// The Agent Bus walked every folder the store had, so the corpus
+/// contextd declines arrived through a second door with no index in
+/// between.
+///
+/// **This is not a restriction on the person.** A human opening their
+/// own Spam folder in the window is their business — ADR-0029's second
+/// test, guardrails sit between the model and the machine and never
+/// between somebody and their own mail. The GUI still shows every
+/// folder; the tools do not.
+const UNSERVED_FOLDERS = ['spam', 'junk', 'trash'];
+
+/// May the read tools answer out of this folder?
+///
+/// Any path component decides it, case-insensitively, because a synced
+/// account spells it `[Gmail]/Spam` and a Maildir++ one spells it
+/// `.Junk`.
+export function agentMayRead(folder) {
+    return !String(folder ?? '')
+        .split(/[/\\]/)
+        .some((part) => UNSERVED_FOLDERS.includes(part.replace(/^\.+/, '').toLowerCase()));
+}
+
 /// `"INBOX/1785515977.25479_1.lisa_U_8401"` → `{folder, unique}`.
 ///
 /// Same shape `search_mail` emits and `read_message` accepts, so an

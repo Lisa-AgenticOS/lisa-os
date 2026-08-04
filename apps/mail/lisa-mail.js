@@ -38,21 +38,21 @@ import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
 import {
-    decodeWords, parseAddress, parseHeaders, readableBody, renderableBody, splitMessage,
+    messageText, parseAddress, parseHeaders, readableBody, splitMessage,
 } from './lib/rfc822.js';
 import {
+    FOLDER_ORDER, discoverAccounts as accountsUnder, foldersIn, isMaildirFolder,
     listFolder, messageId, messagePath, parseFilename, previewOf, uniqueMatchesId,
 } from './lib/maildir.js';
+import {decodeSubject, messageView} from './lib/message.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
 import {actionsFor, flagChange, moveTo} from './lib/actions.js';
-import {parseMessageId, planFor} from './lib/agent-actions.js';
+import {agentMayRead, parseMessageId, planFor} from './lib/agent-actions.js';
 import {buildMessage, forwardFields, messageIdFor, replyFields} from './lib/compose.js';
 import {msmtpArgv, sendOutcome, sentFilename} from './lib/send.js';
 import {McpServer} from './lib/mcp.js';
 import {linkAction} from './lib/links.js';
-import {
-    attachmentBytes as partBytes, attachments, listedAttachments, safeFilename,
-} from './lib/attachments.js';
+import {attachmentBytes as partBytes, safeFilename} from './lib/attachments.js';
 
 // Preview is a sibling app in the same tree — `lisa-app` resolves
 // `mail/lisa-mail.js` and `preview/lisa-preview.js` under one base, and
@@ -95,6 +95,27 @@ try {
     // No WebKit here. readerHtml stays null and the TextView is used.
 }
 
+/// The Unix-signal half of GLib, which moved.
+///
+/// `GLib.unix_signal_add` still works and prints a deprecation warning
+/// on every current gjs ("has been moved to a separate platform-
+/// specific library"), and `GLibUnix` does not exist on older ones. So
+/// ask, the same way WebKit is asked for above, and keep the warning
+/// out of the log of an app whose job includes being diagnosable.
+let GLibUnix = null;
+try {
+    GLibUnix = imports.gi.GLibUnix;
+} catch {
+    // Older GLib: the function is still on GLib itself.
+}
+
+/// Run `handler` when this process is sent `signal`, on the main loop.
+function onUnixSignal(signal, handler) {
+    if (GLibUnix?.signal_add)
+        return GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal, handler);
+    return GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal, handler);
+}
+
 const APP_ID = 'app.lisaos.Mail';
 
 function configPath() {
@@ -134,10 +155,6 @@ function maildirRoot(config = null) {
     });
 }
 
-/// Folders, in the order a person thinks of them rather than
-/// alphabetically: the inbox, then what you sent, then the rest.
-const FOLDER_ORDER = ['INBOX', 'Sent', 'Drafts', 'Archive', 'Spam', 'Trash'];
-
 function listDir(path) {
     const out = [];
     let dir;
@@ -167,22 +184,32 @@ const PAGE = 50;
 /// from "read every byte on disk" into "read the front of each file".
 const SEARCH_HEAD = 16384;
 
-/// Read at most `max` bytes from a file.
+/// Read at most `max` bytes from the front of a MESSAGE file.
 ///
 /// Whole-file reads are what made a real mailbox unusable: an HTML
 /// newsletter with an inline image is megabytes, and the list needs its
 /// first line.
+///
+/// Decoded with `messageText`, not `TextDecoder` — see `readMessageFile`
+/// below. A bounded read makes the UTF-8 decoder worse, not better: the
+/// bound lands mid-character on a message that is fine, and every byte
+/// after it becomes U+FFFD.
 function readHead(path, max) {
     try {
         const stream = Gio.File.new_for_path(path).read(null);
         const bytes = stream.read_bytes(max, null);
         stream.close(null);
-        return new TextDecoder('utf-8').decode(bytes.get_data() ?? new Uint8Array());
+        return messageText(bytes.get_data() ?? new Uint8Array());
     } catch {
         return '';
     }
 }
 
+/// Read one of OUR OWN files — the config, the msmtprc. UTF-8, because
+/// we wrote them and they are text.
+///
+/// Never a message: a message is a byte stream and this decode is lossy
+/// (#232). `readMessageFile` is the one below.
 function readFile(path) {
     try {
         const [ok, bytes] = GLib.file_get_contents(path);
@@ -201,25 +228,31 @@ function readFile(path) {
 /// while it tried.
 const MAX_MESSAGE_BYTES = 128 * 1024 * 1024;
 
-/// A file as one character per byte.
+/// A message file, as one character per byte.
 ///
-/// Latin-1 is the only decoding that is a bijection on bytes, which is
-/// what an attachment needs: the parser only ever looks at ASCII
-/// (boundaries, headers, base64), and the part bodies come back out
-/// with every byte intact. `null` when the file cannot be read or is
-/// larger than the bound above — the caller says so rather than
-/// pretending the attachment was empty.
-function readFileAsBytes(path) {
+/// THE ONLY WAY THIS APP READS MAIL, and it used not to be: everything
+/// except the attachment path went through `readFile`'s
+/// `TextDecoder('utf-8')`, which replaces every byte sequence that is
+/// not valid UTF-8 with U+FFFD. That decode happens BEFORE the message
+/// has said what its charset is, so `charset=ISO-8859-1; 8bit` mail was
+/// destroyed on the way in and `decodeBytes`' Latin-1 branch could
+/// never run: `Përshëndetje` arrived as `P<FFFD>rsh<FFFD>ndetje`, on
+/// 198 of the reference device's 25,207 messages (#232).
+///
+/// Latin-1 is the only decoding that is a bijection on bytes, so it is
+/// the only one that may be applied before the charset is known — the
+/// parser looks at ASCII (boundaries, header names, base64) and the
+/// part bodies come back out with every byte intact, for `rfc822.js` to
+/// decode once it knows what they are.
+///
+/// `null` when the file cannot be read or is larger than the bound
+/// above — the caller says so rather than pretending it was empty.
+function readMessageFile(path) {
     try {
         const [ok, bytes] = GLib.file_get_contents(path);
         if (!ok || bytes.length > MAX_MESSAGE_BYTES)
             return null;
-        let out = '';
-        // In chunks: `String.fromCharCode.apply` on a multi-megabyte
-        // array blows the argument limit on every engine.
-        for (let i = 0; i < bytes.length; i += 8192)
-            out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-        return out;
+        return messageText(bytes);
     } catch {
         return null;
     }
@@ -227,31 +260,12 @@ function readFileAsBytes(path) {
 
 /// The accounts this Maildir holds, and where each one's folders are.
 ///
-/// Two layouts exist and both must work. `lisa mail setup` writes a flat
-/// tree for one account (`~/Mail/INBOX`) and a per-account tree for
-/// several (`~/Mail/you_at_example.com/INBOX`). The flat one is what is
-/// already synced on this machine, so it is not a legacy shape to
-/// tolerate — it is the common case, and silently relocating somebody's
-/// Maildir would not be a migration, it would be a disappearance.
-///
-/// Detection is by structure, not by config: a directory holding
-/// `cur/` is a folder, and a directory holding folders is an account.
+/// The rules live in `lib/maildir.js` where they are testable against
+/// the tree the reference device actually has — a flat set of folders
+/// AND two per-account subtrees in the same root, which is the state
+/// that made both real accounts invisible (#222). This is the reader.
 function discoverAccounts(root) {
-    const dirs = listDir(root).filter((e) => e.isDir && !e.name.startsWith('.'));
-    const isFolder = (path) => listDir(path).some((e) => e.isDir && (e.name === 'cur' || e.name === 'new'));
-
-    // Flat: the root itself contains folders.
-    if (dirs.some((d) => isFolder(`${root}/${d.name}`)))
-        return [{name: accountLabel() ?? 'Mail', root}];
-
-    // Nested: each subdirectory that contains folders is an account.
-    const out = [];
-    for (const d of dirs) {
-        const path = `${root}/${d.name}`;
-        if (listDir(path).some((e) => e.isDir && isFolder(`${path}/${e.name}`)))
-            out.push({name: d.name.replace('_at_', '@'), root: path});
-    }
-    return out;
+    return accountsUnder(root, listDir, {label: accountLabel()});
 }
 
 /// The mail store: a Maildir on disk, read on demand.
@@ -280,10 +294,14 @@ class Store {
     }
 
     /// Folder names across every account, for the sidebar's outer level.
+    ///
+    /// Real folders only — a directory that holds no `cur/` is not one,
+    /// and listing every subdirectory is how an ACCOUNT was drawn as an
+    /// empty folder (#222).
     allFolders() {
         const seen = [];
         for (const a of this.accounts) {
-            for (const f of listDir(a.root).filter((e) => e.isDir).map((e) => e.name)) {
+            for (const f of foldersIn(a.root, listDir)) {
                 if (!seen.includes(f))
                     seen.push(f);
             }
@@ -304,12 +322,7 @@ class Store {
     }
 
     folders() {
-        const found = listDir(this.root)
-            .filter((e) => e.isDir && !e.name.startsWith('.'))
-            .map((e) => e.name);
-        const known = FOLDER_ORDER.filter((f) => found.includes(f));
-        const rest = found.filter((f) => !FOLDER_ORDER.includes(f)).sort();
-        return [...known, ...rest];
+        return foldersIn(this.root, listDir);
     }
 
     /// The cheap half: what the filenames alone can tell us.
@@ -338,8 +351,8 @@ class Store {
     /// message for real still reads all of it — see `message()`.
     summary(folder, m, head = 0) {
         const path = messagePath(this.root, folder, m.dir, m.filename) ?? '';
-        const raw = head > 0 ? readHead(path, head) : readFile(path);
-        const {headerText, body} = splitMessage(raw);
+        const raw = (head > 0 ? readHead(path, head) : readMessageFile(path)) ?? '';
+        const {headerText} = splitMessage(raw);
         const headers = parseHeaders(headerText);
         const from = parseAddress(headers.get('from'));
         const full = {
@@ -347,7 +360,12 @@ class Store {
             from,
             subject: decodeSubject(headers.get('subject')),
             date: headers.get('date'),
-            preview: previewOf(bodyOf(raw, body)),
+            // The readable body and nothing else. This used to fall
+            // back to the RAW body when the readable one came out
+            // empty, which is how `%PDF-1.4 %Ǭ… /FlateDecode` ended up
+            // in the preview column of the message list (#221). A
+            // message with nothing to say in the list says nothing.
+            preview: previewOf(readableBody(raw)),
         };
         return {...full, group: classify(full, headers)};
     }
@@ -418,15 +436,22 @@ class Store {
     }
 
     /// One message, fully parsed.
+    ///
+    /// `messageView` (lib/message.js) does the parsing, so the object
+    /// the reading pane, the tools and Reply all share has ONE producer
+    /// and a test can run it over the bytes of a message file. It used
+    /// to be built here, where nothing can reach it — which is how
+    /// every reply went out with no In-Reply-To for as long as replying
+    /// has existed (#223).
     message(folder, unique) {
         const found = this.locate(folder, unique);
         if (!found)
             return null;
-        const raw = readFile(found.path);
-        const {headerText, body} = splitMessage(raw);
-        const headers = parseHeaders(headerText);
+        const raw = readMessageFile(found.path);
+        if (raw === null)
+            return null;
         const meta = parseFilename(found.name, found.dir);
-        return {
+        return messageView(raw, {
             folder,
             id: `${folder}/${unique}`,
             unique,
@@ -437,21 +462,7 @@ class Store {
             // what read_message could find (#167).
             filename: found.name, dir: found.dir,
             seen: meta.seen, flagged: meta.flagged,
-            from: parseAddress(headers.get('from')),
-            to: headers.get('to'),
-            subject: decodeSubject(headers.get('subject')),
-            date: headers.get('date'),
-            body: bodyOf(raw, body),
-            // The HTML as sent, for the window. Tools never see
-            // this: a model is handed `body`, which is prose.
-            html: renderableBody(raw).html,
-            // What is attached: metadata only, and only the parts worth
-            // showing (lib/attachments.js). The BYTES are fetched on
-            // demand by `attachmentBytes` — putting a 4 MB PDF in every
-            // parsed message would undo the reason `summary()` reads
-            // only the head of a file.
-            attachments: listedAttachments(attachments(raw)),
-        };
+        });
     }
 
     /// The bytes of one attachment, read from the message file on
@@ -462,32 +473,25 @@ class Store {
     /// turns every invalid sequence into U+FFFD. base64 survives that
     /// (it is ASCII), an `8bit` or `binary` part does not — it would
     /// save a corrupt file that still opens far enough to look like the
-    /// app's fault.
+    /// app's fault. (Every read is that way round now — see
+    /// `readMessageFile` — but this one is where it started.)
+    ///
+    /// `maxBytes` is the size of the message file itself, not the
+    /// 64 MiB part bound: this is a save or an open a PERSON asked for,
+    /// the whole file is already in memory, and a decoded part cannot
+    /// exceed the file it came out of (base64 and quoted-printable both
+    /// shrink). `attachmentBytes` returns null rather than a truncated
+    /// buffer when even that is not enough (#238) — the caller says so
+    /// out loud instead of writing three quarters of somebody's file.
     attachmentBytes(folder, unique, path) {
         const found = this.locate(folder, unique);
         if (!found)
             return null;
-        const raw = readFileAsBytes(found.path);
+        const raw = readMessageFile(found.path);
         if (raw === null)
             return null;
-        return partBytes(raw, path);
+        return partBytes(raw, path, {maxBytes: MAX_MESSAGE_BYTES});
     }
-}
-
-function bodyOf(raw, fallback) {
-    const text = readableBody(raw);
-    return text.trim() ? text : fallback;
-}
-
-/// A subject, decoded and never empty.
-///
-/// Written first as `parseAddress(value).address`, which produced the
-/// right string for the wrong reason — `parseAddress` decodes on the
-/// way in and returns the whole text when there is no `<…>` — and would
-/// have mangled any subject containing angle brackets. A subject is not
-/// an address.
-function decodeSubject(value) {
-    return decodeWords(value).trim() || '(no subject)';
 }
 
 let store = null;
@@ -514,9 +518,12 @@ let readerHtml = null;
 let allowRemote = true;
 let remoteBanner = null;
 let currentAccountName = null;
-/// The message currently open, so the banner can re-render it.
-let openMessageFull = null;
 let readerActions = null;
+/// The message on screen, FULLY PARSED — the object `store.message`
+/// returned, not the list row that was clicked. The toolbar, the
+/// attachment reader, the composer and the "show images" banner all act
+/// on this one, because a list row has no body, no Message-ID and no
+/// References (#223).
 let openMessage = null;
 /// The window, for the file dialogs the attachment bar puts up.
 let mainWindow = null;
@@ -746,10 +753,27 @@ function hasRemoteContent(html) {
         /url\(\s*["']?https?:/i.test(String(html ?? ''));
 }
 
+/// What the reading pane shows when a message has no text at all.
+///
+/// A message whose only content is a document now has an empty body
+/// rather than the document's bytes (#221), and an empty pane under a
+/// subject reads as a broken app — that is exactly how #210 was
+/// reported. So the pane says which it is, and points at the row above
+/// it that has the file in it.
+function emptyBodyNotice(full) {
+    const count = full.attachments?.length ?? 0;
+    if (count === 0)
+        return 'This message has no text.';
+    return count === 1
+        ? 'This message has no text — what it carries is the attachment above.'
+        : `This message has no text — what it carries is the ${count} attachments above.`;
+}
+
 function renderBody(full) {
     const rich = readerHtml && full.html;
     if (!rich) {
-        readerBody.buffer.set_text(full.body ?? '', -1);
+        const body = String(full.body ?? '');
+        readerBody.buffer.set_text(body.trim() ? body : emptyBodyNotice(full), -1);
         readerStack?.set_visible_child_name('text');
         return;
     }
@@ -909,9 +933,28 @@ function attachmentBytesOf(att) {
         showNotice('No message is open.');
         return null;
     }
+    // REFUSED OUT LOUD, rather than saved short (#238). The row's size
+    // and the bytes that get written are now the same number or there
+    // are no bytes: a file that saves at three quarters of its length
+    // is worse than one that does not save, because it opens.
+    if (att.size > MAX_MESSAGE_BYTES) {
+        showNotice(`That attachment is ${GLib.format_size(att.size)}, larger than the ` +
+            `${GLib.format_size(MAX_MESSAGE_BYTES)} this app will unpack. ` +
+            'Nothing was written — a partial file would be worse.');
+        return null;
+    }
     const bytes = store.attachmentBytes(openMessage.folder, openMessage.unique, att.path);
     if (!bytes || bytes.length === 0) {
         showNotice('That attachment could not be read from the message file.');
+        return null;
+    }
+    if (bytes.length !== att.size) {
+        // Cannot happen — `attachmentBytes` refuses rather than
+        // truncates — and is checked anyway, because the failure it
+        // guards against is silent by nature and this is the last place
+        // that can see both numbers.
+        showNotice(`That attachment did not come back whole (${bytes.length} of ` +
+            `${att.size} bytes), so nothing was written.`);
         return null;
     }
     return bytes;
@@ -1238,8 +1281,6 @@ function applyMove(fromFolder, change, toFolder) {
 }
 
 function showMessage(msg) {
-    openMessage = msg;
-    buildToolbar(msg);
     // `?? msg` used to be silent, and that silence WAS the bug (#210):
     // a list row carries subject and sender but no body, so a failed
     // lookup filled the header and left the pane empty — indis-
@@ -1255,6 +1296,12 @@ function showMessage(msg) {
               `match it.`,
         html: null,
     };
+    // THE TOOLBAR ACTS ON THE FULL MESSAGE, not on the list row. A row
+    // carries a preview and no body, no Message-ID and no References —
+    // so Reply quoted nothing and threaded nowhere (#223). Same object
+    // for the buttons, the attachment reader and the composer.
+    openMessage = full;
+    buildToolbar(full);
     readerTitle.set_label(full.subject ?? '');
     // Both halves of the sender, always: a display name is
     // attacker-controlled, and `"security@yourbank.com" <evil@x.test>`
@@ -1265,7 +1312,6 @@ function showMessage(msg) {
     // Consent is per message: opening a different one must not inherit
     // the last one's permission to phone home.
     allowRemote = loadConfig().showRemoteImages !== false;
-    openMessageFull = full;
     buildAttachments(full);
     renderBody(full);
 }
@@ -1298,8 +1344,11 @@ function reloadFolders() {
     const multi = accounts.length > 1;
 
     for (const folder of store.allFolders()) {
+        // A folder is present in an account when that account really
+        // has one — `cur/` or `new/`, not merely a directory of that
+        // name (#222).
         const present = accounts.filter(
-            (a) => listDir(`${a.root}/${folder}`).some((e) => e.isDir));
+            (a) => isMaildirFolder(`${a.root}/${folder}`, listDir));
         if (present.length === 0)
             continue;
 
@@ -1545,8 +1594,8 @@ app.connect('activate', () => {
     remoteBanner.connect('button-clicked', () => {
         allowRemote = true;
         remoteBanner.set_revealed(false);
-        if (openMessageFull)
-            renderBody(openMessageFull);
+        if (openMessage)
+            renderBody(openMessage);
     });
     readerBox.append(remoteBanner);
 
@@ -1599,13 +1648,48 @@ app.connect('activate', () => {
         writeAction: (tool, args) => writeAction(tool, args),
     });
     mcp.start();
-    window.connect('close-request', () => {
+
+    /// Give the socket back, once, whatever ended the process.
+    ///
+    /// This used to hang off `close-request` alone, so every exit that
+    /// is not a person clicking the window's X — SIGTERM from systemd,
+    /// a logout that kills the session's units, `pkill` — left the
+    /// socket file behind. mcp-bus defers socket activation and reads
+    /// PRESENCE AS AVAILABILITY, so a dead app went on advertising
+    /// `search_mail` and `read_message` and agentd got ECONNREFUSED
+    /// instead of "Mail is not running" (#219, filed against Surfer;
+    /// the same shape was here).
+    ///
+    /// Idempotent, because more than one of these paths can fire: a
+    /// close-request that quits the app reaches `shutdown` too.
+    let released = false;
+    const release = () => {
+        if (released)
+            return;
+        released = true;
         mcp.stop();
-        // The temp copies of attachments go with the window. Somebody
-        // else's invoice should not outlive the app that unpacked it.
+        // The temp copies of attachments go with it. Somebody else's
+        // invoice should not outlive the app that unpacked it.
         clearAttachmentFiles();
+    };
+    window.connect('close-request', () => {
+        release();
         return false;
     });
+    // `shutdown` covers every clean exit — `app.quit()`, the last
+    // window closing, a Gio.Application decision this file never makes.
+    app.connect('shutdown', () => release());
+    // …and the signals that end a process without one. The handler runs
+    // on the main loop, so it may do real work; `quit()` then unwinds
+    // the rest of the app the ordinary way. SOURCE_REMOVE because a
+    // second SIGTERM should kill us rather than queue another quit.
+    for (const signal of [1 /* SIGHUP */, 2 /* SIGINT */, 15 /* SIGTERM */]) {
+        onUnixSignal(signal, () => {
+            release();
+            app.quit();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
 
     window.present();
 });
@@ -1776,9 +1860,11 @@ function openPreferences(parent) {
         }
         // Take effect on what is on screen now, not on next launch.
         allowRemote = config.showRemoteImages;
-        // openMessageFull, not an invented `currentMessage` — line 1069
-        // (the “show images” banner) already re-renders through it.
-        if (openMessageFull) renderBody(openMessageFull);
+        // `openMessage`, not an invented `currentMessage` — the “show
+        // images” banner already re-renders through it. There used to
+        // be a second global holding the same message under a different
+        // name, which is a second place to get stale.
+        if (openMessage) renderBody(openMessage);
     });
     reading.add(remoteRow);
     page.add(reading);
@@ -1869,9 +1955,18 @@ function openPreferences(parent) {
 /// Returns summaries, never whole bodies: a search that dumped every
 /// matching message into the model's context would spend the window on
 /// the first query and hand over far more than was asked for.
+///
+/// Spam, Junk and Trash are not searched (#237). That is contextd's
+/// decision from #185 — "a corpus that exists to be hostile", and mail
+/// the person already chose to forget — and the Agent Bus was reaching
+/// the same corpus through a second door with no index in between. The
+/// WINDOW still shows them: a person opening their own Spam folder is
+/// their business (ADR-0029).
 function searchMail({query = '', folder = '', limit = 20} = {}) {
     const q = String(query).toLowerCase().trim();
-    const folders = folder ? [String(folder)] : store.folders();
+    if (folder && !agentMayRead(folder))
+        return {messages: [], skipped: `${folder} is not served to agents`};
+    const folders = (folder ? [String(folder)] : store.folders()).filter(agentMayRead);
     const out = [];
     for (const f of folders) {
         // The index first, then a bounded read per candidate. Calling
@@ -1902,6 +1997,12 @@ function readMessage({id = ''} = {}) {
     const unique = rest.join('/');
     if (!folder || !unique)
         return {error: 'id must be "<folder>/<message>" as returned by search_mail'};
+    // The same folders `search_mail` will not list (#237). Asked here
+    // too, because an id is a string a model can construct: refusing to
+    // list Spam while answering a hand-built `Spam/…` id would be a
+    // guardrail with a door in it.
+    if (!agentMayRead(folder))
+        return {error: `${folder} is not served to agents — open it in Mail instead`};
     const msg = store.message(folder, unique);
     if (!msg)
         return {error: `no message ${id}`};

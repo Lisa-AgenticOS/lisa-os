@@ -1,6 +1,6 @@
 // Write-tier tools resolve to the SAME plans the buttons do (#167).
 import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
-import {parseMessageId, planFor} from '../lib/agent-actions.js';
+import {agentMayRead, parseMessageId, planFor} from '../lib/agent-actions.js';
 
 const msg = (over = {}) => ({
     folder: 'INBOX', dir: 'cur', filename: '123.abc:2,S',
@@ -63,6 +63,25 @@ test('an unknown tool name errors', () => {
 
 test('a missing message errors rather than throwing', () => {
     assert(planFor('archive_message', null, {}, FOLDERS).error);
+});
+
+test('the folders contextd refuses to index are not served to an agent either (#237)', () => {
+    // #185 decided Spam is "a corpus that exists to be hostile" and
+    // Trash is what the user already chose to forget, so `lisa mail
+    // index` skips both (cli/lisa/src/mail.rs, UNINDEXED_FOLDERS). The
+    // Agent Bus tools walked every folder the store had, which handed a
+    // model the exact corpus the retrieval path declines — through a
+    // second door, with no index in between.
+    for (const folder of ['INBOX', 'Sent', 'Drafts', 'Archive', 'Newsletters'])
+        assert(agentMayRead(folder), `${folder} is ordinary mail`);
+    for (const folder of ['Spam', 'Junk', 'Trash', 'spam', 'JUNK', 'trash'])
+        assert(!agentMayRead(folder), `${folder} must not be served to a model`);
+    // The same spellings a synced account uses for them.
+    assert(!agentMayRead('[Gmail]/Spam'), 'nested is still spam');
+    assert(!agentMayRead('acct/Junk/cur'), 'any component decides it');
+    // Nothing is a folder name, and a folder nobody named is not one
+    // of these.
+    assert(agentMayRead(''), 'an empty name is refused elsewhere, not here');
 });
 
 finish('mail/agent-actions');

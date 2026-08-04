@@ -23,6 +23,21 @@ So the Agent Bus tools are half the point:
 | `search_mail` | read | summaries — subject, sender, date, group, preview |
 | `read_message` | read | one message in full, by the id `search_mail` gave, plus a list of what is attached (name, type, size) |
 
+**Neither tool serves Spam, Junk or Trash** (#237). That is contextd's
+decision from #185 — Spam is "a corpus that exists to be hostile" and
+Trash is what you already chose to forget — and the Agent Bus was
+reaching the same corpus through a second door with no index in between.
+The list is the one `lisa mail index` uses
+(`cli/lisa/src/mail.rs`, `UNINDEXED_FOLDERS`), matched on any path
+component, case-insensitively. **The window still shows them**: a person
+opening their own Spam folder is their business, which is ADR-0029's
+second test — a guardrail sits between the model and the machine, never
+between somebody and their own mail.
+
+The Write-tier tools are not restricted this way: they return no message
+content, so they are not a route into the corpus, and an agent has no id
+to act on there anyway — `search_mail` hands none out.
+
 **Everything they emit is tagged `mail` provenance**, on the JSON-RPC
 envelope *and* inside the payload — agentd unwraps `content[0].text` and
 discards the envelope, which is how the browser's tag was lost on its
@@ -50,6 +65,40 @@ $HOME/Mail/            # or $LISA_MAILDIR
   INBOX/{cur,new,tmp}
   Sent/…  Archive/…
 ```
+
+### Two layouts, and both of them at once
+
+`lisa mail setup` writes a flat tree for one account and a per-account
+tree for several:
+
+```
+~/Mail/INBOX/…                          # flat
+~/Mail/you_at_example.com/INBOX/…       # per account
+```
+
+**A root can hold both, and the reference device does** (#222). Account
+discovery used to stop at the first flat folder it saw, so a machine
+with an old flat tree *and* two synced accounts reported one account
+called "Mail": both real accounts were drawn in the sidebar as empty
+folders, 24,456 messages were unreachable, `search_mail` answered out of
+the leftover tree, and Sent and Drafts were written into it.
+
+Now a directory is a folder only if it holds `cur/` or `new/`, an
+account is a directory of folders, and **both kinds are reported**. The
+named accounts come first, because the store opens on the first one and
+live mail is what a person means; folders sitting loose in the root come
+last, as an account named `Mail`.
+
+**Nothing is moved and nothing is deleted.** A tree that looks like a
+leftover is still somebody's mail, and an app that tidies it away has
+made an irreversible decision on their behalf. Mail shows it, names it,
+and leaves it where it is.
+
+The agent tools see **the selected account** — `search_mail` walks the
+folders of whichever account the window is on, because a message id is
+`folder/message` and has nowhere to put an account. Two accounts with a
+folder of the same name are two different folders; asking across both
+would need an id shape that says which.
 
 The consequence is honest: Mail shows what has been synced, and says so
 when there is nothing rather than pretending to be offline.
@@ -84,6 +133,7 @@ every channel carries `Expunge None` and `Remove None`.
 | file | what |
 |---|---|
 | `lib/rfc822.js` | headers, encoded words, addresses, readable body, the MIME part walk and transfer decoding. Pure, total — malformed input yields something empty, never an exception |
+| `lib/message.js` | one message file → the object the reading pane, the tools and Reply all share. Pure |
 | `lib/attachments.js` | what is attached, what its bytes are, and what it is safe to call the file. Pure |
 | `lib/maildir.js` | filename flags, listing, ids, path containment, previews |
 | `lib/smart.js` | which pile a message goes in |
@@ -93,7 +143,27 @@ every channel carries `Expunge None` and `Remove None`.
 | `lib/settings.js` | what the settings page is allowed to say. Pure |
 | `lisa-mail.js` | the window; thin over the above |
 
-`just shell-test` runs the pure half — 112 cases, on any dev host.
+`just shell-test` runs the pure half — 135 cases, on any dev host.
+
+### A message is bytes until its charset says otherwise
+
+Every message file is read one character per byte (`messageText`), and
+the parser decodes each part once it knows what the part declares. The
+app used to read mail through `TextDecoder('utf-8')`, which replaces
+every byte sequence that is not valid UTF-8 with U+FFFD *before the
+message has said what its charset is* — so the Latin-1 branch of the
+decoder could never run and `charset=ISO-8859-1; 8bit` mail arrived as
+`P<FFFD>rsh<FFFD>ndetje` (#232). On the reference device that was 402
+message bodies carrying replacement characters; it is now 140, and what
+is left are messages that declare **no charset at all** and contain
+Windows-1252 bytes (101 of them), or declare `utf-8` and are not
+(39) — where a replacement character is the honest answer rather than a
+guess.
+
+The consequence for anything calling `lib/rfc822.js`: **its input is a
+byte string, not a decoded one.** Fixtures in the suites build their
+non-ASCII cases out of bytes for that reason, and because a fixture that
+is already correctly decoded cannot fail the way real mail does.
 
 ## Attachments
 
@@ -148,6 +218,17 @@ valid characters said rather than throwing, and the walk stops at six
 levels and two hundred parts, because forty nested multiparts are a
 cheap thing to send.
 
+**A part past the bound is refused, not truncated** (#238). The size in
+the row is computed by arithmetic and the bytes are decoded with a cap,
+and nothing compared the two: a 68 MB attachment showed 71,303,169 bytes
+and Save As wrote 67,108,864 of them, silently. Three quarters of
+somebody's file, written under the name of the whole thing, is the worst
+failure this app could have — it opens far enough to look like their
+problem. Now `attachmentBytes` returns the whole part or nothing, a save
+the person asked for is allowed the whole message file's worth (a
+decoded part cannot exceed the file it came from), and anything past
+even that says so on the banner.
+
 ### The bytes are for the person, not for the model
 
 `read_message` reports **what** is attached — filename, type, size — and
@@ -155,6 +236,21 @@ never the contents. An agent asked "is the invoice attached?" can answer
 it and point at Preview, which is where a document gets read; a
 summariser that could be handed a PDF is one that can be handed anything
 a sender likes.
+
+**That was a promise this app broke for as long as it has had an Agent
+Bus** (#221). Choosing the body fell back to "the first part with
+anything in it", with no check that the part was text — so ordinary
+"here is the file" mail, where the text parts exist and are *empty*,
+resolved to the PDF, the JPEG or the .docx. `read_message` returned a
+3,145,615-character body starting `PK\x03\x04`; the list's preview
+column read `%PDF-1.4 %Ǭ… /FlateDecode`. Measured across the reference
+device's 34,368 messages: **168 bodies, 98 MB of decoded binary, now
+zero.**
+
+A message whose only content is a document has an **empty body and a
+listed attachment**, which is the truth. The reading pane says so in
+words rather than showing a blank pane, because a blank pane is how
+#210 was reported.
 
 ## Settings
 
@@ -248,6 +344,12 @@ table, and an entry in `app.lisaos.Mail.json`. Keep `maxLength` bounds at
 or under 256: a larger one breaks grammar compilation for **every**
 offered tool, not just this app's (issue #147).
 
+**The socket is given back on every exit, not only on a window close.**
+mcp-bus defers socket activation and reads presence as availability, so
+a socket left behind by a killed process is a tool that advertises
+itself and answers `ECONNREFUSED` (#219). `close-request`, GApplication
+`shutdown`, and SIGHUP/SIGINT/SIGTERM all release it, once.
+
 ## Settings
 
 A real preferences page, not only the diagnostic it started as.
@@ -281,8 +383,14 @@ A real preferences page, not only the diagnostic it started as.
   the same `flagChange`/`moveTo` plans the toolbar uses — one
   implementation, two callers. An action that would change nothing
   returns `changed: false` with a reason rather than a cheerful ok.
-- **No threading.** Messages are listed individually. `References` and
-  `In-Reply-To` are parsed and unused.
+- **No threading in the list.** Messages are shown individually. What a
+  reply *sends* does thread: `Message-ID` and `References` are read off
+  the message and a reply carries `In-Reply-To` and the extended chain
+  (#223). It did not until now — nothing in this app called
+  `headers.get('message-id')`, `replyFields` read a field no producer
+  set, and `?? ''` swallowed the absence, so every reply this app ever
+  composed landed in the recipient's client as a new conversation. The
+  test that should have caught it supplied both fields by hand.
 - ~~No attachments.~~ **Done (#211, #169):** listed, saved, opened in
   Preview, and quick-looked with Space — see *Attachments* above. Three
   things it still does not do:

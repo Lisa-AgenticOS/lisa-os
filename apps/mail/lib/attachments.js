@@ -21,7 +21,9 @@
 // that could be handed a PDF is a summariser that can be handed
 // anything a sender likes.
 
-import {decodeTransfer, decodedSize, headerParam, leafParts} from './rfc822.js';
+import {
+    MAX_PART_BYTES, decodeTransfer, decodedSize, headerParam, leafParts,
+} from './rfc822.js';
 
 /// Characters that never belong in a filename or a label: the C0 and C1
 /// controls (NUL included) and the bidi overrides.
@@ -83,7 +85,19 @@ export function attachments(raw) {
 /// The bytes of one attachment, addressed by its part path.
 ///
 /// `null` when the path addresses no part — the caller may be holding a
-/// path from a message that has since been re-synced.
+/// path from a message that has since been re-synced — and `null` again
+/// when the part is LARGER THAN THE BOUND. That second one is #238:
+/// `decodedSize` (the number in the row) is uncapped, `decodeTransfer`
+/// stops at `maxBytes`, and nothing compared them, so a 68 MB
+/// attachment showed 71,303,169 bytes in the list and Save As wrote
+/// 67,108,864 of them with no error anywhere. Three quarters of
+/// somebody's file, written under the name of the whole thing, is the
+/// worst kind of failure this app could have: it opens far enough to
+/// look like their problem.
+///
+/// So the whole part or nothing. The caller decides what a bound it
+/// cannot meet means — the window raises it for a save the person
+/// explicitly asked for, and says so when even that is not enough.
 export function attachmentBytes(raw, path, options = {}) {
     if (!Array.isArray(path))
         return null;
@@ -91,8 +105,11 @@ export function attachmentBytes(raw, path, options = {}) {
     for (const leaf of leafParts(raw)) {
         if (leaf.path.join('.') !== want)
             continue;
-        return decodeTransfer(
-            leaf.body, leaf.headers.get('content-transfer-encoding'), options);
+        const encoding = leaf.headers.get('content-transfer-encoding');
+        const max = Math.max(0, options.maxBytes ?? MAX_PART_BYTES);
+        if (decodedSize(leaf.body, encoding) > max)
+            return null;
+        return decodeTransfer(leaf.body, encoding, options);
     }
     return null;
 }
