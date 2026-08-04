@@ -36,6 +36,7 @@
 //! No network access: the model endpoint is inferenced on loopback, and
 //! egress belongs to lisa-remoted (CLAUDE.md rule 5).
 
+mod caller;
 mod dbus;
 mod loop_runner;
 mod skills;

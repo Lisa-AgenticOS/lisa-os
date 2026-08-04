@@ -66,8 +66,18 @@ CLASS = (
 # unit here is a claim about its code: check for lisa_peer::exe_of_peer
 # (and /proc/<pid>/ reads about peers) first.
 ALLOWED = {
-    # Ownership checks in harnessd are broker-name based (Owner), never
-    # /proc-based; its confinement is load-bearing for ADR-0029.
+    # Every identity decision in harnessd is broker-based, never
+    # /proc-based: ownership is `Owner`/`PeerId`, and the trigger
+    # ceiling (#229, src/caller.rs) is GetConnectionCredentials for the
+    # uid plus GetNameOwner for the prompt surface. Neither reads
+    # another process's /proc, so neither breaks inside the user
+    # namespace these options imply — re-verified on the reference
+    # machine: harnessd's uid_map is `1000 1000 1`, and readlink of a
+    # peer's /proc/<pid>/exe succeeds outside that namespace and fails
+    # inside it. Its confinement is load-bearing for ADR-0029, so the
+    # options stay and the identity mechanism is chosen to survive them.
+    # Anything here that starts wanting `lisa_peer::exe_of_peer` has to
+    # leave this list first, or it will fail closed and silently.
     "lisa-harnessd.service",
     # A timer-driven client: it calls GNOME Online Accounts and writes
     # the user's maildir, and never identifies a peer — nothing

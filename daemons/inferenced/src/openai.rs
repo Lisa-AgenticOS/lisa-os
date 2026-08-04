@@ -67,11 +67,48 @@ impl Content {
     pub fn has_non_text(&self) -> bool {
         match self {
             Content::Text(_) => false,
-            Content::Parts(parts) => parts
-                .iter()
-                .any(|p| p["type"].as_str().is_some_and(|t| t != "text")),
+            Content::Parts(parts) => parts.iter().any(part_is_non_text),
         }
     }
+}
+
+/// What a text-only engine says about content it cannot see.
+///
+/// ONE sentence, shared by every lane that has to say it. It was written
+/// out by hand in the typed lane and nowhere else, which is how #236
+/// happened: the tools lane had no copy of the rule *and* no copy of the
+/// text, so nothing about it was even visibly missing.
+pub const TEXT_ONLY_REFUSAL: &str = "this model reads text only — pick a multimodal model \
+     (e.g. a remote: provider) for images or audio";
+
+/// Is this content part something other than text?
+///
+/// A part with **no `type` at all** counts as non-text, deliberately.
+/// `Content::text()` renders such a part as the empty string and then
+/// filters it out — i.e. it drops it silently — which is the exact
+/// failure the modality refusal exists to prevent: a confident answer
+/// about something nobody looked at. Refusing is the fail-closed
+/// reading, and a part with no `type` is malformed for every provider
+/// this daemon forwards to anyway.
+fn part_is_non_text(part: &serde_json::Value) -> bool {
+    part["type"].as_str() != Some("text")
+}
+
+/// Does a RAW OpenAI-compat body carry anything a text-only model cannot
+/// see (#236)?
+///
+/// The passthrough lane never builds a [`ChatCompletionRequest`] — that
+/// is the whole point of it, the body goes to the engine verbatim — so
+/// [`Content::has_non_text`] could not see what it was carrying. This is
+/// the same question asked of the untyped shape.
+pub fn body_has_non_text(body: &serde_json::Value) -> bool {
+    body["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|m| {
+            m["content"]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(part_is_non_text))
+        })
+    })
 }
 
 impl From<String> for Content {
@@ -229,5 +266,82 @@ mod tests {
         }));
         assert!(!m.content.has_non_text());
         assert_eq!(m.text(), "still just words");
+    }
+
+    /// Issue #236. The typed lane deserializes into [`Content`]; the
+    /// passthrough lane never does, and asked the question of nothing at
+    /// all. Both lanes must now answer the same way about the same
+    /// bytes, so the two predicates are checked against each other here
+    /// rather than trusted to agree.
+    #[test]
+    fn both_lanes_answer_the_same_way_about_the_same_message() {
+        for content in [
+            serde_json::json!("just words"),
+            serde_json::json!([{"type": "text", "text": "just words"}]),
+            serde_json::json!([
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ]),
+            serde_json::json!([{"type": "input_audio", "input_audio": {"data": "AAA"}}]),
+        ] {
+            let typed = parts(serde_json::json!({"role": "user", "content": content}))
+                .content
+                .has_non_text();
+            let raw = body_has_non_text(
+                &serde_json::json!({"messages": [{"role": "user", "content": content}]}),
+            );
+            assert_eq!(typed, raw, "the two lanes disagree about {content}");
+        }
+    }
+
+    /// A part with no `type` is treated as non-text, and that is the
+    /// deliberate reading rather than an accident of the comparison.
+    /// `Content::text()` renders such a part as nothing and filters it
+    /// away — a silent drop, which is precisely the failure the refusal
+    /// exists to prevent.
+    #[test]
+    fn a_part_that_does_not_say_what_it_is_counts_as_unreadable() {
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": [
+                {"image_url": {"url": "data:image/png;base64,AAA"}},
+            ]}],
+        });
+        assert!(
+            body_has_non_text(&body),
+            "a typeless part slipped past as though it were text"
+        );
+    }
+
+    /// The control: the predicate must not simply answer yes. A body of
+    /// plain strings — every text-only conversation ever — is untouched,
+    /// and so is a body with no messages at all.
+    #[test]
+    fn an_ordinary_text_conversation_is_not_called_multimodal() {
+        assert!(!body_has_non_text(&serde_json::json!({
+            "messages": [
+                {"role": "system", "content": "you are lisa"},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "1", "type": "function",
+                     "function": {"name": "read_file", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "1", "content": "file contents"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "read_file"}}],
+        })));
+        assert!(!body_has_non_text(&serde_json::json!({})));
+        assert!(!body_has_non_text(&serde_json::json!({"messages": []})));
+    }
+
+    /// The refusal is one sentence in one place, and it has to say both
+    /// what is wrong and what to do — "unsupported" sends a person
+    /// hunting through settings for a switch that does not exist.
+    #[test]
+    fn the_refusal_says_what_to_do_about_it() {
+        assert!(TEXT_ONLY_REFUSAL.contains("reads text only"));
+        assert!(
+            TEXT_ONLY_REFUSAL.contains("multimodal"),
+            "the refusal does not name the way out: {TEXT_ONLY_REFUSAL}"
+        );
     }
 }

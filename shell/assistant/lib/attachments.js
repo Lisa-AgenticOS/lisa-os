@@ -141,6 +141,14 @@ export function attachmentSizeRefusal(name, bytes, staged) {
  * mechanism, and it stays (ADR-0029: a check the caller can skip is not
  * a guard). An unknown model fails closed: we cannot know it is
  * multimodal, and guessing yes ends in that same confident answer.
+ *
+ * That sentence was FALSE AS WRITTEN until #236. The refusal existed on
+ * inferenced's typed lane only, and the lane this window actually uses
+ * is the tools lane, which handed the body to llama-server verbatim —
+ * so skipping this check got you a raw 500 with an mmproj hint, not
+ * Lisa's sentence. Both lanes refuse now
+ * (`daemons/inferenced/src/llama.rs`), which is what makes the claim
+ * above something a reader can rely on rather than something we meant.
  * @param {?{id: string, label: string}} model  the picked model entry
  * @param {object[]} items  attachments the composer is holding
  * @returns {?string}  a sentence for the transcript, or null

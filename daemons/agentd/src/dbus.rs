@@ -121,15 +121,38 @@ async fn caller_is_lisa_program(
     let Ok(peer) = lisa_peer::resolve(conn, header).await else {
         return false;
     };
-    if !peer.is_same_user_as_us() {
-        return false;
-    }
-    let Ok(exe) = lisa_peer::exe_of_peer(&peer) else {
-        return false;
-    };
-    lisa_peer::manager::default_managers()
-        .iter()
-        .any(|m| m == &exe)
+    exe_is_lisa_program(
+        peer.is_same_user_as_us(),
+        lisa_peer::exe_of_peer(&peer).ok().as_deref(),
+        &lisa_peer::manager::default_managers(),
+    )
+}
+
+/// The decision itself, separated so it can be tested.
+///
+/// `caller_is_lisa_program` needs a live `Connection` and a real peer,
+/// which a unit test cannot cheaply build — so the only part that
+/// decides anything had no test, which is how #215 shipped.
+///
+/// `configured` is the shipped allowlist as WRITTEN; the resolution is
+/// this function's job.
+fn exe_is_lisa_program(
+    same_user: bool,
+    exe: Option<&std::path::Path>,
+    configured: &[std::path::PathBuf],
+) -> bool {
+    // RESOLVED, not compared verbatim (#215). `/proc/<pid>/exe` reports
+    // the file the kernel actually executed, with every symlink already
+    // followed — and the channel CLI ships behind a `current` symlink
+    // that `lisa apps update` moves, so the kernel says
+    // `…/runtime/versions/20260803.75/bin/lisa` where the allowlist
+    // says `…/runtime/current/bin/lisa`. Compared as written, those
+    // never match, and EVERY call from the channel CLI was
+    // provenance-downgraded to `app:` — a security decision that was
+    // really a stale path. `resolve_managers` exists for exactly this
+    // and was not being called.
+    let managers = lisa_peer::manager::resolve_managers(configured);
+    lisa_peer::manager::may_manage(same_user, exe, &managers).is_ok()
 }
 
 fn disposition_of(confirmation: Confirmation) -> &'static str {
@@ -360,6 +383,67 @@ mod tests {
             );
             assert_eq!(unknown.to_string(), not_yours.to_string());
         }
+    }
+
+    /// Issue #215. The channel CLI lives behind a `current` symlink
+    /// (`…/runtime/current/bin/lisa` → `…/runtime/versions/<ver>/bin
+    /// /lisa`, confirmed on the reference machine), and
+    /// `/proc/<pid>/exe` reports the resolved file. Comparing the
+    /// allowlist as written therefore matched nothing, and every call
+    /// from the CLI a person typed into was downgraded to `app:`
+    /// provenance — a stale path wearing a security decision's clothes.
+    #[test]
+    fn a_manager_behind_a_moving_symlink_is_still_a_lisa_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("versions/20260803.75/bin");
+        std::fs::create_dir_all(&real).unwrap();
+        let binary = real.join("lisa");
+        std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
+        let binary = binary.canonicalize().unwrap();
+
+        let channel = dir.path().join("current");
+        std::os::unix::fs::symlink(dir.path().join("versions/20260803.75"), &channel).unwrap();
+        let configured = vec![channel.join("bin/lisa")];
+
+        // What the kernel reports is the RESOLVED file; what the
+        // allowlist names is the symlinked one. They are one program.
+        assert!(
+            exe_is_lisa_program(true, Some(&binary), &configured),
+            "the channel CLI was not recognised as a Lisa program"
+        );
+    }
+
+    /// Resolving must not turn the allowlist into a wildcard: the
+    /// refusals it is there to make have to survive it.
+    #[test]
+    fn resolving_the_allowlist_still_refuses_everyone_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = dir.path().join("lisa");
+        let theirs = dir.path().join("totally-normal-app");
+        for p in [&ours, &theirs] {
+            std::fs::write(p, b"#!/bin/sh\n").unwrap();
+        }
+        let configured = vec![ours.clone()];
+        let ours = ours.canonicalize().unwrap();
+        let theirs = theirs.canonicalize().unwrap();
+
+        assert!(exe_is_lisa_program(true, Some(&ours), &configured));
+        assert!(
+            !exe_is_lisa_program(true, Some(&theirs), &configured),
+            "an ordinary program was accepted as a Lisa program"
+        );
+        assert!(
+            !exe_is_lisa_program(false, Some(&ours), &configured),
+            "another user's process was accepted"
+        );
+        assert!(
+            !exe_is_lisa_program(true, None, &configured),
+            "a caller with no readable exe was accepted"
+        );
+        assert!(
+            !exe_is_lisa_program(true, Some(&ours), &[]),
+            "an empty allowlist authorised somebody"
+        );
     }
 
     /// The consent-surface refusal is deliberately NOT disguised: the

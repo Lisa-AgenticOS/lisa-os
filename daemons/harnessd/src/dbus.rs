@@ -77,6 +77,16 @@ pub enum Trigger {
 }
 
 impl Trigger {
+    /// What the MESSAGE asked for, before any ceiling is applied.
+    ///
+    /// Not a decision — a decision made from this alone is the defect
+    /// (#229). Its only job is to let the Ledger say what was claimed
+    /// when a claim is turned down, the way agentd records a provenance
+    /// downgrade rather than only refusing it.
+    pub fn requested(requested: Option<&str>) -> Trigger {
+        Trigger::resolve(requested, Trigger::Prompt)
+    }
+
     /// Parse what the caller asked for, then clamp it to what the caller
     /// is allowed to be. `ceiling` comes from the caller's identity.
     pub fn resolve(requested: Option<&str>, ceiling: Trigger) -> Trigger {
@@ -112,6 +122,22 @@ impl Trigger {
             Trigger::Schedule => "schedule",
             Trigger::Event => "event",
         }
+    }
+
+    /// May a run of this class be handed the jailed file and command
+    /// family (`read_file`, `write_file`, `edit_file`, `run_command`,
+    /// `run_tests`, `grep`, `list_dir`)?
+    ///
+    /// ADR-0036 §6.4, in one sentence: *shell plus an event trigger is
+    /// the injection endgame* — untrusted content choosing arbitrary
+    /// commands with nobody watching — so **event and schedule triggers
+    /// get typed tools only**.
+    ///
+    /// The family used to be attached from `workspace.is_some()` alone
+    /// (#230), which made the trigger class irrelevant to the most
+    /// dangerous decision the daemon makes.
+    pub fn may_use_file_tools(self) -> bool {
+        matches!(self, Trigger::Prompt)
     }
 }
 
@@ -212,6 +238,40 @@ impl Harness1 {
             running: Arc::new(Mutex::new(HashMap::new())),
         }
     }
+
+    /// Note that a caller claimed a trust class it may not have.
+    ///
+    /// Best-effort by design, for the same reason agentd's provenance
+    /// downgrade is: failing the run because the note could not be
+    /// written would turn a Ledger problem into an outage, and the run
+    /// is not the thing at fault.
+    fn ledger_trigger_downgrade(
+        &self,
+        asked: Trigger,
+        got: Trigger,
+        facts: &crate::caller::CallerFacts,
+    ) {
+        if let Err(e) = self.ledger.append(&lisa_ledger::Event {
+            kind: "harness.trigger_downgrade".into(),
+            app_id: "host".into(),
+            preview: format!(
+                "a caller claimed the {} trigger class and was held to {}",
+                asked.provenance(),
+                got.provenance()
+            ),
+            status: "downgraded".into(),
+            detail: format!(
+                "asked={} resolved={} same_user={} prompt_surface={}",
+                asked.provenance(),
+                got.provenance(),
+                facts.same_user,
+                facts.owns_prompt_surface
+            ),
+            ..Default::default()
+        }) {
+            eprintln!("harnessd: could not ledger a trigger downgrade: {e}");
+        }
+    }
 }
 
 fn opt_str(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
@@ -233,13 +293,28 @@ impl Harness1 {
         prompt: String,
         options: HashMap<String, OwnedValue>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<u64> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        // Every session-bus caller is a desktop surface today, so the
-        // ceiling is Prompt. When schedules and event sources land they
-        // get their own peers, and THIS is where their lower ceiling is
-        // applied — from the caller's identity, not from `options`.
-        let trigger = Trigger::resolve(opt_str(&options, "trigger").as_deref(), Trigger::Prompt);
+        // The ceiling comes from the TRANSPORT, never from `options`
+        // (ADR-0033, ADR-0036 §1, #229). A caller may narrow its own
+        // trust — a surface may say "treat this as an event" — and can
+        // never widen it.
+        let facts = crate::caller::facts_of(conn, &header).await;
+        let ceiling = crate::caller::ceiling(facts);
+        let raw_trigger = opt_str(&options, "trigger");
+        let asked = Trigger::requested(raw_trigger.as_deref());
+        let trigger = Trigger::resolve(raw_trigger.as_deref(), ceiling);
+        if asked != trigger {
+            // Recorded, not refused — agentd's precedent for the same
+            // shape of claim (`agent.provenance_downgrade`). A peer
+            // repeatedly claiming to be the person at the keyboard is
+            // the signature worth being able to grep for afterwards,
+            // and refusing outright would break a surface that merely
+            // tagged its run wrongly.
+            self.ledger_trigger_downgrade(asked, trigger, &facts);
+        }
 
         let history = parse_history(opt_str(&options, "history").as_deref());
 
@@ -265,6 +340,13 @@ impl Harness1 {
                 }
             },
         };
+        // The trigger class decides whether the file family exists at
+        // all (#230, ADR-0036 §6.4). Applied to the WORKSPACE rather
+        // than to the provider list, so the one value feeds both the
+        // tools and the system prompt: strip the tools without stripping
+        // the sentence that promises them and the model confidently
+        // claims to have saved something.
+        let workspace = workspace.filter(|_| trigger.may_use_file_tools());
         let skills = crate::skills::load();
 
         let req = Request {
@@ -542,6 +624,51 @@ mod tests {
                 "a refusal must say what was wrong with {raw:?}"
             );
         }
+    }
+
+    /// Issue #230, and ADR-0036 §6.4's "injection endgame": the file and
+    /// command family used to be attached from `workspace.is_some()`
+    /// alone, so an `event`-triggered run — one woken by content that
+    /// arrived from outside the machine — was handed `read_file`,
+    /// `write_file` and `run_command`. Demonstrated on the device
+    /// before this landed.
+    #[test]
+    fn only_a_person_at_the_keyboard_gets_file_and_command_tools() {
+        assert!(
+            Trigger::Prompt.may_use_file_tools(),
+            "a person who chose a folder must still get file tools"
+        );
+        assert!(
+            !Trigger::Event.may_use_file_tools(),
+            "an event-triggered run was given the file and command family"
+        );
+        assert!(
+            !Trigger::Schedule.may_use_file_tools(),
+            "ADR-0036 §6.4: event and schedule triggers get typed tools only"
+        );
+    }
+
+    /// The rule above has to be a function of the RESOLVED class, not of
+    /// what the message asked for — otherwise a caller clamped down to
+    /// `event` keeps the family by having said `prompt`.
+    #[test]
+    fn a_clamped_caller_loses_the_file_family_with_the_class() {
+        let resolved = Trigger::resolve(Some("prompt"), Trigger::Event);
+        assert_eq!(resolved, Trigger::Event);
+        assert!(
+            !resolved.may_use_file_tools(),
+            "claiming `prompt` kept the file family after the clamp"
+        );
+    }
+
+    /// What the message asked for is reportable but never a decision:
+    /// the Ledger needs it to say what was turned down (#229).
+    #[test]
+    fn what_was_asked_for_is_recorded_separately_from_what_was_granted() {
+        assert_eq!(Trigger::requested(Some("prompt")), Trigger::Prompt);
+        assert_eq!(Trigger::requested(None), Trigger::Prompt);
+        assert_eq!(Trigger::requested(Some("event")), Trigger::Event);
+        assert_eq!(Trigger::requested(Some("wat")), Trigger::Event);
     }
 
     #[test]

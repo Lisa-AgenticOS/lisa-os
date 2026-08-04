@@ -87,9 +87,50 @@ chain (`user` / `schedule` / `event`), and `bus-tools` appends `web`
 once anything web-tagged has been read. agentd escalates on the worst of
 them.
 
-Today every session peer is a desktop surface, so the ceiling is
-`Prompt`. The enforcement point exists now so that when cron and mail
-arrive they get a lower ceiling and nothing else has to change.
+### Where the ceiling comes from (#229)
+
+The ceiling is derived from the **transport**, in `src/caller.rs`. Two
+answers, both from the message broker and neither of them anything the
+sender wrote:
+
+| Question | Asked of | Used for |
+|---|---|---|
+| what uid is this connection? | `GetConnectionCredentials` | must be our own user |
+| who owns `app.lisaos.Assistant`? | `GetNameOwner` | must be this caller |
+
+Both true → ceiling `Prompt`. Anything else, including a caller we could
+not place at all → ceiling `Event`, the class whose content is never
+trusted. A turned-down claim is written to the Ledger as
+`harness.trigger_downgrade`, the way agentd records a provenance
+downgrade — refusing outright would break a surface that merely tagged
+its run wrongly, and a claim nobody can grep for is not an audit trail.
+
+Until this landed the ceiling was the literal `Trigger::Prompt` for
+every caller, so `busctl --user call … Run` — any peer on the session
+bus — drove a run in the class a person typing gets.
+
+**Why a bus name and not `/proc/<pid>/exe`.** Everywhere else in Lisa,
+program identity is the executable behind the broker's pidfd
+(ADR-0033). That mechanism cannot work *here*: this is a per-user unit
+with `ProtectHome`/`ProtectSystem`/`PrivateDevices`, which a user
+manager can only deliver through an implicit user namespace, and from
+inside one every peer's `/proc/<pid>/exe` is EACCES (#161). An exe check
+in this daemon would be a check that silently never matches. Verified on
+the reference machine: harnessd's `uid_map` is `1000 1000 1`, and
+readlink of a peer's `exe` succeeds outside the namespace and fails
+inside it. `os/repo-tools/check-user-units.py` carries the same note.
+
+**The honest limit.** A well-known name belongs to whoever asks first,
+so a peer that grabs `app.lisaos.Assistant` while the Assistant is
+closed inherits its ceiling. That is smaller than the hole it replaces —
+before, no peer had to do anything at all — and a peer holding the
+Assistant's name has also taken over the window the person launches,
+which is a much louder place to stand.
+
+`Schedule` is deliberately unreachable: nothing in Lisa is a scheduler
+yet, and handing out a class no shipped peer can legitimately hold would
+be a hole with no user. A scheduler daemon arrives with its own name and
+its own arm of `caller::ceiling`.
 
 ## Streaming
 
@@ -112,11 +153,24 @@ turns good input into an error.
 |---|---|---|
 | Agent Bus (`bus-tools`) | always | read-tier only until #145 lands |
 | Skills (`read_skill`) | when any skill is installed | read |
-| Workspace (files, commands) | **only with a granted folder** | jailed to that folder |
+| Workspace (files, commands) | **a granted folder AND the `prompt` class** | jailed to that folder |
 
 The families are assembled per run, so a surface with no workspace gets
 no file tools — absent, not disabled. A tool the model can call only to
 be refused wastes a turn and teaches it nothing.
+
+The second condition on the last row is #230, and it is ADR-0036 §6.4:
+*shell plus an event trigger is the injection endgame* — untrusted
+content choosing arbitrary commands with nobody watching — so **event
+and schedule triggers get typed tools only**. The family used to be
+attached from `workspace.is_some()` alone, so an `event`-triggered run
+was handed `read_file`, `write_file` and `run_command`; demonstrated on
+the device.
+
+The rule is applied to the WORKSPACE rather than to the provider list,
+so one value feeds both the tools and the system prompt. Strip the tools
+without stripping the sentence that promises them and the model
+confidently claims to have saved something.
 
 ## The working folder is a grant
 
@@ -127,9 +181,35 @@ it** — the same shape Claude Desktop uses, and the same reason
 (ADR-0030: the capability is handed in from outside the loop).
 
 `workspace::validate` refuses a path that is not absolute, does not
-exist, is not a directory, is the whole home, is a system folder, or
-lies outside the user's home. It resolves before judging, because
-`~/proj/..` is the home root however it is spelled.
+exist, is not a directory, is the whole home, is a system folder, lies
+outside the user's home, **or is hidden or inside anything hidden**. It
+resolves before judging, because `~/proj/..` is the home root however it
+is spelled.
+
+The hidden rule is #231. Every other check passed for `~/.ssh` —
+absolute, real, a directory, under home, not home itself — so it was a
+legal jail root, and `read_file authorized_keys` handed the model the
+user's key material. Demonstrated on the device. Writes were stopped
+only by `ProtectHome=read-only` in the unit, and a systemd option is not
+a policy: it is true until the day the unit changes, and then the
+regression is silent.
+
+It is structural rather than a denylist of the credential stores we
+happened to think of, for the reason the next paragraph gives about
+denylists generally. A leading dot is the convention by which a program
+says "this is mine, not the user's work", and that is what is checked —
+after the home prefix is stripped, so a home directory that is itself
+hidden (macOS test fixtures live under `/private/var/folders/…/.tmpXXX`)
+is not caught by its own spelling.
+
+**The cost, stated plainly.** Someone whose project genuinely *is* a
+dotfile folder — `~/.config/nvim` is the real example — has to copy it
+elsewhere or work on it another way. ADR-0029's second test says a
+guardrail sits between the model and the machine, never between a person
+and their own machine, so the line is drawn where the two actually
+differ: nothing chooses `~/.ssh` because it is *working on* `~/.ssh`.
+The failure prevented is a credential leaving the machine; the failure
+caused is a copy.
 
 **The containment is the home requirement, not the denylist.** A prefix
 denylist looks like the defence and is not: canonicalisation can move a
@@ -174,6 +254,17 @@ about them.
   message-size ceiling belongs to dbus-broker's own configuration.
   Passing a file descriptor instead of a base64 data URI would remove
   the amplification entirely, and would be a redesign of the option.
-- **The trigger ceiling is hardcoded to `Prompt`** because every caller
-  today is a desktop surface. It must come from `lisa-peer` identity
-  before any non-desktop client exists.
+- **The trigger ceiling is a bus name, not an executable.** See "Where
+  the ceiling comes from" above: it is the strongest identity available
+  to a daemon that must keep its mount sandbox (#161), and a peer that
+  takes `app.lisaos.Assistant` while the Assistant is closed inherits
+  its ceiling.
+- **A dotfile folder cannot be a workspace** (#231), so the assistant
+  cannot help with `~/.config/nvim` in place.
+- **`ProtectHome=read-only` means the workspace file tools cannot
+  actually write on the device.** The jail permits it and the unit does
+  not, so `write_file` into a granted folder fails at the syscall. That
+  is a separate defect from #231 — noticed while fixing it — and it is
+  not fixed here: the option is real containment for `run_command`, and
+  swapping it for a narrower `ReadWritePaths` is a change to the unit's
+  whole confinement story rather than a line.

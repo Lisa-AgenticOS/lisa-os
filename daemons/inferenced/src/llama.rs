@@ -137,19 +137,6 @@ impl Inner {
     /// One streaming completion request against the child; yields token
     /// deltas parsed from its OpenAI-compat SSE stream.
     async fn open_stream(&self, req: &GenerateRequest) -> Result<reqwest::Response, EngineError> {
-        // REFUSE what this engine cannot see, rather than flattening it
-        // away. A local text model handed an image would otherwise get
-        // "[image_url]" in its prompt and answer confidently about a
-        // picture nobody looked at — the worst available outcome, and
-        // indistinguishable from working. Multimodal input belongs to a
-        // model that has the modality (PLAN §5.11 remote lane).
-        if req.messages.iter().any(|m| m.content.has_non_text()) {
-            return Err(EngineError::Unavailable(
-                "this model reads text only — pick a multimodal model \
-                 (e.g. a remote: provider) for images or audio"
-                    .into(),
-            ));
-        }
         // Cap tokens even when the client doesn't: a runaway generation
         // (e.g. an unbounded grammar rule) must not hold the slot forever.
         let mut body = serde_json::json!({
@@ -200,6 +187,14 @@ impl Engine for LlamaEngine {
     ) -> futures::future::BoxFuture<'static, Result<serde_json::Value, EngineError>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
+            // BEFORE `ensure_running`, on purpose (#236). Booting a
+            // multi-GiB model in order to say "I cannot read images"
+            // costs minutes and answers nothing.
+            if crate::openai::body_has_non_text(&body) {
+                return Err(EngineError::Unavailable(
+                    crate::openai::TEXT_ONLY_REFUSAL.into(),
+                ));
+            }
             inner.ensure_running().await?;
             // The passthrough lane is non-streaming; cap tokens like the
             // typed lane so a runaway generation can't hold the slot.
@@ -246,6 +241,16 @@ impl Engine for LlamaEngine {
     fn raw_chat_stream(&self, mut body: serde_json::Value) -> RawFrameStream {
         let inner = Arc::clone(&self.inner);
         Box::pin(async_stream::stream! {
+            // The lane the Assistant actually uses since #225, and the
+            // one that had no modality check at all (#236): a person who
+            // attached a picture got llama-server's raw 500 and an
+            // mmproj hint quoted back at them.
+            if crate::openai::body_has_non_text(&body) {
+                yield Err(EngineError::Unavailable(
+                    crate::openai::TEXT_ONLY_REFUSAL.into(),
+                ));
+                return;
+            }
             if let Err(e) = inner.ensure_running().await {
                 yield Err(e);
                 return;
@@ -363,6 +368,28 @@ impl Engine for LlamaEngine {
     fn generate(&self, req: GenerateRequest) -> TokenStream {
         let inner = Arc::clone(&self.inner);
         Box::pin(async_stream::stream! {
+            // REFUSE what this engine cannot see, rather than flattening
+            // it away. A local text model handed an image would get
+            // "[image_url]" in its prompt and answer confidently about a
+            // picture nobody looked at — the worst available outcome,
+            // and indistinguishable from working. Multimodal input
+            // belongs to a model that has the modality (PLAN §5.11).
+            //
+            // Here rather than inside `open_stream`, where it used to
+            // live, for two reasons. It is now the same *position* the
+            // passthrough lane's check has — before the child is
+            // started, because booting a multi-GiB model to say "I
+            // cannot read images" costs minutes and answers nothing —
+            // and, being before `ensure_running`, it is reachable by a
+            // test that has no model at all. A mutation check found the
+            // old placement had no test whatsoever: deleting the
+            // refusal outright left the suite green (#236).
+            if req.messages.iter().any(|m| m.content.has_non_text()) {
+                yield Err(EngineError::Unavailable(
+                    crate::openai::TEXT_ONLY_REFUSAL.into(),
+                ));
+                return;
+            }
             if let Err(e) = inner.ensure_running().await {
                 yield Err(e);
                 return;
@@ -418,5 +445,184 @@ impl Engine for LlamaEngine {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    /// A config that can never spawn a child: no model path, so
+    /// `ensure_running` refuses deterministically and nothing is
+    /// executed. That is what makes these runnable on a dev host — and
+    /// it is also the control, because "llama.model_path not
+    /// configured" is a DIFFERENT sentence from the text-only refusal.
+    fn engine_that_cannot_start() -> LlamaEngine {
+        LlamaEngine::new(LlamaConfig {
+            model_path: None,
+            ..LlamaConfig::default()
+        })
+    }
+
+    fn body_with_an_image() -> serde_json::Value {
+        serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is in this picture?"},
+                    {"type": "image_url",
+                     "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            }],
+            "tools": [],
+            "stream": true,
+        })
+    }
+
+    fn text_only_body() -> serde_json::Value {
+        serde_json::json!({
+            "messages": [{"role": "user", "content": "what is in this picture?"}],
+            "tools": [],
+        })
+    }
+
+    /// Issue #236. The refusal lived in `open_stream`, which only the
+    /// TYPED lane goes through. The tools lane — the one behind every
+    /// Assistant window — handed the body to llama-server verbatim, and
+    /// a person who attached an image got a raw 500 with an mmproj hint
+    /// quoted back at them instead of Lisa's sentence.
+    ///
+    /// Verified side by side before this landed: typed lane → the
+    /// refusal; tools lane → the child's error.
+    #[tokio::test]
+    async fn the_passthrough_lane_refuses_what_the_engine_cannot_see() {
+        let engine = engine_that_cannot_start();
+        let err = engine
+            .raw_chat(body_with_an_image())
+            .await
+            .expect_err("an image reached a text-only engine");
+        assert!(
+            err.to_string().contains("reads text only"),
+            "the tools lane did not give Lisa's refusal: {err}"
+        );
+    }
+
+    /// The streaming half of the same lane, which is the one the
+    /// Assistant actually uses since #225.
+    #[tokio::test]
+    async fn the_streaming_passthrough_lane_refuses_it_too() {
+        let engine = engine_that_cannot_start();
+        let first = engine
+            .raw_chat_stream(body_with_an_image())
+            .next()
+            .await
+            .expect("the stream ended without a frame");
+        let err = first.expect_err("an image reached a text-only engine");
+        assert!(
+            err.to_string().contains("reads text only"),
+            "the streaming tools lane did not give Lisa's refusal: {err}"
+        );
+    }
+
+    /// The positive control, and the thing that makes the two above
+    /// mean something: a text-only body is NOT refused by this rule. It
+    /// fails further down, for the unrelated reason that this test's
+    /// engine has no model — so a check that simply refused everything
+    /// would fail here.
+    #[tokio::test]
+    async fn a_text_only_body_is_not_refused_by_the_modality_rule() {
+        let engine = engine_that_cannot_start();
+        let err = engine
+            .raw_chat(text_only_body())
+            .await
+            .expect_err("the test engine cannot start, so this must fail");
+        assert!(
+            !err.to_string().contains("reads text only"),
+            "a text-only request was refused as multimodal: {err}"
+        );
+        assert!(
+            err.to_string().contains("model_path"),
+            "expected the no-model failure, got: {err}"
+        );
+    }
+
+    /// The TYPED lane's half of the same rule — and the one that had no
+    /// test at all until a mutation check went looking. Deleting the
+    /// refusal from `open_stream` outright left the entire suite green,
+    /// because every assertion about it was really an assertion about
+    /// `Content::has_non_text`, which is a different question from
+    /// "does the lane ask it".
+    #[tokio::test]
+    async fn the_typed_lane_refuses_what_the_engine_cannot_see() {
+        let engine = engine_that_cannot_start();
+        let req = GenerateRequest {
+            messages: vec![crate::openai::ChatMessage {
+                role: "user".into(),
+                content: serde_json::from_value(serde_json::json!([
+                    {"type": "text", "text": "what is in this picture?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ]))
+                .unwrap(),
+            }],
+            grammar: None,
+            max_tokens: None,
+        };
+        let first = engine
+            .generate(req)
+            .next()
+            .await
+            .expect("the stream ended without a frame");
+        let err = first.expect_err("an image reached a text-only engine");
+        assert!(
+            err.to_string().contains("reads text only"),
+            "the typed lane did not give Lisa's refusal: {err}"
+        );
+    }
+
+    /// The typed lane's control, matching the passthrough lane's: a
+    /// text-only turn is not refused by this rule, it fails on the
+    /// unrelated missing model. Without this, a check that refused
+    /// everything would pass the test above.
+    #[tokio::test]
+    async fn a_text_only_turn_is_not_refused_by_the_modality_rule() {
+        let engine = engine_that_cannot_start();
+        let req = GenerateRequest {
+            messages: vec![crate::openai::ChatMessage {
+                role: "user".into(),
+                content: "what is in this picture?".into(),
+            }],
+            grammar: None,
+            max_tokens: None,
+        };
+        let err = engine
+            .generate(req)
+            .next()
+            .await
+            .expect("the stream ended without a frame")
+            .expect_err("the test engine cannot start, so this must fail");
+        assert!(
+            !err.to_string().contains("reads text only"),
+            "a text-only turn was refused as multimodal: {err}"
+        );
+        assert!(
+            err.to_string().contains("model_path"),
+            "expected the no-model failure, got: {err}"
+        );
+    }
+
+    /// The refusal has to come BEFORE the child is started: booting a
+    /// multi-GiB model in order to say "I cannot read images" costs
+    /// minutes and answers nothing. Proven by the engine above having
+    /// no model at all — if the order were reversed, these would fail
+    /// with `model_path` instead of the refusal.
+    #[tokio::test]
+    async fn nothing_is_spawned_to_deliver_the_refusal() {
+        let engine = engine_that_cannot_start();
+        let err = engine.raw_chat(body_with_an_image()).await.unwrap_err();
+        assert!(
+            !err.to_string().contains("model_path"),
+            "the engine tried to start before refusing: {err}"
+        );
     }
 }
