@@ -155,3 +155,118 @@ with §2 rather than replacing it.
 Context: our own reviewed code carried 27 defects, four of them reachable
 guard bypasses. Review is how we found them, not a mechanism that stops
 them.
+
+---
+
+# Amendment 1 (2026-08-04) — build or adopt, and what "no third party" means
+
+Three questions came up the same day this was accepted. Recording the
+answers here rather than in a second ADR, because they are the same
+decision seen from different sides.
+
+## 1. Build our own storefront; do not fork GNOME Software
+
+The original text leaned on "GNOME Software exists" as a reason to defer.
+That is weak once you notice we intend to own the desktop anyway, so it
+needs replacing with a real argument. Here it is:
+
+**GNOME Software's trust model is per-package. Ours is per-capability.**
+It answers "is this package signed, and from a repo you trust?" We need to
+answer "what can this app do to your machine and on your behalf?" Those
+are different data models, and adopting it would mean fighting its schema
+precisely where the only interesting screen lives.
+
+Secondary, but real: it is C and PackageKit-shaped, while ADR-0047 commits
+our surfaces to GJS/GTK4. A store in the same stack as every other app is
+one we can iterate on by copying a file onto the device — the property
+that made a five-fix batch verifiable on hardware in one night.
+
+And a fork is a maintenance commitment forever: every upstream release
+becomes a rebase. That is justified for the Shell, where we need behaviour
+upstream will not take (#208's system-wide gesture is unreachable because
+mutter does not grant it to third parties). It is not justified for a
+component we would gut.
+
+## 2. `lisa-desktop` is pre-fork — do not plan against it
+
+`lisa-desktop`'s description says it is *becoming* a hard fork of GNOME
+Shell. As of 2026-08-04 it holds **extensions and the IME**
+(`overlay-extension`, `launcher`, `desktop`, `fcitx5-lisa`), which ride on
+stock GNOME Shell. `gnome-online-accounts-lisa`'s own PKGBUILD states
+"Nothing is forked" — stock with two `-D` flags.
+
+So no plan may assume fork-only capability. "We will own it because we are
+forking GNOME" is a plan resting on a plan, and treating intent as
+capability is the defect rule 10 names.
+
+## 3. "No third-party dependency" — the useful distinction
+
+The constraint is real but needs splitting, or it forbids things it should
+not:
+
+- **Depending on a SERVICE somebody else operates** — a remote we do not
+  control, an index we cannot rebuild, a build farm that can vanish. This
+  is what ADR-0034 §7a forbids for install/update/recovery, and what we
+  avoid here by choice.
+- **Using SOFTWARE somebody else wrote** — Flatpak, systemd, pacman, GTK.
+  Lisa is built almost entirely of this. Self-hosting the service while
+  using the software is not a compromise; it is the normal answer.
+
+### How elementary OS solved the same problem
+
+Worth copying, because they faced it directly. Their AppCenter:
+
+- **imports SOURCE from a git repository and builds it in a clean
+  environment on infrastructure they run** — developers submit a repo, not
+  a binary
+- runs the **review queue as pull requests**; merging publishes
+- ships apps through **their own hosted, curated Flatpak repo**, not
+  Flathub
+- **curates hard**: native GTK apps that respect system settings, each one
+  tested and reviewed before it reaches users
+
+The dependency they refused is the one that matters: **they never accept a
+stranger's binary.** They chose to depend on Flatpak (software) and on
+GitHub Actions (a service) — and their own remote is the part they kept.
+
+### Lisa's position is structurally stronger, because of ADR-0047
+
+Our apps are interpreted GJS. There is no compile step, so
+"build from source in a clean environment" collapses into "review the
+source and sign it": **the artifact IS the source.** A reviewer reads what
+runs, and a shipped app cannot diverge from the reviewed code the way a
+binary can. Reproducible builds are a problem we do not have to solve
+because we do not have builds.
+
+That yields the rule for third-party apps, whenever we get there:
+
+1. **Source in, source out.** We accept a repository, review the source,
+   and ship the same files. No binaries from strangers, ever.
+2. **We host the index and the artifacts.** Signed with the key
+   `lisa-keyring` already ships.
+3. **Software we did not write is fine; services we do not run are a
+   decision.** Any such dependency gets named in the ADR that adopts it.
+4. **Capability is enforced, not declared** — §2 of this ADR, unchanged
+   and still the gate.
+
+### On Flatpak specifically
+
+Still not rejected. Its sandbox and permission model are real, and it is
+self-hostable, so using it need not mean depending on Flathub. But it
+solves *isolation*, not *agent-surface capability* — a Flatpak permission
+says nothing about which tools a model may call through the Agent Bus. If
+adopted, it composes with §2 rather than replacing it, and it does not
+change the sequencing.
+
+## Our own apps come first, and that part is unblocked
+
+The first-party catalog carries Mail, Surfer, Preview, Notes, Recorder and
+the shell surfaces — apps we build, review and sign, where the manifest
+and its enforcement have the same author. It needs none of §2–§4.
+
+It does need the apps channel to work. As of 2026-08-04 it does not
+(#239): `lisa apps update` reported success while installing to a path the
+launcher never reads, and the channel did not carry `apps/` at all. **A
+storefront's Install button would sit directly on that mechanism**, which
+is the sharpest possible argument for fixing delivery before building a
+face for it.
