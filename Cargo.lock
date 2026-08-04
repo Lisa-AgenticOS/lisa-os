@@ -1315,6 +1315,7 @@ dependencies = [
  "harness-core",
  "hex",
  "liblisa",
+ "lisa-agentd",
  "lisa-contextd",
  "lisa-guard",
  "lisa-ledger",

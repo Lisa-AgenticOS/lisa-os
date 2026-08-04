@@ -102,6 +102,16 @@ pub struct Request {
     pub workspace: Option<std::path::PathBuf>,
     /// One `name: description` line per skill, or empty.
     pub skills_catalog: String,
+    /// The skills this run may load — the same set the catalog above
+    /// advertises and the `read_skill` tool serves.
+    ///
+    /// This field is why the allowlist is in force at all (#245). The
+    /// loop's enforcement point has been live since #57, but every
+    /// production caller took `AgentConfig::skills`'s default of
+    /// `Vec::new()`, so `Skill::allowed_by` intersected nothing and a
+    /// `tools:` line was decoration. Handing the loop the offered set is
+    /// the missing input.
+    pub skills: Vec<harness_core::Skill>,
 }
 
 /// Cancellation, shared with the loop that has to honour it.
@@ -166,6 +176,10 @@ pub fn run(
         system_prompt: system_prompt(&req.workspace, &req.skills_catalog),
         prior_turns: req.history,
         attachments: req.attachments,
+        // The input the enforcement point never got (#245). The loop
+        // offers these, and applies a skill's `tools:` line once it has
+        // served that skill's body.
+        skills: req.skills,
         // The stop button, handed to the thing that can act on it.
         cancel,
         ..AgentConfig::new(ledger)
@@ -230,7 +244,244 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_harness::{ToolCall, ToolOutcome, ToolSpec};
+    use std::io::{BufRead, BufReader, Write};
     use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A model that answers scripted SSE frames — the real
+    /// `OpenAiBackend` on the real wire, because `run()` constructs its
+    /// own backend and a test that swapped it out would not be testing
+    /// `run()`.
+    ///
+    /// Returns one canned response per request, in order, and records
+    /// every request body so a test can assert what the model was told.
+    struct StubModel {
+        port: u16,
+        seen: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl StubModel {
+        fn start(responses: Vec<&'static str>) -> StubModel {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().unwrap().port();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&seen);
+            std::thread::spawn(move || {
+                for (i, stream) in listener.incoming().enumerate() {
+                    let Ok(mut stream) = stream else { break };
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut len = 0usize;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                            len = v.trim().parse().unwrap_or(0);
+                        }
+                        if line == "\r\n" || line == "\n" {
+                            break;
+                        }
+                    }
+                    let mut body = vec![0u8; len];
+                    std::io::Read::read_exact(&mut reader, &mut body).expect("body");
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
+                        recorded.lock().unwrap().push(v);
+                    }
+                    // Past the end of the script the model just says done,
+                    // so a loop that takes an unexpected extra turn ends
+                    // rather than hanging the suite.
+                    let frames = responses.get(i).copied().unwrap_or(
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\ndata: [DONE]\n\n",
+                    );
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{frames}",
+                        frames.len()
+                    );
+                    let _ = stream.flush();
+                }
+            });
+            StubModel { port, seen }
+        }
+
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+    }
+
+    /// SSE for "call this tool with these arguments".
+    fn call_frames(name: &str, args: &str) -> String {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"c1\",\
+             \"function\":{{\"name\":\"{name}\",\"arguments\":{}}}}}]}}}}]}}\n\n\
+             data: [DONE]\n\n",
+            serde_json::Value::String(args.to_string())
+        )
+    }
+
+    /// A tool family that counts what it was actually asked to run.
+    struct CountingTool {
+        name: &'static str,
+        ran: Arc<AtomicUsize>,
+    }
+
+    impl ToolProvider for CountingTool {
+        fn specs(&self) -> Vec<ToolSpec> {
+            vec![ToolSpec::new(
+                self.name,
+                "a tool that records having run",
+                serde_json::json!({"type": "object", "properties": {}}),
+            )]
+        }
+        fn execute(&self, _call: &ToolCall) -> ToolOutcome {
+            self.ran.fetch_add(1, Ordering::SeqCst);
+            ToolOutcome::ok("ran", false)
+        }
+    }
+
+    /// Write a skill whose `tools:` line names `allows`, and return the
+    /// loaded set the way production loads it.
+    fn skill_dir(dir: &std::path::Path, allows: &str) -> Vec<harness_core::Skill> {
+        std::fs::write(
+            dir.join("scoped.md"),
+            format!("---\nname: scoped-skill\ndescription: a scoped workflow\ntools: {allows}\n---\nDo the thing.\n"),
+        )
+        .unwrap();
+        forge_harness::skills::load_from(&[dir.to_path_buf()])
+    }
+
+    /// One run through `loop_runner::run` — the production entry point
+    /// the D-Bus surface calls — against the stub model.
+    fn run_once(
+        url: String,
+        skills: Vec<harness_core::Skill>,
+        providers: &[&dyn ToolProvider],
+    ) -> Vec<Progress> {
+        let led = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(lisa_ledger::Ledger::open(led.path().join("l.db")).unwrap());
+        let req = Request {
+            prompt: "do the scoped thing".into(),
+            history: Vec::new(),
+            attachments: Vec::new(),
+            url,
+            model: None,
+            max_turns: 4,
+            workspace: None,
+            skills_catalog: crate::skills::catalog_lines(&skills),
+            skills,
+        };
+        let mut out = Vec::new();
+        run(req, providers, ledger, Cancel::default(), &mut |p| {
+            out.push(p)
+        });
+        out
+    }
+
+    /// **The guarantee, on the production path (#245).**
+    ///
+    /// A skill on disk declares `tools: allowed_tool`. The model loads
+    /// it with `read_skill` — which is how a skill starts driving — and
+    /// then asks for `forbidden_tool`. The tool must never run.
+    ///
+    /// Everything here is the shipping path: `forge_harness::skills`
+    /// loads the file, `loop_runner::run` builds the config, the real
+    /// `OpenAiBackend` speaks to a socket. Nothing sets
+    /// `AgentConfig::skills` by hand — that is exactly the thing #245
+    /// says was only ever done in a unit test.
+    #[test]
+    fn a_skills_allowlist_stops_a_tool_the_loop_would_otherwise_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = skill_dir(dir.path(), "allowed_tool, read_skill");
+        let model = StubModel::start(vec![
+            Box::leak(call_frames("read_skill", "{\"name\":\"scoped-skill\"}").into_boxed_str()),
+            Box::leak(call_frames("forbidden_tool", "{}").into_boxed_str()),
+        ]);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let forbidden = CountingTool {
+            name: "forbidden_tool",
+            ran: Arc::clone(&ran),
+        };
+        let skill_tools = crate::skills::SkillTools::new(skills.clone());
+        let providers: [&dyn ToolProvider; 2] = [&forbidden, &skill_tools];
+
+        run_once(model.url(), skills, &providers);
+
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            0,
+            "a tool outside the active skill's allowlist was dispatched"
+        );
+        // And the model was told why, rather than the call vanishing.
+        let seen = model.seen.lock().unwrap();
+        let last = seen.last().expect("the loop kept talking to the model");
+        let text = last.to_string();
+        assert!(
+            text.contains("not permitted by the active skill"),
+            "the refusal never reached the model: {text}"
+        );
+    }
+
+    /// The positive control. Same run, same tool, same everything —
+    /// except the skill names the tool. It runs.
+    ///
+    /// Without this the test above passes for a loop that dispatches
+    /// nothing at all, which is the failure mode of every allowlist
+    /// test ever written.
+    #[test]
+    fn the_same_tool_runs_when_the_skill_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = skill_dir(dir.path(), "forbidden_tool, read_skill");
+        let model = StubModel::start(vec![
+            Box::leak(call_frames("read_skill", "{\"name\":\"scoped-skill\"}").into_boxed_str()),
+            Box::leak(call_frames("forbidden_tool", "{}").into_boxed_str()),
+        ]);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let tool = CountingTool {
+            name: "forbidden_tool",
+            ran: Arc::clone(&ran),
+        };
+        let skill_tools = crate::skills::SkillTools::new(skills.clone());
+        let providers: [&dyn ToolProvider; 2] = [&tool, &skill_tools];
+
+        run_once(model.url(), skills, &providers);
+
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            1,
+            "the allowlist blocked a tool it names"
+        );
+    }
+
+    /// A skill that was never loaded does not restrict anything.
+    ///
+    /// The allowlist attaches when a body is SERVED, not when a file
+    /// happens to exist on the machine: otherwise installing any scoped
+    /// skill would quietly narrow every unrelated conversation, and the
+    /// Assistant would start refusing to search context because someone
+    /// dropped a workflow in `~/.local/share/lisa/skills`.
+    #[test]
+    fn an_unloaded_skill_restricts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = skill_dir(dir.path(), "nothing_at_all");
+        let model = StubModel::start(vec![Box::leak(
+            call_frames("forbidden_tool", "{}").into_boxed_str(),
+        )]);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let tool = CountingTool {
+            name: "forbidden_tool",
+            ran: Arc::clone(&ran),
+        };
+        let skill_tools = crate::skills::SkillTools::new(skills.clone());
+        let providers: [&dyn ToolProvider; 2] = [&tool, &skill_tools];
+
+        run_once(model.url(), skills, &providers);
+
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+    }
 
     /// Each appended section has to start on its own line.
     ///

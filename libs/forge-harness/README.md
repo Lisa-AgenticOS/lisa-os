@@ -1,12 +1,21 @@
 # forge-harness — the agentic app-building loop
 
-Spec: docs/PLAN.md §5.12.1. Milestone: M6. Governance: ADR-0004 (Flutter
-lane), ADR-0027 (on-device SDK + launch), ADR-0029 (guardrails).
+Spec: docs/PLAN.md §5.12.1. Milestone: M6. Governance: ADR-0047 (GJS +
+GTK4 is the one toolkit), ADR-0050 (`lisa dev check` is the checker),
+ADR-0029 (guardrails), ADR-0025 (one agent loop). ADR-0004/ADR-0027
+describe the Flutter lane, which is parked.
 
-plan → edit files (jailed to project dir) → `dart analyze` / `flutter
-analyze` → iterate. Pluggable backends: local coder models, a remote
-provider, or any agent CLI over the same tool jail. Hot-reload preview and
-VLM screenshot self-inspection are still ahead.
+plan → edit files (jailed to project dir) → run the verifier → feed its
+findings back → iterate. Pluggable backends: local coder models, a
+remote provider, or any agent CLI over the same tool jail. Hot-reload
+preview and VLM screenshot self-inspection are still ahead.
+
+**The verifier is the loop's own judgement, not the model's.** A
+`DoneClaimed` is followed by a check rather than believed. Three arms
+(`Verifier`): `Command { program, args }` — what `lisa forge` uses, with
+`lisa dev check` as the program (ADR-0050 §4); `Dart` — the parked
+lane's `dart analyze`; and `None`, for surfaces with no project at all
+(the Assistant, `lisa assist`).
 
 ## Attachments on the task turn (#209)
 
@@ -48,26 +57,65 @@ Nobody is watching it, so the boundaries are deterministic and live in
   tool output for the model to route around.
 
 **The limit, stated plainly:** none of that confines a *subprocess*.
-`run_tests` invokes `cargo test` / `flutter test` over source the model
-just wrote, which executes `build.rs` and test bodies as the user,
-outside every guard above. So: **jailed for its own file tools,
-(ADR-0029 phase 3); until it lands, run the forge loop on projects you'd
+`run_tests` invokes `cargo test` (or the parked lane's `flutter test`)
+over source the model just wrote, which executes `build.rs` and test
+bodies as the user, outside every guard above. Landlock closes this on
+Linux (ADR-0029 phase 3, below); elsewhere the subprocess runs
+unconfined and says so, so run the forge loop on projects you would
 already be willing to `cargo test`.
+
+The same reasoning is why **`lisa dev check` does not run an app's own
+suite**: the verifier is plain argv with none of that confinement, and a
+checker that executes model-authored code in order to verify it would
+hand the loop the escape the jail exists to prevent. `run_tests` reports
+that a `tests/*.test.js` suite exists and that no JS runtime is on
+`lisa-guard`'s command allowlist, rather than calling a real suite
+"unrecognized".
 
 Driven from the CLI (`cli/lisa`, `lisa forge`):
 
 | verb | what it does |
 |---|---|
-| `lisa forge --setup` | install the pinned Flutter SDK to `/var/lib/lisa/flutter` — sha256-pinned tarball on x86_64, commit-pinned checkout on aarch64 (ADR-0027) |
-| `lisa forge --flutter "…"` | scaffold a lisa_ui app (pubspec + `LisaApp` stub + smoke test) and run the loop with `flutter analyze` as the verifier |
-| `lisa forge --build` / `--run` | `flutter build linux --release`, install the bundle under the forge apps dir, write the `.desktop` entry, optionally launch |
+| `lisa forge "a notes app"` | the default lane: write a GJS + GTK4/Adwaita app, verified each turn by `lisa dev check`. No scaffold and no toolchain — the source is interpreted, so an empty directory is a legitimate start and the checker says "no sources" until the model writes some |
+| `lisa forge --flutter "…"` | **the parked lane** (ADR-0047): scaffold a `lisa_ui` Flutter app and verify with `flutter analyze`. Needs an SDK; nothing user-facing has ever been built this way |
+| `lisa forge --setup` | fetch the pinned Flutter SDK for that lane into the user's own data dir — sha256-pinned tarball on x86_64, commit-pinned checkout on aarch64 (ADR-0027). Never needs `sudo` (#243) |
+| `lisa forge --build` / `--run` | Flutter only: `flutter build linux --release`, install the bundle under the forge apps dir, write the `.desktop` entry, optionally launch |
 
-The workflow itself is a skill (`skills/build-lisa-ui-app/SKILL.md`,
+The workflow itself is a skill (`skills/build-lisa-app/SKILL.md`,
 ADR-0025), not hardcoded prose.
 
-Status: **loop live** — plan→edit(jailed)→analyze→iterate converges
-against real models and the scripted-backend test; the Flutter lane
-scaffolds, verifies, builds and installs.
+Status: **loop live** — plan→edit(jailed)→check→iterate converges
+against real models and the scripted-backend test. `cli/lisa/tests/forge_verifier.rs`
+runs the default lane's verifier as a real subprocess against a real app
+tree, in both directions: an empty project reports findings, a
+well-formed GJS app verifies clean.
+
+## Skills scope what the loop may call (#57, #245)
+
+`AgentConfig::skills` is the set of skills a run may LOAD — the same set
+`read_skill` serves and the system prompt's catalog advertises
+(`skills::load()` is the one search path, shared with `lisa skills`).
+
+A skill's `tools:` frontmatter takes effect **when its body is served**,
+not when its file exists on the machine:
+
+- a skill sitting unread in `~/.local/share/lisa/skills` narrows
+  nothing, so installing one cannot silently break an unrelated
+  conversation;
+- the restriction attaches at the moment untrusted text enters the
+  context, and the loop applies the frontmatter of the body it *served*
+  — a third-party skill (ADR-0049) cannot widen its own allowlist by
+  saying so in its body.
+
+Allowlists **intersect** across active skills, so activating a second,
+unrestricted skill cannot restore the full tool set. A refused call comes
+back as tool *output* naming what is allowed, not as an error that ends
+the run.
+
+This is scoping, not a guardrail in the ADR-0030 sense — what stands
+between the model and the machine is the guard, the jail and the tiers.
+The model can decline to load a skill, and gains nothing by declining
+except the loss of the workflow.
 
 ## Limits and open issues
 

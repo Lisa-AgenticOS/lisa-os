@@ -7,7 +7,7 @@ useHead({ title: 'Building apps — Lisa OS developers' })
   <div>
     <span class="eyebrow">Docs / Building apps</span>
     <h1>Apps on Lisa.</h1>
-    <p class="lede">Two lanes today: the GJS shell surfaces that ship in the image (Assistant, Ledger app, Settings, the overlay backend under <code>shell/</code>), and the Flutter lane built on <code>lisa_ui</code>. Apps expose their actions to the system as MCP tools; the Agent Bus enforces confirmation tiers so apps don't have to.</p>
+    <p class="lede">One toolkit: <strong>GJS + GTK4/Adwaita</strong> (ADR-0047). The shell surfaces that ship in the image (Assistant, Ledger app, Settings, the overlay backend under <code>shell/</code>) and the apps (Mail, Surfer, Preview) are the same shape, so a fix reaches a device by copying files. Apps expose their actions to the system as MCP tools; the Agent Bus enforces confirmation tiers so apps don't have to.</p>
 
     <h2>The <code>lisa-app</code> launcher</h2>
     <p>Shell apps are interpreted (GJS), so updating them is copying files. <code>/usr/bin/lisa-app &lt;relpath&gt;</code> execs <code>gjs -m</code> on the app entry point, resolved out of the current apps tree. It does not know where that tree is: it asks <code>lisa apps path shell</code>, the same function <code>lisa apps update</code> installs through, so the writer and the reader cannot disagree (issue #239). <code>.desktop</code> files and D-Bus activation exec via <code>lisa-app</code>, so an updated tree takes effect on the next app launch, no reboot (ADR-0020).</p>
@@ -41,10 +41,14 @@ lisa apps path shell<span class="c"># the directories a launcher searches, best 
     <h2>Exposing tools (MCP manifests)</h2>
     <p>An app declares its actions in a manifest: typed tools with a JSON Schema per input, a confirmation <code>tier</code> (<code>read</code> / <code>write</code> / <code>destructive</code>), and optional <code>undo</code> mappings the bus journals for <code>lisa undo</code>. The Notes app (<code>apps/notes</code>) is the worked example — see the <NuxtLink to="/api#mcp">manifest walkthrough in the API reference</NuxtLink>. Tiers are enforced at the bus, not by app goodwill.</p>
 
-    <h2>The Flutter lane and <code>lisa_ui</code></h2>
-    <p><code>libs/lisa_ui</code> is the widget kit Lisa apps import (ADR-0014, phase 1): a curated re-export of the Material vocabulary plus Lisa-branded widgets and theming, behind a single <code>import 'package:lisa_ui/lisa_ui.dart'</code>. Violet seed color, Material 3, Rubik (OS-installed, platform sans fallback). Phase 2 swaps the backend to a vendored, re-themed Material fork with no app-facing API change.</p>
-    <p><code>libs/lisa_flutter</code> is the zero-dependency Dart transport for the OpenAI-compatible endpoint, with a live round trip against the daemon.</p>
-    <div class="note">Honest status: the kit is ready and widget-tested (see the <NuxtLink to="/design">Design page</NuxtLink> for the widget inventory), but the Flutter <em>app lane</em> — Forge-generated apps, Flatpak packaging, capability manifests — is milestone M6 and still pending. Notes and Recorder are slated to be built in this lane as permanent dogfood (PLAN §5.8).</div>
+    <h2>Checking an app: <code>lisa dev check</code></h2>
+    <p>One command decides whether a directory is a valid Lisa app (ADR-0050), and it is the same judgement the Forge uses as its verifier — so generated code and hand-written code are held to one standard. It gates on there being source at all, on no top-level <code>await</code> in an entry module (the failure that binds a socket, advertises it and answers nothing, with no error in any log), and on the manifest, parsed by the same code <code>lisa-agentd</code> runs.</p>
+    <pre><code>lisa dev check apps/notes   <span class="c"># exits non-zero, with findings</span>
+lisa forge "a notes app" --project ~/notes</code></pre>
+    <p>It deliberately does not run the app's own tests and makes no JavaScript syntax claim — the verifier runs unconfined, and a checker that executes model-written code in order to verify it would hand the loop the escape the jail exists to prevent.</p>
+
+    <h2>The Flutter lane is parked</h2>
+    <p><code>libs/lisa_ui</code> and <code>libs/lisa_flutter</code> are kept, not deleted, and neither is the way to build an app (ADR-0047). Nothing user-facing was ever written in Flutter; the reasons GJS won were iteration on real hardware, desktop integration (portals, D-Bus activation, AT-SPI, input methods) that GTK4 gets for free, and one toolkit meaning one design-token sheet, one test harness and one set of idioms. The image ships no <code>lisa_ui</code> payload and the CLI declares no Flutter dependencies.</p>
 
     <h2>No SDK required</h2>
     <p>You don't need anything Lisa-specific to build against the intelligence: the OpenAI-compatible endpoint on <code>127.0.0.1:7777</code> works with any existing OpenAI client — Electron, web, CLI, anything. Guided generation (<code>response_format: json_schema</code>) gives you typed output that always parses. See <NuxtLink to="/api">the API reference</NuxtLink> and <a :href="`${repo}/tree/main/docs/sdk/samples`">docs/sdk/samples</a>.</p>

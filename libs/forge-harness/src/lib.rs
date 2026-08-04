@@ -9,8 +9,10 @@
 //! as free-form model output. Every file operation is mediated by the
 //! [`jail::Jail`], so path traversal stays impossible no matter what the
 //! model asks for. Each turn the backend either calls one tool or signals
-//! done; a [`Verifier`] (`dart analyze` by default, any command, or none)
-//! decides whether "done" is believed. Hot-reload preview + VLM
+//! done; a [`Verifier`] decides whether "done" is believed — `lisa dev
+//! check` for the default GJS lane (ADR-0047, ADR-0050), any other
+//! command, `dart analyze` for the parked Flutter lane, or none for a
+//! surface with no project at all. Hot-reload preview + VLM
 //! self-inspection join the loop next (run-controller).
 
 pub mod agent;
@@ -18,6 +20,7 @@ pub mod confine;
 pub mod jail;
 pub mod openai;
 pub mod shell_tool;
+pub mod skills;
 pub mod tools;
 
 pub use agent::{
@@ -27,6 +30,7 @@ pub use agent::{
 };
 pub use openai::{OpenAiBackend, backend_refusal, streaming_request_body};
 pub use shell_tool::{ShellRequest, ShellTool};
+pub use skills::{READ_SKILL, SkillTools};
 pub use tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 
 use serde::Deserialize;

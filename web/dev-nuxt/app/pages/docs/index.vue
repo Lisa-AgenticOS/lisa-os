@@ -12,7 +12,7 @@ useHead({ title: 'Docs — Lisa OS developers' })
     <div class="grid" style="margin-top:34px">
       <NuxtLink class="card" to="/docs/getting-started"><h3>Getting started</h3><p>Flash the USB image, boot it, install to disk, stay updated — A/B slots with automatic rollback.</p></NuxtLink>
       <NuxtLink class="card" to="/docs/architecture"><h3>Architecture</h3><p>The daemon map, the portal trust boundary, the Ledger, and the egress rules — plus every ADR.</p></NuxtLink>
-      <NuxtLink class="card" to="/docs/apps"><h3>Building apps</h3><p>The GJS shell surfaces, the <code>lisa-app</code> launcher, the app update channel, and the Flutter lane.</p></NuxtLink>
+      <NuxtLink class="card" to="/docs/apps"><h3>Building apps</h3><p>One toolkit (GJS + GTK4/Adwaita), the <code>lisa-app</code> launcher, the app update channel, and <code>lisa dev check</code>.</p></NuxtLink>
       <NuxtLink class="card" to="/docs/cli"><h3>CLI reference</h3><p>Every <code>lisa</code> verb, generated from the actual command definitions in the repo.</p></NuxtLink>
     </div>
 

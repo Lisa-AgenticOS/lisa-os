@@ -24,6 +24,10 @@ bus-tools = { version = "0.1.0", path = "../../libs/bus-tools" }
 harness-core = { version = "0.1.0", path = "../../libs/harness-core" }
 hex = "0.4.3"
 liblisa = { version = "0.1.0", path = "../../libs/liblisa" }
+# agentd's manifest parser, for `lisa dev check` (ADR-0050 §4.1): the
+# checker calls the grammar the bus enforces rather than restating it,
+# because a rule that exists twice is #218 with different nouns.
+lisa-agentd = { version = "0.1.0", path = "../../daemons/agentd" }
 lisa-contextd = { version = "0.1.0", path = "../../daemons/contextd" }
 lisa-ledger = { version = "0.1.0", path = "../../libs/lisa-ledger" }
 lisa-modeld = { version = "0.1.0", path = "../../daemons/modeld" }

@@ -9,6 +9,7 @@
 mod agent;
 mod apps;
 mod bus_tools;
+mod dev;
 mod doctor;
 mod guard;
 mod mail;
@@ -305,16 +306,18 @@ enum Command {
             env = "LISA_INFERENCE_URL"
         )]
         url: String,
-        /// Max plan→edit→analyze iterations before giving up.
+        /// Max plan→edit→check iterations before giving up.
         #[arg(long, default_value_t = 6)]
         max_iters: usize,
-        /// Forge a lisa_ui Flutter app: scaffolds the project (lisa_ui
-        /// path dependency, LisaApp stub, smoke test) and verifies with
-        /// `flutter analyze`. Needs the flutter SDK (see --setup).
+        /// Forge a Flutter app instead — the PARKED lane (ADR-0047).
+        /// Scaffolds a lisa_ui project and verifies with `flutter
+        /// analyze`. Needs the flutter SDK (see --setup). The default
+        /// lane is GJS + GTK4/Adwaita, checked by `lisa dev check`.
         #[arg(long)]
         flutter: bool,
-        /// Provision the pinned Flutter SDK to /var/lib/lisa/flutter
-        /// (hash-pinned; Lisa devices, x86_64 + aarch64) and exit.
+        /// Provision the pinned Flutter SDK for the parked lane into
+        /// your own data dir (hash-pinned; x86_64 + aarch64) and exit.
+        /// Never needs sudo.
         #[arg(long)]
         setup: bool,
         /// Build --project for Linux and install it: bundle under the
@@ -325,6 +328,11 @@ enum Command {
         /// --build, then launch the app.
         #[arg(long)]
         run: bool,
+    },
+    /// Developer tooling for building on Lisa (ADR-0050).
+    Dev {
+        #[command(subcommand)]
+        cmd: DevCmd,
     },
     /// Skills: the SKILL.md workflows Lisa loads on demand (ADR-0025).
     Skills {
@@ -394,6 +402,17 @@ enum GuardCmd {
     Allow { rule: String },
     /// Enforce a rule again.
     Forbid { rule: String },
+}
+
+#[derive(Subcommand)]
+enum DevCmd {
+    /// Check an app tree: the single authority on what a valid Lisa app
+    /// is (ADR-0050 §4). Exits non-zero with findings; `lisa forge`
+    /// runs it as its verifier.
+    Check {
+        /// The app directory (default: the current one).
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -768,6 +787,9 @@ fn run() -> anyhow::Result<()> {
                 forge_cmd(&task.join(" "), &project, model, &url, max_iters, flutter)
             }
         }
+        Command::Dev { cmd } => match cmd {
+            DevCmd::Check { path } => dev::check_cmd(path),
+        },
         Command::Skills { cmd } => match cmd {
             SkillsCmd::List => skills::list(),
             SkillsCmd::Show { name } => skills::show(&name),
@@ -1164,7 +1186,30 @@ const FLUTTER_SDK_SHA256: &str = "a0edd646c159c0e816788c0e46a4f071199c1320495898
 /// install as tightly as the sha256 pins the x86_64 tarball (ADR-0027).
 const FLUTTER_SDK_COMMIT: &str = "84fc5cbb223bc12f83d65b647ff8a56caf779ffd";
 const FLUTTER_GIT_URL: &str = "https://github.com/flutter/flutter.git";
-const FLUTTER_VAR_DIR: &str = "/var/lib/lisa/flutter";
+/// Where a *previous* release installed the SDK. Read, never written
+/// (issue #243): a device that already took the `/var` install keeps
+/// finding it.
+const FLUTTER_LEGACY_VAR_DIR: &str = "/var/lib/lisa/flutter";
+
+/// Where `lisa forge --setup` installs the parked lane's SDK now.
+///
+/// **In the user's home, and never under `sudo` (#243).** It used to be
+/// `/var/lib/lisa/flutter`, which no ordinary user can create — so the
+/// verb's own error text said *"run `sudo lisa forge --setup`"*. CLAUDE.md
+/// 7b and ADR-0034 §3 forbid exactly that: nothing user-facing needs
+/// sudo, and `escalate.privilege` is an unoverridable `Deny` in our own
+/// guard. A user-facing verb printing instructions to escalate is the
+/// shape that rule exists to prevent.
+///
+/// `$HOME` is also the right place on the merits: a Flutter SDK is
+/// per-user developer tooling, not a system payload, and on Lisa `/home`
+/// is its own partition (ADR-0019) so it survives A/B updates anyway.
+fn flutter_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("LISA_FLUTTER_DIR") {
+        return PathBuf::from(p);
+    }
+    user_data_dir().join("lisa/flutter")
+}
 
 /// How the pinned SDK is obtained for a given CPU architecture.
 ///
@@ -1220,9 +1265,11 @@ fn flutter_program() -> String {
     if on_path {
         return "flutter".into();
     }
-    let var_bin = std::path::Path::new(FLUTTER_VAR_DIR).join("bin/flutter");
-    if var_bin.is_file() {
-        return var_bin.to_string_lossy().into_owned();
+    for base in [flutter_dir(), PathBuf::from(FLUTTER_LEGACY_VAR_DIR)] {
+        let bin = base.join("bin/flutter");
+        if bin.is_file() {
+            return bin.to_string_lossy().into_owned();
+        }
     }
     "flutter".into() // let the spawn error carry the message
 }
@@ -1235,7 +1282,8 @@ fn forge_setup() -> anyhow::Result<()> {
     let on_path = std::env::var_os("PATH")
         .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join("flutter").is_file()));
     if on_path
-        || std::path::Path::new(FLUTTER_VAR_DIR)
+        || flutter_dir().join("bin/flutter").is_file()
+        || std::path::Path::new(FLUTTER_LEGACY_VAR_DIR)
             .join("bin/flutter")
             .is_file()
     {
@@ -1246,7 +1294,8 @@ fn forge_setup() -> anyhow::Result<()> {
         bail!("`lisa forge setup` provisions Lisa devices; install Flutter yourself on dev hosts");
     }
     let plan = flutter_install_plan(std::env::consts::ARCH)?;
-    let dest = std::path::Path::new(FLUTTER_VAR_DIR);
+    let dest = flutter_dir();
+    let dest = dest.as_path();
     // A leftover dest without bin/flutter would survive the early "already
     // available" check and then fail the final rename after the whole
     // download (#43) — surface it now, and let the user remove it (we
@@ -1254,18 +1303,16 @@ fn forge_setup() -> anyhow::Result<()> {
     if dest.exists() {
         bail!(
             "{} exists but holds no usable SDK (bin/flutter missing) — \
-             remove it (sudo rm -r {}) and rerun",
-            dest.display(),
+             remove it and rerun (we never delete a directory we did not \
+             just create)",
             dest.display()
         );
     }
-    let parent = dest.parent().expect("FLUTTER_VAR_DIR has a parent");
-    std::fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "creating {} — run `sudo lisa forge --setup` on a device",
-            parent.display()
-        )
-    })?;
+    let parent = dest.parent().expect("the SDK dir has a parent");
+    // No sudo, and no advice to use it: this is under the user's own
+    // data dir, so a failure here is a real failure (a full disk, a
+    // read-only home) and not a missing privilege.
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     match plan {
         FlutterInstall::Tarball { url, sha256 } => {
             install_flutter_tarball(parent, dest, url, sha256)?
@@ -1279,8 +1326,9 @@ fn forge_setup() -> anyhow::Result<()> {
     // absolute paths, so it must see its final home.
     flutter_bootstrap(dest);
     println!(
-        ">> Flutter {FLUTTER_SDK_VERSION} installed at {FLUTTER_VAR_DIR} — \
-         `lisa forge --flutter` will find it automatically"
+        ">> Flutter {FLUTTER_SDK_VERSION} installed at {} — \
+         `lisa forge --flutter` will find it automatically",
+        dest.display()
     );
     Ok(())
 }
@@ -1303,12 +1351,8 @@ fn install_flutter_tarball(
             .call()
             .context("downloading the Flutter SDK")?;
         let mut reader = resp.body_mut().as_reader();
-        let mut file = std::fs::File::create(&part).with_context(|| {
-            format!(
-                "creating {} — run `sudo lisa forge --setup` on a device",
-                part.display()
-            )
-        })?;
+        let mut file =
+            std::fs::File::create(&part).with_context(|| format!("creating {}", part.display()))?;
         let mut hasher = sha2::Sha256::new();
         let mut buf = [0u8; 1 << 16];
         loop {
@@ -1426,8 +1470,11 @@ fn lisa_ui_path() -> anyhow::Result<PathBuf> {
         return Ok(installed);
     }
     bail!(
-        "lisa_ui not found — set LISA_UI_PATH to a lisa_ui checkout \
-         (packaged path /usr/share/lisa/lisa_ui is absent)"
+        "lisa_ui not found — set LISA_UI_PATH to a `libs/lisa_ui` checkout. \
+         The OS no longer ships one: the Flutter lane is parked (ADR-0047) \
+         and #37 is closed won't-do, so /usr/share/lisa/lisa_ui is absent by \
+         design. A Lisa app is GJS + GTK4/Adwaita — drop --flutter and run \
+         `lisa dev check` to see what one needs."
     );
 }
 
@@ -1522,6 +1569,27 @@ fn scaffold_flutter_app(project: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The verifier the default (GJS) lane runs — `lisa dev check`, this
+/// binary, ADR-0050 §4.
+///
+/// A function rather than an expression inside `forge_cmd` so a test can
+/// assert what the Forge actually selects. `cli/lisa/tests/forge_verifier.rs`
+/// executes the arm end to end but spells it itself, so it would keep
+/// passing if this ever went back to `Verifier::Dart` — which is the
+/// regression the whole of #243 is about.
+fn default_verifier() -> forge_harness::Verifier {
+    forge_harness::Verifier::Command {
+        // `current_exe` rather than the string "lisa": the binary running
+        // the loop IS the checker, so the verifier cannot pick up a
+        // different `lisa` from `$PATH` — or fail to find one at all in a
+        // dev checkout.
+        program: std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "lisa".into()),
+        args: vec!["dev".into(), "check".into()],
+    }
+}
+
 fn forge_cmd(
     task: &str,
     project: &PathBuf,
@@ -1557,18 +1625,31 @@ fn forge_cmd(
             args: vec!["analyze".into(), "--no-pub".into()],
         }
     } else {
-        let pubspec = project.join("pubspec.yaml");
-        if !pubspec.exists() {
-            std::fs::write(
-                &pubspec,
-                format!(
-                    "name: {}\ndescription: An app forged by LisaCode.\nenvironment:\n  sdk: ^3.0.0\n",
-                    dart_package_name(project)
-                ),
-            )?;
-            std::fs::create_dir_all(project.join("bin"))?;
-        }
-        forge_harness::Verifier::Dart
+        // The default lane is GJS (ADR-0047 §4), and its checker is
+        // `lisa dev check` (ADR-0050 §4) — not a `Verifier::Gjs` arm.
+        //
+        // The arm would have been smaller today and wrong tomorrow: it
+        // would be a second implementation of "what a valid Lisa app
+        // is", living where only a forge run can reach it, while the
+        // verb has to exist anyway for CI and for the person who edits
+        // the file after the loop ends. This repo's two most expensive
+        // defects are one truth in two places (#218 in triplicate, #239
+        // spelled two ways); adding a second copy on purpose, with a
+        // migration promised later, is how the interval that produces
+        // drift gets created deliberately.
+        //
+        // No scaffold is written. GJS is interpreted, so there is
+        // nothing to `pub get` and nothing to build (ADR-0050 §6): an
+        // empty directory is a legitimate start, and `lisa dev check`
+        // reports "no sources" until the model writes some — which is
+        // #29's gate, and the reason a bare "done" cannot converge on an
+        // empty tree.
+        //
+        // `current_exe` rather than the string "lisa": the binary
+        // running the loop is the checker, so the verifier cannot pick
+        // up a different `lisa` from `$PATH` — or fail to find one at
+        // all in a dev checkout.
+        default_verifier()
     };
     println!("LisaCode: building \"{task}\" in {}", project.display());
     let mut backend = forge_harness::OpenAiBackend {
@@ -3439,6 +3520,104 @@ mod update_staging_tests {
 #[cfg(test)]
 mod forge_tests {
     use super::*;
+
+    /// **No user-facing verb tells you to escalate** (#243, CLAUDE.md 7b,
+    /// ADR-0034 §3).
+    ///
+    /// `lisa forge --setup` wrote to `/var/lib/lisa/flutter`, which no
+    /// ordinary user can create, and then printed *"run `sudo lisa forge
+    /// --setup`"* when the create failed. `escalate.privilege` is an
+    /// unoverridable `Deny` in our own guard, so the CLI advising it is
+    /// the machine arguing with itself.
+    ///
+    /// Asserted over the source of the forge lane rather than by running
+    /// it, because the failure is a string a person only sees when the
+    /// path is already broken — the one place nobody looks.
+    #[test]
+    fn the_forge_lane_never_advises_sudo() {
+        let src = include_str!("main.rs");
+        let start = src
+            .find("The pinned Flutter SDK")
+            .expect("the forge setup block is in this file");
+        let end = src[start..]
+            .find("// `lisa forge --build` / `--run`")
+            .map(|o| start + o)
+            .expect("the SDK block ends where the build verbs begin");
+        let lane = &src[start..end];
+        for (i, line) in lane.lines().enumerate() {
+            // Comments may say the word — that is how the rule gets
+            // remembered. Code that PRINTS it is the defect.
+            let code = line.split("//").next().unwrap_or("");
+            assert!(
+                !code.contains("sudo"),
+                "the SDK setup lane advises sudo at line {i} of its block: {line}"
+            );
+        }
+        // And nowhere in the CLI does anything tell you to run one of
+        // our own verbs as root. `lisa update` may still print a
+        // `bootctl` recovery line — that is a bootloader command, not
+        // this program asking to be re-run with privilege it refuses to
+        // request.
+        // Built at runtime so this assertion is not itself a hit.
+        let needle = format!("{}{} lisa", "su", "do");
+        for (i, line) in src.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            assert!(
+                !code.contains(&needle),
+                "line {} tells the user to run a lisa verb with elevated \
+                 privilege: {line}",
+                i + 1
+            );
+        }
+    }
+
+    /// **The Forge's default lane runs `lisa dev check`** (#243,
+    /// ADR-0047 §4, ADR-0050 §4).
+    ///
+    /// It ran `Verifier::Dart`, which on a directory of `.js` files
+    /// reports "the project contains no Dart source files yet" and can
+    /// never converge — so the headline feature could not produce the
+    /// kind of app Lisa ships. `tests/forge_verifier.rs` proves the arm
+    /// works; this proves it is the arm chosen.
+    #[test]
+    fn the_default_lane_verifies_with_lisa_dev_check() {
+        let forge_harness::Verifier::Command { program, args } = default_verifier() else {
+            panic!(
+                "the default lane must run a command verifier — a \
+                 language-specific arm is a second opinion about what a \
+                 valid Lisa app is (ADR-0050 §4)"
+            );
+        };
+        assert_eq!(args, ["dev", "check"]);
+        assert!(
+            std::path::Path::new(&program).is_absolute(),
+            "the verifier resolves `lisa` through $PATH: {program}"
+        );
+    }
+
+    /// The SDK lands in the user's own data dir, not on `/var`.
+    #[test]
+    fn the_sdk_installs_into_the_users_home() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: single-threaded test process env manipulation, the
+        // same shape the other env-driven tests in this file use.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", dir.path());
+            std::env::remove_var("LISA_FLUTTER_DIR");
+        }
+        let d = flutter_dir();
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+        assert!(
+            d.starts_with(dir.path()),
+            "the SDK still installs outside the user's home: {}",
+            d.display()
+        );
+        assert_ne!(
+            d,
+            std::path::Path::new(FLUTTER_LEGACY_VAR_DIR),
+            "the SDK still installs to the system state dir"
+        );
+    }
 
     #[test]
     fn every_supported_arch_has_a_pinned_artifact_and_the_rest_refuse() {

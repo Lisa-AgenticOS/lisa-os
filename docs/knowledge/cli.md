@@ -18,13 +18,32 @@ request). PNG/JPEG/WebP/GIF ride `image_url`; WAV/MP3 ride
 text-only local model the request is refused with that reason, never
 answered blind. Repeat `--attach` for several files.
 
-**Forge verbs (PLAN §5.12.1, ADR-0027):** `lisa forge --setup` installs the
-pinned Flutter SDK to `/var/lib/lisa/flutter` (sha256-pinned tarball on
-x86_64, commit-pinned checkout on aarch64); `lisa forge --flutter "…"`
-scaffolds a lisa_ui app and runs the loop against `flutter analyze`;
-`lisa forge --build` / `--run` build it for Linux, install the bundle under
-the forge apps dir on /var and write the `.desktop` entry that puts it in
-the app grid.
+**Building an app (PLAN §5.12.1, ADR-0047, ADR-0050).** A Lisa app is
+**GJS + GTK4/Adwaita** — interpreted source, no build step and no
+toolchain. It is a directory holding an entry module
+`lisa-<name>.js`, its logic under `lib/`, tests under `tests/`, and an
+`app.lisaos.<Name>.json` MCP manifest, which is what makes the app a
+capability the model can reach rather than just a window.
+
+```
+lisa dev check apps/notes      # is this a valid Lisa app? exits non-zero with findings
+lisa forge "a notes app" --project ~/notes
+```
+
+`lisa dev check` is the single authority on what a valid app is: it
+gates on there being source at all, on no top-level `await` in an entry
+module (the failure that binds a socket and answers nothing, with no
+error in any log), and on the manifest — parsed by the same code
+`lisa-agentd` uses, so a manifest it accepts is one the bus accepts.
+`lisa forge` runs it as its verifier after every edit, which is why the
+loop cannot converge on an empty directory or on an app the bus would
+reject. It does not run the app's own tests and makes no JavaScript
+syntax claim; `just shell-test` runs the suites.
+
+**The Flutter lane is parked** (ADR-0047): `lisa forge --flutter`,
+`--setup`, `--build` and `--run` still work and nothing user-facing has
+ever been built with them. `--setup` installs the pinned SDK into your
+own data directory and never asks for `sudo`.
 
 **Voice verbs (PLAN §5.7.5, ADR-0011).**
 

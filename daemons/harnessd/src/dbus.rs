@@ -355,6 +355,7 @@ impl Harness1 {
             attachments,
             workspace: workspace.clone(),
             skills_catalog: crate::skills::catalog_lines(&skills),
+            skills: skills.clone(),
             url: opt_str(&options, "url").unwrap_or_else(|| DEFAULT_URL.to_string()),
             model: opt_str(&options, "model"),
             max_turns: 12,

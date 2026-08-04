@@ -99,6 +99,81 @@ impl ToolOutcome {
     pub fn err(text: impl Into<String>) -> Self {
         Self::ok(format!("error: {}", text.into()), false)
     }
+
+    /// Did this call fail?
+    ///
+    /// The failure marker is a text prefix, because the outcome is what
+    /// the MODEL reads and it has to be legible there. That made "is
+    /// this an error" a string comparison spelled at each call site —
+    /// `starts_with("error")` in the loop's narration,
+    /// `starts_with("error: refused")` in the ledger — and a fourth
+    /// caller (#245's skill activation) is where those spellings start
+    /// to disagree. One method, one convention.
+    pub fn is_err(&self) -> bool {
+        self.text.starts_with("error:")
+    }
+}
+
+#[cfg(test)]
+mod run_tests_tests {
+    use super::*;
+
+    /// A Lisa app's suite is a real suite, and saying "no recognized
+    /// test setup" about it teaches the model the project is malformed
+    /// (#246). Say what is actually true: the runtime is not on the
+    /// command allowlist.
+    #[test]
+    fn a_lisa_app_suite_is_named_rather_than_called_unrecognized() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        std::fs::write(dir.path().join("tests/notes.test.js"), "// suite\n").unwrap();
+        assert!(has_js_suite(dir.path()));
+
+        let jail = crate::jail::Jail::new(dir.path()).unwrap();
+        let out = run_tests(&jail);
+        assert!(out.is_err());
+        assert!(
+            out.text.contains("tests/*.test.js"),
+            "the suite is not named: {}",
+            out.text
+        );
+        assert!(
+            !out.text.contains("no recognized test setup"),
+            "a real suite was called unrecognized: {}",
+            out.text
+        );
+    }
+
+    /// …and a tree with no suite at all still says so, naming every
+    /// layout it looked for.
+    #[test]
+    fn an_empty_tree_still_reports_nothing_to_run() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_js_suite(dir.path()));
+        let jail = crate::jail::Jail::new(dir.path()).unwrap();
+        let out = run_tests(&jail);
+        assert!(
+            out.text.contains("no recognized test setup"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("tests/*.test.js"), "{}", out.text);
+    }
+
+    /// The parked lane's SDK is looked for where `lisa forge --setup`
+    /// now puts it, not only on `/var` (#243).
+    #[test]
+    fn the_sdk_path_includes_the_users_own_dir() {
+        // SAFETY: env manipulation in a single-threaded test.
+        unsafe { std::env::set_var("LISA_FLUTTER_DIR", "/tmp/sdk") };
+        let dirs = flutter_bin_dirs();
+        unsafe { std::env::remove_var("LISA_FLUTTER_DIR") };
+        assert_eq!(dirs[0], "/tmp/sdk/bin");
+        assert!(
+            dirs.contains(&"/var/lib/lisa/flutter/bin".to_string()),
+            "a device that took the old install lost its SDK: {dirs:?}"
+        );
+    }
 }
 
 const MAX_FILE_CHARS: usize = 30_000;
@@ -110,7 +185,7 @@ const MAX_LIST_ENTRIES: usize = 500;
 pub fn tool_specs() -> Vec<ToolSpec> {
     let rel = |what: &str| {
         json!({"type": "string", "description":
-            format!("Project-relative {what} — e.g. `bin/main.dart`. Never absolute, never containing `..`.")})
+            format!("Project-relative {what} — e.g. `lib/notes.js`. Never absolute, never containing `..`.")})
     };
     vec![
         ToolSpec::new(
@@ -175,9 +250,8 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run_command",
-            "Run an allowlisted command in the project root (no shell). Use it for \
-             toolchain commands like `dart analyze`; file operations should go through \
-             the dedicated tools.",
+            "Run an allowlisted command in the project root (no shell). File \
+             operations should go through the dedicated tools.",
             json!({
                 "type": "object",
                 "properties": {
@@ -190,8 +264,10 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run_tests",
-            "Run the project's test suite (`dart test` for a pubspec project, \
-             `cargo test` for a Cargo project).",
+            "Run the project's test suite. Recognises a Cargo project \
+             (`cargo test`) and a pubspec project (`dart test` / `flutter test`, \
+             the parked lane). A Lisa app's own `tests/*.test.js` suite is NOT \
+             runnable from here yet — run it outside the loop.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -348,6 +424,16 @@ fn run_command(jail: &Jail, args: &Value) -> ToolOutcome {
     run_program(jail, program, &argv)
 }
 
+/// Does this tree carry a Lisa app's own suite — `tests/*.test.js`, the
+/// layout `just shell-test` globs?
+fn has_js_suite(root: &std::path::Path) -> bool {
+    std::fs::read_dir(root.join("tests"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().ends_with(".test.js"))
+}
+
 fn run_tests(jail: &Jail) -> ToolOutcome {
     let root = jail.root();
     let (program, argv): (&str, &[&str]) = if root.join("pubspec.yaml").exists() {
@@ -362,12 +448,57 @@ fn run_tests(jail: &Jail) -> ToolOutcome {
         }
     } else if root.join("Cargo.toml").exists() {
         ("cargo", &["test"])
+    } else if has_js_suite(root) {
+        // A Lisa app (ADR-0047): `tests/*.test.js`, run by whichever JS
+        // runtime the host has — the shape `just shell-test` already
+        // uses. None of `gjs`, `node` or `jsc` is in `lisa-guard`'s
+        // ALLOWED_COMMANDS, so `run_program` would refuse the spawn and
+        // the model would read a guard verdict instead of a reason.
+        //
+        // Said plainly rather than attempted, because a tool that
+        // reports "refused" for a suite that exists teaches the model
+        // the suite is broken. Adding the runtimes to the allowlist is a
+        // guard-policy change with its own corpus entries (CLAUDE.md 6a),
+        // not something to smuggle in from here.
+        return ToolOutcome::err(
+            "this project has a `tests/*.test.js` suite, and no JS runtime is on the \
+             command allowlist yet — so the loop cannot run it. Verify with the \
+             `lisa dev check` verifier instead, and run the suite outside the loop \
+             (`just shell-test`).",
+        );
     } else {
         return ToolOutcome::err(
-            "no recognized test setup in the project (looked for pubspec.yaml and Cargo.toml)",
+            "no recognized test setup in the project (looked for `tests/*.test.js`, \
+             pubspec.yaml and Cargo.toml)",
         );
     };
     run_program(jail, program, argv)
+}
+
+/// Where the parked lane's SDK may be, most recent location first.
+///
+/// Spelled to match `cli/lisa`'s `flutter_dir()`; the legacy `/var` path
+/// stays because a device that already installed there keeps working.
+fn flutter_bin_dirs() -> Vec<String> {
+    let user = std::env::var_os("LISA_FLUTTER_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(std::path::PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(std::path::PathBuf::from)
+                        .map(|h| h.join(".local/share"))
+                })
+                .map(|d| d.join("lisa/flutter"))
+        });
+    let mut out: Vec<String> = user
+        .map(|p| p.join("bin").display().to_string())
+        .into_iter()
+        .collect();
+    out.push("/var/lib/lisa/flutter/bin".to_string());
+    out
 }
 
 fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
@@ -384,12 +515,15 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
         Verdict::Allow => {}
         verdict => return ToolOutcome::err(verdict.to_string()),
     }
-    // On Lisa devices the Flutter SDK lives on the durable partition
-    // (`lisa forge setup`, issue #37) — extend the child's PATH so the
-    // agent's `flutter`/`dart` calls resolve there too.
+    // The parked Flutter lane's SDK, wherever `lisa forge --setup` put
+    // it — the user's own data dir now, and `/var/lib/lisa/flutter` on a
+    // device that took the earlier install (#243: the `/var` location is
+    // what made that verb print a `sudo` instruction). Both are appended
+    // so `flutter`/`dart` resolve either way.
+    let extra = flutter_bin_dirs().join(":");
     let path = match std::env::var("PATH") {
-        Ok(p) => format!("{p}:/var/lib/lisa/flutter/bin"),
-        Err(_) => "/var/lib/lisa/flutter/bin".to_string(),
+        Ok(p) => format!("{p}:{extra}"),
+        Err(_) => extra,
     };
     // Confine the CHILD, not us (ADR-0029 phase 3, #53). `cargo test`
     // compiles and runs build.rs and test bodies that the model just

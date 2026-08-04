@@ -38,7 +38,7 @@ useHead({ title: 'Lisa OS — developer portal' })
         <NuxtLink class="card" to="/docs"><h3>Docs</h3><p>Install the OS, understand the architecture, build and ship apps, master the <code>lisa</code> CLI.</p></NuxtLink>
         <NuxtLink class="card" to="/api"><h3>API reference</h3><p>The OpenAI-compatible HTTP endpoint, the D-Bus interfaces, and MCP tool manifests — from source.</p></NuxtLink>
         <NuxtLink class="card" to="/downloads"><h3>Downloads</h3><p>Every release with its assets — USB image, sysupdate transfer set, apps tarball, checksums.</p></NuxtLink>
-        <NuxtLink class="card" to="/design"><h3>Design</h3><p>The violet ramp, editorial tokens, Rubik, and the lisa_ui widget kit.</p></NuxtLink>
+        <NuxtLink class="card" to="/design"><h3>Design</h3><p>The violet ramp, editorial tokens, Rubik, and the one token source every surface reads.</p></NuxtLink>
         <NuxtLink class="card" to="/news"><h3>News</h3><p>What shipped, week by week, plus release notes straight from GitHub.</p></NuxtLink>
         <NuxtLink class="card" to="/contribute"><h3>Contribute</h3><p>Good first issues, live from the repo. Claim one, open a PR.</p></NuxtLink>
       </div>

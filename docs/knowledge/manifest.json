@@ -38,7 +38,7 @@
     {
       "file": "cli.md",
       "about": "The lisa command line",
-      "sha256": "08b874a272166eda73f0a76cfff9bbf97c9e4f2b70fefeb81177c439b8825000"
+      "sha256": "0d3b6c4474dbcaffbaf5e6a9e84f932a447b21dfad79a6508d5eed92e958415b"
     }
   ],
   "$comment": "GENERATED \u2014 see build-knowledge.py. Consumed by `lisa context sync-knowledge` and the lisaos.dev docs build."

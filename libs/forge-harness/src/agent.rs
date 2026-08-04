@@ -211,16 +211,37 @@ pub struct AgentConfig {
     /// invariant. There is no `Default` for this struct for the same
     /// reason: constructing one requires deciding where the record goes.
     pub ledger: Arc<Ledger>,
-    /// Skills active for this run.
+    /// The skills this run may load — the set `read_skill` serves and
+    /// the system prompt's catalog advertises.
     ///
-    /// A skill's `tools:` frontmatter is an allowlist, and until now it
-    /// was parsed and never consulted: `allows_tool()` had no callers
-    /// outside its own unit tests (#57). A skill declaring
-    /// `tools: [read_file, grep]` got the whole tool set, while the
-    /// skill format documented the restriction as enforced.
+    /// A skill's `tools:` frontmatter is an allowlist, and it was parsed
+    /// and never consulted: `allows_tool()` had no callers outside its
+    /// own unit tests (#57). The enforcement point below closed that,
+    /// and then nothing populated this field except a unit test (#245) —
+    /// so `allowed_by` intersected an empty slice on every shipping
+    /// surface and a `tools:` line constrained nothing.
     ///
-    /// Empty means no restriction — the loop is running without a skill,
-    /// not under an empty one.
+    /// **A skill starts constraining when its body is served, not when
+    /// its file exists.** The loop watches for a successful
+    /// [`crate::READ_SKILL`] call and marks that skill active for the
+    /// rest of the run. Two reasons, and the second is the one that
+    /// matters:
+    ///
+    /// * A skill installed on the machine is an *offer*. Applying every
+    ///   offer's allowlist would mean one scoped workflow in
+    ///   `~/.local/share/lisa/skills` silently narrowing every unrelated
+    ///   conversation.
+    /// * The allowlist attaches at the moment untrusted text enters the
+    ///   context. A third-party skill body (ADR-0049) cannot widen its
+    ///   own allowlist, because the loop applies the frontmatter of the
+    ///   body it *served* — not anything the body says. What the model
+    ///   controls is whether to load the skill at all, and declining
+    ///   forfeits the workflow without gaining a tool.
+    ///
+    /// This is scoping, not a guardrail in the ADR-0030 sense: it is not
+    /// what stands between the model and the machine (that is the guard,
+    /// the jail and the tiers). Empty means no restriction — the loop is
+    /// running without a skill, not under an empty one.
     pub skills: Vec<harness_core::Skill>,
     /// What the model is told it IS.
     ///
@@ -287,12 +308,26 @@ pub struct AgentReport {
     pub verified: bool,
 }
 
+/// What every forge run is told it is — and, from ADR-0047 on, what a
+/// Lisa app is made of.
+///
+/// This is the instruction the model receives, not documentation about
+/// it. It described the Flutter lane for four months after ADR-0047
+/// parked that lane (#246), which is why the assertions in
+/// `prompt_tests` below exist: a prompt is the one piece of "docs" that
+/// changes behaviour, and the only thing that can notice it going stale
+/// is a test.
+///
+/// It names what `lisa dev check` (ADR-0050) actually checks, because
+/// the loop feeds that verifier's findings back as the next turn's
+/// instructions — a model that has to discover the manifest rule by
+/// failing spends turns learning what the prompt could have told it.
 pub const FORGE_SYSTEM_PROMPT: &str = "\
 You are the Lisa Forge, an autonomous coding agent working inside a jailed project \
 directory. You inspect and modify the project by calling the provided tools.
 
 Rules:
-- ALL paths are project-relative (e.g. `bin/main.dart`, `lib/src/foo.dart`). Never \
+- ALL paths are project-relative (e.g. `lisa-notes.js`, `lib/notes.js`). Never \
 absolute, never containing `..` — the jail rejects them and the write does not happen.
 - Inspect before you edit: use `list_dir`, `read_file`, and `grep` to understand the \
 project. Use `edit_file` for targeted changes, `write_file` for new files or complete \
@@ -300,12 +335,33 @@ rewrites.
 - `run_command` is allowlisted and runs in the project root; use it for toolchain \
 commands. Use `run_tests` to run the test suite.
 - Analyzer/verifier findings are fed back to you after each edit; fix them.
-- Flutter UI imports `package:lisa_ui/lisa_ui.dart` — the Lisa design system — never \
-`package:flutter/material.dart` directly. Root the app with `LisaApp`, build screens \
-with `LisaScaffold`, and use the Material widget vocabulary lisa_ui re-exports \
-(ElevatedButton, ListView, TextField, showDialog) plus `LisaCard`, `LisaStreamText`, \
-and `ConsentChip` where they fit.
-- When the task is complete, reply with a short summary and NO tool call.";
+
+A Lisa app is GJS + GTK4/Adwaita. It is interpreted source — there is no build step, \
+no package manifest to resolve, and nothing to compile. Write these files:
+
+- `lisa-<name>.js` — the entry module. Starts `#!/usr/bin/env -S gjs -m`, imports \
+`gi://Gtk?version=4.0` and `gi://Adw?version=1`, and runs an `Adw.Application` whose \
+`application_id` is the app id.
+- `lib/*.js` — the logic, imported by BOTH the window and the tests. No `gi://` \
+imports in here: that is what makes it testable.
+- `tests/*.test.js` — one suite per `lib/` module, importing from `../lib/`.
+- `app.lisaos.<Name>.json` — the MCP manifest, and the thing that makes a window an \
+app. `{\"lisa_manifest\": 1, \"app_id\": \"app.lisaos.<Name>\", \"tools\": [...]}`, where \
+each tool has a `name`, a `tier` of read/write/destructive, and an `input_schema` \
+whose `type` is `object`. Without it the app publishes no capability and the model \
+can never reach it.
+- `app.lisaos.<Name>.desktop` with `Exec=lisa-app <name>/lisa-<name>.js`.
+
+Two rules that are checked and are easy to get wrong:
+
+- NEVER use top-level `await` in an entry module. It binds the socket, advertises \
+it, and then answers nothing — with no error in any log. Put awaited work inside the \
+function that needs it.
+- The app id `app.lisaos.<Name>` is ONE string used everywhere: the manifest \
+filename, the manifest `app_id`, the `.desktop` basename, the icon name, and the \
+`Adw.Application` id. Two spellings of it is a bug nobody sees until launch.
+
+When the task is complete, reply with a short summary and NO tool call.";
 
 /// What the loop is doing right now — surfaced to observers so a CLI can
 /// narrate the run live (the difference between an agent and a spinner).
@@ -486,6 +542,32 @@ fn ledger_finish(
     Ok(())
 }
 
+/// A skill starts driving the moment its body reaches the model.
+///
+/// Keyed off the tool NAME the loop dispatched and the skill name in the
+/// arguments it dispatched with — both of which the loop chose to send —
+/// so the served text cannot nominate itself as some other skill. A
+/// failed read activates nothing: the model did not get the workflow, so
+/// it is not following it.
+fn activate_served_skill(
+    offered: &[harness_core::Skill],
+    active: &mut Vec<harness_core::Skill>,
+    call: &ToolCall,
+    outcome: &ToolOutcome,
+) {
+    if call.name != crate::READ_SKILL || outcome.is_err() {
+        return;
+    }
+    let Some(name) = call.args.get("name").and_then(|v| v.as_str()) else {
+        return;
+    };
+    if let Some(skill) = offered.iter().find(|s| s.name == name)
+        && !active.iter().any(|a| a.name == skill.name)
+    {
+        active.push(skill.clone());
+    }
+}
+
 /// The loop itself, over any set of tool families (ADR-0025 phase 1).
 /// `project` remains the verifier's working directory; tools come from
 /// `providers`, so a caller with no workspace at all is legitimate.
@@ -505,6 +587,10 @@ pub fn forge_agent_with_tools(
         config.attachments.clone(),
     ));
     let mut verifier_output = String::new();
+    // The skills that are actually driving (#245). Grows only when the
+    // loop itself serves a body, which is the one event that means "this
+    // workflow is now in the conversation".
+    let mut active: Vec<harness_core::Skill> = Vec::new();
     for turn in 1..=config.max_turns {
         // Stop, checked where stopping is free (#227): before a turn
         // begins, and again below once the backend has answered but
@@ -575,7 +661,7 @@ pub fn forge_agent_with_tools(
                 // append aborts the run rather than acting unobserved.
                 let call_ref = ledger_start(&config.ledger, task, &call)?;
 
-                let outcome = if !harness_core::Skill::allowed_by(&config.skills, &call.name) {
+                let outcome = if !harness_core::Skill::allowed_by(&active, &call.name) {
                     // Refused as tool OUTPUT, not as an error that ends
                     // the run: the model gets told why and can choose
                     // another tool, which is the behaviour that makes an
@@ -583,8 +669,7 @@ pub fn forge_agent_with_tools(
                     ToolOutcome::err(format!(
                         "tool `{}` is not permitted by the active skill; allowed: {}",
                         call.name,
-                        config
-                            .skills
+                        active
                             .iter()
                             .filter_map(|s| s.tools.as_ref())
                             .flatten()
@@ -606,6 +691,7 @@ pub fn forge_agent_with_tools(
                         )),
                     }
                 };
+                activate_served_skill(&config.skills, &mut active, &call, &outcome);
                 ledger_finish(&config.ledger, call_ref, &call, &outcome)?;
                 observe(AgentEvent::CallResult {
                     ok: !outcome.text.starts_with("error"),
@@ -695,6 +781,142 @@ impl Backend for ScriptedBackend {
             return Ok(last.clone());
         }
         Err(ForgeError::Backend("script exhausted".into()))
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            args,
+        }
+    }
+
+    fn offered() -> Vec<harness_core::Skill> {
+        vec![harness_core::Skill::declared(
+            "reader",
+            Some(vec!["read_file".into()]),
+        )]
+    }
+
+    /// Serving a body is what turns a skill on.
+    #[test]
+    fn a_served_body_activates_that_skill_and_only_that_one() {
+        let mut active = Vec::new();
+        activate_served_skill(
+            &offered(),
+            &mut active,
+            &call(crate::READ_SKILL, json!({"name": "reader"})),
+            &ToolOutcome::ok("Read things.", false),
+        );
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "reader");
+
+        // Twice is still once — a model re-reading its workflow must not
+        // grow the active list without bound.
+        activate_served_skill(
+            &offered(),
+            &mut active,
+            &call(crate::READ_SKILL, json!({"name": "reader"})),
+            &ToolOutcome::ok("Read things.", false),
+        );
+        assert_eq!(active.len(), 1);
+
+        // A name we never offered activates nothing: the loop applies
+        // the frontmatter of skills IT loaded, not of names the model
+        // invents.
+        activate_served_skill(
+            &offered(),
+            &mut active,
+            &call(crate::READ_SKILL, json!({"name": "not-a-skill"})),
+            &ToolOutcome::ok("whatever", false),
+        );
+        assert_eq!(active.len(), 1);
+    }
+
+    /// A read that FAILED did not put a workflow in the context, so
+    /// nothing is driving. Without this, asking for a misspelled skill
+    /// would silently narrow the rest of the run to a workflow the model
+    /// never received — a restriction with no visible cause.
+    #[test]
+    fn a_failed_read_activates_nothing() {
+        let mut active = Vec::new();
+        activate_served_skill(
+            &offered(),
+            &mut active,
+            &call(crate::READ_SKILL, json!({"name": "reader"})),
+            &ToolOutcome::err("reading skill \"reader\": no such file"),
+        );
+        assert!(active.is_empty(), "a failed read activated a skill");
+    }
+
+    /// Only `read_skill` activates. Any other tool that happens to take
+    /// a `name` argument — and several do — must not.
+    #[test]
+    fn another_tool_with_a_name_argument_activates_nothing() {
+        let mut active = Vec::new();
+        activate_served_skill(
+            &offered(),
+            &mut active,
+            &call("read_file", json!({"name": "reader"})),
+            &ToolOutcome::ok("contents", false),
+        );
+        assert!(active.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::FORGE_SYSTEM_PROMPT as P;
+
+    /// **The prompt is the instruction, not documentation** (#246).
+    ///
+    /// ADR-0047 made GJS + GTK4/Adwaita the default and parked Flutter,
+    /// and this string kept telling every forge run to
+    /// `import 'package:lisa_ui/lisa_ui.dart'` and root the app with
+    /// `LisaApp`. Correcting the ADR and leaving the prompt is the exact
+    /// defect ADR-0047 was written about: a decision that lives only in
+    /// `docs/adr/` is a decision nobody follows.
+    #[test]
+    fn the_forge_is_told_to_write_the_toolkit_we_ship() {
+        for gone in [
+            "Flutter",
+            "flutter",
+            "Dart",
+            "dart",
+            "pubspec",
+            "lisa_ui",
+            "LisaApp",
+            "LisaScaffold",
+            ".dart",
+        ] {
+            assert!(
+                !P.contains(gone),
+                "the forge prompt still says {gone:?} — ADR-0047 parked that lane"
+            );
+        }
+        assert!(P.contains("GJS"), "the prompt does not name the toolkit");
+        assert!(P.contains("Adw.Application"));
+    }
+
+    /// The prompt has to describe what the verifier requires, or the
+    /// loop cannot converge: `lisa dev check` (ADR-0050) demands an
+    /// entry module, a manifest whose name is its `app_id`, and no
+    /// top-level `await`. A model told none of that discovers all three
+    /// by failing.
+    #[test]
+    fn the_prompt_names_what_the_verifier_checks() {
+        assert!(P.contains("lisa_manifest"), "no manifest instruction");
+        assert!(P.contains("app_id"));
+        assert!(
+            P.contains("top-level `await`"),
+            "the footgun with no log line is not mentioned"
+        );
     }
 }
 
@@ -874,19 +1096,42 @@ mod tests {
         );
     }
 
-    /// Issue #57: `tools:` was parsed and never consulted, so a skill
+    /// A skill's `tools:` line narrows the loop, once the skill is
+    /// driving (#57, #245).
+    ///
+    /// #57: `tools:` was parsed and never consulted, so a skill
     /// declaring what it needs got everything anyway — the restriction
-    /// was documentation. This is the test that makes it a restriction.
+    /// was documentation.
+    ///
+    /// Driven the way production drives it: a skill file on disk,
+    /// `SkillTools` serving it, and the model calling `read_skill`
+    /// before it calls anything else. Setting `AgentConfig::skills` and
+    /// expecting instant enforcement is what this test used to do, and
+    /// it was the ONLY population of that field in the tree — true of
+    /// the mechanism, false of the system.
     #[test]
     fn a_skills_allowlist_actually_narrows_what_the_loop_will_run() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("proj");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::write(project.join("a.txt"), "hello").unwrap();
-
-        let reader = harness_core::Skill::declared("reader", Some(vec!["read_file".into()]));
+        let skills_dir = dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("reader.md"),
+            "---\nname: reader\ndescription: read things\ntools: read_file, read_skill\n---\nRead.\n",
+        )
+        .unwrap();
+        let skills = crate::skills::load_from(&[skills_dir]);
+        assert_eq!(skills.len(), 1);
 
         let mut backend = ScriptedBackend::new(vec![
+            // The skill starts driving here, and not before.
+            AgentAction::Call(ToolCall {
+                id: "0".into(),
+                name: crate::READ_SKILL.into(),
+                args: serde_json::json!({"name": "reader"}),
+            }),
             // Permitted by the allowlist.
             AgentAction::Call(ToolCall {
                 id: "1".into(),
@@ -903,10 +1148,21 @@ mod tests {
         ]);
         let config = AgentConfig {
             verifier: Verifier::None,
-            skills: vec![reader],
+            skills: skills.clone(),
             ..AgentConfig::new(scratch_ledger(dir.path()))
         };
-        forge_agent("read then write", &project, &mut backend, &config).unwrap();
+        let workspace = WorkspaceTools::new(&project).unwrap();
+        let skill_tools = crate::SkillTools::new(skills);
+        let providers: [&dyn ToolProvider; 2] = [&workspace, &skill_tools];
+        forge_agent_with_tools(
+            "read then write",
+            &project,
+            &mut backend,
+            &config,
+            &providers,
+            &mut |_| {},
+        )
+        .unwrap();
 
         // The refusal is what the file system says, not what a log says:
         // the write must not have happened.
@@ -915,6 +1171,54 @@ mod tests {
             "write_file ran despite not being in the skill's allowlist"
         );
         assert!(project.join("a.txt").exists());
+    }
+
+    /// The same run, without the `read_skill` call: the write happens.
+    ///
+    /// The positive control for the test above, and the assertion that
+    /// makes the activation rule real rather than incidental — a skill
+    /// sitting on disk unread narrows nothing.
+    #[test]
+    fn a_skill_that_was_never_read_narrows_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let skills_dir = dir.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(
+            skills_dir.join("reader.md"),
+            "---\nname: reader\ndescription: read things\ntools: read_file\n---\nRead.\n",
+        )
+        .unwrap();
+        let skills = crate::skills::load_from(&[skills_dir]);
+
+        let mut backend = ScriptedBackend::new(vec![
+            AgentAction::Call(ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                args: serde_json::json!({"path": "b.txt", "content": "yes"}),
+            }),
+            AgentAction::Done("done".into()),
+        ]);
+        let config = AgentConfig {
+            verifier: Verifier::None,
+            skills: skills.clone(),
+            ..AgentConfig::new(scratch_ledger(dir.path()))
+        };
+        let workspace = WorkspaceTools::new(&project).unwrap();
+        let skill_tools = crate::SkillTools::new(skills);
+        let providers: [&dyn ToolProvider; 2] = [&workspace, &skill_tools];
+        forge_agent_with_tools(
+            "write",
+            &project,
+            &mut backend,
+            &config,
+            &providers,
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert!(project.join("b.txt").exists());
     }
 
     /// Several skills active: the narrowest wins.

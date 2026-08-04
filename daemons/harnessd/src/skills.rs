@@ -1,123 +1,28 @@
-//! Skills: how to do a thing, offered rather than injected.
+//! Skills, as this daemon sees them — a thin view onto the one
+//! resolver.
 //!
-//! A skill is a markdown file with `name`/`description` frontmatter and a
-//! workflow body (`harness_core::Skill`). The catalog — one
-//! `name: description` line each — is small enough to sit in the system
-//! prompt; the bodies are not, and pasting every skill into every
-//! conversation is how a context window gets spent before the question
-//! is read.
+//! The search path, the loader, the catalog lines and the `read_skill`
+//! tool all live in `forge_harness::skills` now (issue #245). They used
+//! to live here *as well*, and the copy here spelled the runtime channel
+//! `/var/lib/lisa/apps/current/skills` while `cli/lisa` spelled it
+//! `/var/lib/lisa/apps/payloads/runtime/current/skills` — a comment
+//! above the copy claimed it "mirrors `cli/lisa`'s resolution". Neither
+//! spelling was what `lisa apps` installs, so after a runtime-channel
+//! update `lisa skills list` and the loop could see different sets. That
+//! is #239 with different nouns, and the fix is the same: one authority,
+//! two callers.
 //!
-//! So the model sees the list and fetches what it needs with
-//! `read_skill`. That is a Read-tier operation over files we ship, and it
-//! is the reason a skill can be long and specific instead of a summary.
-
-use forge_harness::{ToolCall, ToolOutcome, ToolProvider, ToolSpec};
-use serde_json::json;
-use std::path::PathBuf;
-
-const CHANNEL_SKILLS_DIR: &str = "/var/lib/lisa/apps/current/skills";
-const SYSTEM_SKILLS_DIR: &str = "/usr/share/lisa/skills";
-
-/// Search path, earlier winning on a name clash so an override can
-/// shadow a packaged skill. Mirrors `cli/lisa`'s resolution.
-pub fn skills_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("LISA_SKILLS_DIR")
-        .map(|v| std::env::split_paths(&v).collect())
-        .unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join(".local/share/lisa/skills"));
-    }
-    dirs.push(PathBuf::from(CHANNEL_SKILLS_DIR));
-    dirs.push(PathBuf::from(SYSTEM_SKILLS_DIR));
-    dirs
-}
-
-pub fn load() -> Vec<harness_core::Skill> {
-    let mut out: Vec<harness_core::Skill> = Vec::new();
-    for dir in skills_dirs() {
-        if !dir.is_dir() {
-            continue;
-        }
-        for s in harness_core::Skill::load_dir(&dir).skills {
-            if !out.iter().any(|k| k.name == s.name) {
-                out.push(s);
-            }
-        }
-    }
-    out
-}
-
-/// The lines that go in the system prompt. Empty when there are no
-/// skills — and then the prompt says nothing about them, rather than
-/// advertising a tool that would return nothing.
-pub fn catalog_lines(skills: &[harness_core::Skill]) -> String {
-    skills
-        .iter()
-        .map(|s| format!("- {}: {}", s.name, s.description))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// `read_skill` — fetch one workflow body by name.
-pub struct SkillTools {
-    skills: Vec<harness_core::Skill>,
-}
-
-impl SkillTools {
-    pub fn new(skills: Vec<harness_core::Skill>) -> SkillTools {
-        SkillTools { skills }
-    }
-    pub fn is_empty(&self) -> bool {
-        self.skills.is_empty()
-    }
-}
-
-impl ToolProvider for SkillTools {
-    fn specs(&self) -> Vec<ToolSpec> {
-        if self.skills.is_empty() {
-            return Vec::new();
-        }
-        vec![ToolSpec::new(
-            "read_skill",
-            "Read the full instructions for one of the skills listed in your \
-             system prompt. Do this BEFORE starting a task a skill covers — the \
-             list only gives you its name and one line.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "The skill's name."},
-                },
-                "required": ["name"],
-            }),
-        )]
-    }
-
-    fn execute(&self, call: &ToolCall) -> ToolOutcome {
-        let Some(name) = call.args.get("name").and_then(|v| v.as_str()) else {
-            return ToolOutcome::err("read_skill needs a `name`");
-        };
-        match self.skills.iter().find(|s| s.name == name) {
-            // The names it may ask for are the ones we listed, so a miss
-            // is worth naming them again rather than a bare not-found.
-            None => ToolOutcome::err(format!(
-                "no skill called {name:?}. Available: {}",
-                self.skills
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            Some(skill) => match skill.body() {
-                Ok(body) => ToolOutcome::ok(body, false),
-                Err(e) => ToolOutcome::err(format!("reading skill {name:?}: {e}")),
-            },
-        }
-    }
-}
+//! The guard is structural rather than a test: there is one definition
+//! and this is a re-export of it, so the two surfaces cannot spell the
+//! search path differently even by accident. `cli/lisa/src/skills.rs`
+//! asserts its own resolution IS the shared one, which is the thing a
+//! future local copy here would have to break.
+pub use forge_harness::skills::{SkillTools, catalog_lines, load};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_harness::ToolProvider;
 
     #[test]
     fn an_empty_catalog_offers_no_tool() {

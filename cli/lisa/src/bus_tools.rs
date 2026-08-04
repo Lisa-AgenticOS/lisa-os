@@ -50,9 +50,19 @@ pub fn assist_cmd(
     let ledger = std::sync::Arc::new(lisa_ledger::Ledger::open(
         lisa_ledger::Ledger::default_path(),
     )?);
+    // Skills, offered the same way every other surface offers them
+    // (#245): the catalog rides in the prompt, the bodies stay on disk
+    // behind `read_skill`, and a skill's `tools:` line takes effect once
+    // its body has been served. Before this, `lisa assist` took
+    // `AgentConfig::skills`'s default of `Vec::new()` — so a skill could
+    // not narrow anything here no matter what its frontmatter said.
+    let skills = forge_harness::skills::load();
+    let catalog = forge_harness::skills::catalog_lines(&skills);
     let config = forge_harness::AgentConfig {
         max_turns,
         verifier: forge_harness::Verifier::None,
+        system_prompt: with_skill_catalog(forge_harness::agent::FORGE_SYSTEM_PROMPT, &catalog),
+        skills: skills.clone(),
         ..forge_harness::AgentConfig::new(ledger)
     };
     let mut observe = |ev: forge_harness::AgentEvent| {
@@ -87,7 +97,11 @@ pub fn assist_cmd(
         }
         crate::agent::prompt_yes("  run it? [y/N] ").unwrap_or(false)
     })?;
-    let providers: [&dyn ToolProvider; 2] = [&bus, &shell];
+    let skill_tools = forge_harness::SkillTools::new(skills);
+    let mut providers: Vec<&dyn ToolProvider> = vec![&bus, &shell];
+    if !skill_tools.is_empty() {
+        providers.push(&skill_tools);
+    }
     let report = forge_harness::forge_agent_with_tools(
         utterance,
         &project,
@@ -98,4 +112,38 @@ pub fn assist_cmd(
     )?;
     println!("{}", report.summary);
     Ok(())
+}
+
+/// Append the skill catalog to a system prompt, or leave it alone.
+///
+/// An empty catalog stays out entirely: advertising `read_skill` with
+/// nothing to read spends a turn on a tool that can only fail.
+fn with_skill_catalog(prompt: &str, catalog: &str) -> String {
+    if catalog.trim().is_empty() {
+        return prompt.to_string();
+    }
+    format!(
+        "{prompt}\n\nSkills — step-by-step workflows for specific jobs. Read the full \
+         one with read_skill BEFORE starting a task it covers; these lines are only \
+         names, and while a skill is loaded you may only use the tools it \
+         declares:\n\n{catalog}"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_catalog_leaves_the_prompt_untouched() {
+        assert_eq!(with_skill_catalog("base", "  \n "), "base");
+        assert!(!with_skill_catalog("base", "").contains("read_skill"));
+    }
+
+    #[test]
+    fn a_catalog_is_appended_after_a_blank_line() {
+        let p = with_skill_catalog("base.", "- demo: a demo");
+        assert!(p.starts_with("base.\n\nSkills"), "{p}");
+        assert!(p.ends_with("- demo: a demo"), "{p}");
+    }
 }
