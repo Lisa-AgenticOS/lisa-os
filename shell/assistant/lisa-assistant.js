@@ -205,6 +205,21 @@ class AssistantWindow {
         // stealing Ctrl+V wholesale would break the commonest thing
         // anyone does in a text box.
         const keys = new Gtk.EventControllerKey();
+        // CAPTURE, and this is the whole bug (#264). A controller added
+        // with the default BUBBLE phase runs AFTER the focused widget —
+        // and the focused widget here is the GtkText inside the
+        // GtkEntry, which carries GTK's own Ctrl+V shortcut. That
+        // shortcut matches on the KEY, not on what the clipboard holds:
+        // it calls paste-clipboard, finds no *text* behind a pasted
+        // screenshot, rings the error bell, and consumes the event. The
+        // handler below never ran, and a person pasting a screenshot
+        // heard a beep and saw nothing.
+        //
+        // Capture descends from the toplevel, so the entry sees the key
+        // before its own GtkText child. Returning false when the
+        // clipboard holds no texture hands the key straight back, so an
+        // ordinary text paste is untouched — which the test asserts.
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE);
         keys.connect('key-pressed', (_c, keyval, _code, state) => {
             const ctrl = (state & Gdk.ModifierType.CONTROL_MASK) !== 0;
             if (ctrl && (keyval === Gdk.KEY_v || keyval === Gdk.KEY_V))
