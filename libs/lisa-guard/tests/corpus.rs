@@ -480,6 +480,28 @@ type BusCase = (&'static str, Class, fn() -> serde_json::Value, &'static str);
 /// None of these is available to an agent at any tier, under any grant,
 /// after any dialog.
 const BUS_MUST_REFUSE: &[BusCase] = &[
+    // 0 — the owner's own refusal (#253). This path is inside the
+    // workspace and would otherwise be an ordinary, permitted write; the
+    // owner putting the folder out of bounds in Settings is the only
+    // thing refusing it. Deleting the protection from `bus_grant` makes
+    // this case leak, which is the regression the entry exists to catch.
+    //
+    // Spelled `~/…` rather than `dev/app/…`: `is_path_shaped` does not
+    // treat a bare relative name as a path claim at all, so the bare
+    // form would never reach the path rules and the case would pass for
+    // the wrong reason.
+    (
+        "write_file",
+        Class::Write,
+        || json!({"path": "~/dev/app/client-legal/notes.md"}),
+        "a folder the owner protected in Settings — tightening is theirs to do",
+    ),
+    (
+        "delete_file",
+        Class::Delete,
+        || json!({"path": "~/dev/app/client-legal"}),
+        "the protected folder itself, not merely something inside it",
+    ),
     // 1 — destroying the system or a whole home.
     (
         "delete_everything",
@@ -818,10 +840,19 @@ fn bus_grant(home: &std::path::Path) -> Grant {
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
     std::fs::create_dir_all(home.join(".config/lisa")).unwrap();
+    // A folder the owner put out of bounds in Settings (#253). Inside
+    // the workspace on purpose: without a protection this path is
+    // squarely in scope and an ordinary write, so the ONLY thing that
+    // can refuse it is the owner's own entry. A protection outside the
+    // workspace would be refused by `scope.outside_home` anyway and
+    // would prove nothing.
+    let protected = workspace.join("client-legal");
+    std::fs::create_dir_all(&protected).unwrap();
     Grant {
         uid: Grant::for_this_user().uid,
         home: Some(home.to_path_buf()),
         workspace: Some(workspace),
+        protections: lisa_guard::Protections::from_paths([protected]),
         trigger: Trigger::Prompt,
         trusted_chain: true,
         ..Grant::default()

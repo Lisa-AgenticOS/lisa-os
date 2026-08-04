@@ -130,6 +130,10 @@ pub struct Grant {
     /// Empty today — there is no surface that writes it, and a dialog
     /// must never add to it.
     pub allowlist: Vec<PathBuf>,
+    /// Paths the OWNER put OUT of bounds (#253). The mirror of
+    /// `allowlist`, and safe from anywhere a dialog can reach: this can
+    /// only ever add a refusal. See `crate::protections`.
+    pub protections: crate::Protections,
     pub trigger: Trigger,
     /// True when nothing untrusted is in the trigger chain. Only used to
     /// decide whether "always allow" may be OFFERED — never to widen
@@ -147,6 +151,7 @@ impl Default for Grant {
             workspace: None,
             scratch: None,
             allowlist: Vec::new(),
+            protections: crate::Protections::default(),
             trigger: Trigger::Unattended,
             trusted_chain: false,
         }
@@ -305,6 +310,10 @@ pub const BUS_RULES: &[(&str, &str)] = &[
         "a target that resolves to another user's file, wherever it lives",
     ),
     (
+        "owner.protected_path",
+        "a folder this machine's owner put out of bounds in Settings (#253) — the only refusal here they can remove",
+    ),
+    (
         "scope.hidden_folder",
         "anything inside ~/.* — where programs keep credentials, and where Lisa keeps the Ledger and grants",
     ),
@@ -328,6 +337,10 @@ pub const HARD_NO_RULES: &[&str] = &[
     "rm.system_path",
     "audit.erase",
     "fs.not_yours",
+    // The owner's own (#253). In the catalogue because a refusal the
+    // person configured must be as visible and as explicable as one we
+    // shipped — Settings lists both, and only this one is removable.
+    "owner.protected_path",
 ];
 
 /// The verdict for one tool call.
@@ -390,6 +403,11 @@ fn judge_target(action: &Action, grant: &Grant, raw: &str) -> ActionVerdict {
         .or_else(|| touches_another_users_file(grant, &target))
         .or_else(|| destroys_the_system_or_a_home(action, grant, &target))
         .or_else(|| erases_the_record(action, grant, &target))
+        .or_else(|| the_owner_put_it_out_of_bounds(action, grant, &target))
+    // Last of the HARD NOs, deliberately: a built-in reason is more
+    // specific and more useful than "you protected this folder", so
+    // it wins when both apply. Adding a protection can only ever
+    // turn an Allow or an Ask into a refusal — never the reverse.
     {
         return v;
     }
@@ -668,6 +686,37 @@ fn destroys_the_system_or_a_home(
                 Class::Delete => "deleted",
                 _ => "rewritten",
             }
+        ),
+    })
+}
+
+/// **The owner's own refusals (#253).**
+///
+/// Checked as an ADDITIONAL refusal, never as a lookup that could
+/// answer "allowed": a path this set does not cover means the set has
+/// no opinion, so control falls through to every built-in exactly as
+/// before. That is what makes the Settings page safe to reach from a
+/// dialog — the worst a hostile write here can do is refuse too much.
+///
+/// Read-tier calls are exempt on purpose. The owner protected the
+/// folder from being CHANGED; refusing to let a summary mention it
+/// would make the setting a censor rather than a guard, and people who
+/// find a protection too blunt turn it off.
+fn the_owner_put_it_out_of_bounds(
+    action: &Action,
+    grant: &Grant,
+    target: &Target,
+) -> Option<ActionVerdict> {
+    if !action.class.mutates() || grant.protections.is_empty() {
+        return None;
+    }
+    let hit = target.any(|p| grant.protections.covers(p));
+    hit.then(|| ActionVerdict::HardNo {
+        rule: "owner.protected_path",
+        reason: format!(
+            "`{}` is inside a folder you put out of bounds in Settings. \
+             Remove it there if you want agents to act on it.",
+            target.raw
         ),
     })
 }

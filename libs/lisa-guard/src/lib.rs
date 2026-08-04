@@ -31,6 +31,7 @@ mod action;
 mod command;
 mod overrides;
 mod path;
+mod protections;
 mod rules;
 mod shell;
 
@@ -40,6 +41,7 @@ pub use action::{
 pub use command::{ALLOWED_COMMANDS, Allowlist, check_command, check_command_advisory};
 pub use overrides::{Overrides, active as active_overrides, overrides_path};
 pub use path::{ContainError, contain, write_contained};
+pub use protections::Protections;
 pub use shell::{Invocation, check_shell_line};
 
 use std::fmt;
