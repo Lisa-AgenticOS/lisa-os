@@ -3457,6 +3457,99 @@ fn completions(shell: clap_complete::Shell, out: &mut dyn Write) {
 }
 
 #[cfg(test)]
+mod attachment_tests {
+    use super::attachment_part;
+
+    /// Write a temp file with the given extension and bytes.
+    fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("lisa-attach-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn an_image_becomes_a_data_uri_image_part() {
+        // The shape a provider expects, and the one inferenced's
+        // `Content::Parts` forwards verbatim (#209).
+        let p = tmp("shot.png", b"\x89PNG\r\n\x1a\n");
+        let v = attachment_part(&p).unwrap();
+        assert_eq!(v["type"], "image_url");
+        let url = v["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "{url}");
+        assert!(
+            !url.ends_with("base64,"),
+            "the payload must actually be there"
+        );
+    }
+
+    #[test]
+    fn audio_is_a_bare_payload_and_a_format_name_not_a_data_uri() {
+        // The asymmetry that makes this worth a test: `image_url` takes
+        // a data: URI and `input_audio` takes raw base64 plus a format.
+        // Sending one shape where the other is expected produces a
+        // provider-side error that reads like our bug.
+        let p = tmp("clip.wav", b"RIFF....WAVE");
+        let v = attachment_part(&p).unwrap();
+        assert_eq!(v["type"], "input_audio");
+        assert_eq!(v["input_audio"]["format"], "wav");
+        let data = v["input_audio"]["data"].as_str().unwrap();
+        assert!(
+            !data.starts_with("data:"),
+            "audio takes no data: URI: {data}"
+        );
+        assert!(!data.is_empty());
+    }
+
+    #[test]
+    fn the_extension_decides_and_is_case_insensitive() {
+        for (name, want) in [
+            ("a.PNG", "image_url"),
+            ("a.JPEG", "image_url"),
+            ("a.WebP", "image_url"),
+            ("a.gif", "image_url"),
+            ("a.MP3", "input_audio"),
+        ] {
+            let p = tmp(name, b"x");
+            assert_eq!(attachment_part(&p).unwrap()["type"], want, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unsupported_file_is_refused_by_name_and_lists_what_works() {
+        // Guessing `image/*` for an unknown type is what the doc comment
+        // above the function warns against: it produces a provider error
+        // that reads like our bug rather than like the user's typo.
+        let p = tmp("notes.pdf", b"%PDF-1.4");
+        let e = attachment_part(&p).unwrap_err().to_string();
+        assert!(e.contains("notes.pdf"), "{e}");
+        assert!(
+            e.contains("png"),
+            "the message must say what IS supported: {e}"
+        );
+        assert!(e.contains("wav"), "{e}");
+    }
+
+    #[test]
+    fn a_file_with_no_extension_is_refused_rather_than_sniffed() {
+        let p = tmp("screenshot", b"\x89PNG\r\n\x1a\n");
+        assert!(
+            attachment_part(&p).is_err(),
+            "content sniffing is not the contract"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_names_itself_in_the_error() {
+        let e = attachment_part(std::path::Path::new("/nonexistent/x.png"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("/nonexistent/x.png"), "{e}");
+    }
+}
+
+#[cfg(test)]
 mod completions_tests {
     use clap::CommandFactory;
 
