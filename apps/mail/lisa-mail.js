@@ -40,7 +40,7 @@ import Gtk from 'gi://Gtk';
 import {
     messageText, parseAddress, parseHeaders, readableBody, splitMessage,
 } from './lib/rfc822.js';
-import {ACCENTS, railEntries, railIsVisible, shouldSwitch} from './lib/rail.js';
+import {ACCENTS, colourFor, railEntries, railIsVisible, shouldSwitch} from './lib/rail.js';
 import {isFavourite, toggleFavourite, visibleFolders} from './lib/favourites.js';
 import {accountStates} from './lib/accountstate.js';
 import {
@@ -1474,7 +1474,7 @@ function reloadFolders() {
     // The rail decides nothing here; `lib/rail.js` does, and it is
     // tested without GTK. This is the widget for that decision.
     const entries = railEntries(accounts, store.allFolders(),
-        (root, folder) => store.counts(root, folder));
+        (root, folder) => store.counts(root, folder), loadConfig());
     reloadRail(entries);
 
     // Whose folders are on screen. `currentAccount` survives a rebuild
@@ -2533,6 +2533,53 @@ function openPreferences(parent) {
             description: 'Untick a folder to keep it out of the sidebar. It stays ' +
                 'on disk and keeps syncing; this only decides what you see.',
         });
+
+        // The account's colour (#249). A hash is stable and unchosen —
+        // it never matches what the account looks like in your head.
+        // Only shown with a rail to colour: with one account there is
+        // no rail, and the value would decide nothing on screen.
+        if (store.accounts.length > 1) {
+            const swatchRow = new Adw.ActionRow({
+                title: 'Colour',
+                subtitle: 'Used on the account rail',
+            });
+            const swatches = new Gtk.Box({
+                orientation: Gtk.Orientation.HORIZONTAL, spacing: 4,
+                valign: Gtk.Align.CENTER,
+            });
+            const current = colourFor(account.root, loadConfig());
+            for (const [i, hex] of ACCENTS.entries()) {
+                const pick = new Gtk.ToggleButton({
+                    css_classes: ['flat', `lisa-acct-${i}`],
+                    active: hex === current,
+                    width_request: 24, height_request: 24,
+                    tooltip_text: hex,
+                });
+                pick.connect('toggled', () => {
+                    if (!pick.get_active())
+                        return;
+                    const config = loadConfig();
+                    const next = {
+                        ...config,
+                        accountColours: {...(config.accountColours ?? {}), [account.root]: hex},
+                    };
+                    if (!saveConfig(next)) {
+                        swatchRow.set_subtitle('Could not save this preference');
+                        return;
+                    }
+                    swatchRow.set_subtitle('Used on the account rail');
+                    // The rail is what this decides; redraw it now
+                    // rather than at next launch.
+                    reloadFolders();
+                });
+                const first = swatches.get_first_child();
+                if (first)
+                    pick.set_group(first);
+                swatches.append(pick);
+            }
+            swatchRow.add_suffix(swatches);
+            group.add(swatchRow);
+        }
         for (const folder of onDisk) {
             const row = new Adw.SwitchRow({
                 title: folder,

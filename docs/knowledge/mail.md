@@ -131,12 +131,17 @@ Two of those are less obvious than they look:
   contribute.** A badge is a call to action; a permanent 912 from junk
   teaches people to ignore every badge on the rail. Archive is
   deliberately not exempt — mail you filed unread is still unread.
-- **The colour comes from the Maildir root, not the list position.**
-  Assigning by index means adding an account in the middle recolours
-  every account below it, and this rail is navigated by colour before it
-  is read. The palette is `color.account` in `branding/tokens.json` —
-  identity, never status, which is why it is a separate group from
-  `color.semantic`.
+- **The colour is chosen if you chose one, and hashed from the Maildir
+  root otherwise.** A hash is stable but unchosen — it never matches what
+  an account looks like in your head — so Settings offers a swatch
+  (#249). Hashing by root rather than by list position matters for the
+  fallback: assigning by index means adding an account in the middle
+  recolours every account below it, and this rail is navigated by colour
+  before it is read. The palette is `color.account` in
+  `branding/tokens.json` — identity, never status, which is why it is a
+  separate group from `color.semantic`. A value outside that palette in
+  the config file is ignored rather than drawn, because `check-tokens.py`
+  polices source and cannot reach a colour that arrives at runtime.
 
 ### The sidebar is curated, not a rendering of the disk
 

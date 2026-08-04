@@ -140,4 +140,32 @@ test('the rail is furniture with one account', () => {
     assert(!railIsVisible(null));
 });
 
+test('a chosen colour wins over the hash, per account', () => {
+    // #249: the hash is stable and UNCHOSEN. The swatch is what makes it
+    // yours, and it is the one value the rail, the settings row and a
+    // future unified-list stripe all read.
+    const config = {accountColours: {'/home/lisa/Mail/apple_at_example.test': ACCENTS[3]}};
+    const rows = railEntries(EIGHT, FOLDERS, counts({}), config);
+    assertEq(rows[1].accent, ACCENTS[3], 'the chosen colour is used');
+    assertEq(rows[0].accent, accentFor(EIGHT[0].root), 'unchosen accounts still hash');
+});
+
+test('a chosen colour outside the palette is ignored, not drawn', () => {
+    // A config file is editable by hand, and check-tokens.py cannot
+    // reach a value that arrives at runtime. Falling back to the hash
+    // keeps an off-brief colour off the screen without refusing to draw
+    // the account at all.
+    const config = {accountColours: {[EIGHT[0].root]: '#FF00FF'}};
+    const rows = railEntries(EIGHT, FOLDERS, counts({}), config);
+    assertEq(rows[0].accent, accentFor(EIGHT[0].root));
+});
+
+test('no config at all still colours every account', () => {
+    // The rail predates the setting; passing nothing must behave exactly
+    // as it did before, or upgrading turns the rail grey.
+    const rows = railEntries(EIGHT, FOLDERS, counts({}));
+    for (const row of rows)
+        assert(ACCENTS.includes(row.accent), `${row.root} has a colour`);
+});
+
 finish('mail/rail');

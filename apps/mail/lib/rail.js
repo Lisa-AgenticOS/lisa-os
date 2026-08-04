@@ -60,7 +60,7 @@ const NOT_A_CALL_TO_ACTION = new Set(['Spam', 'Junk', 'Trash']);
 /// `countsFor(root, folder)` is `Store.counts` narrowed to what the rail
 /// reads — passed in rather than imported so this stays testable without
 /// a Maildir on disk.
-export function railEntries(accounts, folders, countsFor) {
+export function railEntries(accounts, folders, countsFor, config = null) {
     if (!Array.isArray(accounts)) return [];
     return accounts.map((a) => {
         let unread = 0;
@@ -75,7 +75,7 @@ export function railEntries(accounts, folders, countsFor) {
             address: a.name,
             label: localPart(a.name),
             initial: initialOf(a.name),
-            accent: accentFor(a.root),
+            accent: colourFor(a.root, config),
             unread,
         };
     });
@@ -102,6 +102,25 @@ export function initialOf(name) {
     const s = String(name ?? '').trim();
     if (!s) return '?';
     return [...s][0].toUpperCase();
+}
+
+/// The colour to draw an account in: chosen if there is one, else hashed.
+///
+/// #249 asked for a swatch, because the hash is stable and UNCHOSEN —
+/// it never collides with what the account looks like in your head. One
+/// value drives the rail, the settings row, and a future unified-list
+/// stripe.
+///
+/// A value outside the palette is IGNORED rather than drawn.
+/// `check-tokens.py` polices hex literals in source and cannot reach one
+/// that arrives from a config file at runtime, and a hand-edited
+/// `mail.json` is a real thing. Falling back to the hash keeps an
+/// off-brief colour off the screen without refusing to draw the account.
+export function colourFor(root, config = null) {
+    const chosen = config?.accountColours?.[root];
+    if (typeof chosen === 'string' && ACCENTS.includes(chosen))
+        return chosen;
+    return accentFor(root);
 }
 
 /// An account's colour, derived from its Maildir root.
