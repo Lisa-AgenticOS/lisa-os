@@ -122,3 +122,27 @@ export function accentFor(root) {
     }
     return ACCENTS[h % ACCENTS.length];
 }
+
+/// Should a rail toggle change the account?
+///
+/// GTK's grouped ToggleButtons fire `toggled` TWICE per click — once for
+/// the button turning off, once for the one turning on. Acting on both
+/// switches the account twice per press, and the first of the two names
+/// the account you just left. So: only the press that turns one ON
+/// counts, and re-pressing the account already shown is a no-op rather
+/// than a rebuild that scrolls the folder list back to the top.
+export function shouldSwitch(isActive, entryRoot, currentRoot) {
+    if (!isActive) return false;
+    if (!entryRoot) return false;
+    return entryRoot !== currentRoot;
+}
+
+/// Is the rail worth showing?
+///
+/// One account is furniture: a chooser between one thing costs a column
+/// and answers nothing. Zero is not "hide" but "there is nothing here at
+/// all", which the caller handles before reaching the rail — an empty
+/// rail beside an empty sidebar says the same nothing twice.
+export function railIsVisible(entries) {
+    return Array.isArray(entries) && entries.length > 1;
+}

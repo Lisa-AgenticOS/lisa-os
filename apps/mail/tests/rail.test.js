@@ -11,7 +11,9 @@
 // as empty folders. A rail that disagrees with the store is that bug
 // again with a nicer picture.
 import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
-import {railEntries, initialOf, accentFor, ACCENTS} from '../lib/rail.js';
+import {
+    railEntries, initialOf, accentFor, railIsVisible, shouldSwitch, ACCENTS,
+} from '../lib/rail.js';
 
 // The device's real account set, names as `discoverAccounts` returns
 // them (`_at_` already turned back into `@`).
@@ -108,6 +110,34 @@ test('every accent comes from the token sheet', () => {
 test('no accounts means no rail rows, not a crash', () => {
     assertEq(railEntries([], FOLDERS, counts({})).length, 0);
     assertEq(railEntries(null, FOLDERS, counts({})).length, 0);
+});
+
+test('a grouped toggle only switches on the press that turns one ON', () => {
+    // GTK fires `toggled` twice per click — once for the button going
+    // off, once for the one coming on. Acting on both switches twice per
+    // press, and the first of the two names the account you just LEFT.
+    const A = '/home/lisa/Mail/a', B = '/home/lisa/Mail/b';
+    assert(shouldSwitch(true, B, A), 'the button coming on switches');
+    // The button going OFF is the one for the account being LEFT, so its
+    // root differs from `currentRoot` — which means only the isActive
+    // guard can reject it. Writing this with A and A instead passed even
+    // with that guard deleted, because the roots-differ check caught it:
+    // a test that two rules both satisfy proves neither.
+    assert(!shouldSwitch(false, A, B), 'the button going off does not');
+    // Re-pressing the account already shown must not rebuild: a rebuild
+    // scrolls the folder list back to the top under the reader.
+    assert(!shouldSwitch(true, A, A), 'the account already shown is a no-op');
+    // First selection, nothing current yet.
+    assert(shouldSwitch(true, A, null), 'the first press selects');
+    assert(!shouldSwitch(true, null, A), 'an entry with no root selects nothing');
+});
+
+test('the rail is furniture with one account', () => {
+    const one = [{root: '/a'}];
+    assert(!railIsVisible(one), 'a chooser between one thing answers nothing');
+    assert(railIsVisible([{root: '/a'}, {root: '/b'}]));
+    assert(!railIsVisible([]));
+    assert(!railIsVisible(null));
 });
 
 finish('mail/rail');

@@ -40,6 +40,7 @@ import Gtk from 'gi://Gtk';
 import {
     messageText, parseAddress, parseHeaders, readableBody, splitMessage,
 } from './lib/rfc822.js';
+import {ACCENTS, railEntries, railIsVisible, shouldSwitch} from './lib/rail.js';
 import {
     FOLDER_ORDER, discoverAccounts as accountsUnder, foldersIn, isMaildirFolder,
     listFolder, messageId, messagePath, parseFilename, previewOf, uniqueMatchesId,
@@ -521,6 +522,8 @@ let store = null;
 /// A view-state variable, deliberately not an action-state one: nothing
 /// resolves a message's path through this. Rows carry their own root.
 let currentAccount = null;
+/// The account rail (#248). Rebuilt whenever the folder list is.
+let accountRail = null;
 let currentFolder = 'INBOX';
 /// How many of the current folder are drawn. Reset by loadFolder, grown
 /// by the "load more" row.
@@ -1391,16 +1394,16 @@ function showMessage(msg) {
 /// has to take effect without a restart — an app that needs relaunching
 /// to notice its own preference is one people stop trusting the
 /// preference of.
-/// Rebuild the folder sidebar.
+/// Rebuild the rail and the folder sidebar (#248).
 ///
-/// Folder-major, accounts nested inside — the shape Spark uses and the
-/// one in the screenshot that prompted this. INBOX is a group holding
-/// one row per account rather than a single row, because "which of my
-/// inboxes" is the question a person with two accounts is actually
-/// asking, and a merged list cannot answer it.
+/// The account axis lives in the RAIL, not in the tree. Folder-major
+/// with accounts nested inside — what this used to be, and what Spark
+/// does — collapses at the owner's real scale: eight accounts turns
+/// INBOX into eight rows and Sent into eight more. Account-major is
+/// forty rows. A rail plus one account's folders is five.
 ///
-/// With one account the expanders collapse to plain rows: nesting a
-/// single mailbox under itself is ceremony, not structure.
+/// With one account the rail is hidden entirely: a chooser between one
+/// thing is furniture.
 function reloadFolders() {
     let child = folderList.get_first_child();
     while (child) {
@@ -1410,39 +1413,31 @@ function reloadFolders() {
     }
 
     const accounts = store.accounts;
-    const multi = accounts.length > 1;
+    // The rail decides nothing here; `lib/rail.js` does, and it is
+    // tested without GTK. This is the widget for that decision.
+    const entries = railEntries(accounts, store.allFolders(),
+        (root, folder) => store.counts(root, folder));
+    reloadRail(entries);
 
+    // Whose folders are on screen. `currentAccount` survives a rebuild
+    // after sync, so a person is not bounced out of the account they
+    // were reading; only a window that has not chosen falls through.
+    const shown = accounts.find((a) => a.root === currentAccount?.root) ?? accounts[0];
+    if (!shown)
+        return;
+    currentAccount = shown;
+
+    // `allFolders()` for the ORDER (INBOX, Sent, Drafts… then the rest
+    // alphabetically), filtered to this account's real folders. Using
+    // `folders(root)` directly would order them by readdir, which is
+    // whatever the filesystem felt like.
     for (const folder of store.allFolders()) {
-        // A folder is present in an account when that account really
-        // has one — `cur/` or `new/`, not merely a directory of that
-        // name (#222).
-        const present = accounts.filter(
-            (a) => isMaildirFolder(`${a.root}/${folder}`, listDir));
-        if (present.length === 0)
+        // A folder is present when the account really has one — `cur/`
+        // or `new/`, not merely a directory of that name (#222).
+        if (!isMaildirFolder(`${shown.root}/${folder}`, listDir))
             continue;
-
-        if (!multi) {
-            const a = present[0];
-            folderList.append(folderRow(folder, a, store.counts(a.root, folder).unread, false));
-            continue;
-        }
-
-        // One expander per folder, one row per account inside it. The
-        // badge on the expander is the folder's total across accounts,
-        // which is the number you want when it is collapsed.
-        const total = present.reduce((n, a) => n + store.counts(a.root, folder).unread, 0);
-        const expander = new Adw.ExpanderRow({
-            title: folder,
-            expanded: folder === 'INBOX',
-        });
-        if (total > 0) {
-            expander.add_suffix(new Gtk.Label({
-                label: String(total), css_classes: ['dim-label', 'caption'],
-            }));
-        }
-        for (const a of present)
-            expander.add_row(folderRow(folder, a, store.counts(a.root, folder).unread, true));
-        folderList.append(expander);
+        folderList.append(
+            folderRow(folder, shown, store.counts(shown.root, folder).unread, false));
     }
 
     const first = folderList.get_row_at_index(0);
@@ -1454,6 +1449,75 @@ function reloadFolders() {
         // first one. Only a window that has not chosen yet falls through
         // to accounts[0].
         selectFolder(currentAccount ?? accounts[0], currentFolder || 'INBOX');
+    }
+}
+
+/// Rebuild the account rail from decided entries (#248).
+///
+/// The rail is hidden with one account: a chooser between one thing is
+/// furniture. It is NOT hidden with zero — `reloadFolders` returns
+/// before this when there are no accounts at all, and an empty rail
+/// beside an empty sidebar would say the same nothing twice.
+function reloadRail(entries) {
+    if (!accountRail)
+        return;
+    let child = accountRail.get_first_child();
+    while (child) {
+        const next = child.get_next_sibling();
+        accountRail.remove(child);
+        child = next;
+    }
+    accountRail.set_visible(railIsVisible(entries));
+    if (!railIsVisible(entries))
+        return;
+
+    for (const entry of entries) {
+        // A ToggleButton, not a ListBoxRow: the rail is a chooser, and
+        // GTK gives a toggle the pressed state and the keyboard
+        // behaviour for free. Grouped so exactly one is active.
+        const button = new Gtk.ToggleButton({
+            tooltip_text: entry.unread > 0
+                ? `${entry.address} — ${entry.unread} unread`
+                : entry.address,
+            css_classes: ['flat', 'lisa-rail-account'],
+            active: entry.root === currentAccount?.root,
+        });
+        // The initial over the account's own colour. A favicon per
+        // account is the better answer and needs somewhere to fetch and
+        // cache one from; a letter is what can be drawn from what is on
+        // disk today, and it is what a person recognises at 32px anyway.
+        const avatar = new Adw.Avatar({size: 32, text: entry.label, show_initials: true});
+        // The accent is decided in lib/rail.js and RENDERED here. A
+        // colour computed and never drawn is the shape of every defect
+        // this app has been fixing all week, so the index is resolved
+        // against the same palette the stylesheet was built from.
+        avatar.add_css_class(`lisa-acct-${Math.max(0, ACCENTS.indexOf(entry.accent))}`);
+        const badge = new Gtk.Label({
+            label: entry.unread > 99 ? '99+' : String(entry.unread),
+            css_classes: ['caption', 'lisa-rail-badge'],
+            visible: entry.unread > 0,
+        });
+        const stack = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, spacing: 2});
+        stack.append(avatar);
+        stack.append(badge);
+        button.set_child(stack);
+        button._root = entry.root;
+        button.connect('toggled', () => {
+            // The rule is `shouldSwitch`, in lib/rail.js, where it is
+            // tested: a grouped toggle fires TWICE per click and the
+            // first firing names the account you just left.
+            if (!shouldSwitch(button.get_active(), entry.root, currentAccount?.root))
+                return;
+            const account = store.accounts.find((a) => a.root === entry.root);
+            if (!account)
+                return;
+            currentAccount = account;
+            reloadFolders();
+        });
+        const first = accountRail.get_first_child();
+        if (first)
+            button.set_group(first);
+        accountRail.append(button);
     }
 }
 
@@ -1845,7 +1909,38 @@ app.connect('activate', () => {
     const who = accountLabel();
     if (who)
         sidebarTitle.set_subtitle(who);
-    sidebar.set_content(new Gtk.ScrolledWindow({child: folderList, vexpand: true}));
+    // The rail's stylesheet, generated from the same palette the rail
+    // decides with — one class per accent, so a colour cannot be drawn
+    // that is not in branding/tokens.json (check-tokens.py holds the
+    // list to the token group, in order).
+    const railCss = new Gtk.CssProvider();
+    railCss.load_from_data(
+        ACCENTS.map((hex, i) =>
+            `.lisa-acct-${i} { background-image: none; background-color: ${hex}; color: #FFF1E9; }`
+        ).join('\n') +
+        '\n.lisa-rail-badge { opacity: 0.75; }\n', -1);
+    Gtk.StyleContext.add_provider_for_display(
+        window.get_display(), railCss, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+    // Pane 0: the account rail (#248). Left of the folders, so the
+    // reading order is account -> folder -> message -> body, which is
+    // the order a person narrows in. Hidden with one account.
+    accountRail = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL, spacing: 4,
+        margin_top: 8, margin_bottom: 8, margin_start: 4, margin_end: 4,
+        css_classes: ['lisa-account-rail'],
+    });
+    const railScroller = new Gtk.ScrolledWindow({
+        child: accountRail, vexpand: true,
+        hscrollbar_policy: Gtk.PolicyType.NEVER,
+    });
+    const sidebarBody = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL});
+    sidebarBody.append(railScroller);
+    sidebarBody.append(new Gtk.Separator({orientation: Gtk.Orientation.VERTICAL}));
+    sidebarBody.append(new Gtk.ScrolledWindow({
+        child: folderList, vexpand: true, hexpand: true,
+    }));
+    sidebar.set_content(sidebarBody);
 
     // Pane 2: the grouped message list.
     listBox = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
