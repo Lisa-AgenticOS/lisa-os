@@ -42,3 +42,16 @@
 #panel.unlock-screen {
     background-color: rgba(0, 0, 0, 0.2);
 }
+
+/* Dock unread badge (#190). violet-300 from branding/tokens.json —
+   deliberately NOT the reserved egress amber (#E66100), which means
+   "this leaves your hardware" and must never be spent on a mail count. */
+.lisa-dock-badge {
+    background-color: #9B7BE8;
+    color: #FFF1E9;
+    border-radius: 10px;
+    padding: 1px 6px;
+    margin: 2px;
+    font-size: 10pt;
+    font-weight: bold;
+}

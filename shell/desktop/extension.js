@@ -42,6 +42,8 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.js';
 import {Dash} from 'resource:///org/gnome/shell/ui/dash.js';
 
+import {badgeFor, desktopIdFromUri} from './lib/badges.js';
+
 import {bottomRightBarriers, bottomRightOf, dockPlacement, showAppsAction} from './lib/layout.js';
 import {activeIconName, candidatePaths, shouldUseActive, isTransientPeek} from './lib/stateicon.js';
 
@@ -219,6 +221,46 @@ class LisaDock extends St.BoxLayout {
         this.add_child(this.dash);
     }
 
+    /// Draw (or clear) a count badge on one dock item (#190).
+    ///
+    /// Walks the Dash's own children rather than keeping a parallel map:
+    /// the Dash rebuilds its icons whenever favourites or running apps
+    /// change, and a map would go stale silently — which is how a badge
+    /// ends up on the wrong icon.
+    setBadge(desktopId, badge) {
+        const box = this.dash._box;
+        if (!box)
+            return;
+        for (const child of box.get_children()) {
+            const app = child.child?._delegate?.app ?? child._delegate?.app;
+            if (app?.get_id() !== desktopId)
+                continue;
+            const icon = child.child ?? child;
+            icon._lisaBadge?.destroy();
+            icon._lisaBadge = null;
+            if (badge.label === null)
+                return;
+            const pill = new St.Label({
+                text: badge.label,
+                style_class: 'lisa-dock-badge',
+                x_align: Clutter.ActorAlign.END,
+                y_align: Clutter.ActorAlign.START,
+            });
+            icon.add_child(pill);
+            icon._lisaBadge = pill;
+            return;
+        }
+    }
+
+    /// Take every badge off, so `disable()` is a real undo.
+    clearBadges() {
+        for (const child of this.dash._box?.get_children() ?? []) {
+            const icon = child.child ?? child;
+            icon._lisaBadge?.destroy();
+            icon._lisaBadge = null;
+        }
+    }
+
     /// Size the Dash to the monitor, then place the whole panel.
     reposition(monitor) {
         if (!monitor)
@@ -238,6 +280,34 @@ export default class LisaDesktopExtension extends Extension {
         this._signals = [];
 
         this._dock = new LisaDock();
+        // Unity LauncherEntry (#190): the convention every toolkit
+        // already emits, so a third-party app badges with no
+        // Lisa-specific code. Subscribed with a null sender — any peer
+        // may emit for its OWN app, and `desktopIdFromUri` is what stops
+        // one badging somebody else's icon.
+        this._badgeSub = Gio.DBus.session.signal_subscribe(
+            null,
+            'com.canonical.Unity.LauncherEntry',
+            'Update',
+            '/com/canonical/Unity/LauncherEntry',
+            null,
+            Gio.DBusSignalFlags.NONE,
+            (_c, _sender, _path, _iface, _signal, params) => {
+                try {
+                    const [uri, props] = params.deepUnpack();
+                    const id = desktopIdFromUri(uri);
+                    if (!id)
+                        return;
+                    const plain = {};
+                    for (const [k, v] of Object.entries(props ?? {}))
+                        plain[k] = v?.deepUnpack ? v.deepUnpack() : v;
+                    this._dock?.setBadge(id, badgeFor(plain));
+                } catch (e) {
+                    // A malformed signal is a missing badge, never a
+                    // broken shell.
+                    logError(e, 'lisa-desktop: bad LauncherEntry update');
+                }
+            });
         // trackFullscreen: a fullscreen window gets the whole screen.
         // Floating chrome that survives fullscreen is a bug (ADR-0035).
         // affectsStruts stays false: the dock floats over maximized
@@ -415,7 +485,12 @@ export default class LisaDesktopExtension extends Extension {
         this._signals?.forEach(([obj, id]) => obj.disconnect(id));
         this._signals = null;
 
+        if (this._badgeSub) {
+            Gio.DBus.session.signal_unsubscribe(this._badgeSub);
+            this._badgeSub = null;
+        }
         if (this._dock) {
+            this._dock.clearBadges();
             Main.layoutManager.removeChrome(this._dock);
             this._dock.destroy();
             this._dock = null;

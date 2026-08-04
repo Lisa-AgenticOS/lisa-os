@@ -1494,6 +1494,9 @@ function reloadFolders() {
     const entries = railEntries(accounts, store.allFolders(),
         (root, folder) => store.counts(root, folder), loadConfig());
     reloadRail(entries);
+    // The rail and the dock badge answer the same question, so they are
+    // recomputed together rather than from two triggers that can drift.
+    publishUnread();
 
     // Whose folders are on screen. `currentAccount` survives a rebuild
     // after sync, so a person is not bounced out of the account they
@@ -1529,6 +1532,51 @@ function reloadFolders() {
         // first one. Only a window that has not chosen yet falls through
         // to accounts[0].
         selectFolder(currentAccount ?? accounts[0], currentFolder || 'INBOX');
+    }
+}
+
+/// Publish the unread count so the dock can badge us (#190).
+///
+/// `com.canonical.Unity.LauncherEntry.Update` — the convention every
+/// toolkit already emits, so Lisa's dock is a consumer of a standard
+/// rather than of something we invented. Emitting it also means Mail
+/// badges on any desktop that reads it, not only ours.
+///
+/// The number is INBOX unread across every account, because that is
+/// what a dock badge means to a person: "mail is waiting". Sent,
+/// Drafts and Archive are not waiting for anybody, and Spam/Trash are
+/// excluded for the reason lib/rail.js excludes them from its badge — a
+/// permanent 912 teaches people to ignore the badge.
+///
+/// Best effort by construction: a failed emit is a missing badge, never
+/// a broken mail app, so it is logged and swallowed.
+function publishUnread() {
+    let count = 0;
+    try {
+        for (const account of store?.accounts ?? [])
+            count += store.counts(account.root, 'INBOX').unread ?? 0;
+    } catch (e) {
+        logError(e, 'mail: could not count unread for the dock badge');
+        return;
+    }
+    try {
+        Gio.DBus.session.emit_signal(
+            null,
+            '/com/canonical/Unity/LauncherEntry',
+            'com.canonical.Unity.LauncherEntry',
+            'Update',
+            new GLib.Variant('(sa{sv})', [
+                `application://${APP_ID}.desktop`,
+                {
+                    // `count-visible` false is how the convention says
+                    // "clear it"; sending count 0 with visible true
+                    // would draw a badge reading nothing.
+                    'count': new GLib.Variant('x', count),
+                    'count-visible': new GLib.Variant('b', count > 0),
+                },
+            ]));
+    } catch (e) {
+        logError(e, 'mail: could not publish the dock badge');
     }
 }
 
