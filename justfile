@@ -38,6 +38,10 @@ lint:
     # favorite-apps in the wrong override stanza compiles to nothing: the
     # dock shipped a default that had never been applied (#263).
     python3 os/repo-tools/check-dock.py
+    # docs/KEYBOARD.md is derived from the files that bind the keys, so
+    # nobody has to trust a table (#257). A shortcut added, removed or
+    # rebound without the map following fails here.
+    python3 os/repo-tools/build-keymap.py --check
     # The knowledge pack (#175) is generated from component READMEs; a
     # stale committed copy would ship the model answers about last
     # month's OS.

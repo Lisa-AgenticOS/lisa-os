@@ -34,3 +34,7 @@ repo-out/
 
 # QEMU/rustc crash dumps — 300 MB each, never wanted in the tree.
 *.core
+
+# build-keymap.py imports check-shell-keys.py rather than reimplementing
+# its parsing, so Python now leaves bytecode next to the repo tools.
+__pycache__/
