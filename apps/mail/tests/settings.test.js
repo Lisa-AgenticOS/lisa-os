@@ -3,7 +3,7 @@
 // saying nothing.
 import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
 import {
-    DEFAULTS, accountRows, bannerText, lastSynced, parseConfig, resolveMaildir,
+    DEFAULTS, bannerText, lastSynced, parseConfig, resolveMaildir,
     serializeConfig, storeSummary, syncStatus, validateMaildir,
 } from '../lib/settings.js';
 
@@ -86,15 +86,6 @@ test('everything present but unbridged says so, and names the issue', () => {
     assertEq(syncStatus({...working, bridged: true}).kind, 'ok');
 });
 
-test('the account list shows what is there rather than filtering it', () => {
-    const rows = accountRows([account(), account({provider: 'Fastmail', mailDisabled: true})]);
-    assertEq(rows.length, 2);
-    assertEq(rows[0].usable, true);
-    assertEq(rows[1].usable, false);
-    assert(rows[1].subtitle.includes('switched off'), rows[1].subtitle);
-    assertEq(accountRows([]), []);
-    assertEq(accountRows(), []);
-});
 
 test('the on-disk summary counts what is there and pluralises like a person', () => {
     assertEq(storeSummary(['INBOX', 'Sent'], {INBOX: 3, Sent: 1}), '2 folders, 4 messages');

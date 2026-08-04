@@ -42,6 +42,7 @@ import {
 } from './lib/rfc822.js';
 import {ACCENTS, railEntries, railIsVisible, shouldSwitch} from './lib/rail.js';
 import {isFavourite, toggleFavourite, visibleFolders} from './lib/favourites.js';
+import {accountStates} from './lib/accountstate.js';
 import {
     FOLDER_ORDER, discoverAccounts as accountsUnder, foldersIn, isMaildirFolder,
     listFolder, messageId, messagePath, parseFilename, previewOf, uniqueMatchesId,
@@ -69,7 +70,7 @@ import {BUS_NAME as PREVIEWER_NAME, OBJECT_PATH as PREVIEWER_PATH}
 import {kindOf} from '../preview/lib/formats.js';
 
 import {
-    CONFIG_NAME, accountRows, bannerText, lastSynced, parseConfig, resolveMaildir,
+    CONFIG_NAME, bannerText, lastSynced, parseConfig, resolveMaildir,
     serializeConfig, storeSummary, syncStatus, validateMaildir,
 } from './lib/settings.js';
 
@@ -1252,6 +1253,62 @@ function htmlDocument(body) {
 /// Returns null when there is no config, and the header stays "Mail".
 function mbsyncrcPath() {
     return GLib.build_filenamev([GLib.get_user_config_dir(), 'lisa', 'mbsyncrc']);
+}
+
+/// Which identities `~/.config/lisa/mbsyncrc` actually declares.
+///
+/// The set `lisa mail setup` wrote. An account GOA knows and this does
+/// not is the silent failure #249 exists for: connected, and nothing
+/// fetches it.
+function configuredIdentities() {
+    const users = new Set();
+    for (const line of readFile(mbsyncrcPath()).split('\n')) {
+        const m = line.match(/^\s*User\s+(.+?)\s*$/);
+        if (m)
+            users.add(m[1]);
+    }
+    return users;
+}
+
+/// Per-account facts for `accountStates`, joining the three layers.
+///
+/// GOA says what is connected, the mbsync config says what is set up,
+/// and the Maildir says what actually arrived. A tree with no GOA
+/// account behind it is reported too — that is the orphan on the
+/// reference device (#224), and hiding it would be the same silence
+/// this group exists to break.
+function accountFacts(goa) {
+    const configured = configuredIdentities();
+    const roots = new Map(store.accounts.map((a) => [a.name, a.root]));
+    const claimed = new Set();
+    const facts = (goa ?? []).map((a) => {
+        const identity = a.identity || a.imapUser || '';
+        const root = roots.get(identity) ?? null;
+        if (root) claimed.add(identity);
+        return {
+            goa: a,
+            configured: configured.has(a.imapUser || identity),
+            root,
+            messages: root ? messagesUnder(root) : 0,
+        };
+    });
+    for (const account of store.accounts) {
+        if (claimed.has(account.name))
+            continue;
+        facts.push({
+            goa: null, configured: false, root: account.root,
+            messages: messagesUnder(account.root),
+        });
+    }
+    return facts;
+}
+
+/// How many messages a Maildir root holds, across its real folders.
+function messagesUnder(root) {
+    let n = 0;
+    for (const folder of foldersIn(root, listDir))
+        n += store.counts(root, folder).total ?? 0;
+    return n;
 }
 
 function accountLabel() {
@@ -2540,10 +2597,38 @@ function openPreferences(parent) {
         for (const row of added)
             accountsGroup.remove(row);
         added.length = 0;
-        for (const a of accountRows(accounts)) {
-            const row = new Adw.ActionRow({title: a.title, subtitle: a.subtitle});
-            if (!a.usable)
-                row.add_prefix(new Gtk.Image({icon_name: 'dialog-warning-symbolic'}));
+        // Honest state per account (#249): what is connected, what is
+        // set up, what actually arrived, and WHICH LAYER is blocking.
+        // The old rows named the account and said nothing about whether
+        // mail was reaching it, which is the silence this replaces.
+        for (const a of accountStates(accountFacts(accounts))) {
+            const row = new Adw.ActionRow({title: a.title, subtitle: a.detail});
+            row.add_prefix(new Gtk.Image({
+                icon_name: a.ok ? 'emblem-ok-symbolic' : 'dialog-warning-symbolic',
+            }));
+            // One action, the one that unblocks THIS layer. No button
+            // where there is nothing to press: an account that is fine
+            // needs no control, and an orphaned tree is somebody's mail
+            // rather than a one-click removal.
+            if (a.action === 'online-accounts') {
+                const open = new Gtk.Button({label: 'Online Accounts', valign: Gtk.Align.CENTER});
+                open.connect('clicked', () => openOnlineAccounts());
+                row.add_suffix(open);
+            } else if (a.action === 'setup' || a.action === 'sync') {
+                // Both are `lisa mail` verbs and neither is safe to fire
+                // from a settings dialog without the user seeing what it
+                // does — setup rewrites the sync config. So the row says
+                // the command rather than running it, which is honest
+                // about what has to happen and does not pretend to a
+                // capability the app does not have yet.
+                const cmd = a.action === 'setup' ? 'lisa mail setup' : 'lisa mail sync';
+                const hint = new Gtk.Label({
+                    label: cmd, valign: Gtk.Align.CENTER,
+                    css_classes: ['dim-label', 'monospace', 'caption'],
+                    selectable: true,
+                });
+                row.add_suffix(hint);
+            }
             accountsGroup.add(row);
             added.push(row);
         }

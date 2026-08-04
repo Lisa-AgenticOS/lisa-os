@@ -121,21 +121,6 @@ export function validateMaildir(path) {
     return {ok: true, path: text.replace(/\/+$/, '') || '/'};
 }
 
-/// One line per connected account, from what GOA reported.
-///
-/// `mailDisabled` is shown rather than filtered out: an account whose
-/// Mail switch is off looks identical to no account at all from inside
-/// this app, and "you have it, it is switched off" is a different
-/// problem from "you have not added it".
-export function accountRows(accounts = []) {
-    return (accounts ?? []).filter(Boolean).map((a) => ({
-        title: a.provider || 'Account',
-        subtitle: a.mailDisabled
-            ? `${a.identity || 'unknown'} — Mail is switched off for this account`
-            : (a.imapUser || a.identity || 'unknown'),
-        usable: !a.mailDisabled,
-    }));
-}
 
 /// Why there is no mail, in the order the answers block each other.
 ///
