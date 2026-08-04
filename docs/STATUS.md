@@ -5,6 +5,69 @@ fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
 "where are we on it" companion. **Last updated: 2026-08-04.**
 
+## 2026-08-04 night — Mail grows a rail, the guard grows the owner's own refusals
+
+Twenty-one commits. Everything below is tested and mutation-checked;
+**none of it has been seen on a screen**, because #267 (Log Out does
+nothing) blocks the session restart every extension and app reload
+needs. That caveat applies to the whole entry.
+
+- **Mail is four panes now (#248).** The account axis left the tree: a
+  rail of avatars chooses the account, the sidebar shows that account's
+  folders. At eight accounts folder-first was INBOX expanding to eight
+  rows and Sent to eight more. Colour comes from the Maildir root, not
+  the list position — assigning by index recolours every account below
+  an insertion — and is overridable by a swatch (#249). `color.account`
+  joined `branding/tokens.json`: identity, never status.
+- **The sidebar is curated, not a rendering of the disk (#249).** The
+  rule that mattered was the default: an account nobody has curated
+  shows *everything*, because shipping the opposite would empty every
+  existing sidebar and read as data loss.
+- **Each account names the layer that is blocking it (#249)** —
+  `mail-off` / `never-set-up` / `never-synced` / `synced` / `orphaned`.
+  The orphan row is the `~/Mail` tree with 9,125 messages no channel
+  points at, named rather than hidden and given no removal button.
+- **Smart shipped and nobody labelled it (#250).** The grouped list was
+  always the only list; what was missing was Classic. `sections()` is
+  shaped so Classic *cannot* become a second classifier — it never calls
+  one, proved by a `groupOf` that throws.
+- **`lisa mail index` walks the trees the config syncs (#224)**, not
+  everything on disk. 26,117 duplicate embedding vectors, 27.7% of the
+  context store, came from indexing an orphaned tree nothing keeps up to
+  date. The existing rows are still there — deleting them is the owner's.
+- **The owner may put a folder out of bounds (#253).** `Protections` is
+  the mirror of `Overrides`: tightening is safe from anywhere, loosening
+  is out-of-band only. The guarantee is *shape* — the type holds only
+  what the owner added, so there is no `remove` that can reach a
+  built-in, and `judge` consults it as an additional refusal that can
+  never answer "allowed". Live end to end from `guard-protect` on disk.
+- **Dock badges from Unity LauncherEntry (#190)**, a protocol we did not
+  invent, so third-party apps badge with no Lisa-specific code. The
+  parser treats the payload as hostile: a peer cannot badge somebody
+  else's icon, and a badge you cannot clear is impossible by
+  construction.
+- **Surfer has a session per profile (#259, #181).** One session meant
+  agent-driven `navigate`/`click`/`fill` ran where you are logged into
+  everything. The default is the boundary: everything ambiguous fails
+  closed to the agent profile, and a `profile` field on a request is
+  deliberately *not* an escape hatch.
+- **`docs/KEYBOARD.md` is generated (#257)**, and its **Bound by**
+  column prints *nothing — reserved, not bound* for a chord with no call
+  site. That is what #255 looked like from the outside.
+
+**Five lint gates added today**, each mutation-checked against its own
+original defect: `check-shell-keys`, `check-dock`, `build-keymap
+--check`, `check-widget-lifecycle`, and `check-tokens`' account-palette
+assertion. Plus a new guard rule with a catalogue entry and corpus
+coverage — two of the repo's own gates refused it until both existed.
+
+**Found by looking rather than reasoning:** the fcitx5 nag suppression
+(#191) *appears* fixed on the device — zero notifications, diagnostic
+demonstrably running — but a **user-scope
+`~/.config/fcitx5/conf/notifications.conf` shadows the shipped file** and
+says the same thing. The passing test is the user's copy passing. Third
+instance of that shape on this machine.
+
 ## 2026-08-04 late — the shortcuts that were never bound, and a docs sweep
 
 - **Super+Space was reserved everywhere and bound nowhere (#255).** The
