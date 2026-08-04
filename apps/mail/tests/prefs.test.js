@@ -8,7 +8,7 @@
 // The interesting part of every one of them is the DEFAULT, because a
 // default is what almost everybody gets.
 import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
-import {composeFrom, afterAction, saveFolder} from '../lib/prefs.js';
+import {composeFrom, afterAction, saveFolder, listView, sections} from '../lib/prefs.js';
 
 const A = {name: 'flakerimi@basecode.al', root: '/home/lisa/Mail/flakerimi_at_basecode.al'};
 const B = {name: 'apple@example.test', root: '/home/lisa/Mail/apple_at_example.test'};
@@ -72,6 +72,43 @@ test('attachments save where the system says, until told otherwise', () => {
     // choose rather than inventing a path that may not exist.
     assertEq(saveFolder(null, null), null);
     assertEq(saveFolder({attachmentDir: ''}, '/home/lisa/Downloads'), '/home/lisa/Downloads');
+});
+
+test('Smart is the default, because Smart is what already ships', () => {
+    // The grouped list with section headers is the only list this app
+    // has ever drawn. So the toggle ADDS Classic; it does not add Smart.
+    // Same reason afterAction defaults to `next`.
+    assertEq(listView(null), 'smart');
+    assertEq(listView({}), 'smart');
+    assertEq(listView({listView: 'classic'}), 'classic');
+    assertEq(listView({listView: 'nonsense'}), 'smart');
+});
+
+test('Classic is the same messages with the grouping skipped', () => {
+    // #250: "Smart mode must not become a second source of truth about
+    // what a message is." Classic is not a second classifier — it is one
+    // section with everything in it, in the order it arrived.
+    const messages = [{id: 1, group: 'People'}, {id: 2, group: 'Seen'}, {id: 3, group: 'People'}];
+    const groupOf = () => { throw new Error('Classic must not call the classifier'); };
+    const out = sections(messages, 'classic', groupOf);
+    assertEq(out.length, 1);
+    assertEq(out[0].name, null, 'no heading, so the renderer draws none');
+    assertEq(out[0].items.map((m) => m.id).join(','), '1,2,3', 'order untouched');
+});
+
+test('Smart defers entirely to the classifier', () => {
+    const messages = [{id: 1, group: 'People'}];
+    let asked = null;
+    const groupOf = (m) => { asked = m; return [{name: 'People', items: m}]; };
+    const out = sections(messages, 'smart', groupOf);
+    assertEq(asked, messages, 'the classifier decides, not this function');
+    assertEq(out[0].name, 'People');
+});
+
+test('an empty list is an empty list in both views', () => {
+    assertEq(sections([], 'classic', () => []).length, 1);
+    assertEq(sections(null, 'classic', () => []) [0].items.length, 0);
+    assertEq(sections(null, 'smart', () => []).length, 0);
 });
 
 finish('mail/prefs');

@@ -43,7 +43,7 @@ import {
 import {ACCENTS, colourFor, railEntries, railIsVisible, shouldSwitch} from './lib/rail.js';
 import {isFavourite, toggleFavourite, visibleFolders} from './lib/favourites.js';
 import {accountStates} from './lib/accountstate.js';
-import {afterAction, composeFrom, saveFolder} from './lib/prefs.js';
+import {afterAction, composeFrom, listView, saveFolder, sections} from './lib/prefs.js';
 import {
     FOLDER_ORDER, discoverAccounts as accountsUnder, foldersIn, isMaildirFolder,
     listFolder, messageId, messagePath, parseFilename, previewOf, uniqueMatchesId,
@@ -693,8 +693,13 @@ function loadFolder(folder, limit = PAGE) {
         clearReader();
         return;
     }
-    for (const group of grouped(messages)) {
-        listBox.append(groupHeader(group.name, group.items.length));
+    // Smart groups under headers from `classify()`; Classic is the same
+    // messages with the grouping step skipped (#250). ONE classifier
+    // either way — Classic is not a second opinion about what a message
+    // is, it is a section with everything in it.
+    for (const group of sections(messages, listView(loadConfig()), grouped)) {
+        if (group.name)
+            listBox.append(groupHeader(group.name, group.items.length));
         for (const m of group.items)
             listBox.append(messageRow(m));
     }
@@ -2056,6 +2061,33 @@ app.connect('activate', () => {
     // search entry below was created, packed, and invisible — which no
     // test would have caught and one screenshot did.
     const listHeader = new Adw.HeaderBar();
+    // Smart / Classic (#250), above the list where the reference puts
+    // it. A ToggleGroup would be Adw 1.7+; two grouped toggles in a
+    // linked box is the same control on the Adw we pin.
+    const viewSmart = new Gtk.ToggleButton({label: 'Smart'});
+    const viewClassic = new Gtk.ToggleButton({label: 'Classic'});
+    viewClassic.set_group(viewSmart);
+    (listView(loadConfig()) === 'classic' ? viewClassic : viewSmart).set_active(true);
+    const viewSwitch = new Gtk.Box({css_classes: ['linked']});
+    viewSwitch.append(viewSmart);
+    viewSwitch.append(viewClassic);
+    for (const [button, mode] of [[viewSmart, 'smart'], [viewClassic, 'classic']]) {
+        button.connect('toggled', () => {
+            // A grouped toggle fires twice per click; only the press
+            // that turns one ON is a choice (the rule lib/rail.js's
+            // `shouldSwitch` exists for, same trap).
+            if (!button.get_active())
+                return;
+            const config = loadConfig();
+            if (listView(config) === mode)
+                return;
+            config.listView = mode;
+            if (!saveConfig(config))
+                return;
+            loadFolder(currentFolder, shownLimit);
+        });
+    }
+    listHeader.pack_start(viewSwitch);
     const search = new Gtk.SearchEntry({placeholder_text: 'Search', hexpand: true});
     // Searches the WHOLE folder, not the page on screen. Filtering drawn
     // rows would answer "no results" for a message that is on disk and
@@ -2626,6 +2658,26 @@ function openPreferences(parent) {
     // templates, because we have none of them and a page of disabled
     // rows is intent rendered as behaviour.
     const flow = new Adw.PreferencesGroup({title: 'Reading and composing'});
+
+    const viewRow = new Adw.ComboRow({
+        title: 'Message list',
+        subtitle: 'Smart groups by what a message is; Classic is one list, newest first',
+        model: Gtk.StringList.new(['Smart', 'Classic']),
+    });
+    const VIEW_ORDER = ['smart', 'classic'];
+    viewRow.set_selected(Math.max(0, VIEW_ORDER.indexOf(listView(loadConfig()))));
+    viewRow.connect('notify::selected', () => {
+        const config = loadConfig();
+        config.listView = VIEW_ORDER[viewRow.get_selected()] ?? 'smart';
+        if (!saveConfig(config)) {
+            viewRow.set_subtitle('Could not save this preference');
+            return;
+        }
+        // The window's own toggle has to agree; two controls for one
+        // value that disagree is worse than one control.
+        loadFolder(currentFolder, shownLimit);
+    });
+    flow.add(viewRow);
 
     const afterRow = new Adw.ComboRow({
         title: 'After archiving or trashing',

@@ -139,6 +139,23 @@ Two of those are less obvious than they look:
   the config file is ignored rather than drawn, because `check-tokens.py`
   polices source and cannot reach a colour that arrives at runtime.
 
+### Smart and Classic are one classifier, two arrangements
+
+`lib/smart.js`'s `classify()` assigns every message a group, and the
+list has always drawn those groups under section headers. **Classic is
+the thing that was missing**, not Smart: a plain reverse-chronological
+list, the same messages with the grouping step skipped (#250).
+
+`sections(messages, view, groupOf)` is the whole difference, and it is
+deliberately shaped so Classic *cannot* become a second opinion about
+what a message is — it returns one section containing everything, in the
+order it arrived, without calling the classifier at all. Adding a group
+to `classify()` therefore changes Smart and nothing else needs to know.
+
+Smart is the default because Smart is what already shipped. The toggle
+sits above the list, and the same value is a row in Settings, so the two
+controls read one setting rather than holding two opinions.
+
 ### The sidebar is curated, not a rendering of the disk
 
 A Maildir accumulates folders nobody chose: server-side rules leave

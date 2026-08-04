@@ -74,3 +74,35 @@ export function saveFolder(config, xdgDownloads = null) {
         return chosen;
     return xdgDownloads || null;
 }
+
+/// Smart or Classic (#250).
+///
+/// **Smart is the default because it is what already ships.** The
+/// grouped list with section headers has been the only list this app
+/// has ever drawn, so the toggle adds Classic rather than adding Smart —
+/// the same reason `afterAction` defaults to `next`.
+///
+/// Classic is a plain reverse-chronological list: the same messages, no
+/// headers. It exists because grouping is a judgement, and a judgement
+/// you cannot switch off is one you have to trust.
+const VIEWS = new Set(['smart', 'classic']);
+
+export function listView(config) {
+    const want = config?.listView;
+    return VIEWS.has(want) ? want : 'smart';
+}
+
+/// The list, arranged for the chosen view.
+///
+/// One function, so the window has no second opinion about what a
+/// message is. #250 asks for exactly this: "Smart mode must not become
+/// a second source of truth" — Classic is not a different classifier,
+/// it is the same messages with the grouping step skipped.
+///
+/// `groupOf` is `smart.grouped`, injected so this stays testable without
+/// importing the classifier here.
+export function sections(messages, view, groupOf) {
+    if (view === 'classic')
+        return [{name: null, items: messages ?? []}];
+    return groupOf(messages ?? []);
+}
