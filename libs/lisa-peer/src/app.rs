@@ -75,6 +75,9 @@ pub enum IdentityKind {
     /// unforgeable identity (its own executable), just not a named app —
     /// and it gets its own grant and quota bucket, never a victim's.
     Unattributed,
+    /// The caller owns this app's well-known name on the broker, and the
+    /// broker — not the message — says so. See [`owned_name_identity`].
+    BusName,
 }
 
 impl IdentityKind {
@@ -86,6 +89,7 @@ impl IdentityKind {
             IdentityKind::Flatpak => "flatpak",
             IdentityKind::Host => "host",
             IdentityKind::Unattributed => "unattributed",
+            IdentityKind::BusName => "bus-name",
         }
     }
 }
@@ -108,6 +112,15 @@ impl AppIdentity {
         Self {
             app_id: app_id.into(),
             kind: IdentityKind::Host,
+        }
+    }
+
+    /// An app that PROVED which app it is by owning its own well-known
+    /// name on the broker ([`owned_name_identity`]).
+    pub fn bus_name(app_id: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            kind: IdentityKind::BusName,
         }
     }
 
@@ -238,11 +251,66 @@ pub fn resolve_exec_program(program: &str, bin_dirs: &[&str]) -> Option<PathBuf>
         .find_map(|candidate| candidate.canonicalize().ok())
 }
 
+/// Programs that run *somebody else's* code: interpreters, shells, and
+/// the exec wrappers that reach them. Not an exhaustive list of
+/// interpreters on a Linux system and not trying to be — it is the list
+/// of programs a Lisa `.desktop` file plausibly names, plus the obvious
+/// neighbours, and anything missed lands in the SAFE direction only if
+/// no two apps share it. Adding one is cheap; see [`lends_identity`].
+const INTERPRETERS: [&str; 17] = [
+    "gjs",
+    "gjs-console",
+    "lisa-app",
+    "python",
+    "python2",
+    "python3",
+    "node",
+    "nodejs",
+    "perl",
+    "ruby",
+    "sh",
+    "bash",
+    "dash",
+    "zsh",
+    "env",
+    "flatpak",
+    "wine",
+];
+
+/// May a desktop entry running `exec_path` lend its id to whoever is
+/// executing that file?
+///
+/// **No, when the file is an interpreter** (issue #228). `/proc/<pid>/exe`
+/// names the program the kernel executed, and for a scripted app that is
+/// the interpreter — `/usr/bin/gjs` for every GJS app on the machine.
+/// Matching on it alone therefore gives ONE entry's id to EVERY script
+/// that interpreter runs, which is issue #106's forgery with the
+/// attacker replaced by an accident: on the reference device
+/// `app.lisaos.PreviewPeek.desktop` carried `Exec=/usr/bin/gjs -m …` and
+/// contextd told the Assistant it was PreviewPeek.
+///
+/// The distinguishing part of such an `Exec` line is the SCRIPT path,
+/// and the only place to read a running process's script path is its
+/// `argv` — which the process chooses. That is exactly the
+/// self-assertion `comm` was, so there is nothing here to match on
+/// safely, and the entry lends nothing. A scripted app proves its
+/// identity through the transport instead ([`owned_name_identity`]).
+pub fn lends_identity(exec_path: &Path) -> bool {
+    !exec_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| INTERPRETERS.contains(&name))
+}
+
 /// Build a mapping row from a `.desktop` file, or `None` if its program
-/// cannot be resolved to a real system binary.
+/// cannot be resolved to a real system binary — or is one that cannot
+/// stand for an app at all ([`lends_identity`]).
 pub fn desktop_entry(id: &str, contents: &str, bin_dirs: &[&str]) -> Option<DesktopEntry> {
     let program = parse_exec_program(contents)?;
     let exec_path = resolve_exec_program(&program, bin_dirs)?;
+    if !lends_identity(&exec_path) {
+        return None;
+    }
     Some(DesktopEntry {
         id: id.trim_end_matches(".desktop").to_string(),
         exec_path,
@@ -261,6 +329,71 @@ pub fn host_identity(exe: &Path, entries: &[DesktopEntry]) -> AppIdentity {
         .find(|e| e.exec_path == exe)
         .map(|e| AppIdentity::host(e.id.clone()))
         .unwrap_or_else(|| AppIdentity::unattributed(exe))
+}
+
+/// The reverse-DNS prefixes Lisa's own applications and daemons use
+/// (ADR-0016). A name outside them is not ours to hand an identity to.
+const LISA_NAME_PREFIXES: [&str; 2] = ["app.lisaos.", "dev.lisaos."];
+
+/// Is `name` a well-known bus name we ship?
+///
+/// Deliberately narrow: this is the set of names that may become an
+/// identity, so it is a list of things we own rather than a shape check.
+/// The trailing segment must be non-empty and made of the characters
+/// D-Bus allows in a name element, so `app.lisaos.` and
+/// `app.lisaos.A/B` are not names at all.
+pub fn is_lisa_app_name(name: &str) -> bool {
+    let Some(tail) = LISA_NAME_PREFIXES.iter().find_map(|p| name.strip_prefix(p)) else {
+        return false;
+    };
+    !tail.is_empty()
+        && tail.split('.').all(|seg| {
+            !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+/// The identity a bus caller PROVES by owning a well-known name.
+///
+/// # Why this exists next to `/proc/<pid>/exe` (issue #228)
+///
+/// The executable is the right answer for a compiled app and no answer
+/// at all for a scripted one. Lisa's own apps are GJS: the kernel says
+/// every one of them is `/usr/bin/gjs`, and `/usr/bin/lisa-app` — the
+/// launcher every `.desktop` entry names — is a shell script that
+/// `exec gjs`, so it never appears as anyone's executable either. On the
+/// reference machine that meant the Assistant could not open its own
+/// memory namespace, and a stray `Exec=/usr/bin/gjs …` entry made every
+/// GJS process on the system answer to `app.lisaos.PreviewPeek`.
+///
+/// `GetNameOwner` is the broker's answer, not the sender's claim, which
+/// is the ADR-0033 property that matters — and `exec` in a wrapper does
+/// not disturb it, because the connection is opened after the exec.
+/// `harnessd`'s `caller.rs` reached the same conclusion for the same
+/// reason (#161).
+///
+/// Pure: `owner` is what `GetNameOwner(name)` answered, and `caller` is
+/// the unique name the broker assigned this connection. Both come from
+/// the transport; neither is in the message.
+///
+/// # The honest limit
+///
+/// A well-known name belongs to whoever asks first. If the Assistant is
+/// not running, another peer of this user can take
+/// `app.lisaos.Assistant` and inherit its memory namespace. That is a
+/// real weakness, it is the one `harnessd` already accepted, and it is
+/// smaller than what it replaces: an app that cannot be identified at
+/// all is an app whose per-app boundary does not exist.
+pub fn owned_name_identity(caller: &str, name: &str, owner: Option<&str>) -> Option<AppIdentity> {
+    if !is_lisa_app_name(name) {
+        return None;
+    }
+    // A unique name owns itself on every connection; that is a fact
+    // about D-Bus, not a claim about which app is calling. The prefix
+    // check above already excludes `:1.x`, and this says why out loud.
+    if name.starts_with(':') || caller.is_empty() {
+        return None;
+    }
+    (owner? == caller).then(|| AppIdentity::bus_name(name))
 }
 
 /// Resolves a caller to an [`AppIdentity`]. Trait so the D-Bus layer
@@ -617,6 +750,122 @@ mod tests {
                 "host binary should not corroborate a marker: {exe}"
             );
         }
+    }
+
+    /// Issue #228, reproduced on the reference machine: every GJS app on
+    /// the system reports `/proc/<pid>/exe` = `/usr/bin/gjs`, so a
+    /// `.desktop` entry whose `Exec` runs the interpreter lends its id to
+    /// **every other script that interpreter runs**. On the device
+    /// `app.lisaos.PreviewPeek.desktop` carried
+    /// `Exec=/usr/bin/gjs -m …/lisa-preview.js`, and contextd answered
+    /// the Assistant with "app.lisaos.PreviewPeek may only use its own
+    /// memory namespace".
+    ///
+    /// The script path is in `argv`, which the process chooses — the
+    /// same self-assertion `comm` was (#106). So an interpreter entry
+    /// lends nothing at all: a shared unattributed bucket, never a
+    /// victim's name.
+    #[test]
+    fn an_interpreter_entry_lends_its_id_to_nobody() {
+        let bin = bin_dir_with(&["gjs", "lisa-app"]);
+        let bins = [bin.path().to_str().unwrap()];
+        assert_eq!(
+            desktop_entry(
+                "app.lisaos.PreviewPeek.desktop",
+                "[Desktop Entry]\nExec=gjs -m /home/lisa/preview-dev/lisa-preview.js\n",
+                &bins,
+            ),
+            None,
+            "an interpreter lent an app id to every script it runs"
+        );
+        // The absolute spelling is the same program.
+        let gjs = bin.path().join("gjs");
+        assert_eq!(
+            desktop_entry(
+                "app.lisaos.Assistant.desktop",
+                &format!(
+                    "[Desktop Entry]\nExec={} -m /x/lisa-assistant.js\n",
+                    gjs.display()
+                ),
+                &bins,
+            ),
+            None
+        );
+        // And with no entry to collide with, a GJS app is its own
+        // bucket rather than somebody else's name.
+        let exe = gjs.canonicalize().unwrap();
+        assert_eq!(
+            host_identity(&exe, &[]),
+            AppIdentity::unattributed(&exe),
+            "an unmatched interpreter must not be attributed to an app"
+        );
+    }
+
+    /// The rule is about programs that run other people's code, not
+    /// about a name. A compiled app still lends its id.
+    #[test]
+    fn a_compiled_program_still_lends_its_id() {
+        let bin = bin_dir_with(&["gnome-text-editor"]);
+        let bins = [bin.path().to_str().unwrap()];
+        let entry = desktop_entry(
+            "org.gnome.TextEditor.desktop",
+            "[Desktop Entry]\nExec=gnome-text-editor %U\n",
+            &bins,
+        );
+        assert!(entry.is_some(), "a real binary must still be identifiable");
+    }
+
+    /// The other half of #228: with the executable useless, an app must
+    /// still be able to prove which app it is. The broker's
+    /// `GetNameOwner` is that proof — the same mechanism `harnessd`'s
+    /// `caller.rs` uses (ADR-0033), and unlike `/proc/<pid>/exe` a shell
+    /// wrapper's `exec` does not destroy it.
+    #[test]
+    fn a_caller_holding_its_own_well_known_name_is_that_app() {
+        assert_eq!(
+            owned_name_identity(":1.42", "app.lisaos.Assistant", Some(":1.42")),
+            Some(AppIdentity::bus_name("app.lisaos.Assistant"))
+        );
+        // Somebody else owns it: the caller is not that app.
+        assert_eq!(
+            owned_name_identity(":1.42", "app.lisaos.Assistant", Some(":1.7")),
+            None
+        );
+        // Nobody owns it.
+        assert_eq!(
+            owned_name_identity(":1.42", "app.lisaos.Assistant", None),
+            None
+        );
+    }
+
+    /// A name is only identity if it is a name WE ship. Otherwise any
+    /// peer could mint a namespace by asking for one — the same
+    /// invariant `manager`'s allowlist and `PROMPT_SURFACES` carry.
+    #[test]
+    fn only_a_lisa_name_may_be_claimed_this_way() {
+        for name in [
+            "org.gnome.Calculator",
+            "",
+            "app.lisaos",
+            "app.lisaos.",
+            "app.lisaos.A/B",
+            "host:/usr/bin/gjs",
+            "com.evil.app.lisaos.Assistant",
+        ] {
+            assert_eq!(
+                owned_name_identity(":1.42", name, Some(":1.42")),
+                None,
+                "{name:?} was accepted as an app identity"
+            );
+        }
+        assert!(owned_name_identity(":1.42", "dev.lisaos.Ledger1", Some(":1.42")).is_some());
+    }
+
+    /// A unique name is not a claim: `:1.42` owning `:1.42` is what the
+    /// broker says about EVERY connection, so it must not become an id.
+    #[test]
+    fn a_unique_name_is_never_an_app_identity() {
+        assert_eq!(owned_name_identity(":1.42", ":1.42", Some(":1.42")), None);
     }
 
     #[test]

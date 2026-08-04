@@ -103,6 +103,31 @@ vice versa. Launch reopens the most recent conversation.
 - All Context1 calls **fail soft**: without `lisa-contextd` the app runs
   exactly as before — conversations live for the run of the window, and the
   user is told once.
+- A read that **failed** is not a namespace that is **empty** (#228). The
+  listing is loaded with one `MemoryList`, which answers `{}` for an
+  empty namespace and an error for an unreadable one; the `sessions`
+  index — the one write here that REPLACES rather than adds — is only
+  ever written once such a read has said what it is replacing. Until
+  then a completed turn still writes its own `session/<id>` record,
+  because that is additive, and a record with no index entry is
+  recoverable where a lost record is not.
+- On launch the listing is **reconciled against the records
+  themselves** (`indexFromRecords`), so conversations that dropped off
+  the index come back. They needed to: `_memoryGet` used to map every
+  failure — `AccessDenied` included — to `''`, which parses as an empty
+  index, and the next completed turn wrote an index of exactly one
+  entry over the real one. The other records were never deleted, and
+  that is what makes recovery possible at all.
+- A **staged image belongs to the conversation it was staged in**
+  (#235). Switching conversations clears the strip and says so; the
+  attachment also carries its session id, so a switch path that forgot
+  to clear still cannot put one conversation's picture on another's
+  wire — which matters because the other conversation may be on a cloud
+  model when this one was local.
+- A **Spotlight hand-off that arrives mid-stream is queued**, not
+  dropped (#233). It starts its own conversation when the running reply
+  finishes, and says so while it waits. It never writes into the
+  composer: that draft belongs to whoever typed it.
 
 ## How it fits
 

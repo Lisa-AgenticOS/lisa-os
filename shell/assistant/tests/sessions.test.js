@@ -9,6 +9,7 @@ import {
     parseSessionIndex, serializeSessionIndex, parseSession, serializeSession,
     sessionWithTurns, upsertIndex, removeFromIndex, displayIndex,
     titleFromTurns, migrateLegacyConversation, formatSessionTime,
+    indexFromRecords, mergeIndex, restorePlan, handoffPlan,
 } from '../lib/sessions.js';
 
 // ---- key layout (must match libs/harness-core/src/session.rs) -------
@@ -280,6 +281,110 @@ test('sessions persist side by side and switch without bleeding', () => {
     index = parseSessionIndex(get(INDEX_KEY));
     assertEq(index.map(e => e.id), [a.id]);
     assertEq(parseSession(get(sessionKey(b.id))), null, 'gone, not empty');
+});
+
+// ---- #228: a failed read is not an empty store ------------------------
+
+test('indexFromRecords rebuilds the listing out of the records themselves', () => {
+    // What #228 left on the device: `_memoryGet` mapped EVERY failure to
+    // '', `_persistSession` then wrote `upsertIndex([], record)` — an
+    // index of exactly one — and every other conversation stayed in the
+    // namespace, addressable and unlisted. Context1 has no per-key
+    // delete, so the records are still there to be found.
+    const a = {...newSession('older'), created_ts: 100, updated_ts: 100,
+        turns: [{role: 'user', text: 'one'}]};
+    const b = {...newSession('newer'), created_ts: 200, updated_ts: 200,
+        turns: [{role: 'user', text: 'two'}]};
+    const map = {
+        [sessionKey(a.id)]: serializeSession(a),
+        [sessionKey(b.id)]: serializeSession(b),
+        // A tombstoned record, a corrupt one, and a key that is not a
+        // session at all: none of them becomes a listing row.
+        'session/s-gone': '',
+        'session/s-junk': '{not json',
+        [INDEX_KEY]: serializeSessionIndex([sessionInfo(b)]),
+        conversation: 'legacy',
+    };
+    assertEq(indexFromRecords(map).map(e => e.id), [b.id, a.id]);
+    assertEq(indexFromRecords({}), []);
+    assertEq(indexFromRecords(null), []);
+});
+
+test('mergeIndex keeps the stored order and adds what only the records know', () => {
+    const kept = {id: 's-1', title: 'kept', created_ts: 1, updated_ts: 500};
+    const found = {id: 's-2', title: 'found', created_ts: 1, updated_ts: 900};
+    // The stored entry wins for its own id — the index is where a title
+    // rename lands — but activity order still decides the listing.
+    const stale = {id: 's-1', title: 'stale', created_ts: 1, updated_ts: 5};
+    assertEq(mergeIndex([kept], [stale, found]).map(e => [e.id, e.title]),
+        [['s-2', 'found'], ['s-1', 'kept']]);
+    assertEq(mergeIndex([], []), []);
+});
+
+test('an unreadable namespace is never mistaken for an empty one', () => {
+    // The defect in one assertion (#228, the #210 shape): a call that
+    // FAILED must not license a rewrite of the index, because the
+    // rewrite replaces every conversation the person has.
+    const plan = restorePlan({ok: false, error: 'Access denied'});
+    assert(!plan.indexKnown,
+        'a failed read licensed a destructive index rewrite');
+    assert(typeof plan.note === 'string' && plan.note !== '',
+        'a store that could not be read must say so');
+    assert(/denied/i.test(plan.note), `the note must say why: ${plan.note}`);
+    assertEq(plan.sessions, [], 'nothing may be invented out of a failure');
+
+    // An EMPTY namespace is a different answer, and it is authoritative:
+    // first run, nothing stored, and the index may be written.
+    const fresh = restorePlan({ok: true, map: {}});
+    assert(fresh.indexKnown, 'an empty namespace is a known namespace');
+    assertEq(fresh.sessions, []);
+    assertEq(fresh.note, null);
+});
+
+test('restorePlan merges the stored index, the orphans and what is open', () => {
+    const a = {...newSession('listed'), created_ts: 100, updated_ts: 100};
+    const orphan = {...newSession('orphaned'), created_ts: 50, updated_ts: 50};
+    const open = sessionInfo({...newSession('open'), created_ts: 9, updated_ts: 9});
+    const plan = restorePlan({ok: true, map: {
+        [sessionKey(a.id)]: serializeSession(a),
+        [sessionKey(orphan.id)]: serializeSession(orphan),
+        [INDEX_KEY]: serializeSessionIndex([sessionInfo(a)]),
+        [LEGACY_CONVERSATION_KEY]: 'older still',
+    }}, [open]);
+    assert(plan.indexKnown);
+    assertEq(plan.sessions.map(e => e.title), ['listed', 'orphaned', 'open']);
+    assertEq(plan.legacy, 'older still',
+        'the legacy conversation comes out of the same read');
+    // Recovery is worth saying out loud — it is the person's own
+    // conversations coming back.
+    assert(/1 /.test(plan.note ?? ''), `recovery is reported: ${plan.note}`);
+});
+
+// ---- #233: a hand-off that arrives mid-stream --------------------------
+
+test('a Spotlight hand-off arriving mid-stream is queued, never dropped', () => {
+    // `_send` returned early whenever a run was in flight, so the
+    // overlay's prompt overwrote the composer and then went nowhere:
+    // no session, no turn, no error (#233).
+    const busy = handoffPlan('what is this page', {busy: true, hasTurns: true});
+    assertEq(busy.action, 'queue');
+    assertEq(busy.prompt, 'what is this page');
+    assert(typeof busy.note === 'string' && busy.note !== '',
+        'a queued hand-off must be visible');
+
+    const idle = handoffPlan('  hello  ', {busy: false, hasTurns: true});
+    assertEq(idle.action, 'send');
+    assertEq(idle.prompt, 'hello', 'the prompt is trimmed once, here');
+    assert(idle.newSession, 'an idle hand-off starts a fresh conversation');
+
+    // Nothing typed is nothing to do, busy or not.
+    for (const busyState of [true, false]) {
+        assertEq(handoffPlan('   ', {busy: busyState}).action, 'ignore');
+        assertEq(handoffPlan(null, {busy: busyState}).action, 'ignore');
+    }
+    // A hand-off on a blank window does not need a new session made for
+    // it — it is already sitting in one.
+    assert(!handoffPlan('hi', {busy: false, hasTurns: false}).newSession);
 });
 
 finish('assistant-sessions');

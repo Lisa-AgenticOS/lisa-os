@@ -162,9 +162,22 @@ async fn an_ordinary_peer_cannot_buy_the_trusted_path_by_naming_it() {
         "an unverified `user` claim must not skip confirmation: {detail}"
     );
     // …and the reason is visible in the parked call, not merely implied:
-    // the chain says which app it was attributed to.
+    // the chain says which peer it was attributed to.
+    //
+    // The CLAIMANT, not the callee (#217). This assertion used to read
+    // `app:org.gnome.Calendar` — the app whose tool was being CALLED —
+    // which is how the defect survived a test suite: the wrong
+    // attribution was written down as the expectation. Over p2p there
+    // is no broker and no readable executable, so every unidentifiable
+    // peer shares `host:unknown`; what matters is that it is a fact
+    // about the SENDER.
     let spec: Value = serde_json::from_str(&detail).unwrap();
-    assert_eq!(spec["chain"][0], "app:org.gnome.Calendar", "{detail}");
+    assert_eq!(spec["chain"][0], "app:host:unknown", "{detail}");
+    assert_ne!(
+        spec["chain"][0], "app:org.gnome.Calendar",
+        "the app being called was recorded as the peer that claimed to \
+         be human (#217): {detail}"
+    );
     assert_eq!(spec["escalated"], true, "{detail}");
     // Nothing ran.
     assert_eq!(f.dispatcher.dispatched(), 0);
@@ -189,7 +202,9 @@ async fn write_call_parks_then_confirm_executes_and_undo_reverts() {
     assert_eq!(disposition, "confirm-modal", "{spec_json}");
     let spec: Value = serde_json::from_str(&spec_json).unwrap();
     assert_eq!(spec["escalated"], true, "{spec_json}");
-    assert_eq!(spec["chain"][0], "app:org.gnome.Calendar", "{spec_json}");
+    // The claimant, not the callee (#217) — see the note in the test
+    // above.
+    assert_eq!(spec["chain"][0], "app:host:unknown", "{spec_json}");
     assert_eq!(f.dispatcher.dispatched(), 0, "nothing runs before consent");
 
     let reply = p.call_method("Confirm", &(call_id, true)).await.unwrap();

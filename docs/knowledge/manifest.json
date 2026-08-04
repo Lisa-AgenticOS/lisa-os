@@ -8,7 +8,7 @@
     {
       "file": "surfer.md",
       "about": "Surfer, the browser",
-      "sha256": "48b22bcf94a92b302e5663cdf9f64f0684b53f470577584eb393b14a6c518957"
+      "sha256": "0b6c92919cf47e45fb63b7a425774e8a9a1c9e484c6c561ac19e3301fa618d53"
     },
     {
       "file": "preview.md",
@@ -23,7 +23,7 @@
     {
       "file": "assistant.md",
       "about": "The Lisa Assistant chat window",
-      "sha256": "1b4c769fca94482984d0df08299a66a898783250c4731ded092c340ad2bb6af9"
+      "sha256": "c4d284b0f3cb264a277825bcc65b409d1ca744f79ebbe4793ad0392b1413c830"
     },
     {
       "file": "ledger.md",

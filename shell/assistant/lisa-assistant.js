@@ -37,14 +37,15 @@ import {
 } from './lib/model.js';
 import {
     INDEX_KEY, LEGACY_CONVERSATION_KEY, UNTITLED, sessionKey, newSession,
-    sessionInfo, parseSessionIndex, serializeSessionIndex, parseSession,
+    sessionInfo, serializeSessionIndex, parseSession,
     serializeSession, sessionWithTurns, upsertIndex, removeFromIndex,
     displayIndex, formatSessionTime, migrateLegacyConversation,
+    restorePlan, handoffPlan,
 } from './lib/sessions.js';
 import {toPangoMarkup} from './lib/markdown.js';
 import {
     IMAGE_MIME_BY_EXT, imageMimeForName, attachmentsPayload, attachmentRefusal,
-    attachmentSizeRefusal,
+    attachmentSizeRefusal, stagedForSession,
 } from './lib/attachments.js';
 import {chosenPath, remoteLocationNote} from './lib/chooser.js';
 
@@ -106,6 +107,15 @@ class AssistantWindow {
         // so abandoning one leaves nothing in app memory.
         this._session = newSession();
         this._sessions = [];
+        // Whether a read has authoritatively said what is stored. Until
+        // it has, the index is never REWRITTEN — a failed read must not
+        // become a destructive write (#228).
+        this._indexKnown = false;
+        this._indexPending = false;
+        // A Spotlight hand-off that arrived while a reply was streaming
+        // (#233). It starts its own conversation when the run ends
+        // rather than being dropped on the floor.
+        this._pendingHandoff = null;
         this._rows = [];        // sidebar rows, by position
         this._listUpdating = false;
         // Images staged for the next message (#209): {name, mime, b64,
@@ -346,12 +356,25 @@ class AssistantWindow {
             this._renderSessionList();  // put the selection back
             return;
         }
-        const record = parseSession(await this._memoryGet(sessionKey(id)));
+        const read = await this._memoryGet(sessionKey(id));
+        if (!read.ok) {
+            // The read FAILED — which is not the same as the record
+            // being gone, and dropping the conversation from the index
+            // on the strength of it is how #228 lost conversations that
+            // were sitting in the namespace the whole time. Say so, and
+            // leave every stored byte exactly where it is.
+            this._renderSessionList();  // put the selection back
+            this._systemNote('That conversation could not be read right ' +
+                `now (${read.error}). It has not been changed — try again.`);
+            return;
+        }
+        const record = parseSession(read.value);
         if (!record) {
-            // The index knows about it but the record is gone or corrupt;
-            // say so rather than silently opening an empty conversation.
+            // Authoritative this time: the store answered, and what it
+            // holds is a tombstone or unusable. Say so rather than
+            // silently opening an empty conversation.
             this._sessions = removeFromIndex(this._sessions, id);
-            this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+            this._writeIndex();
             this._showSession(newSession(), []);
             this._systemNote('That conversation could not be read — it has ' +
                 'been removed from the list.');
@@ -376,26 +399,45 @@ class AssistantWindow {
     /// thought — silently continuing yesterday's thread would carry
     /// context the person cannot see.
     ///
-    /// The send is deferred to an idle tick because the model list may
-    /// still be loading when the action arrives (a cold start goes
-    /// activate -> window -> action within the same frame), and _send
-    /// refuses without a model. One retry window, then it gives up
-    /// with a visible note rather than looping.
+    /// Mid-stream it is QUEUED, not dropped (#233). `_send` returns
+    /// early while a run is in flight, so a hand-off that landed then
+    /// used to overwrite the composer and go nowhere at all: no session,
+    /// no turn, no error — and the overlay had already closed, so the
+    /// question was gone. It now runs when the current reply finishes,
+    /// and says so while it waits.
+    ///
+    /// The prompt no longer travels through `this._entry`: that is the
+    /// person's draft for the conversation they are in, and the overlay
+    /// has no business overwriting it.
     askInNewSession(prompt) {
-        const text = String(prompt ?? '').trim();
-        if (text === '')
+        const plan = handoffPlan(prompt, {
+            busy: this._activeQid !== null,
+            hasTurns: this._turns.length > 0,
+        });
+        if (plan.action === 'ignore')
             return;
-        if (this._activeQid === null && this._turns.length > 0)
+        if (plan.action === 'queue') {
+            this._pendingHandoff = plan.prompt;
+            this._systemNote(plan.note);
+            this._scrollToBottom();
+            return;
+        }
+        if (plan.newSession)
             this._showSession(newSession(), []);
-        this._entry.text = text;
+        // The send is deferred to an idle tick because the model list
+        // may still be loading when the action arrives (a cold start
+        // goes activate -> window -> action within the same frame), and
+        // _send refuses without a model. One retry window, then it gives
+        // up with a visible note rather than looping.
         let tries = 0;
         GLib.timeout_add(GLib.PRIORITY_DEFAULT, 120, () => {
             if (this._model) {
-                this._send();
+                this._send(plan.prompt);
                 return GLib.SOURCE_REMOVE;
             }
             if (++tries > 25) {          // ~3 s
-                this._systemNote('No model available yet — press Send when one appears.');
+                this._systemNote(`No model available yet — “${plan.prompt}” ` +
+                    'was not sent. Pick a model and ask again.');
                 return GLib.SOURCE_REMOVE;
             }
             return GLib.SOURCE_CONTINUE;
@@ -404,6 +446,15 @@ class AssistantWindow {
 
     /// Make `info` the open conversation and render `turns` into the log.
     _showSession(info, turns) {
+        // Staged attachments do not follow the person to another
+        // conversation (#235). An image attached here and sent there
+        // reaches THAT conversation's provider — which may be a cloud
+        // one when this conversation's was local — so this is a
+        // disclosure, not an untidy composer. Every switch in this
+        // window comes through here, which is why it is here.
+        const carried = this._attachments.length;
+        if (carried > 0)
+            this._clearAttachments();
         this._session = sessionInfo(info);
         this._turns = [];
         let child = this._log.get_first_child();
@@ -414,6 +465,12 @@ class AssistantWindow {
         }
         for (const t of turns)
             this._addTurn(t.role, t.text, t.model ?? undefined);
+        // After the log is emptied, or the note would be swept out with
+        // the conversation it is about.
+        if (carried > 0) {
+            this._systemNote(`${carried} staged image${carried === 1 ? '' : 's'} ` +
+                'stayed with the other conversation — attach again to send here.');
+        }
         this._renderSessionList();
     }
 
@@ -440,6 +497,16 @@ class AssistantWindow {
     _deleteSession(id) {
         if (this._activeQid !== null && id === this._session.id)
             return;
+        if (!this._indexKnown) {
+            // Deleting rewrites the index, and the index is not known
+            // to be what we think it is (#228). Refusing visibly beats
+            // tombstoning a record and then failing to say which of the
+            // person's other conversations went with it.
+            this._systemNote('Stored conversations could not be read this ' +
+                'session, so deleting one is not safe — restart the ' +
+                'assistant and try again.');
+            return;
+        }
         if (this._sessions.some(e => e.id === id)) {
             this._sessions = removeFromIndex(this._sessions, id);
             // Context1 has no per-key delete (only a namespace-wide wipe,
@@ -447,7 +514,7 @@ class AssistantWindow {
             // record is tombstoned with the empty string — what
             // SessionStore does too.
             this._memorySet(sessionKey(id), '');
-            this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+            this._writeIndex();
         }
         if (id !== this._session.id) {
             this._renderSessionList();
@@ -547,6 +614,18 @@ class AssistantWindow {
         this._setBusy(false);
         this._scrollToBottom();
         this._persistSession();
+        // A hand-off that arrived while this was streaming (#233) gets
+        // its own conversation now that there is one to give it.
+        // Deferred by a tick so the persist above lands against the
+        // conversation it belongs to before the switch.
+        const queued = this._pendingHandoff;
+        if (queued !== null) {
+            this._pendingHandoff = null;
+            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this.askInNewSession(queued);
+                return GLib.SOURCE_REMOVE;
+            });
+        }
     }
 
     // ---- attachments (#209) ---------------------------------------------
@@ -695,8 +774,17 @@ class AssistantWindow {
         return true;
     }
 
+    /// Stage an image against the conversation that is open (#235).
+    ///
+    /// The `session` tag is what makes an attachment belong to a
+    /// conversation rather than to the composer. `_showSession` clears
+    /// the strip on every switch; this is the second mechanism, so a
+    /// switch path nobody remembered to clear still cannot put one
+    /// conversation's picture on another's wire — and that wire may go
+    /// to a different provider, which makes it a disclosure and not a
+    /// stray widget.
     _addAttachment(item) {
-        this._attachments.push(item);
+        this._attachments.push({...item, session: this._session.id});
         this._renderAttachments();
     }
 
@@ -750,11 +838,18 @@ class AssistantWindow {
 
     // ---- sending -------------------------------------------------------
 
-    _send() {
-        const prompt = this._entry.text.trim();
+    /// Send the composer's contents, or `override` when something other
+    /// than the person's typing supplies the text (the Spotlight
+    /// hand-off, #233). An override never touches `this._entry`: that
+    /// draft belongs to whoever typed it.
+    _send(override = null) {
+        const fromComposer = override === null;
+        const prompt = (fromComposer ? this._entry.text : override).trim();
         if (this._activeQid !== null || !this._harness)
             return;
-        if (prompt === '' && this._attachments.length === 0)
+        // Only this conversation's attachments are ever in play (#235).
+        const staged = stagedForSession(this._attachments, this._session.id);
+        if (prompt === '' && staged.length === 0)
             return;
         if (!this._model) {
             this._systemNote('Pick a model first.');
@@ -766,7 +861,7 @@ class AssistantWindow {
         // letting them watch a spinner turn into a daemon error (#209).
         const picked = this._models.find(m => m.id === this._model) ??
             {id: this._model, label: this._model};
-        const refusal = attachmentRefusal(picked, this._attachments);
+        const refusal = attachmentRefusal(picked, staged);
         if (refusal) {
             this._systemNote(refusal);
             this._scrollToBottom();
@@ -777,10 +872,11 @@ class AssistantWindow {
             this._scrollToBottom();
             return;
         }
-        const parts = attachmentsPayload(this._attachments);
-        const attached = this._attachments;
+        const parts = attachmentsPayload(staged);
+        const attached = staged;
         const history = historyPayload(this._turns);
-        this._entry.text = '';
+        if (fromComposer)
+            this._entry.text = '';
         this._clearAttachments();
         this._addTurn('user', prompt, undefined, attached);
         this._current = this._addTurn('assistant', '', this._model);
@@ -1064,9 +1160,25 @@ class AssistantWindow {
     // exactly as it always has — conversations live for the run of the
     // window, and the user is told once.
 
+    /// Load the stored conversations, and decide whether this window is
+    /// allowed to rewrite the listing at all (#228).
+    ///
+    /// One `MemoryList`, not a `MemoryGet` per key: it answers "what is
+    /// stored" without conflating an empty namespace with an unreadable
+    /// one, and it brings the records along, so an index a previous run
+    /// clobbered is rebuilt out of the conversations themselves.
     async _restoreSessions() {
-        this._sessions = parseSessionIndex(await this._memoryGet(INDEX_KEY));
-        if (this._sessions.length === 0 && await this._migrateLegacy())
+        const plan = restorePlan(await this._memoryList(), this._sessions);
+        this._sessions = plan.sessions;
+        this._indexKnown = plan.indexKnown;
+        if (plan.note)
+            this._systemNote(plan.note);
+        // A write that was waiting on this now knows what it replaces.
+        if (this._indexKnown && this._indexPending) {
+            this._indexPending = false;
+            this._writeIndex();
+        }
+        if (this._sessions.length === 0 && this._migrateLegacy(plan.legacy))
             return;
         this._renderSessionList();
         if (this._turns.length > 0)
@@ -1079,15 +1191,18 @@ class AssistantWindow {
     /// Fold the pre-sessions `conversation` key into session one, then
     /// tombstone it so an upgrade happens exactly once. Returns whether
     /// anything was migrated.
-    async _migrateLegacy() {
-        const session = migrateLegacyConversation(
-            await this._memoryGet(LEGACY_CONVERSATION_KEY));
+    ///
+    /// `stored` is the value the restore already read — not a second
+    /// fetch, which would be a second chance to read a failure as an
+    /// empty key and migrate nothing.
+    _migrateLegacy(stored) {
+        const session = migrateLegacyConversation(stored);
         if (!session || this._turns.length > 0)
             return false;
         this._showSession(sessionInfo(session), session.turns);
         this._sessions = upsertIndex(this._sessions, session);
         this._memorySet(sessionKey(session.id), serializeSession(session));
-        this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+        this._writeIndex();
         this._memorySet(LEGACY_CONVERSATION_KEY, '');
         this._renderSessionList();
         return true;
@@ -1156,22 +1271,59 @@ class AssistantWindow {
         const record = sessionWithTurns(this._session, this._turns);
         this._session = sessionInfo(record);
         this._sessions = upsertIndex(this._sessions, record);
+        // The record first and unconditionally: writing it is additive,
+        // it is the conversation itself, and a record with no index
+        // entry is recoverable (`indexFromRecords`) where a lost record
+        // is not.
         this._memorySet(sessionKey(record.id), serializeSession(record));
-        this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
+        this._writeIndex();
         this._renderSessionList();
     }
 
-    /// A missing key and an absent daemon are both '' — the same thing
-    /// as far as the window is concerned, and the same thing a tombstone
-    /// means.
+    /// Read one key. `{ok, value}` — NOT a bare string.
+    ///
+    /// This used to be `catch { return ''; }`, and that single line is
+    /// #228's second and worse half. `''` is what a missing key and a
+    /// tombstone look like, so every failure — `AccessDenied` most of
+    /// all — arrived as "there is nothing stored here", and the callers
+    /// act on that: `_openSession` drops the conversation from the index
+    /// and `_persistSession` used to rewrite the index around a single
+    /// entry. A read that failed became a destructive write. The #210
+    /// shape, in a place with no undo: Context1 has no per-key delete.
     async _memoryGet(key) {
         try {
             const reply = await this._contextCall('MemoryGet',
                 new GLib.Variant('(ss)', [APP_ID, key]), '(s)');
             const [value] = reply.deepUnpack();
-            return value;
-        } catch {
-            return '';
+            return {ok: true, value};
+        } catch (e) {
+            // contextd raises for a MISSING key by design, so an error
+            // here is not necessarily a failure — but the window cannot
+            // tell which from the error alone, and the safe reading of
+            // "cannot tell" is "do not write". `_restoreSessions` asks
+            // the unambiguous question (MemoryList) instead.
+            return {ok: false, value: '', error: e?.message ?? String(e)};
+        }
+    }
+
+    /// The whole namespace, key → value.
+    ///
+    /// Unambiguous where MemoryGet is not: an empty namespace is `{}`
+    /// and a namespace that could not be read is an error, so "nothing
+    /// stored" and "nothing readable" stop being the same answer. It
+    /// also carries the session records, which is what makes recovering
+    /// an index this bug already clobbered possible at all.
+    async _memoryList() {
+        try {
+            const reply = await this._contextCall('MemoryList',
+                new GLib.Variant('(s)', [APP_ID]), '(s)');
+            const [json] = reply.deepUnpack();
+            const map = JSON.parse(json);
+            if (map === null || typeof map !== 'object' || Array.isArray(map))
+                throw new Error('the namespace did not read as an object');
+            return {ok: true, map};
+        } catch (e) {
+            return {ok: false, error: e?.message ?? String(e)};
         }
     }
 
@@ -1185,6 +1337,22 @@ class AssistantWindow {
                 this._systemNote('Context daemon unavailable — ' +
                     'conversations will not survive a restart.');
             });
+    }
+
+    /// Write the index — the one destructive write this window makes.
+    ///
+    /// `sessions` REPLACES the listing of every conversation, so it may
+    /// only be written once a read has authoritatively said what is
+    /// stored (`_indexKnown`). Until then the write is remembered, not
+    /// performed: a turn that completes before the restore lands still
+    /// gets its RECORD written (that is additive and safe), and the
+    /// listing follows when the restore says what it is replacing.
+    _writeIndex() {
+        if (!this._indexKnown) {
+            this._indexPending = true;
+            return;
+        }
+        this._memorySet(INDEX_KEY, serializeSessionIndex(this._sessions));
     }
 
     _contextCall(method, params, replyType) {

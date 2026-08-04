@@ -116,6 +116,18 @@ impl Context1 {
         if asked_for.is_empty() || asked_for == me.app_id {
             return Ok(me.app_id);
         }
+        // Not its executable's namespace — but the executable is not the
+        // only thing the transport knows (#228). Every Lisa app is a GJS
+        // script launched through `/usr/bin/lisa-app`, a shell wrapper
+        // that `exec gjs`, so the kernel says `/usr/bin/gjs` for all of
+        // them and NO app can match its own `.desktop` entry. The broker
+        // can still answer: an app that owns its own well-known name IS
+        // that app, and `GetNameOwner` is the broker's word, not the
+        // sender's (ADR-0033, and the same mechanism harnessd's
+        // `caller.rs` had to fall back to for #161).
+        if let Some(id) = self.owned_name_identity(conn, &peer, asked_for).await {
+            return Ok(id.app_id);
+        }
         // Asking for somebody else's namespace: only the user's own
         // tooling may, and only because `lisa memory --app X` is a
         // thing a person does on purpose.
@@ -131,6 +143,35 @@ impl Context1 {
                 me.app_id
             ))),
         }
+    }
+
+    /// The I/O half of [`lisa_peer::app::owned_name_identity`]: ask the
+    /// broker who owns `name`, and hand the pure rule the answer.
+    ///
+    /// `None` on every error and on p2p, where there is no broker to ask
+    /// — an unanswerable question is not a yes.
+    ///
+    /// `GetNameOwner` does NOT start an activatable service, which is
+    /// what makes it safe to ask on every memory call: finding out
+    /// whether Notes owns its name must not launch Notes.
+    async fn owned_name_identity(
+        &self,
+        conn: &zbus::Connection,
+        peer: &lisa_peer::Peer,
+        name: &str,
+    ) -> Option<AppIdentity> {
+        let lisa_peer::PeerId::Bus(ref caller) = peer.id else {
+            return None;
+        };
+        // Cheap and pure first: a name that could never be an identity
+        // is not worth a round trip to the broker.
+        if !lisa_peer::app::is_lisa_app_name(name) {
+            return None;
+        }
+        let bus_name = zbus::names::BusName::try_from(name.to_string()).ok()?;
+        let dbus = zbus::fdo::DBusProxy::new(conn).await.ok()?;
+        let owner = dbus.get_name_owner(bus_name).await.ok()?;
+        lisa_peer::app::owned_name_identity(caller, name, Some(owner.as_str()))
     }
 
     /// Whether this caller may read the index unscoped.

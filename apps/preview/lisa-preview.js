@@ -37,6 +37,26 @@ import {Previewer} from './lib/previewer.js';
 
 const Cairo = imports.cairo;
 
+/// The Unix-signal half of GLib, which moved.
+///
+/// `GLib.unix_signal_add` still works and prints a deprecation warning
+/// on every current gjs ("has been moved to a separate platform-
+/// specific library"), and `GLibUnix` does not exist on older ones. So
+/// ask for it, the same way `apps/mail` does.
+let GLibUnix = null;
+try {
+    GLibUnix = imports.gi.GLibUnix;
+} catch {
+    // Older GLib: the function is still on GLib itself.
+}
+
+/// Run `handler` when this process is sent `signal`, on the main loop.
+function onUnixSignal(signal, handler) {
+    if (GLibUnix?.signal_add)
+        return GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal, handler);
+    return GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal, handler);
+}
+
 /// Poppler is optional at RUNTIME, not at build time. A dev host
 /// without it should still open images rather than failing to start —
 /// and the failure, when a PDF is opened anyway, should name the
@@ -1146,6 +1166,14 @@ function buildWindow() {
     audioPage = new Adw.StatusPage({icon_name: 'audio-x-generic-symbolic'});
     audioPage.set_child(audioControls);
     stack.add_named(audioPage, 'audio');
+    // NOT a `release()` here, deliberately (#219). Surfer releases the
+    // socket on close-request because closing its window ends the
+    // process; Preview's does not. In `--previewer-service` mode this
+    // app is started by dbus-daemon, answers Space in Files, and STAYS
+    // running with no window — so releasing on close would take the
+    // agent tools away from a process that is still there to serve
+    // them. `shutdown` and the signal handlers cover every exit that is
+    // really an exit.
     win.connect('close-request', () => { stopMedia(); return false; });
 
     // --- pages sidebar: thumbnails, reorder, remove -----------------
@@ -1441,9 +1469,36 @@ app.connect('activate', () => {
     win.present();
     render();
 });
-app.connect('shutdown', () => {
-    try { mcp?.stop(); } catch (e) { /* exiting */ }
-    try { previewer?.stop(); } catch (e) { /* exiting */ }
-});
+/// Give the agent socket back, once, whatever ended the process.
+///
+/// `shutdown` alone covers a clean exit and nothing else — SIGTERM from
+/// systemd, a logout that kills the session's units, `pkill` — so a
+/// killed Preview left its socket file in `$XDG_RUNTIME_DIR/lisa/mcp`.
+/// mcp-bus defers socket activation and reads PRESENCE AS AVAILABILITY,
+/// so a dead app went on advertising `read_document` and agentd got
+/// ECONNREFUSED instead of "Preview is not running" (#219, filed
+/// against Surfer; the same shape was here, and was verified on the
+/// reference machine — a `.sock` with no process behind it).
+///
+/// Idempotent: a window close that quits the app reaches `shutdown` too.
+let released = false;
+function release() {
+    if (released) return;
+    released = true;
+    try { mcp?.stop(); } catch (e) { logError(e, 'lisa-preview mcp release'); }
+    try { previewer?.stop(); } catch (e) { logError(e, 'lisa-preview previewer release'); }
+}
+app.connect('shutdown', () => release());
+// …and the signals that end a process without a `shutdown`. The handler
+// runs on the main loop, so it may do real work; `quit()` then unwinds
+// the app the ordinary way. SOURCE_REMOVE because a second SIGTERM
+// should kill us rather than queue another quit.
+for (const signal of [1 /* SIGHUP */, 2 /* SIGINT */, 15 /* SIGTERM */]) {
+    onUnixSignal(signal, () => {
+        release();
+        app.quit();
+        return GLib.SOURCE_REMOVE;
+    });
+}
 
 app.run([imports.system.programInvocationName, ...argv]);

@@ -71,9 +71,28 @@ loop today (see Limits).
     at all right now. Anything that can open the socket can still call
     them — which is how the bypasses below were reproduced.
   - The consent surface is agentd's, not Surfer's. This README used to
-    describe that escalation as behaviour ("agentd escalates them…");
-    the end-to-end path — confirmation shown, call in the Ledger — is
-    still **not verified on a seated session**, and #216 is open.
+    describe that escalation as behaviour ("agentd escalates them…").
+    That path has now been measured on the reference machine, and it
+    does not hold — which is why the `read` filter stays, and why #216
+    stays open. What was run, on 2026-08-04, against the live daemons:
+    - `RequestCall(app.lisaos.Surfer, navigate, …)` with
+      `provenance: ["user"]` parks as **`confirm-modal`**,
+      `effective_tier: destructive`, `escalated: true`. The tier
+      machinery is real, and a `web` tag in the chain rides along.
+    - `dev.lisaos.Consent1` has **no owner**. It is D-Bus-activatable,
+      and agentd asks with `GetNameOwner`, which deliberately does not
+      activate — so `consent_role()` answers `Absent`.
+    - `Absent` is the headless fallback (#135): the requester may
+      answer its own call. The probe's *own connection* then called
+      `Confirm(call_id, true)` and agentd **dispatched it** — it came
+      back `failed` only because the Surfer socket was dead (#219), an
+      MCP transport error, not a refusal.
+    So the only thing between a model and `click`/`fill` today would be
+    `bus-tools` choosing not to call `Confirm` — code in the same
+    process the model drives. CLAUDE.md rule 6a: if it is reachable
+    from inside, it is not a guardrail. Exposing the write tier needs a
+    consent surface that is *running* and *independent*, proven on a
+    seated session, first.
   What Surfer itself enforces, all of it deterministic code the model
   cannot reach, and all of it device-verified against the reviewer's
   hostile pages in `/tmp/surfrev/`:

@@ -268,6 +268,133 @@ export function migrateLegacyConversation(json, now = Date.now()) {
 }
 
 /**
+ * The listing rebuilt out of the stored records themselves.
+ *
+ * Recovery, and it has work to do (#228). `_memoryGet` mapped every
+ * failure to `''` — including `AccessDenied` — so the window read an
+ * empty index, and the next completed turn wrote `upsertIndex([], …)`:
+ * an index of exactly ONE conversation, replacing the real one. The
+ * other conversations were never deleted, because Context1 has no
+ * per-key delete; they are still at `session/<id>`, addressable and
+ * unlisted. This is how they come back.
+ * @param {?Object<string, string>} map  the namespace, key → value
+ * @returns {object[]}  index entries, most recently active first
+ */
+export function indexFromRecords(map) {
+    const rows = [];
+    for (const [key, value] of Object.entries(map ?? {})) {
+        if (!key.startsWith(SESSION_KEY_PREFIX))
+            continue;
+        // parseSession already refuses a tombstone and a corrupt record.
+        const record = parseSession(value);
+        if (record)
+            rows.push(sessionInfo(record));
+    }
+    return rows.sort((a, b) => b.updated_ts - a.updated_ts);
+}
+
+/**
+ * `first` wins for any id it has; everything only `second` knows about
+ * is added. Ordered by activity, like every other listing.
+ * @param {object[]} first
+ * @param {object[]} second
+ * @returns {object[]}  a new array
+ */
+export function mergeIndex(first, second) {
+    const kept = (first ?? []).map(sessionInfo);
+    const seen = new Set(kept.map(e => e.id));
+    const added = (second ?? []).map(sessionInfo).filter(e => !seen.has(e.id));
+    return [...kept, ...added].sort((a, b) => b.updated_ts - a.updated_ts);
+}
+
+/**
+ * What a restore learned about the app-memory namespace.
+ *
+ * The whole point is the `indexKnown` bit, and it is #228's second and
+ * more dangerous half — the #210 shape. Rewriting `sessions` REPLACES
+ * the list of every conversation the person has, so it may only ever
+ * happen from a read that authoritatively said what is stored. A call
+ * that FAILED is not that. It used to be: `catch { return ''; }`, and
+ * `''` parses as an empty index, so one AccessDenied cost the person
+ * every conversation in their list.
+ *
+ * An empty namespace is a different answer and a fine one — first run,
+ * nothing stored, write away.
+ * @param {{ok: boolean, map?: Object<string,string>, error?: string}} read
+ * @param {object[]} [open]  index entries the window already holds
+ * @returns {{indexKnown: boolean, sessions: object[], legacy: string,
+ *            note: ?string}}
+ */
+export function restorePlan(read, open = []) {
+    if (!read?.ok) {
+        return {
+            indexKnown: false,
+            sessions: (open ?? []).map(sessionInfo),
+            legacy: '',
+            note: 'Stored conversations could not be read ' +
+                `(${read?.error || 'the context daemon did not answer'}). ` +
+                'Nothing is saved this session — and nothing already ' +
+                'saved has been changed.',
+        };
+    }
+    const map = read.map ?? {};
+    const stored = parseSessionIndex(map[INDEX_KEY]);
+    const recovered = indexFromRecords(map);
+    const orphans = recovered.filter(e => !stored.some(s => s.id === e.id));
+    return {
+        indexKnown: true,
+        // What is open beats both: the person is looking at it.
+        sessions: mergeIndex(mergeIndex(stored, recovered), open),
+        legacy: typeof map[LEGACY_CONVERSATION_KEY] === 'string'
+            ? map[LEGACY_CONVERSATION_KEY] : '',
+        note: orphans.length === 0 ? null
+            : `Recovered ${orphans.length} conversation` +
+              `${orphans.length === 1 ? '' : 's'} that had dropped off the list.`,
+    };
+}
+
+/**
+ * What to do with a Spotlight hand-off (`ask(prompt)`).
+ *
+ * `_send` returned early whenever a run was in flight, so a hand-off
+ * arriving mid-stream overwrote the composer and then went nowhere: no
+ * new session, no turn, no error, nothing in the log (#233). The
+ * overlay had already closed, so the person's question was simply gone.
+ *
+ * Queued rather than refused, and never merged into the running
+ * conversation: the reply that is streaming belongs to the conversation
+ * that asked for it, and what was typed into the overlay's empty box is
+ * a new thought (#210). It starts its own conversation when the current
+ * run ends — and it says so, because a queue nobody can see is the same
+ * silence in a nicer shape.
+ * @param {?string} prompt
+ * @param {{busy?: boolean, hasTurns?: boolean}} [state]
+ * @returns {{action: 'send'|'queue'|'ignore', prompt: string,
+ *            newSession: boolean, note: ?string}}
+ */
+export function handoffPlan(prompt, state = {}) {
+    const text = String(prompt ?? '').trim();
+    if (text === '')
+        return {action: 'ignore', prompt: '', newSession: false, note: null};
+    if (state.busy) {
+        return {
+            action: 'queue',
+            prompt: text,
+            newSession: true,
+            note: `“${text}” will start a new conversation when this reply ` +
+                'finishes.',
+        };
+    }
+    // A blank window is already the fresh conversation a hand-off wants.
+    return {
+        action: 'send',
+        prompt: text,
+        newSession: !!state.hasTurns,
+        note: null,
+    };
+}
+
+/**
  * A conversation's "last active" subtitle. Deliberately locale-free:
  * the list is scanned, not read, and a fixed form keeps the sidebar
  * width predictable.

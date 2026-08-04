@@ -6,13 +6,74 @@
 mod server;
 mod storage;
 
+use std::ffi::CString;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 const APP_ID: &str = "app.lisaos.notes";
 /// Must match `mcp_bus::DEFAULT_SOCKET_DIR`.
 const DEFAULT_SOCKET_DIR: &str = "/run/lisa/mcp";
+
+/// The bound socket's path, for the signal handler to unlink (#219).
+///
+/// A raw pointer in an atomic rather than a `OnceLock<CString>`,
+/// because a signal handler may only call async-signal-safe things: an
+/// atomic load is one, and taking a lock or allocating is not. The
+/// `CString` is leaked on purpose — it must outlive every path out of
+/// this process, including the ones that do not unwind.
+static SOCKET_PATH: AtomicPtr<libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Unlink the socket and leave, from inside a signal handler.
+///
+/// `unlink` and `_exit` are both on POSIX's async-signal-safe list;
+/// nothing else here allocates, formats or locks. `_exit` rather than a
+/// flag the accept loop polls, because the loop is parked in `accept()`
+/// and would not look at a flag until the next connection — which, for
+/// a socket we are trying to give back, may be never.
+extern "C" fn release_and_exit(sig: libc::c_int) {
+    let path = SOCKET_PATH.load(Ordering::SeqCst);
+    if !path.is_null() {
+        // SAFETY: `path` is a leaked, NUL-terminated C string that is
+        // never freed and never rewritten after it is first stored.
+        unsafe { libc::unlink(path) };
+    }
+    // SAFETY: `_exit` is always safe to call; it does not unwind.
+    unsafe { libc::_exit(128 + sig) }
+}
+
+/// Arrange for `socket` to be removed however this process ends.
+///
+/// It used not to be removed at all on the way OUT — only cleared on
+/// the way in, by the next start. So a killed server (systemd stopping
+/// the unit, a logout, `pkill`) left the socket file sitting in the
+/// runtime directory, and `mcp_bus` defers socket activation: it reads
+/// socket PRESENCE as tool availability. agentd therefore went on
+/// offering `search_notes` and `create_note` to the model and got
+/// ECONNREFUSED on every dispatch, instead of "Notes is not running"
+/// (#219). Found in exactly that state on the reference machine, for
+/// Surfer and Preview.
+fn release_socket_on_exit(socket: &Path) {
+    let Ok(c_path) = CString::new(socket.as_os_str().as_encoded_bytes()) else {
+        return; // a path with an interior NUL cannot be a real socket
+    };
+    SOCKET_PATH.store(c_path.into_raw(), Ordering::SeqCst);
+    // SAFETY: installing a handler that only unlinks and `_exit`s.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = release_and_exit as *const () as libc::sighandler_t;
+        libc::sigemptyset(&mut action.sa_mask);
+        action.sa_flags = 0;
+        // The three that end a process without giving it a chance to
+        // return from `main`. SIGKILL is deliberately absent: it cannot
+        // be caught, which is why the next start still clears a stale
+        // socket as well.
+        for sig in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
+            libc::sigaction(sig, &action, std::ptr::null_mut());
+        }
+    }
+}
 
 fn main() -> ExitCode {
     let socket = match socket_path() {
@@ -45,6 +106,9 @@ fn run(socket: &Path) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::remove_file(socket)?; // stale socket from a previous run
     }
     let listener = UnixListener::bind(socket)?;
+    // Registered after the bind, so a failed bind never arms a handler
+    // that would unlink somebody else's live socket.
+    release_socket_on_exit(socket);
     eprintln!(
         "lisa-notes: listening on {}, db {}",
         socket.display(),

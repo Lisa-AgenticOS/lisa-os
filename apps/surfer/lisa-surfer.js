@@ -33,6 +33,26 @@ import {rowLabel} from './lib/tablist.js';
 import {suggestionsFor} from './lib/omnibox.js';
 import {START_URI, START_PAGE_HTML, goQuery} from './lib/startpage.js';
 
+/// The Unix-signal half of GLib, which moved.
+///
+/// `GLib.unix_signal_add` still works and prints a deprecation warning
+/// on every current gjs ("has been moved to a separate platform-
+/// specific library"), and `GLibUnix` does not exist on older ones. So
+/// ask for it, the same way `apps/mail` does.
+let GLibUnix = null;
+try {
+    GLibUnix = imports.gi.GLibUnix;
+} catch {
+    // Older GLib: the function is still on GLib itself.
+}
+
+/// Run `handler` when this process is sent `signal`, on the main loop.
+function onUnixSignal(signal, handler) {
+    if (GLibUnix?.signal_add)
+        return GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal, handler);
+    return GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal, handler);
+}
+
 const HOME = START_URI; // the local start page (lib/startpage.js)
 
 /// Surfer's own version, which appears in the user agent. Bumped by
@@ -382,6 +402,14 @@ function buildWindow() {
         default_width: 1280,
         default_height: 860,
     });
+    // The socket lives exactly as long as a window does. `shutdown`
+    // would reach it anyway when the last window closes; releasing here
+    // as well means the tools stop advertising themselves before GTK
+    // starts tearing the window down, rather than after (#219).
+    win.connect('close-request', () => {
+        release();
+        return false;
+    });
 
     const back = Gtk.Button.new_from_icon_name('go-previous-symbolic');
     const fwd = Gtk.Button.new_from_icon_name('go-next-symbolic');
@@ -720,5 +748,43 @@ app.connect('activate', () => {
     });
     mcp.start();
 });
-app.connect('shutdown', () => mcp?.stop());
+
+/// Give the socket back, once, whatever ended the process.
+///
+/// This hung off GApplication `shutdown` alone, which covers a clean
+/// exit and nothing else — SIGTERM from systemd, a logout that kills
+/// the session's units, `pkill`, a crash of the outer process — so a
+/// killed Surfer left the socket file sitting in
+/// `$XDG_RUNTIME_DIR/lisa/mcp`. mcp-bus defers socket activation and
+/// reads PRESENCE AS AVAILABILITY, so a dead browser went on
+/// advertising `read_page`, `navigate` and `click`, and agentd got
+/// ECONNREFUSED where it should have been told "Surfer is not running"
+/// (#219). Reproduced on the reference machine before this landed:
+/// SIGTERM, no process, socket still there, `connect()` → ECONNREFUSED.
+///
+/// Idempotent, because more than one of these paths can fire: a window
+/// close that quits the app reaches `shutdown` too.
+let released = false;
+function release() {
+    if (released)
+        return;
+    released = true;
+    try {
+        mcp?.stop();
+    } catch (e) {
+        logError(e, 'lisa-surfer: releasing the agent socket');
+    }
+}
+app.connect('shutdown', () => release());
+// …and the signals that end a process without a `shutdown`. The handler
+// runs on the main loop, so it may do real work; `quit()` then unwinds
+// the app the ordinary way. SOURCE_REMOVE because a second SIGTERM
+// should kill us rather than queue another quit.
+for (const signal of [1 /* SIGHUP */, 2 /* SIGINT */, 15 /* SIGTERM */]) {
+    onUnixSignal(signal, () => {
+        release();
+        app.quit();
+        return GLib.SOURCE_REMOVE;
+    });
+}
 app.run([]);

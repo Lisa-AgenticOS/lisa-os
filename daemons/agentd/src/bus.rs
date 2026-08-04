@@ -20,7 +20,7 @@
 use crate::journal::{self, JournalError, UndoJournal};
 use crate::manifest::{ToolDecl, validate_args};
 use crate::registry::Registry;
-use crate::tier::{Confirmation, Provenance, Resolution, resolve};
+use crate::tier::{Claimant, Confirmation, Provenance, Resolution, resolve};
 use lisa_ledger::{Event, Ledger, LedgerError, preview_of};
 use lisa_peer::{Owner, PeerId};
 use serde::Serialize;
@@ -345,18 +345,27 @@ impl AgentBus {
     /// may never reach the bus (it can be denied earlier), and a
     /// security signal that only appears when the call succeeds is one
     /// you cannot search for.
-    pub fn ledger_provenance_downgrade(&self, actor: &str, app_id: &str, tool: &str) {
+    /// Record that `claimant` asserted `user` provenance it was not
+    /// owed, on its way to `target_app`'s `tool`.
+    ///
+    /// Filed under the CLAIMANT (#217). It used to be filed under the
+    /// message's `actor` string with the TARGET app named as the
+    /// asserting party — so the entry that exists to make a repeat
+    /// claimant greppable produced the list of apps that had been aimed
+    /// at instead, and each victim read as the offender.
+    pub fn ledger_provenance_downgrade(&self, claimant: &Claimant, target_app: &str, tool: &str) {
         // Best-effort by design: failing the call because the note
         // could not be written would turn a Ledger problem into an
         // outage, and the call is not the thing at fault here.
         if let Err(e) = self.ledger.append(&Event {
             kind: "agent.provenance_downgrade".into(),
-            app_id: actor.into(),
+            app_id: claimant.to_string(),
             preview: preview_of(&format!(
-                "{app_id}/{tool} claimed user provenance without being a Lisa program"
+                "{claimant} claimed user provenance without being a Lisa \
+                 program, calling {target_app}/{tool}"
             )),
             status: "downgraded".into(),
-            detail: format!("asserted=user verified=app:{app_id} tool={tool}"),
+            detail: format!("asserted=user verified=app:{claimant} target={target_app}/{tool}"),
             ..Default::default()
         }) {
             eprintln!("agentd: could not ledger a provenance downgrade: {e}");
@@ -1946,7 +1955,13 @@ mod tests {
     #[test]
     fn a_provenance_downgrade_is_recorded_where_it_can_be_found() {
         let Fixture { bus, ledger, .. } = fixture();
-        bus.ledger_provenance_downgrade("host", "app.example.Evil", "delete_event");
+        // `app.example.Evil` is the CLAIMANT here, not the callee — the
+        // two used to be the same argument by accident (#217).
+        bus.ledger_provenance_downgrade(
+            &Claimant::from("app.example.Evil"),
+            "app.lisaos.Calendar",
+            "delete_event",
+        );
         let tail = ledger.tail(1).unwrap();
         assert_eq!(tail[0].kind, "agent.provenance_downgrade");
         assert_eq!(tail[0].status, "downgraded");
@@ -1958,6 +1973,44 @@ mod tests {
         assert!(
             tail[0].detail.contains("asserted=user"),
             "the entry must say what was claimed: {}",
+            tail[0].detail
+        );
+    }
+
+    /// #217: the record names the PEER that made the claim, never the
+    /// app whose tool it was aimed at.
+    ///
+    /// The comment above says the entry exists so a repeat claimant can
+    /// be grepped for. What it recorded was the CALLEE — so grepping it
+    /// returned the set of apps that had been targeted, and a peer that
+    /// hit ten different apps looked like ten unrelated incidents while
+    /// each of its victims looked like the offender.
+    #[test]
+    fn a_downgrade_names_the_claimant_and_not_the_app_it_aimed_at() {
+        let Fixture { bus, ledger, .. } = fixture();
+        let claimant = Claimant::from("host:/usr/bin/curl");
+        bus.ledger_provenance_downgrade(&claimant, "app.lisaos.Mail", "send_mail");
+        let tail = ledger.tail(1).unwrap();
+        // The greppable field: one peer, however many apps it aimed at.
+        assert_eq!(
+            tail[0].app_id, "host:/usr/bin/curl",
+            "the entry must be filed under the peer that claimed it"
+        );
+        assert!(
+            tail[0].detail.contains("verified=app:host:/usr/bin/curl"),
+            "the substituted tag is the CLAIMANT's: {}",
+            tail[0].detail
+        );
+        assert!(
+            !tail[0].detail.contains("verified=app:app.lisaos.Mail"),
+            "the victim was recorded as the peer that claimed to be human: {}",
+            tail[0].detail
+        );
+        // The target is still in the record — it is the thing that was
+        // aimed at, and an incident report without it is not one.
+        assert!(
+            tail[0].detail.contains("app.lisaos.Mail") && tail[0].detail.contains("send_mail"),
+            "the target must still be recorded, as the target: {}",
             tail[0].detail
         );
     }

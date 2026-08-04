@@ -4,7 +4,8 @@
 import {test, assert, assertEq, finish} from '../../testing/harness.js';
 import {
     imageMimeForName, imagePart, attachmentsPayload, attachmentRefusal,
-    attachmentSizeRefusal, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_TOTAL_BYTES,
+    attachmentSizeRefusal, stagedForSession,
+    MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_TOTAL_BYTES,
 } from '../lib/attachments.js';
 
 test('imageMimeForName maps the extensions inferenced forwards', () => {
@@ -123,6 +124,34 @@ test('the composer budget stays under what harnessd will accept', () => {
         'the composer allows more base64 than harnessd will take');
     assert(MAX_ATTACHMENT_BYTES <= MAX_ATTACHMENTS_TOTAL_BYTES,
         'one picture may not exceed the whole send');
+});
+
+test('an attachment belongs to the conversation it was staged in', () => {
+    // #235: an image attached in one conversation survived a switch and
+    // was sent with the next message — to THAT conversation's provider.
+    // Clearing the strip on a switch is the fix; this is the second
+    // mechanism, so a switch path nobody remembered to clear still
+    // cannot leak the bytes.
+    const items = [
+        {name: 'salary.png', mime: 'image/png', b64: 'AAAA', session: 's-1'},
+        {name: 'ok.png', mime: 'image/png', b64: 'BBBB', session: 's-2'},
+        {name: 'untagged.png', mime: 'image/png', b64: 'CCCC'},
+    ];
+    assertEq(stagedForSession(items, 's-2').map(a => a.name), ['ok.png']);
+    assertEq(stagedForSession(items, 's-1').map(a => a.name), ['salary.png']);
+    // An attachment with no session is nobody's, not everybody's.
+    assertEq(stagedForSession(items, undefined), []);
+    assertEq(stagedForSession(null, 's-1'), []);
+});
+
+test('the payload never carries another conversation attachment', () => {
+    const items = [
+        {name: 'salary.png', mime: 'image/png', b64: 'AAAA', session: 's-1'},
+        {name: 'ok.png', mime: 'image/png', b64: 'BBBB', session: 's-2'},
+    ];
+    assertEq(attachmentsPayload(stagedForSession(items, 's-2')), [
+        {type: 'image_url', image_url: {url: 'data:image/png;base64,BBBB'}},
+    ]);
 });
 
 await finish('assistant attachments');

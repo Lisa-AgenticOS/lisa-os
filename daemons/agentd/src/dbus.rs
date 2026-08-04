@@ -25,7 +25,7 @@
 //! hosts); session-bus registration is used on real systems.
 
 use crate::bus::{AgentBus, Answerer, BusError, CallRequest, ConsentRole, Outcome};
-use crate::tier::{Confirmation, Provenance};
+use crate::tier::{Claimant, Confirmation, Provenance};
 use std::collections::HashMap;
 use std::sync::Arc;
 use zbus::object_server::SignalEmitter;
@@ -126,6 +126,43 @@ async fn caller_is_lisa_program(
         lisa_peer::exe_of_peer(&peer).ok().as_deref(),
         &lisa_peer::manager::default_managers(),
     )
+}
+
+/// Who is calling, for the Ledger — from the transport, never from the
+/// message (#217, ADR-0033).
+///
+/// The message carries an `actor` string and an `app_id`, and NEITHER
+/// names the sender: `actor` is a self-description ("assistant"), and
+/// `app_id` is the app being called. Both were used here, which is how
+/// a provenance downgrade came to be attributed to its target.
+async fn caller_claimant(conn: &zbus::Connection, header: &zbus::message::Header<'_>) -> Claimant {
+    let Ok(peer) = lisa_peer::resolve(conn, header).await else {
+        return Claimant::from(Claimant::UNKNOWN);
+    };
+    #[cfg(unix)]
+    let exe = lisa_peer::exe_of_peer(&peer).ok();
+    #[cfg(not(unix))]
+    let exe: Option<std::path::PathBuf> = None;
+    claimant_label(exe.as_deref(), &peer.id)
+}
+
+/// The naming rule, separated so it can be tested without a live peer.
+///
+/// The executable first, because it is the same string across restarts
+/// and is therefore the one worth grepping the Ledger for; the unique
+/// bus name second, because it at least distinguishes one connection
+/// from another within a session; and `host:unknown` last, shared by
+/// every peer we could not place at all.
+fn claimant_label(exe: Option<&std::path::Path>, peer: &lisa_peer::PeerId) -> Claimant {
+    if let Some(exe) = exe {
+        // One producer for `host:<exe>`, so the Ledger and the portal
+        // spell an unattributed caller the same way.
+        return Claimant::from(lisa_peer::app::AppIdentity::unattributed(exe).app_id);
+    }
+    match peer {
+        lisa_peer::PeerId::Bus(name) => Claimant::from(format!("peer:{name}")),
+        _ => Claimant::from(Claimant::UNKNOWN),
+    }
 }
 
 /// The decision itself, separated so it can be tested.
@@ -255,7 +292,13 @@ impl Agent1 {
         // one tag which BUYS trust, and it was previously free to
         // anything on the session bus.
         let trusted = caller_is_lisa_program(conn, &header).await;
-        let verified = crate::tier::verify_chain(asserted, trusted, &app_id);
+        // The CLAIMANT, not the callee (#217). `app_id` is the app whose
+        // tool is being called — the target — and passing it here made
+        // the downgrade record name the victim as the peer that claimed
+        // to be human. `Claimant` is a newtype so the two can no longer
+        // be swapped by writing the wrong variable.
+        let claimant = caller_claimant(conn, &header).await;
+        let verified = crate::tier::verify_chain(asserted, trusted, &claimant);
         if verified.downgraded {
             // Recorded, not refused: refusing would break any app that
             // simply tagged its input wrongly. A peer repeatedly
@@ -265,10 +308,11 @@ impl Agent1 {
             // lived until #55's audit: a journal line nobody queries is
             // not an audit trail.
             eprintln!(
-                "agentd: {app_id} asserted user provenance without being a Lisa program; \
-                 downgraded to app:{app_id}"
+                "agentd: {claimant} asserted user provenance without being a Lisa \
+                 program, calling {app_id}/{tool}; downgraded to app:{claimant}"
             );
-            self.bus.ledger_provenance_downgrade(&actor, &app_id, &tool);
+            self.bus
+                .ledger_provenance_downgrade(&claimant, &app_id, &tool);
         }
         let chain = verified.chain;
 

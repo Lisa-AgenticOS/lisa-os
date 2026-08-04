@@ -112,7 +112,12 @@ fn asserting_user_provenance_does_not_buy_the_trusted_path() {
     // What a hostile peer would send: the strongest possible claim.
     let asserted = vec![Provenance::parse("user")];
     // What the transport says about it: not a Lisa program (ADR-0033).
-    let verified = lisa_agentd::tier::verify_chain(asserted, false, attempt.target_app);
+    // The third argument is the CLAIMANT — the peer that sent the
+    // message — never the app being called (#217). A hostile peer here
+    // is not one of ours, so it has no app id of its own; it is named
+    // by its executable, the way every unattributed caller is.
+    let claimant = lisa_agentd::tier::Claimant::from("host:/usr/bin/attacker");
+    let verified = lisa_agentd::tier::verify_chain(asserted, false, &claimant);
     assert!(
         verified.downgraded,
         "a non-Lisa peer's `user` claim must be downgraded"
@@ -120,6 +125,14 @@ fn asserting_user_provenance_does_not_buy_the_trusted_path() {
     assert!(
         !verified.chain.contains(&Provenance::User),
         "no `user` may survive verification for an untrusted peer: {:?}",
+        verified.chain
+    );
+    assert!(
+        !verified
+            .chain
+            .contains(&Provenance::App(attempt.target_app.into())),
+        "the app being ATTACKED was recorded as the peer that claimed to \
+         be human (#217): {:?}",
         verified.chain
     );
 

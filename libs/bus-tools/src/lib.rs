@@ -35,6 +35,29 @@ pub struct BusTool {
 /// tool whose sensitivity we cannot read is not a tool we know is safe to
 /// call unattended, and defaulting the unknown to the permissive value is
 /// how a fail-open lands in a security boundary.
+///
+/// # Why the Read filter is load-bearing, not a placeholder (#216)
+///
+/// This is the ONLY thing keeping write-tier tools away from the model:
+/// `navigate`, `click`, `fill`, `create_note`, `archive_message` are all
+/// registered with agentd and all reachable by anything that can open
+/// the socket. Widening it looks like a one-word change and is not.
+///
+/// Measured on the reference machine, 2026-08-04, against the live
+/// daemons: a write-tier `RequestCall` does park as `confirm-modal` with
+/// `escalated: true`, so the tier machinery is real — but
+/// `dev.lisaos.Consent1` has no owner (it is activatable, and agentd
+/// asks with `GetNameOwner`, which does not activate), so
+/// `consent_role()` answers `Absent`, and `Absent` is the headless
+/// fallback that lets the REQUESTER answer its own call. The probe's own
+/// connection called `Confirm(id, true)` and agentd dispatched.
+///
+/// So if this filter were widened today, the last thing between the
+/// model and a privileged call would be [`outcome_for`] declining to
+/// call `Confirm` — a decision inside the process the model drives.
+/// CLAUDE.md rule 6a: reachable from inside is not a guardrail. The
+/// filter comes off when a consent surface is *running* and
+/// *independent*, proven on a seated session — not before.
 pub fn read_tier_tools(raw: &str) -> anyhow::Result<Vec<BusTool>> {
     let rows: Vec<Value> =
         serde_json::from_str(raw).map_err(|e| anyhow::anyhow!("parsing ListTools JSON: {e}"))?;
@@ -298,6 +321,35 @@ mod tests {
         // is advertised to the model at all.
         assert!(!names.contains(&"create_note"));
         assert!(!names.contains(&"delete_file"));
+    }
+
+    /// The browser's write tier by name, because #216 is a live
+    /// proposal to widen this filter and the reason it stays is not
+    /// visible from `tier == "read"` alone (see the fn docs).
+    ///
+    /// If this ever goes green with the names present, the consent
+    /// surface had better be running, independent, and device-proven.
+    #[test]
+    fn the_browsers_write_tools_are_not_handed_to_the_model() {
+        let surfer = r#"[
+          {"app_id":"app.lisaos.Surfer","name":"read_page","tier":"read"},
+          {"app_id":"app.lisaos.Surfer","name":"navigate","tier":"write"},
+          {"app_id":"app.lisaos.Surfer","name":"click","tier":"write"},
+          {"app_id":"app.lisaos.Surfer","name":"fill","tier":"write"}
+        ]"#;
+        let names: Vec<String> = read_tier_tools(surfer)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.tool)
+            .collect();
+        assert_eq!(names, vec!["read_page"]);
+        for privileged in ["navigate", "click", "fill"] {
+            assert!(
+                !names.iter().any(|n| n == privileged),
+                "`{privileged}` reached the model's tool list with no \
+                 independent consent surface to gate it (#216)"
+            );
+        }
     }
 
     #[test]

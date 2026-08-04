@@ -156,14 +156,67 @@ pub struct VerifiedChain {
     pub downgraded: bool,
 }
 
+/// The peer that SENT the message, as the transport names it.
+///
+/// A newtype and not a `&str`, because the bug it exists to prevent is
+/// passing the wrong string (#217). `verify_chain` was called with the
+/// TARGET app id, so a downgrade recorded the app whose tool had been
+/// aimed at as the peer that claimed to be human — and the record
+/// exists precisely so a repeat claimant can be found, which made it a
+/// list of victims. Both arguments are strings that name an app, so
+/// nothing but a type was ever going to keep them apart.
+///
+/// Built only from what the transport says (`lisa_peer`), never from
+/// anything in the message — the message's own `actor` field is a
+/// claim, and this is the thing that checks claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claimant(String);
+
+impl Claimant {
+    /// The caller we could not place at all. Every unidentifiable peer
+    /// shares it, which is the safe direction: they cannot be told
+    /// apart, so they must not be able to name one another either.
+    pub const UNKNOWN: &'static str = "host:unknown";
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for Claimant {
+    fn from(s: &str) -> Self {
+        Claimant(if s.is_empty() {
+            Self::UNKNOWN.to_string()
+        } else {
+            s.to_string()
+        })
+    }
+}
+
+impl From<String> for Claimant {
+    fn from(s: String) -> Self {
+        Claimant::from(s.as_str())
+    }
+}
+
+impl fmt::Display for Claimant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Bind an asserted chain to what the transport says about the caller.
 ///
 /// `trusted_program` comes from peer credentials — `/proc/<pid>/exe` via
-/// `lisa_peer`, never from anything in the message (ADR-0033).
+/// `lisa_peer`, never from anything in the message (ADR-0033). So does
+/// `claimant`: a downgraded `user` becomes `app:<the peer that said
+/// it>`, which is what the tag means. It used to become `app:<the app
+/// being called>`, which named the wrong party in both the chain and
+/// the Ledger (#217).
 pub fn verify_chain(
     asserted: Vec<Provenance>,
     trusted_program: bool,
-    app_id: &str,
+    claimant: &Claimant,
 ) -> VerifiedChain {
     if trusted_program {
         return VerifiedChain {
@@ -177,7 +230,7 @@ pub fn verify_chain(
         .map(|p| {
             if p == Provenance::User {
                 downgraded = true;
-                Provenance::App(app_id.to_string())
+                Provenance::App(claimant.as_str().to_string())
             } else {
                 p
             }
@@ -352,7 +405,7 @@ mod tests {
     #[test]
     fn a_stranger_cannot_claim_a_human_typed_it() {
         let asserted = vec![Provenance::User];
-        let v = verify_chain(asserted, false, "app.example.Evil");
+        let v = verify_chain(asserted, false, &Claimant::from("app.example.Evil"));
         assert_eq!(v.chain, vec![Provenance::App("app.example.Evil".into())]);
         assert!(v.downgraded, "the substitution must be recorded");
         // …and the downgraded chain is genuinely less trusted, which is
@@ -365,7 +418,11 @@ mod tests {
         // The CLI and the overlay backend are the surfaces a human types
         // into. Downgrading them would make every ordinary request ask
         // for confirmation, which trains people to click through.
-        let v = verify_chain(vec![Provenance::User], true, "dev.lisaos.Cli");
+        let v = verify_chain(
+            vec![Provenance::User],
+            true,
+            &Claimant::from("dev.lisaos.Cli"),
+        );
         assert_eq!(v.chain, vec![Provenance::User]);
         assert!(!v.downgraded);
     }
@@ -383,7 +440,11 @@ mod tests {
             Provenance::File,
             Provenance::Other("weird".into()),
         ];
-        let v = verify_chain(untrusted.clone(), false, "app.example.Thing");
+        let v = verify_chain(
+            untrusted.clone(),
+            false,
+            &Claimant::from("app.example.Thing"),
+        );
         assert_eq!(v.chain, untrusted);
         assert!(!v.downgraded);
     }
@@ -395,7 +456,7 @@ mod tests {
         let v = verify_chain(
             vec![Provenance::User, Provenance::Mail],
             false,
-            "app.lisaos.Mail",
+            &Claimant::from("app.lisaos.Mail"),
         );
         assert_eq!(
             v.chain,
@@ -409,7 +470,7 @@ mod tests {
         // Verification must not accidentally populate a chain: an empty
         // one is the fail-closed case the tier machinery already relies
         // on, and inventing a link here would defeat it.
-        let v = verify_chain(vec![], false, "app.example.Thing");
+        let v = verify_chain(vec![], false, &Claimant::from("app.example.Thing"));
         assert!(v.chain.is_empty());
         assert!(!v.downgraded);
     }

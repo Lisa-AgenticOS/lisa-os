@@ -10,6 +10,31 @@
 import {isRemote} from './model.js';
 
 /**
+ * The staged attachments that belong to conversation `sessionId`.
+ *
+ * An attachment belongs to the conversation it was staged in, not to
+ * the composer (#235). It used to belong to the composer: attach an
+ * image, switch conversations, type — and the picture went with the new
+ * message, to THAT conversation's provider. A picture staged in a chat
+ * with a local model and sent from a chat with a cloud one leaves the
+ * machine, which makes it a disclosure rather than a stray widget.
+ *
+ * The window clears the strip on every switch, which is the fix; this
+ * is the second mechanism, so a switch path nobody remembered to clear
+ * still cannot put one conversation's bytes on another's wire. An
+ * untagged attachment belongs to nobody rather than to everybody —
+ * fail closed, because the failure this guards is disclosure.
+ * @param {?object[]} items
+ * @param {?string} sessionId
+ * @returns {object[]}
+ */
+export function stagedForSession(items, sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '')
+        return [];
+    return (items ?? []).filter(a => a?.session === sessionId);
+}
+
+/**
  * Image types the wire already carries end to end: the Assistant builds
  * the same `image_url` part `lisa ask --attach` does, inferenced passes
  * it through as `Content::Parts`, and lisa-remoted rewrites the data URI

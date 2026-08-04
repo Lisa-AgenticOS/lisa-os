@@ -60,9 +60,18 @@ export class McpServer {
         log(`lisa-surfer: agent tools on ${this._path}`);
     }
 
+    /// Stop listening and remove the socket file.
+    ///
+    /// Idempotent: the app calls this from more than one exit path
+    /// (#219), and unlinking a path a NEW instance has since bound
+    /// would take a live socket away from it.
     stop() {
-        this._service?.stop();
+        if (!this._service) return;
+        this._service.stop();
+        this._service.close();
+        this._service = null;
         if (this._path) GLib.unlink(this._path);
+        this._path = null;
     }
 
     async _serve(conn) {

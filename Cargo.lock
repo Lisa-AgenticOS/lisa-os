@@ -1478,6 +1478,7 @@ dependencies = [
 name = "lisa-notes"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mcp-bus",
  "rusqlite",
  "serde_json",
