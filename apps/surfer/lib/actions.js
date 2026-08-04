@@ -14,19 +14,48 @@
 
 import {resolveInput} from './url.js';
 
+/// The only schemes an AGENT may open. An allowlist, not a blocklist.
+///
+/// This is the fix for #214, and the shape of that bug is worth keeping
+/// written down: `navigate` used to inherit the address bar's
+/// passthrough list, which includes `file:` and `about:` because a
+/// PERSON may open their own files. Reused at the agent boundary it
+/// meant `navigate file:///etc/passwd` followed by `read_page` returned
+/// the contents of any file the user can read, tagged
+/// `provenance: "web"`, straight into the model's context and around
+/// contextd's ACLs entirely.
+///
+/// Two rules, two answers (ADR-0029): the address bar sits between a
+/// person and their own machine and stays open; this sits between the
+/// model and the machine and is closed by default. `about:` is not here
+/// either — nothing an agent needs to do requires it, and "harmless
+/// today" is how the file: hole got in.
+const AGENT_SCHEMES = ['http:', 'https:'];
+
 /// Where `navigate` may actually go.
 ///
-/// Delegates to resolveInput — the ONE place that refuses javascript:,
-/// data:, vbscript: and blob: before normalising (its refusal list was
-/// written for exactly this tool). A search-looking input is refused
-/// rather than searched: a person typing gets a search, an agent
-/// navigating gets told to say where it wants to go.
+/// Two gates, in order. resolveInput first — the ONE place that refuses
+/// javascript:, data:, vbscript: and blob: before normalising, and the
+/// place that turns `example.org` into `https://example.org`. Then the
+/// agent allowlist above, applied to what came out, because the refusal
+/// list alone is a blocklist and a blocklist at a trust boundary is a
+/// list of the attacks somebody thought of.
+///
+/// A search-looking input is refused rather than searched: a person
+/// typing gets a search, an agent navigating gets told to say where it
+/// wants to go.
 export function navigationTarget(raw) {
     const resolved = resolveInput(raw);
     if (resolved.kind === 'refused')
         throw new Error(resolved.reason);
     if (resolved.kind !== 'load' || !resolved.url)
         throw new Error(`not a navigable address: ${JSON.stringify(String(raw ?? ''))}`);
+    const lower = resolved.url.toLowerCase();
+    if (!AGENT_SCHEMES.some(s => lower.startsWith(s))) {
+        throw new Error(
+            `an agent may only open ${AGENT_SCHEMES.join(' and ')} addresses, ` +
+            `not ${JSON.stringify(resolved.url)}`);
+    }
     return resolved.url;
 }
 

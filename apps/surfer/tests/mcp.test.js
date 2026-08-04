@@ -18,6 +18,23 @@ const rCall = await call('tools/call', {name: 'read_page', arguments: {}});
 const rBoom = await call('tools/call', {name: 'boom', arguments: {}});
 const rNoTool = await call('tools/call', {name: 'nope'});
 const rNoMethod = await call('wat', {});
+// #218: `tools[name]` walks the prototype chain, so every name on
+// Object.prototype resolved to a function and got CALLED. `constructor`
+// came back as a tagged success — a fail-open one layer under the code
+// that argues for failing closed.
+const rInherited = await Promise.all(
+    ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__',
+     '__defineGetter__', 'isPrototypeOf', 'propertyIsEnumerable']
+        .map(name => call('tools/call', {name})));
+const rNonString = await Promise.all(
+    [undefined, null, 42, {}, ['read_page']]
+        .map(name => call('tools/call', {name})));
+// A name that IS an own property but is not callable. Nothing in this
+// app's tool map is a string today; the dispatcher should not be the
+// thing that finds out the hard way.
+const rNotCallable = await handleRequest(
+    {jsonrpc: '2.0', id: 1, method: 'tools/call', params: {name: 'version'}},
+    {version: '0.1', read_page: async () => ({})});
 const rJunk = await handleRequest(null, TOOLS);
 const rOldRpc = await handleRequest({jsonrpc: '1.0', id: 9}, TOOLS);
 
@@ -45,6 +62,22 @@ test('a throwing tool is an isError result, not a dead socket', () => {
 test('an unknown tool and an unknown method are JSON-RPC errors', () => {
     assertEq(rNoTool.error.code, -32601);
     assertEq(rNoMethod.error.code, -32601);
+});
+
+test('inherited Object.prototype members are not tools (#218)', () => {
+    for (const r of rInherited) {
+        assertEq(r.error?.code, -32601,
+            `an inherited member answered as a tool: ${JSON.stringify(r)}`);
+    }
+});
+
+test('a tool name that is not a string is not a tool', () => {
+    for (const r of rNonString)
+        assertEq(r.error?.code, -32601, JSON.stringify(r));
+});
+
+test('an entry that is not callable is not a tool', () => {
+    assertEq(rNotCallable.error?.code, -32601, JSON.stringify(rNotCallable));
 });
 
 test('junk input is an invalid-request error, not a crash', () => {

@@ -15,6 +15,38 @@ test('javascript: is refused, case and whitespace included', () => {
     }
 });
 
+test('the agent boundary allows http and https, and nothing else (#214)', () => {
+    // The address bar's passthrough list is the ADDRESS BAR's rule: a
+    // person browsing their own machine to file:///home/… is their
+    // business (ADR-0029's second test). The agent boundary is a
+    // different question with a different answer — `navigate
+    // file:///etc/passwd` then `read_page` is any readable file, tagged
+    // provenance "web", straight into the model's context.
+    assertEq(navigationTarget('http://example.org/'), 'http://example.org/');
+    assertEq(navigationTarget('example.org'), 'https://example.org');
+    for (const bad of [
+        'file:///etc/passwd',
+        'file:///home/lisa/.ssh/id_ed25519',
+        'FILE:///etc/shadow',
+        'about:blank',
+        'about:config',
+        'mailto:a@b.com',
+        'magnet:?xt=urn:btih:abc',
+        'ftp://example.org/x',
+        'lisa://start',
+    ]) {
+        let threw = false;
+        try { navigationTarget(bad); } catch { threw = true; }
+        assert(threw, `agent must not be able to open ${bad}`);
+    }
+});
+
+test('the refusal says what IS allowed', () => {
+    let msg = '';
+    try { navigationTarget('file:///etc/passwd'); } catch (e) { msg = e.message; }
+    assert(msg.includes('http'), `unhelpful refusal: ${msg}`);
+});
+
 test('a search-looking input is refused rather than searched', () => {
     // A person typing words gets a search; an agent must say where it
     // wants to GO. "weather today" navigating to a search engine would
@@ -50,4 +82,4 @@ test('click reports a miss instead of staying silent', () => {
     assert(clickScript('#nope').includes('no element matches'));
 });
 
-finish();
+finish('surfer/actions');

@@ -23,10 +23,12 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import WebKit from 'gi://WebKit?version=6.0';
 
-import {resolveInput} from './lib/url.js';
+import {resolveInput, addressBarAction, DEFAULT_PLACEHOLDER} from './lib/url.js';
 import {EXTRACT_JS, pageResult} from './lib/extract.js';
 import {McpServer} from './lib/mcp.js';
 import {navigationTarget, clickScript, fillScript} from './lib/actions.js';
+import {evaluateInAgentWorld} from './lib/world.js';
+import {pinTarget} from './lib/target.js';
 import {rowLabel} from './lib/tablist.js';
 import {suggestionsFor} from './lib/omnibox.js';
 import {START_URI, START_PAGE_HTML, goQuery} from './lib/startpage.js';
@@ -148,6 +150,32 @@ function currentView() {
     return page ? page.get_child() : null;
 }
 
+/// Every open tab, in tab order, as lib/target.js wants them plus the
+/// page itself. The snapshot is taken when an action is REQUESTED —
+/// which is the whole point of #213: what is in front of the user at
+/// that instant is not what the confirmation described.
+function openTabs() {
+    const selected = tabView.get_selected_page();
+    const out = [];
+    for (let i = 0; i < tabView.get_n_pages(); i++) {
+        const page = tabView.get_nth_page(i);
+        out.push({
+            page,
+            url: page.get_child()?.get_uri() ?? '',
+            selected: page === selected,
+        });
+    }
+    return out;
+}
+
+/// The view a write-tier action names, or a throw explaining why not
+/// (lib/target.js owns the rule). Never falls back to "whatever is in
+/// front of the user" — that fallback IS the bug.
+function pinnedView(args) {
+    const tabs = openTabs();
+    return tabs[pinTarget(tabs, args)].page.get_child();
+}
+
 /// Wire an EXISTING WebView into a tab. Split out because the `create`
 /// signal hands us a view WebKit made itself, which must not be
 /// re-created or pre-loaded.
@@ -167,11 +195,7 @@ function attachTab(view, focus = true) {
         const q = goQuery(uri);
         if (q === null) return false;
         decision.ignore();
-        if (q.trim()) {
-            const r = resolveInput(q);
-            if (r.kind === 'load') v.load_uri(r.url);
-            else if (r.kind === 'search' && r.url) v.load_uri(r.url);
-        }
+        applyAddress(v, q);
         return true;
     });
     // Rail toggling resizes the content card, WebKit re-rasterizes its
@@ -238,88 +262,97 @@ function newTab(url = HOME, focus = true) {
     return view;
 }
 
-function navigate(text) {
-    const view = currentView();
+/// Enter in the address bar, and the start page's form — one brain, and
+/// all THREE of resolveInput's outcomes (#220). The empty-bar case used
+/// to reach `load_uri(null)`, which throws `Argument uri may not be
+/// null` inside a signal handler where nobody sees it.
+function applyAddress(view, text) {
     if (!view) return;
-    const r = resolveInput(text);
-    if (r.kind === 'refused') {
-        // Say why in the URL bar's tooltip area rather than failing mute.
+    const a = addressBarAction(text);
+    // Always reset the placeholder: a refusal used to leave its reason
+    // in the entry for the rest of the session.
+    urlBar.set_placeholder_text(a.placeholder);
+    if (a.act === 'refuse') {
         urlBar.set_text('');
-        urlBar.set_placeholder_text(r.reason);
         return;
     }
-    view.load_uri(r.url);
+    if (a.act === 'load') view.load_uri(a.url);
+}
+
+function navigate(text) {
+    applyAddress(currentView(), text);
 }
 
 /// The agent-facing read of the CURRENT tab. Promise resolves to the
 /// extract.js page result; provenance tagging happens at the MCP edge.
-function readCurrentPage() {
-    return new Promise((resolve, reject) => {
-        const view = currentView();
-        if (!view) { reject(new Error('no open tab')); return; }
-        view.evaluate_javascript(EXTRACT_JS, -1, null, null, null, (v, res) => {
-            try {
-                const value = v.evaluate_javascript_finish(res);
-                resolve(pageResult(JSON.parse(value.to_string()), v.get_uri()));
-            } catch (e) {
-                reject(e);
-            }
-        });
-    });
-}
-
-/// Write-tier agent actions (#166). agentd has already escalated these
-/// through the consent surface before they reach this process — the
-/// tier lives in the manifest and the guard in agentd, never here
-/// (ADR-0029: a check reachable from inside is not a guardrail). What
-/// lives here is only the doing.
-function agentNavigate({url}) {
+///
+/// The script runs in the agent world (lib/world.js, #212): in the
+/// page's own world a page that redefines JSON.stringify forges this
+/// entire result, title and text included.
+async function readCurrentPage() {
     const view = currentView();
-    if (!view) return Promise.reject(new Error('no open tab'));
-    // navigationTarget throws on javascript:/data:/etc — resolveInput's
-    // refusal list, reused not re-implemented (#166).
+    if (!view) throw new Error('no open tab');
+    const raw = await evaluateInAgentWorld(view, EXTRACT_JS);
+    return pageResult(JSON.parse(raw), view.get_uri());
+}
+
+/// Write-tier agent actions (#166).
+///
+/// The tier lives in the manifest and the consent surface is agentd's,
+/// not ours (ADR-0029: a check reachable from inside is not a
+/// guardrail). But "somebody else escalates it" is not the same as
+/// "this process may do as it is told": anything that can open the
+/// socket reaches these handlers directly, which is exactly how #212,
+/// #213 and #214 were reproduced on the device. So the rules that can
+/// only be enforced HERE are enforced here, in deterministic code with
+/// no model in the loop —
+///
+///   - what a page script may see:      lib/world.js  (#212)
+///   - which tab an action may touch:   lib/target.js (#213)
+///   - where an agent may navigate:     lib/actions.js (#214)
+///
+/// and each of them refuses rather than doing something approximate.
+
+/// `navigate` acts on the tab the user is looking at, and its argument
+/// IS its target — the consent dialog shows the address it will open,
+/// so there is nothing about this call the approver cannot see. The
+/// tab is read once, here, rather than at some later point.
+async function agentNavigate({url}) {
+    const view = currentView();
+    if (!view) throw new Error('no open tab');
+    // navigationTarget throws on javascript:/data:/etc AND on anything
+    // that is not http/https — the agent allowlist, which is not the
+    // address bar's rule (#214).
     const target = navigationTarget(url);
+    const from = view.get_uri() ?? '';
     view.load_uri(target);
-    return Promise.resolve({navigating: target});
+    return {navigating: target, from};
 }
 
-function runPageScript(script) {
-    return new Promise((resolve, reject) => {
-        const view = currentView();
-        if (!view) { reject(new Error('no open tab')); return; }
-        view.evaluate_javascript(script, -1, null, null, null, (v, res) => {
-            try {
-                const value = v.evaluate_javascript_finish(res);
-                resolve({...JSON.parse(value.to_string()), url: v.get_uri()});
-            } catch (e) {
-                reject(e);
-            }
-        });
-    });
+/// Run a page script on a PINNED view (never `currentView()` — #213)
+/// and in the agent world (never the page's own — #212).
+async function runPageScript(view, script) {
+    const raw = await evaluateInAgentWorld(view, script);
+    return {...JSON.parse(raw), url: view.get_uri()};
 }
 
-function agentClick({selector}) {
-    return runPageScript(clickScript(selector));
+async function agentClick(args) {
+    // pinnedView throws when the named page is not open any more; the
+    // action is refused rather than landing on whatever replaced it.
+    return runPageScript(pinnedView(args), clickScript(args.selector));
 }
 
-function agentFill({selector, value}) {
-    return runPageScript(fillScript(selector, value));
+async function agentFill(args) {
+    return runPageScript(pinnedView(args), fillScript(args.selector, args.value));
 }
 
 /// The agent-facing selection read.
-function readSelection() {
-    return new Promise((resolve, reject) => {
-        const view = currentView();
-        if (!view) { reject(new Error('no open tab')); return; }
-        view.evaluate_javascript('window.getSelection().toString()', -1, null, null, null, (v, res) => {
-            try {
-                const value = v.evaluate_javascript_finish(res);
-                resolve({selection: value.to_string(), url: v.get_uri()});
-            } catch (e) {
-                reject(e);
-            }
-        });
-    });
+async function readSelection() {
+    const view = currentView();
+    if (!view) throw new Error('no open tab');
+    const selection = await evaluateInAgentWorld(
+        view, 'window.getSelection().toString()');
+    return {selection, url: view.get_uri()};
 }
 
 /// Screenshot of the visible viewport as PNG bytes (capped upstream by
@@ -359,7 +392,7 @@ function buildWindow() {
 
     urlBar = new Gtk.Entry({
         hexpand: true,
-        placeholder_text: 'Search or enter address',
+        placeholder_text: DEFAULT_PLACEHOLDER,
         input_purpose: Gtk.InputPurpose.URL,
     });
     urlBar.connect('activate', () => { suggestPopover?.popdown(); navigate(urlBar.get_text()); });

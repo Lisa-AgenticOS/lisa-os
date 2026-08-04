@@ -24,7 +24,7 @@
     {
       "name": "navigate",
       "tier": "write",
-      "description": "Open a URL in the current Surfer tab. Refuses javascript:, data:, vbscript: and blob: addresses. Navigation changes what the user sees and is confirmed before it happens.",
+      "description": "Open an http: or https: address in the Surfer tab the user is looking at. Only http and https may be opened this way: file:, about:, mailto:, javascript:, data:, vbscript: and blob: are all refused. Navigation changes what the user sees and is confirmed before it happens.",
       "input_schema": {
         "type": "object",
         "required": ["url"],
@@ -36,11 +36,12 @@
     {
       "name": "click",
       "tier": "write",
-      "description": "Click the first element matching a CSS selector on the current page. Acts on an untrusted page in the user's logged-in session and is confirmed before it happens.",
+      "description": "Click the first element matching a CSS selector on a page open in Surfer. Acts on an untrusted page in the user's logged-in session and is confirmed before it happens. Refused if the page named by url is no longer open.",
       "input_schema": {
         "type": "object",
-        "required": ["selector"],
+        "required": ["url", "selector"],
         "properties": {
+          "url": { "type": "string", "description": "The address of the page to act on, exactly as read_page returned it. The click is refused if no open tab is at that address — it is never redirected to another tab.", "maxLength": 2000 },
           "selector": { "type": "string", "description": "CSS selector, e.g. button[type=submit]", "maxLength": 500 }
         }
       }
@@ -48,11 +49,12 @@
     {
       "name": "fill",
       "tier": "write",
-      "description": "Type a value into the form field matching a CSS selector on the current page. Acts on an untrusted page in the user's logged-in session and is confirmed before it happens.",
+      "description": "Type a value into the form field matching a CSS selector on a page open in Surfer. Acts on an untrusted page in the user's logged-in session and is confirmed before it happens. Refused if the page named by url is no longer open.",
       "input_schema": {
         "type": "object",
-        "required": ["selector", "value"],
+        "required": ["url", "selector", "value"],
         "properties": {
+          "url": { "type": "string", "description": "The address of the page to act on, exactly as read_page returned it. The fill is refused if no open tab is at that address — it is never redirected to another tab.", "maxLength": 2000 },
           "selector": { "type": "string", "description": "CSS selector of the field, e.g. input[name=q]", "maxLength": 500 },
           "value": { "type": "string", "description": "The text to enter.", "maxLength": 4000 }
         }

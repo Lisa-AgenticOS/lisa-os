@@ -100,3 +100,33 @@ function searchUrl(query, template) {
     const t = template ?? 'https://duckduckgo.com/?q=%s';
     return t.replace('%s', encodeURIComponent(query));
 }
+
+/// What the address bar says when it has nothing else to say.
+export const DEFAULT_PLACEHOLDER = 'Search or enter address';
+
+/// What pressing Enter in the address bar should DO (#220).
+///
+/// resolveInput has three outcomes and the window handled two of them:
+/// an empty bar is `{kind: "search", url: null}`, which reached
+/// `load_uri(null)` and threw `Argument uri may not be null` inside a
+/// signal handler, where nobody sees it. The third outcome lives here
+/// so it is a case in a tested function rather than a branch somebody
+/// remembers to write.
+///
+/// `placeholder` is always the text the entry should show afterwards —
+/// a refusal's reason, or the default. It used to be set only on
+/// refusal, which left the reason in the entry forever.
+///
+/// Note what this does NOT restrict: a person may navigate their own
+/// browser to `file:///home/…`. The agent boundary is a different
+/// question with a different answer (lib/actions.js, #214) — ADR-0029's
+/// second test: a guardrail sits between the model and the machine,
+/// never between a person and their own machine.
+export function addressBarAction(raw, opts) {
+    const r = resolveInput(raw, opts);
+    if (r.kind === 'refused')
+        return {act: 'refuse', url: null, placeholder: r.reason};
+    if (r.url)
+        return {act: 'load', url: r.url, placeholder: DEFAULT_PLACEHOLDER};
+    return {act: 'nothing', url: null, placeholder: DEFAULT_PLACEHOLDER};
+}

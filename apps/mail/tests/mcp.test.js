@@ -53,4 +53,25 @@ test('a malformed request is refused', async () => {
     assertEq((await handleRequest(null, {})).error.code, -32600);
 });
 
+test('inherited Object.prototype members are not tools (#218)', async () => {
+    // `tools[name]` walked the prototype chain: `constructor` and
+    // `toString` are functions on every object literal, so they were
+    // CALLED and answered with a tagged success instead of -32601.
+    for (const name of [
+        'constructor', 'toString', 'valueOf', 'hasOwnProperty',
+        '__proto__', '__defineGetter__', 'isPrototypeOf',
+    ]) {
+        const out = await handleRequest(call(name), {search_mail: async () => ({})});
+        assertEq(out.error?.code, -32601,
+            `${name} answered as a tool: ${JSON.stringify(out)}`);
+    }
+});
+
+test('a tool name that is not a string is not a tool', async () => {
+    for (const name of [undefined, null, 42, {}, ['search_mail']]) {
+        const out = await handleRequest(call(name), {search_mail: async () => ({})});
+        assertEq(out.error?.code, -32601, JSON.stringify(out));
+    }
+});
+
 await finish('mail/mcp');

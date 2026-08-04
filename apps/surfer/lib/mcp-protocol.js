@@ -24,8 +24,16 @@ export async function handleRequest(req, tools) {
         return null; // notification: no reply at all
     case 'tools/call': {
         const name = req.params?.name;
-        const fn = tools[name];
-        if (!fn)
+        // Own properties only (#218). `tools[name]` walked the prototype
+        // chain, so `constructor`, `toString` and every other member of
+        // Object.prototype resolved to a real function and got CALLED —
+        // and answered with a tagged SUCCESS where the protocol says
+        // -32601. A dispatcher that fails open is a strange floor to
+        // build a guard on.
+        const fn = typeof name === 'string' &&
+            Object.prototype.hasOwnProperty.call(tools, name)
+            ? tools[name] : undefined;
+        if (typeof fn !== 'function')
             return fail(-32601, `no tool ${JSON.stringify(name)}`);
         try {
             const out = await fn(req.params?.arguments ?? {});

@@ -1,6 +1,6 @@
 // Address-bar parsing (ADR-0037, issue #146).
-import {test, assertEq, finish} from '../../../shell/testing/harness.js';
-import {resolveInput} from '../lib/url.js';
+import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
+import {resolveInput, addressBarAction, DEFAULT_PLACEHOLDER} from '../lib/url.js';
 
 const kind = (input) => resolveInput(input).kind;
 const url = (input) => resolveInput(input).url;
@@ -100,6 +100,54 @@ test('empty input is a no-op search, not a crash', () => {
 test('a trailing or leading dot is not a host', () => {
     assertEq(kind('example.'), 'search');
     assertEq(kind('.com'), 'search');
+});
+
+// --- What Enter in the address bar actually does (#220) ---------------
+//
+// resolveInput has THREE outcomes and the window handled two of them.
+// `{kind: "search", url: null}` — an empty bar — reached load_uri(null),
+// which throws `Argument uri may not be null` inside a signal handler,
+// where nobody sees it.
+
+test('Enter on an empty address bar does nothing at all', () => {
+    for (const empty of ['', '   ', '\t', null, undefined]) {
+        const a = addressBarAction(empty);
+        assertEq(a.act, 'nothing', `${JSON.stringify(empty)} must not load`);
+        assertEq(a.url, null);
+    }
+});
+
+test('a real address loads', () => {
+    assertEq(addressBarAction('lisaos.dev').act, 'load');
+    assertEq(addressBarAction('lisaos.dev').url, 'https://lisaos.dev');
+});
+
+test('words search — the address bar is not the agent boundary', () => {
+    const a = addressBarAction('how tall is everest');
+    assertEq(a.act, 'load');
+    assert(a.url.startsWith('https://duckduckgo.com/'));
+});
+
+test('a person may still open their own files', () => {
+    // ADR-0029's second test: a guardrail sits between the model and the
+    // machine, never between a person and their own machine. #214 is
+    // about the AGENT boundary; this is the human one.
+    assertEq(addressBarAction('file:///home/lisa/notes.html').act, 'load');
+});
+
+test('a refusal shows its reason where the user is looking', () => {
+    const a = addressBarAction('javascript:alert(1)');
+    assertEq(a.act, 'refuse');
+    assertEq(a.url, null);
+    assert(a.placeholder.includes('javascript:'), a.placeholder);
+});
+
+test('the placeholder comes back — a refusal is not permanent', () => {
+    // The refusal replaced the entry's placeholder forever: every later
+    // empty bar read "javascript: URLs are not navigable".
+    assertEq(addressBarAction('lisaos.dev').placeholder, DEFAULT_PLACEHOLDER);
+    assertEq(addressBarAction('').placeholder, DEFAULT_PLACEHOLDER);
+    assert(DEFAULT_PLACEHOLDER.length > 0);
 });
 
 finish('surfer/url');
