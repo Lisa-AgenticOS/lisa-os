@@ -32,7 +32,8 @@ def main():
     sanctioned = {
         spec["value"].lower()
         for entries in tokens["color"].values()
-        for spec in entries.values()
+        for name, spec in entries.items()
+        if not name.startswith("$")
     }
 
     bad = []
@@ -50,6 +51,31 @@ def main():
         print("\n".join(f"  {b}" for b in bad))
         return 1
 
+    # The account palette is COPIED into apps/mail/lib/rail.js rather than
+    # imported: branding/out/ is not staged into the apps payload, so an
+    # import resolves on a dev host and throws on a device. Membership —
+    # what the loop above checks — is not enough for a copy that is
+    # INDEXED into: an account's colour comes from `ACCENTS[h % length]`,
+    # so a reordered or short list silently recolours every account,
+    # which is the one thing #248 said must never happen. Assert the copy
+    # equals the group, in order.
+    if (rail := ROOT / "apps/mail/lib/rail.js").exists():
+        want = [
+            spec["value"].lower()
+            for name, spec in tokens["color"]["account"].items()
+            if not name.startswith("$")
+        ]
+        block = re.search(r"export const ACCENTS = \[(.*?)\]", rail.read_text(), re.S)
+        got = [h.lower() for h in HEX.findall(block.group(1))] if block else []
+        if got != want:
+            print("apps/mail/lib/rail.js ACCENTS does not match color.account "
+                  "in branding/tokens.json (#248).")
+            print(f"  tokens.json: {want}")
+            print(f"  rail.js:     {got}")
+            print("  The list is INDEXED into, so order and length decide which "
+                  "account gets which colour.")
+            return 1
+
     check = subprocess.run(
         [sys.executable, str(ROOT / "branding/generate-tokens.py"), "--check"],
         capture_output=True, text=True,
@@ -58,7 +84,7 @@ def main():
         print(check.stdout.strip())
         return 1
 
-    print("tokens: every surface color is sanctioned; outputs in sync")
+    print("tokens: every surface color is sanctioned; account palette in sync; outputs in sync")
     return 0
 
 

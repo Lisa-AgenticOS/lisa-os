@@ -31,6 +31,12 @@ def flat(tokens):
     """(group, name, value, role) for every color token."""
     for group, entries in tokens["color"].items():
         for name, spec in entries.items():
+            # `$comment` is prose, not a token. It is allowed inside a
+            # group as well as at the top level so a group whose rules
+            # are not obvious — color.account is identity, never status —
+            # can carry them where someone editing it will look.
+            if name.startswith("$"):
+                continue
             yield group, name, spec["value"], spec.get("role", "")
 
 
@@ -59,10 +65,23 @@ def js(tokens):
         f"    '{name}': '{value}',"
         for _group, name, value, _role in flat(tokens)
     ]
+    # The account palette is the one group whose ORDER and MEMBERSHIP are
+    # load-bearing: Mail hashes an account's Maildir root into it, so a
+    # consumer needs the list, not eight lookups by name it would have to
+    # keep in step by hand (#248). Flat TOKENS loses which group a colour
+    # came from, and a hand-kept copy in the app is the second source of
+    # truth this whole generator exists to prevent.
+    accents = [
+        f"    '{value}',"
+        for group, _name, value, _role in flat(tokens)
+        if group == "account"
+    ]
     return (
         "// GENERATED from branding/tokens.json — edit that, then run\n"
         "// python3 branding/generate-tokens.py. Hand edits are overwritten.\n"
         "export const TOKENS = {\n" + "\n".join(entries) + "\n};\n"
+        "// Ordered, because consumers index into it. Identity, not status.\n"
+        "export const ACCOUNT_ACCENTS = [\n" + "\n".join(accents) + "\n];\n"
         f"export const FONT_UI = '{tokens['font']['ui']['value']}';\n"
     )
 

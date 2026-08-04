@@ -24,5 +24,24 @@ export const TOKENS = {
     'info': '#4A7DB0',
     'error-soft': '#FFB3B3',
     'egress': '#E66100',
+    'violet': '#6D45C9',
+    'teal': '#2F8C8C',
+    'amber': '#C97F2F',
+    'rose': '#C04C7A',
+    'moss': '#5C8A3C',
+    'slate': '#556B8D',
+    'plum': '#8B4A8B',
+    'clay': '#A05A45',
 };
+// Ordered, because consumers index into it. Identity, not status.
+export const ACCOUNT_ACCENTS = [
+    '#6D45C9',
+    '#2F8C8C',
+    '#C97F2F',
+    '#C04C7A',
+    '#5C8A3C',
+    '#556B8D',
+    '#8B4A8B',
+    '#A05A45',
+];
 export const FONT_UI = 'Rubik';
