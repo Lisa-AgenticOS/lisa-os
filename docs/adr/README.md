@@ -7,13 +7,13 @@ Never silently improvise (PLAN §0.4).
 ## What is actually built
 
 An ADR records a decision, not a delivery. "Accepted" says we chose
-something; it says nothing about whether it exists, and 21 of the 49
+something; it says nothing about whether it exists, and 21 of the 50
 records below carry no status line at all — so this question could not
 be answered by reading them, which is why the table exists.
 
 Read it as: **what would a person find on a device today.**
 
-**The table stops at 0038.** ADR-0039 through ADR-0049 have no row yet;
+**The table stops at 0038.** ADR-0039 through ADR-0050 have no row yet;
 an entry here is expected to name its evidence (see the note under the
 table), and nobody has done that work. Absence from the table means
 "unassessed", not "not built".
@@ -143,3 +143,4 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0047](0047-one-toolkit-gjs-gtk4.md) — One toolkit: GJS + GTK4/Adwaita is the default, Flutter is parked
 - [ADR-0048](0048-lisa-desktop-is-a-desktop-not-a-patched-gnome.md) — Lisa Desktop is a desktop, not a patched GNOME (write the apps; core vs. store)
 - [ADR-0049](0049-every-app-is-an-agent-surface.md) — Every app is an agent surface: install is the grant, the tier is the gate, the registry is the authority
+- [ADR-0050](0050-app-tooling-is-cli-and-the-scaffold-carries-the-traps.md) — App tooling is CLI verbs, not an IDE: `lisa new app` scaffolds, `lisa check` is the authority, and the traps become generated code
