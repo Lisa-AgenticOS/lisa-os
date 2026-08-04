@@ -1,10 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Keybinding schema for the assistant overlay (PLAN §5.7.1: summon
-     with Super+Shift+Space — Super+Space alone is the Spotlight-style
-     search, §5.7.2). Compile with glib-compile-schemas at install;
-     GNOME's input-source switcher also defaults to Super+Space — the
-     image build (Track I) and layer install (Track L) remap that to
-     Ctrl+Super+Space so both Lisa surfaces win. -->
+     with Super+Shift+Space). Super+Space alone is the Spotlight-style
+     search, §5.7.2 — declared and bound by
+     shell/launcher/schemas/, which is where it should always have been:
+     this comment reserved the chord for a year and nothing acted on it
+     (#255). Compile with glib-compile-schemas at install.
+
+     GNOME's input-source switcher defaults to
+     ['<Super>space','XF86Keyboard'] and would collide. It is remapped to
+     Ctrl+Super+Space by ONE file, os/packages/lisa/10_lisa-shell.gschema.override
+     — which both tracks get, because Track I installs the same lisa-shell
+     package Track L does. Verified on the reference device, 2026-08-04:
+     `GSETTINGS_BACKEND=memory gsettings get org.gnome.desktop.wm.keybindings
+     switch-input-source` returns ['<Control><Super>space'], i.e. our value
+     and not GNOME's. check-shell-keys.py fails the lint gate if that line
+     ever goes away. -->
 <schemalist>
   <schema id="org.gnome.shell.extensions.lisa-overlay"
           path="/org/gnome/shell/extensions/lisa-overlay/">

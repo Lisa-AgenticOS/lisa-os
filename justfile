@@ -32,6 +32,12 @@ lint:
     # A manifest installed where agentd does not look does not error,
     # warn or log — the app's tools simply never reach the model (#241).
     python3 os/repo-tools/check-app-manifests.py
+    # A chord reserved in a comment and bound by nobody is a feature that
+    # exists everywhere except on the keyboard (#255).
+    python3 os/repo-tools/check-shell-keys.py
+    # favorite-apps in the wrong override stanza compiles to nothing: the
+    # dock shipped a default that had never been applied (#263).
+    python3 os/repo-tools/check-dock.py
     # The knowledge pack (#175) is generated from component READMEs; a
     # stale committed copy would ship the model answers about last
     # month's OS.

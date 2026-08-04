@@ -111,7 +111,8 @@ is Lisa Desktop — the same shell, without Lisa's session drop-in.
 The release build folds in `lisa-shell` (os/packages/lisa), which
 installs and default-enables the assistant overlay + semantic launcher
 extensions and the Ledger app, and moves GNOME's input-source switcher
-to Super+Shift+Space so the assistant owns Super+Space (§5.7.1). Both
+to Ctrl+Super+Space so the launcher can own Super+Space (§5.7.2) and
+the assistant overlay Super+Shift+Space (§5.7.1). Both
 halves reach the forked shell only because it installs at `/usr`: the
 extensions are found through `XDG_DATA_DIRS`
 (`js/misc/fileUtils.js`, `collectFromDatadirs` — not the shell's

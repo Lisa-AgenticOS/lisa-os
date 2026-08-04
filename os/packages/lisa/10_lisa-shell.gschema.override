@@ -6,17 +6,37 @@
 #   extensions default-enabled (overlay, launcher, and the ADR-0035
 #   desktop — always-visible dock + bottom-right hot corner).
 # - macOS-style summon keys: Super+Space is the Spotlight-style search
-#   (§5.7.2 — GNOME's default Super-only overview also keeps working);
-#   Super+Shift+Space is the assistant overlay (§5.7.1, as
-#   shell/overlay-extension/schemas/ prescribes). GNOME's input-source
-#   switcher — whose Super+Space default collides — moves to
-#   Ctrl+Super+Space, and the backward binding is cleared.
+#   (§5.7.2) and Super+Shift+Space the assistant overlay (§5.7.1). Both
+#   are declared by the extension that answers them, in
+#   shell/launcher/schemas/ and shell/overlay-extension/schemas/ — not
+#   here. GNOME's input-source switcher, whose Super+Space default
+#   collides, moves out of the way below; that remap is this file's job
+#   because it is a GNOME key, not a Lisa one.
 
 [org.gnome.shell]
 enabled-extensions=['lisa-overlay@lisa-os.org', 'lisa-launcher@lisa-os.org', 'lisa-desktop@lisa-os.org']
+# The dock. Same list, same order, as
+# os/mkosi/mkosi.extra/etc/dconf/db/local.d/30-lisa-dock — which is
+# where the reasoning lives, and which the two tracks need separately
+# (dconf ships only in the image; this override is all Track L gets).
+# check-dock.py fails the lint gate if they ever disagree.
+#
+# It has to be in THIS stanza. It shipped under
+# [org.gnome.settings-daemon.plugins.power] from 8faf668 until #263,
+# where favorite-apps is not a key: glib-compile-schemas warned once
+# during the build and dropped the line, so every image since carried a
+# dock default that had never been applied. Measured on the device,
+# 2026-08-04: `GSETTINGS_BACKEND=memory gsettings get org.gnome.shell
+# favorite-apps` returned GNOME's stock Epiphany/Calendar/Nautilus/
+# Software/TextEditor/Calculator, of which only Nautilus is installed —
+# which is exactly the one-icon dock the pin was meant to fix.
+favorite-apps=['app.lisaos.Assistant.desktop', 'org.gnome.Nautilus.desktop', 'app.lisaos.Surfer.desktop', 'app.lisaos.Mail.desktop', 'app.lisaos.Preview.desktop', 'app.lisaos.LedgerApp.desktop', 'org.gnome.Console.desktop']
 
-[org.gnome.shell.keybindings]
-toggle-overview=['<Super>space']
+# toggle-overview is NOT bound to Super+Space (#255). It was, as a
+# stand-in for a Spotlight key nobody had built: it opened the window
+# picker, which is not a search box, and it left the real chord occupied
+# so the launcher's own binding would have collided with it the moment
+# it landed. GNOME's own default for this key is empty; it stays empty.
 
 # The Lisa OS interface font: Rubik (a warm, slightly-rounded geometric
 # sans, OFL — shipped under /usr/share/fonts/rubik). Monospace is left at
@@ -58,15 +78,3 @@ switch-input-source-backward=[]
 [org.gnome.settings-daemon.plugins.power]
 sleep-inactive-ac-type='nothing'
 sleep-inactive-battery-type='nothing'
-
-# What is pinned in the dock.
-#
-# NEVER SET, until now — and the dock has shipped since 2026-07-27. GNOME's
-# stock default is Epiphany, Geary, Calendar, Music and Nautilus, and Lisa
-# installs none of the first four, so an always-visible dock built to be the
-# centrepiece of the desktop (ADR-0035 §2) rendered as one icon and the
-# show-apps button.
-#
-# Lisa's own apps first, in the order somebody reaches for them, with the
-# terminal last because it is the one a person opens deliberately.
-favorite-apps=['app.lisaos.Surfer.desktop', 'app.lisaos.Mail.desktop', 'app.lisaos.Assistant.desktop', 'app.lisaos.Preview.desktop', 'app.lisaos.LedgerApp.desktop', 'org.gnome.Console.desktop']

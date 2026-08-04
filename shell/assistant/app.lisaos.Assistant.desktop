@@ -1,6 +1,24 @@
+# Lisa Assistant launcher entry.
+#
+# DBusActivatable=true, deliberately (#263). A D-Bus .service file has
+# shipped beside this one since #210 so a cold `ask` from the launcher
+# activates the app; without this flag that activation contract was used
+# by exactly one caller and ignored by every other way of starting the
+# app, which is how a launch path rots without anyone noticing. With it,
+# a dock click, `gio launch`, a portal and the Spotlight hand-off all
+# take the same route: activate app.lisaos.Assistant, and let the single
+# instance present its window.
+#
+# The flag is safe here because the three names it ties together agree,
+# and check-dock.py asserts they keep agreeing: the desktop file id, the
+# [D-BUS Service] Name in app.lisaos.Assistant.service, and the
+# Adw.Application application_id in lisa-assistant.js are all
+# app.lisaos.Assistant. Exec= stays as the spec requires — it is what a
+# launcher without a session bus falls back to.
 [Desktop Entry]
 Type=Application
 Name=Lisa Assistant
+DBusActivatable=true
 GenericName=AI Chat
 Comment=Chat with a local model or your signed-in cloud models — every turn on the record.
 Exec=/usr/bin/lisa-app assistant/lisa-assistant.js

@@ -18,6 +18,8 @@
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -27,6 +29,7 @@ import {
     calculatorExpression, parseQalcOutput, parseContextHits,
     mergeResults, parseResultId,
 } from './lib/ranking.js';
+import {summonAction} from './lib/summon.js';
 
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 
@@ -203,16 +206,73 @@ class LisaSearchProvider {
     }
 }
 
+// The keybinding name in schemas/org.gnome.shell.extensions.lisa-launcher.
+// One string, two uses (add + remove), so a rename cannot half-land.
+const SUMMON_KEY = 'toggle-search';
+
 export default class LisaLauncherExtension extends Extension {
     enable() {
         this._provider = new LisaSearchProvider(this);
         Main.overview.searchController.addProvider(this._provider);
+
+        // Super+Space, the Spotlight chord (§5.7.2, issue #255). Until
+        // this line the launcher was reachable only by opening the
+        // overview some other way first: a search provider with no way
+        // to summon the search.
+        //
+        // IGNORE_AUTOREPEAT because holding the chord otherwise fires
+        // open/dismiss alternately at the repeat rate.
+        this._settings = this.getSettings();
+        this._shownId = 0;
+        Main.wm.addKeybinding(
+            SUMMON_KEY,
+            this._settings,
+            Meta.KeyBindingFlags.IGNORE_AUTOREPEAT,
+            Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+            () => this._summon());
     }
 
     disable() {
+        Main.wm.removeKeybinding(SUMMON_KEY);
+        if (this._shownId) {
+            Main.overview.disconnect(this._shownId);
+            this._shownId = 0;
+        }
+        this._settings = null;
         if (this._provider) {
             Main.overview.searchController.removeProvider(this._provider);
             this._provider = null;
         }
+    }
+
+    _summon() {
+        const controller = Main.overview.searchController;
+        if (summonAction({
+            overviewVisible: Main.overview.visible,
+            searchActive: controller?.searchActive === true,
+        }) === 'dismiss') {
+            Main.overview.hide();
+            return;
+        }
+
+        if (Main.overview.visible) {
+            Main.overview.searchEntry.grab_key_focus();
+            return;
+        }
+
+        // show() animates, and the controls take key focus as they
+        // arrive — so asking now is not enough on its own. Ask now
+        // anyway (the entry accepts keystrokes immediately, and a
+        // person types before the animation ends), and again once the
+        // overview says it is up.
+        if (this._shownId === 0) {
+            this._shownId = Main.overview.connect('shown', () => {
+                Main.overview.disconnect(this._shownId);
+                this._shownId = 0;
+                Main.overview.searchEntry.grab_key_focus();
+            });
+        }
+        Main.overview.show();
+        Main.overview.searchEntry.grab_key_focus();
     }
 }

@@ -18,7 +18,8 @@ extensions as symlinks under `/usr/share/gnome-shell/extensions/`, the
 gnome-control-center Intelligence panel opens for provider management
 (ADR-0012) — and `10_lisa-shell.gschema.override` — session defaults that
 enable both extensions and move GNOME's input-source switcher to
-Super+Shift+Space so the assistant owns Super+Space (§5.7.1). The
+Ctrl+Super+Space, so the launcher can own Super+Space (§5.7.2) and the
+assistant overlay Super+Shift+Space (§5.7.1). The
 Track I release image folds it in (release.yml); the fcitx5 addon
 (§5.7.3 layer 2) needs its own native-build lane and is not packaged
 yet.

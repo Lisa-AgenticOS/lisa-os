@@ -3,5 +3,6 @@
     "name": "Lisa Semantic Launcher",
     "description": "One search box mixing app launch, Context Fabric file hits, bus actions, and qalc-routed calculator answers (Lisa OS, PLAN §5.7.2).",
     "shell-version": ["46", "47", "48", "49", "50"],
+    "settings-schema": "org.gnome.shell.extensions.lisa-launcher",
     "url": "https://github.com/Lisa-AgenticOS/lisa-os"
 }

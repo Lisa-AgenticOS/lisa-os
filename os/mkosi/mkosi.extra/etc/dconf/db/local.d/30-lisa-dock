@@ -1,0 +1,49 @@
+# What is pinned in the dock, and in what order (#263).
+#
+# The user report was "assistant doesn't open". Nothing was wrong with
+# the Assistant: its .desktop, its D-Bus .service and its Super+C
+# binding were all present and working. It was simply not reachable —
+# not in the dock, and Show Apps was broken (#262), so the app grid
+# fallback was gone too. Two harmless-looking defaults produced a
+# missing feature.
+#
+# THE ORDER IS AN ARGUMENT, NOT AN APPEND:
+#
+#   1. Assistant. Lisa is an AI-native OS; this is the surface that
+#      makes it one. Pinning it fourth, or not at all, means the
+#      defining feature is the one thing a first-boot user cannot see —
+#      and a person decides what a machine is from what is in front of
+#      them, not from what a shortcut would have done.
+#   2. Files. Where nearly every other task starts, and the only icon
+#      the reference device's owner had kept after rearranging their
+#      own dock — evidence about reach beats taste about it. It was
+#      also missing from the pin list entirely, so pinning anything at
+#      all would have taken Files away from them.
+#   3. Surfer, 4. Mail. The two apps a person lives in all day, browser
+#      before mail because the browser is opened for anything and mail
+#      is opened for mail.
+#   5. Preview, 6. Ledger. Reached mostly from a file or a link, so
+#      they sit after the four that are reached from the dock itself.
+#   7. Console, last: the one a person opens deliberately, and the one
+#      whose presence in the first four positions would say something
+#      untrue about who this OS is for.
+#
+# WHY HERE AS WELL AS IN THE PACKAGE. dconf is a settings backend, so
+# this file reaches whichever shell the image runs, including a
+# private-prefix Lisa Desktop that would never read a gschema override
+# (ADR-0038). The package's 10_lisa-shell.gschema.override carries the
+# identical list for Track L, which ships no dconf at all;
+# os/repo-tools/check-dock.py fails the lint gate if the two drift.
+#
+# WHAT THIS CANNOT DO. It is a default, and a default sits underneath
+# the user's own dconf. GNOME Shell writes favorite-apps whenever
+# anything is pinned or unpinned, so a machine that has already been
+# used has a value of its own and keeps it. This fixes first boot; it
+# does not reach back into an existing profile, and pretending
+# otherwise is how "shipped" comes to mean something different from
+# "present on the device".
+#
+# Defaults, not locks: no locks/ directory ships, so a user's own dock
+# arrangement is theirs and survives every update.
+[org/gnome/shell]
+favorite-apps=['app.lisaos.Assistant.desktop', 'org.gnome.Nautilus.desktop', 'app.lisaos.Surfer.desktop', 'app.lisaos.Mail.desktop', 'app.lisaos.Preview.desktop', 'app.lisaos.LedgerApp.desktop', 'org.gnome.Console.desktop']

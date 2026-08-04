@@ -362,9 +362,16 @@ package_lisa-shell() {
     # compared them. What goes in the tree, and what is excluded from it,
     # is decided in one place now.
     bash os/repo-tools/build-apps-payload.sh "$share"
-    # Compile the overlay keybinding schema in place so the extension's
-    # getSettings() resolves from its own schemas/ directory.
-    glib-compile-schemas "$share/overlay-extension/schemas"
+    # Compile every extension's keybinding schema in place so its
+    # getSettings() resolves from its own schemas/ directory. A LOOP,
+    # not a list: the overlay was named here by hand, so when the
+    # launcher grew a schema of its own (#255) there was nothing to
+    # make the second one compile — and an extension whose getSettings()
+    # throws does not degrade, it fails to enable at all.
+    for schemadir in "$share"/*/schemas; do
+        [ -d "$schemadir" ] || continue
+        glib-compile-schemas "$schemadir"
+    done
 
     # GNOME Shell loads system extensions from
     # /usr/share/gnome-shell/extensions/<uuid>; symlinks keep

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Keybinding schema for the semantic launcher (PLAN §5.7.2: Super+Space
+     is the Spotlight-style search). Compile with glib-compile-schemas at
+     install — os/packages/lisa/PKGBUILD does it for every extension in the
+     staged tree.
+
+     The chord was reserved long before anything claimed it: the overlay's
+     own schema header named it, and GNOME's input-source switcher was
+     displaced to Ctrl+Super+Space to keep it free
+     (os/packages/lisa/10_lisa-shell.gschema.override, switch-input-source).
+     Issue #255 is the year the seat stayed empty. -->
+<schemalist>
+  <schema id="org.gnome.shell.extensions.lisa-launcher"
+          path="/org/gnome/shell/extensions/lisa-launcher/">
+    <key name="toggle-search" type="as">
+      <default><![CDATA[['<Super>space']]]></default>
+      <summary>Open the Lisa search</summary>
+      <description>Shows the overview with the caret already in the search
+      entry, and dismisses it if the search is what is on screen. A
+      default, not a lock: no locks/ directory ships, so Settings ›
+      Keyboard rebinds it and the change sticks.</description>
+    </key>
+  </schema>
+</schemalist>
