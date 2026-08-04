@@ -1,11 +1,32 @@
-# fcitx5-lisa — writing tools & dictation everywhere
+# fcitx5-lisa — writing tools & dictation, where IM protocols reach
 
 Spec: docs/PLAN.md §5.7.3 layer 2, §5.7.5. Milestone: M4. ADR-0007
 (why C++, and why it stays thin).
 
-The input-method trick that reaches everything that accepts text —
-GTK, Qt, Electron, terminals, XWayland: IM protocols are the coverage
-Apple gets via private toolkit hooks.
+The input-method trick that reaches text fields through the IM
+protocols — GTK3, Qt, Electron, terminals, XWayland. That is the
+coverage Apple gets via private toolkit hooks, and on stock GNOME
+Wayland it is **not** everything (#208):
+
+- **GTK4/Wayland-native apps do not route through fcitx.** mutter does
+  not grant `zwp_input_method_v2` to third-party input methods — GNOME
+  routes text input to its own ibus path — so `waylandim` loads and
+  unloads on every fcitx5 start. Most of Lisa's own apps are in this
+  set.
+- **The shell itself routes keys to no IM at all**, so nothing here can
+  work on the desktop or in the overview by construction.
+- What *does* work is everything reached by `GTK_IM_MODULE=fcitx` /
+  `QT_IM_MODULE=fcitx` / `XMODIFIERS=@im=fcitx`, exported from
+  `/etc/environment.d/50-lisa-ime.conf` so the user manager applies it
+  before the session starts. (`/etc/profile.d` was the earlier attempt
+  and is sourced by login shells only, which the graphical session is
+  not — that is why the environment was empty.) Verified on the
+  reference device: the shell's own environ carries all three.
+
+Owning this properly needs the compositor — the Lisa Desktop fork
+(ADR-0038) — or libinput-level access. Until then the gesture below is
+**toolkit-scoped**, and `Super+Shift+Space` is the summon that works
+everywhere.
 
 ## Layout
 
@@ -39,6 +60,13 @@ Apple gets via private toolkit hooks.
   --install build`; needs fcitx5 headers, so Arch/CI).
 
 ## Overlay summon (double-tap Shift)
+
+**Scope, first, because it is the thing this gets wrong:** the detector
+and the whole D-Bus chain work — injecting two clean Shift taps through
+fcitx5's own frontend produces exactly one `Summon` call on the session
+bus, measured. What does not happen is real keystrokes reaching fcitx5
+in a GTK4/Wayland app or on the shell, for the reasons above. So this
+fires in a terminal or an XWayland app and not on the desktop.
 
 On detection the addon calls `Summon("", {})` on the session bus —
 `dev.lisaos.Overlay1.UI` at `/dev/lisaos/Overlay1/UI` (ADR-0016
