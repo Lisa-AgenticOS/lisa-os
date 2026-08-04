@@ -30,12 +30,27 @@ refused rather than silently granted.
 ## How it works
 
 ```
-overlay ──RequestCall──▶ agentd ──parks──▶ ConfirmationRequested (signal)
+overlay ──RequestCall──▶ agentd ──starts this daemon if nothing owns
+                                   dev.lisaos.Consent1 (D-Bus activation)
+                                 ──parks──▶ ConfirmationRequested (signal)
                                                     │
                                             lisa-consentd shows a dialog
                                                     │
                           agentd ◀──Confirm(id, approve)──┘
 ```
+
+Nothing else on the machine ever calls a method on this name, so nothing
+else could ever start it: `GetNameOwner` does not activate, and a signal
+activates nothing at all. That is why it was packaged, activatable and
+never once running on a real device (#244) — agentd now activates it on
+the one event that needs it, a destructive call parking.
+
+Two consequences for this file. The bus name is claimed **last**, after
+the signal subscription is in place, because agentd treats "the name is
+owned" as "the dialog is listening" and emits immediately afterwards.
+And a dialog is the *only* way a destructive call can be approved now: if
+this daemon will not start, agentd refuses the approval and ledgers the
+refusal rather than letting the requester answer for itself.
 
 `agentd` resolves the answerer's identity from the broker — "who owns
 `dev.lisaos.Consent1`?" — never from anything the message claims
@@ -78,12 +93,22 @@ overlay ──RequestCall──▶ agentd ──parks──▶ ConfirmationReque
 
 ## Limits
 
-- **Not yet packaged or wired.** `os/packages/lisa` does not install it,
-  and `lisa-overlayd` still calls `Confirm` itself for chips. Until both
-  land, a destructive call originated by the overlay is refused with
-  `NeedsConsentSurface` rather than approved — failing closed on a real
-  hole, but a visible behaviour change.
-- **Untested against a live agentd.** The logic in `bus.rs` has unit
-  tests and a mutation check; this process has been read, not run.
+- **A headless host cannot approve a destructive call at all.** The only
+  approver is this dialog, and this dialog needs a display: on a machine
+  with a session bus and no seat, a destructive call can be parked and
+  withdrawn but never approved. That is deliberate (#244) — the previous
+  behaviour was to let the requester approve itself, which on the
+  reference desktop meant the model's own connection. A headless
+  approver would need a path of its own, on a connection that is not the
+  requester's, and it does not exist yet.
+- **`lisa-overlayd` still calls `Confirm` itself for chips.** Write-tier
+  calls are approved by the app that drew the chip, so for a chip agentd
+  cannot tell "a person clicked" from "the process decided". Destructive
+  calls are the ones fenced.
+- **Run, but not clicked, against a live agentd.** On the reference iMac
+  agentd activated this daemon, it took the name, and `PendingCount`
+  reported the dialog up while the requester's self-approval was refused
+  — and an independent surface's approval went through. Nobody has yet
+  driven the Allow/Deny buttons in an automated test.
 - **No tests of its own.** The dialog is GTK and the parsing is small;
   `describe()` is the part worth a test and does not have one yet.

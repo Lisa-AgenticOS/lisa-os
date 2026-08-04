@@ -72,8 +72,17 @@ pub enum BusError {
     NeedsConsentSurface(u64),
 }
 
+impl BusError {
+    /// Is this the refusal that says "a human's dialog has to answer
+    /// this one"? The Ledger records those and nothing else, so a
+    /// mistyped call id cannot be turned into an audit-trail flood.
+    fn is_consent_refusal(&self) -> bool {
+        matches!(self, BusError::NeedsConsentSurface(_))
+    }
+}
+
 /// What the *broker* says about the caller's relationship to the
-/// desktop consent surface (`dev.lisaos.Overlay1`).
+/// desktop consent surface (`dev.lisaos.Consent1`).
 ///
 /// Never claimed by the caller. agentd asks the message bus who owns
 /// the consent surface's well-known name and compares it to the
@@ -86,11 +95,61 @@ pub enum ConsentRole {
     Surface,
     /// A consent surface is running, and this is not it.
     Other,
-    /// No consent surface exists — a headless host, the p2p transport
-    /// the daemon's own tests use, or a session where the overlay is not
-    /// running. There is nobody else to ask, so the requester answers
-    /// its own call and the Ledger records that it did.
-    Absent,
+    /// Nobody owns the consent name on the bus this caller reached us
+    /// over — the surface is not running, or the broker could not be
+    /// asked. Either way a human's dialog is missing where one was
+    /// supposed to be, so a destructive call cannot be approved (#244).
+    ///
+    /// This used to be `Absent` and to mean "so the requester answers
+    /// its own call". On the reference iMac the surface was packaged,
+    /// activatable and never started, so every confirmation landed here
+    /// and the model's own connection approved its own `navigate` call.
+    Missing,
+    /// There is no broker to ask: agentd is serving a point-to-point
+    /// connection, which is the transport its own tests use and which
+    /// `main.rs` never builds. One connection, so requester and answerer
+    /// are the same peer by construction and no separation is available
+    /// to enforce.
+    ///
+    /// This is decided by the TRANSPORT (`Connection::unique_name()` is
+    /// `None`), not by anything a caller sends: a peer on a session bus
+    /// cannot present as unbrokered (ADR-0033, `lisa_peer::PeerId`).
+    NoBroker,
+}
+
+impl ConsentRole {
+    /// The decision itself, separated so it can be tested without a
+    /// broker (the same split `PeerId::decide` exists for, #132).
+    ///
+    /// `owner` is `(caller's unique name, the consent name's owner)`, or
+    /// `None` when nobody owns it — *including* when the question could
+    /// not be asked. Failing closed here is the point of #244: the old
+    /// code answered every error with the permissive branch.
+    pub fn of(brokered: bool, owner: Option<(&str, &str)>) -> ConsentRole {
+        if !brokered {
+            return ConsentRole::NoBroker;
+        }
+        match owner {
+            Some((caller, owner)) if caller == owner => ConsentRole::Surface,
+            Some(_) => ConsentRole::Other,
+            None => ConsentRole::Missing,
+        }
+    }
+
+    /// Why this answerer is not an independent consent surface, in the
+    /// words a person reading the Ledger needs: "the dialog is down" and
+    /// "you are the dialog" are different problems with different fixes.
+    fn why_not_the_surface(&self) -> &'static str {
+        match self {
+            ConsentRole::Surface => {
+                "it owns the consent name itself, \
+                 so nobody independent has looked at this"
+            }
+            ConsentRole::Other => "a consent surface is running and this is not it",
+            ConsentRole::Missing => "no consent surface is running on this session",
+            ConsentRole::NoBroker => "there is no message bus to ask",
+        }
+    }
 }
 
 /// Who is answering a parked call, and in what capacity.
@@ -101,12 +160,16 @@ pub struct Answerer {
 }
 
 impl Answerer {
-    /// A peer answering with no consent surface in the session.
+    /// A peer answering with nobody owning the consent name.
+    ///
+    /// What that means follows the transport, exactly as `consent_role`
+    /// derives it on a live connection: a brokered peer is on a session
+    /// bus where the surface should have been running and is not
+    /// (`Missing`); an unbrokered one is p2p, where there is no broker to
+    /// ask (`NoBroker`).
     pub fn alone(peer: PeerId) -> Answerer {
-        Answerer {
-            peer,
-            consent: ConsentRole::Absent,
-        }
+        let consent = ConsentRole::of(matches!(peer, PeerId::Bus(_)), None);
+        Answerer { peer, consent }
     }
 
     /// The desktop consent surface — the human's dialog.
@@ -272,6 +335,11 @@ struct Pending {
     resolution: Resolution,
     start_ref: i64,
     created: Instant,
+    /// Whether this call's first consent refusal has been recorded
+    /// (#244). One entry per parked call: the refusal must be findable,
+    /// and a peer retrying `Confirm` must not be able to write the
+    /// Ledger as fast as it can call.
+    refusal_ledgered: bool,
 }
 
 pub struct AgentBus {
@@ -516,6 +584,7 @@ impl AgentBus {
                         resolution,
                         start_ref,
                         created: Instant::now(),
+                        refusal_ledgered: false,
                     },
                 );
                 Ok(Outcome::AwaitingConfirmation {
@@ -580,12 +649,18 @@ impl AgentBus {
         if approve
             && p.resolution.confirmation == Confirmation::Modal
             && !is_independent_surface
-            // `Absent` means no consent surface exists anywhere, so
-            // refusing would make every destructive call unanswerable on
-            // a headless host — the availability failure #135 reported.
-            // `Surface`-but-self and `Other` both mean a dialog exists
-            // and this is not an independent one.
-            && answerer.consent != ConsentRole::Absent
+            // The one exemption is a transport with no broker at all:
+            // p2p is one connection, so requester and answerer are the
+            // same peer by construction and there is no separation to
+            // enforce. `main.rs` never builds one; agentd's own tests do.
+            //
+            // It used to be `Absent` — "nobody owns the consent name" —
+            // and that is #244: on the reference iMac nothing ever
+            // started the surface, so a real session bus took the
+            // headless exemption and the requesting connection approved
+            // its own destructive call. "No dialog is running" is now a
+            // reason to REFUSE, which is the whole point of having one.
+            && answerer.consent != ConsentRole::NoBroker
         {
             return Err(BusError::NeedsConsentSurface);
         }
@@ -605,13 +680,33 @@ impl AgentBus {
         // call and turn a confirmation into a denial-of-service (#93).
         let pending = {
             let mut pending = self.pending.lock().expect("pending lock");
-            let Some(p) = pending.get(&call_id) else {
+            let Some(p) = pending.get_mut(&call_id) else {
                 return Err(BusError::UnknownCall(call_id));
             };
             match Self::may_answer(p, approve, answerer) {
                 // Refuse WITHOUT removing: a call the caller may not
                 // approve is still the requester's to withdraw.
-                Err(e) => return Err(e(call_id)),
+                Err(e) => {
+                    // A refusal nobody can find afterwards is
+                    // indistinguishable from a call that was never made
+                    // (#244). Once per parked call, so a peer cannot turn
+                    // a Confirm loop into a Ledger flood; `NotYours` is
+                    // deliberately not recorded, since it is the one
+                    // refusal that must reveal nothing to its caller.
+                    let refusal = (e(call_id).is_consent_refusal()
+                        && !std::mem::replace(&mut p.refusal_ledgered, true))
+                    .then(|| (p.req.clone(), p.start_ref));
+                    drop(pending);
+                    if let Some((req, start_ref)) = refusal {
+                        let reason = format!(
+                            "{} may not approve its own destructive call: {}",
+                            answerer.peer,
+                            answerer.consent.why_not_the_surface()
+                        );
+                        self.ledger_deny(&req, Some(start_ref), "refused", &reason)?;
+                    }
+                    return Err(e(call_id));
+                }
                 Ok(()) => pending.remove(&call_id).expect("just checked"),
             }
         };
@@ -1096,6 +1191,18 @@ mod tests {
             0,
             "a foreign peer's approval dispatched a privileged call"
         );
+        // And the sweep wrote nothing. #244 puts consent refusals in the
+        // Ledger; a stranger's refusal is a different animal, because it
+        // needs no call of its own to produce one — the audit trail must
+        // not be writable by a peer with nothing parked.
+        assert!(
+            f.ledger
+                .tail(100)
+                .unwrap()
+                .into_iter()
+                .all(|e| e.status != "refused"),
+            "a foreign sweep wrote to the Ledger"
+        );
 
         // The rightful owner is unaffected by the failed sweep — the
         // parked call must still be there, not evicted.
@@ -1365,56 +1472,32 @@ mod tests {
         assert_eq!(f.dispatcher.dispatched(), 1);
     }
 
-    /// The headless case must also survive: with NO consent surface
-    /// anywhere, the requester answering its own call is the only way a
-    /// destructive action can ever happen, and refusing it was the
-    /// availability failure #135 reported.
+    /// This test used to assert the opposite, and asserting the opposite
+    /// is #244: "with no consent surface anywhere, the requester
+    /// answering its own call is the only way a destructive action can
+    /// ever happen" was written for a headless host and then applied to
+    /// a seated one, because the two were indistinguishable — nobody
+    /// owned the consent name in either case.
+    ///
+    /// The only remaining exemption is a connection with no broker at
+    /// all, and it is not a policy: p2p is one connection, so requester
+    /// and answerer are the same peer by construction. `main.rs` never
+    /// builds one; this daemon's own tests do.
     #[test]
-    fn a_headless_requester_can_still_answer_its_own_call() {
-        let f = fixture();
-        let cli = lisa_peer::PeerId::Bus(":1.10".into());
-        let Outcome::AwaitingConfirmation { call_id, .. } = f
-            .bus
-            .request(CallRequest {
-                caller: cli.clone(),
-                ..call(
-                    "org.gnome.Calendar",
-                    "delete_event",
-                    json!({"event_id": "evt-1"}),
-                    user(),
-                )
-            })
-            .unwrap()
-        else {
-            panic!("a destructive call must park");
-        };
-        f.bus
-            .confirm(call_id, true, &Answerer::alone(cli))
-            .expect("a headless box must still be able to confirm");
-        assert_eq!(f.dispatcher.dispatched(), 1);
-    }
-
-    /// The Ledger must say WHO approved. "A destructive action ran" and
-    /// "a destructive action ran because the requester answered its own
-    /// prompt on a headless box" are different facts, and the Ledger is
-    /// the only place a person can tell them apart (VISION, §5.10).
-    #[test]
-    fn the_ledger_records_whether_a_human_surface_approved() {
-        for (answerer, expected) in [
+    fn only_an_unbrokered_peer_may_still_answer_its_own_destructive_call() {
+        for (what, cli, allowed) in [
             (
-                Answerer::surface(lisa_peer::PeerId::Bus(":1.11".into())),
-                "the consent surface",
+                "a session bus",
+                lisa_peer::PeerId::Bus(":1.10".into()),
+                false,
             ),
-            (
-                Answerer::alone(lisa_peer::PeerId::Bus(":1.10".into())),
-                "no consent surface",
-            ),
+            ("p2p", lisa_peer::PeerId::Direct, true),
         ] {
             let f = fixture();
             let Outcome::AwaitingConfirmation { call_id, .. } = f
                 .bus
                 .request(CallRequest {
-                    caller: lisa_peer::PeerId::Bus(":1.10".into()),
+                    caller: cli.clone(),
                     ..call(
                         "org.gnome.Calendar",
                         "delete_event",
@@ -1425,6 +1508,45 @@ mod tests {
                 .unwrap()
             else {
                 panic!("a destructive call must park");
+            };
+            let answered = f.bus.confirm(call_id, true, &Answerer::alone(cli));
+            assert_eq!(answered.is_ok(), allowed, "{what}: {answered:?}");
+            assert_eq!(f.dispatcher.dispatched(), usize::from(allowed), "{what}");
+        }
+    }
+
+    /// The Ledger must say WHO approved. "A destructive action ran" and
+    /// "a destructive action ran because the requester answered its own
+    /// prompt on a headless box" are different facts, and the Ledger is
+    /// the only place a person can tell them apart (VISION, §5.10).
+    #[test]
+    fn the_ledger_records_whether_a_human_surface_approved() {
+        for (answerer, tool, args, expected) in [
+            (
+                Answerer::surface(lisa_peer::PeerId::Bus(":1.11".into())),
+                "delete_event",
+                json!({"event_id": "evt-1"}),
+                "the consent surface",
+            ),
+            // The chip: an app answering for its own inline affordance,
+            // which is the only approval left that no dialog saw (#244).
+            (
+                Answerer::alone(lisa_peer::PeerId::Bus(":1.10".into())),
+                "add_event",
+                json!({"title": "dentist", "start": "2026-07-24T10:00:00Z"}),
+                "no consent surface",
+            ),
+        ] {
+            let f = fixture();
+            let Outcome::AwaitingConfirmation { call_id, .. } = f
+                .bus
+                .request(CallRequest {
+                    caller: lisa_peer::PeerId::Bus(":1.10".into()),
+                    ..call("org.gnome.Calendar", tool, args, user())
+                })
+                .unwrap()
+            else {
+                panic!("a {tool} call must park");
             };
             f.bus.confirm(call_id, true, &answerer).unwrap();
             let confirmed = f
@@ -1440,6 +1562,178 @@ mod tests {
                 confirmed.preview
             );
         }
+    }
+
+    /// Issue #244, the acceptance criterion, part one. On a real session
+    /// bus with no consent surface running, the peer that parked a
+    /// destructive call must be REFUSED when it approves its own call —
+    /// and the refusal must be in the Ledger, because a refusal nobody
+    /// can find afterwards is indistinguishable from a call that was
+    /// never made.
+    ///
+    /// Measured on the reference iMac: `dev.lisaos.Consent1` had no
+    /// owner, so `consent_role()` resolved to the permissive fallback and
+    /// the probe's own connection approved its own `navigate` call —
+    /// Ledger entry #3233, "modal approved app.lisaos.Surfer/navigate by
+    /// :1.172 (no consent surface)".
+    #[test]
+    fn a_session_bus_with_no_consent_surface_refuses_the_requester_and_ledgers_it() {
+        let f = fixture();
+        // A brokered peer: a unique name only a message bus hands out.
+        let requester = lisa_peer::PeerId::Bus(":1.172".into());
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: requester.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "delete_event",
+                    json!({"event_id": "evt-1"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a destructive call must park");
+        };
+
+        let err = f
+            .bus
+            .confirm(call_id, true, &Answerer::alone(requester.clone()))
+            .expect_err("the requester approved its own call with no surface running");
+        assert!(matches!(err, BusError::NeedsConsentSurface(id) if id == call_id));
+        assert_eq!(f.dispatcher.dispatched(), 0, "it ran anyway");
+
+        let refusal = f
+            .ledger
+            .tail(100)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.status == "refused")
+            .expect("the refusal is not in the Ledger");
+        assert_eq!(refusal.kind, "tool.deny");
+        assert!(
+            refusal.preview.contains(":1.172"),
+            "the Ledger does not say who was refused: {:?}",
+            refusal.preview
+        );
+        assert!(
+            refusal.preview.contains("delete_event"),
+            "the Ledger does not say what was refused: {:?}",
+            refusal.preview
+        );
+
+        // Findable, but not a writable surface: a peer that retries
+        // Confirm in a loop must not be able to write the audit trail as
+        // fast as it can call. One entry per parked call.
+        for _ in 0..5 {
+            assert!(
+                f.bus
+                    .confirm(call_id, true, &Answerer::alone(requester.clone()))
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            f.ledger
+                .tail(100)
+                .unwrap()
+                .into_iter()
+                .filter(|e| e.status == "refused")
+                .count(),
+            1,
+            "a Confirm loop wrote one Ledger entry per attempt"
+        );
+
+        // Refused, not consumed: the human's dialog can still answer it.
+        let outcome = f
+            .bus
+            .confirm(
+                call_id,
+                true,
+                &Answerer::surface(lisa_peer::PeerId::Bus(":1.11".into())),
+            )
+            .expect("the refusal ate the pending call");
+        assert!(matches!(outcome, Outcome::Executed { .. }), "{outcome:?}");
+    }
+
+    /// Issue #244, part two: there is no consent role on a message bus
+    /// under which a peer may approve its OWN destructive call. Not
+    /// `Surface` (it would be wearing both hats, #145), not `Other`
+    /// (#135), and — the hole this test exists for — not the
+    /// no-surface-running fallback either.
+    ///
+    /// The withdrawal and the chip are the positive controls: the fix
+    /// must not take away a requester's ability to take its own call
+    /// back, nor turn an app's inline write chip into a modal.
+    #[test]
+    fn no_consent_role_lets_a_brokered_requester_approve_its_own_destructive_call() {
+        let requester = lisa_peer::PeerId::Bus(":1.10".into());
+        let roles = [
+            ("no surface running", Answerer::alone(requester.clone())),
+            (
+                "a surface exists elsewhere",
+                Answerer::ordinary(requester.clone()),
+            ),
+            (
+                "wearing the surface's hat",
+                Answerer::surface(requester.clone()),
+            ),
+        ];
+        for (what, answerer) in roles {
+            let f = fixture();
+            let Outcome::AwaitingConfirmation { call_id, .. } = f
+                .bus
+                .request(CallRequest {
+                    caller: requester.clone(),
+                    ..call(
+                        "org.gnome.Calendar",
+                        "delete_event",
+                        json!({"event_id": "evt-1"}),
+                        user(),
+                    )
+                })
+                .unwrap()
+            else {
+                panic!("a destructive call must park");
+            };
+            let err = f.bus.confirm(call_id, true, &answerer).expect_err(what);
+            assert!(
+                matches!(err, BusError::NeedsConsentSurface(_)),
+                "{what}: {err:?}"
+            );
+            assert_eq!(f.dispatcher.dispatched(), 0, "{what}: it ran anyway");
+
+            // Withdrawal is not approval: still the requester's to kill.
+            let outcome = f
+                .bus
+                .confirm(call_id, false, &Answerer::alone(requester.clone()))
+                .expect("a requester could not withdraw its own call");
+            assert!(matches!(outcome, Outcome::Denied { .. }), "{outcome:?}");
+        }
+
+        // The chip is untouched: a write-tier call is the app's own
+        // inline affordance and routing it through the modal path would
+        // train people to click through confirmations.
+        let f = fixture();
+        let Outcome::AwaitingConfirmation { call_id, .. } = f
+            .bus
+            .request(CallRequest {
+                caller: requester.clone(),
+                ..call(
+                    "org.gnome.Calendar",
+                    "add_event",
+                    json!({"title": "dentist", "start": "2026-07-24T10:00:00Z"}),
+                    user(),
+                )
+            })
+            .unwrap()
+        else {
+            panic!("a write must park for a chip");
+        };
+        f.bus
+            .confirm(call_id, true, &Answerer::alone(requester))
+            .expect("a write chip must still be answerable by the app that drew it");
+        assert_eq!(f.dispatcher.dispatched(), 1);
     }
 
     /// Issue #137. Nothing ever collected an expired confirmation:

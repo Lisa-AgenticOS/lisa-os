@@ -78,27 +78,102 @@ fn fdo_err(e: BusError) -> zbus::fdo::Error {
 
 /// Is this caller the human's dialog? Asked of the message bus.
 ///
-/// Fails *closed towards `Absent`*, which is deliberate: `Absent` means
-/// "no separate surface exists, so the requester answers its own call".
-/// The alternative — treating an unreachable broker as `Other` — would
-/// make every destructive call unanswerable by anyone, which is the
-/// availability failure #135 reported.
+/// Fails closed (#244). Every answer other than "this connection owns
+/// the consent name" now costs the caller the right to approve its own
+/// destructive call, including the answers that are really failures: an
+/// unreachable broker and a name we could not parse both mean *no
+/// dialog was involved*, and that is a refusal, not a fallback.
+///
+/// The one permissive answer is `NoBroker`, and no caller can reach it
+/// on a session bus: it is decided by whether the *transport* gave us a
+/// unique name (ADR-0033), which a message cannot influence.
 async fn consent_role(conn: &zbus::Connection, caller: &lisa_peer::PeerId) -> ConsentRole {
     // p2p has no broker to ask and no desktop session to ask about.
     let lisa_peer::PeerId::Bus(caller_name) = caller else {
-        return ConsentRole::Absent;
+        return ConsentRole::of(false, None);
     };
-    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else {
-        return ConsentRole::Absent;
+    ConsentRole::of(
+        true,
+        consent_name_owner(conn)
+            .await
+            .as_deref()
+            .map(|o| (caller_name.as_str(), o)),
+    )
+}
+
+/// Who owns `dev.lisaos.Consent1` right now, as the broker sees it.
+/// `None` for "nobody", and for every way of failing to ask.
+async fn consent_name_owner(conn: &zbus::Connection) -> Option<String> {
+    let dbus = zbus::fdo::DBusProxy::new(conn).await.ok()?;
+    let name = zbus::names::BusName::try_from(CONSENT_SURFACE).ok()?;
+    // NameHasNoOwner: the consent surface is not running.
+    dbus.get_name_owner(name)
+        .await
+        .ok()
+        .map(|o| o.as_str().to_string())
+}
+
+/// What the park path must do about the consent surface before it emits
+/// `ConfirmationRequested` (#244).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceStart {
+    /// Nothing to start: a chip is the app's own inline affordance, and
+    /// a p2p connection has no broker that could activate anything.
+    NotNeeded,
+    AlreadyRunning,
+    Start,
+}
+
+fn surface_start(brokered: bool, confirmation: Confirmation, owned: bool) -> SurfaceStart {
+    if !brokered || confirmation != Confirmation::Modal {
+        SurfaceStart::NotNeeded
+    } else if owned {
+        SurfaceStart::AlreadyRunning
+    } else {
+        SurfaceStart::Start
+    }
+}
+
+/// Start the consent surface, if a human's dialog is about to be needed
+/// and none is running (#244).
+///
+/// The surface shipped as a D-Bus *activatable* service and was never
+/// once running on the reference device, because activation happens on a
+/// method call and nothing on the machine ever made one: `GetNameOwner`
+/// explicitly does not activate, and `ConfirmationRequested` is a signal,
+/// which activates nothing at all. Parking a modal is the moment the
+/// dialog is needed, so it is the moment to ask for it.
+///
+/// Activated rather than left to a session unit on purpose: a unit that
+/// died at login leaves the 14:00 destructive call with no dialog and no
+/// way back, whereas activation restores the surface the next time one
+/// is needed. `StartServiceByName` also returns only once the service
+/// owns the name, so the signal that follows cannot outrun its listener.
+///
+/// A failure here is not fatal and not a bypass: nobody owns the name,
+/// so `confirm` refuses. It is logged because "the dialog would not
+/// start" is the operator's problem to see.
+async fn start_consent_surface(conn: &zbus::Connection, confirmation: Confirmation) {
+    let brokered = conn.unique_name().is_some();
+    // Cheap short-circuit: do not ask the broker anything about a chip.
+    if surface_start(brokered, confirmation, false) == SurfaceStart::NotNeeded {
+        return;
+    }
+    let owned = consent_name_owner(conn).await.is_some();
+    if surface_start(brokered, confirmation, owned) != SurfaceStart::Start {
+        return;
+    }
+    let (Ok(dbus), Ok(name)) = (
+        zbus::fdo::DBusProxy::new(conn).await,
+        zbus::names::WellKnownName::try_from(CONSENT_SURFACE),
+    ) else {
+        return;
     };
-    let Ok(name) = zbus::names::BusName::try_from(CONSENT_SURFACE) else {
-        return ConsentRole::Absent;
-    };
-    match dbus.get_name_owner(name).await {
-        Ok(owner) if owner.as_str() == caller_name => ConsentRole::Surface,
-        Ok(_) => ConsentRole::Other,
-        // NameHasNoOwner: the overlay is not running.
-        Err(_) => ConsentRole::Absent,
+    if let Err(e) = dbus.start_service_by_name(name, 0).await {
+        eprintln!(
+            "agentd: no consent surface and {CONSENT_SURFACE} would not start ({e}); \
+             this call can now only be withdrawn"
+        );
     }
 }
 
@@ -332,7 +407,17 @@ impl Agent1 {
             })
             .map_err(fdo_err)?;
         let reply = outcome_reply(&outcome);
-        if let Outcome::AwaitingConfirmation { call_id, spec, .. } = &outcome {
+        if let Outcome::AwaitingConfirmation {
+            call_id,
+            confirmation,
+            spec,
+            ..
+        } = &outcome
+        {
+            // Before the signal, never after: the surface subscribes to
+            // it as it starts, and a signal emitted into an empty
+            // session is a dialog that never appears (#244).
+            start_consent_surface(conn, *confirmation).await;
             let _ = Self::confirmation_requested(&emitter, *call_id, spec.to_string()).await;
         }
         Ok(reply)
@@ -487,6 +572,70 @@ mod tests {
         assert!(
             !exe_is_lisa_program(true, Some(&ours), &[]),
             "an empty allowlist authorised somebody"
+        );
+    }
+
+    /// Issue #244, the first half: the consent surface was packaged,
+    /// activatable and never once running, because nothing on the
+    /// machine ever called a method on `dev.lisaos.Consent1`.
+    /// `GetNameOwner` deliberately does not activate, and
+    /// `ConfirmationRequested` is a signal — signals never activate
+    /// anything. So a name that only agentd cares about had nobody to
+    /// start it, and every confirmation landed in the no-surface branch.
+    ///
+    /// Parking a modal is the one moment a human's dialog is needed, so
+    /// that is where the surface gets started.
+    #[test]
+    fn a_parking_modal_starts_the_consent_surface_and_nothing_else_does() {
+        use crate::tier::Confirmation;
+        // A modal on a message bus with nobody owning the name: start it.
+        assert_eq!(
+            surface_start(true, Confirmation::Modal, false),
+            SurfaceStart::Start
+        );
+        // Already up: activating again would be a second dialog.
+        assert_eq!(
+            surface_start(true, Confirmation::Modal, true),
+            SurfaceStart::AlreadyRunning
+        );
+        // A chip is the app's own inline affordance — it is not the
+        // human's dialog and must not conjure one.
+        assert_eq!(
+            surface_start(true, Confirmation::Chip, false),
+            SurfaceStart::NotNeeded
+        );
+        // p2p (agentd's own test transport): no broker, so there is
+        // nothing to ask and nothing that could be activated.
+        assert_eq!(
+            surface_start(false, Confirmation::Modal, false),
+            SurfaceStart::NotNeeded
+        );
+    }
+
+    /// Issue #244. `consent_role` failed closed *towards the permissive
+    /// branch*: every error — an unreachable broker, an unparsable name
+    /// — resolved to "no surface exists, so the requester answers its
+    /// own call". Only one thing may mean that now, and it is not an
+    /// error: a connection with no broker at all.
+    #[test]
+    fn only_an_unbrokered_transport_may_mean_there_is_no_surface() {
+        assert_eq!(
+            ConsentRole::of(false, None),
+            ConsentRole::NoBroker,
+            "p2p has no broker to ask"
+        );
+        assert_eq!(
+            ConsentRole::of(true, None),
+            ConsentRole::Missing,
+            "a bus with nobody owning the name is a MISSING surface, not an absent one"
+        );
+        assert_eq!(
+            ConsentRole::of(true, Some((":1.10", ":1.10"))),
+            ConsentRole::Surface
+        );
+        assert_eq!(
+            ConsentRole::of(true, Some((":1.10", ":1.99"))),
+            ConsentRole::Other
         );
     }
 

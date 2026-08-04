@@ -70,6 +70,36 @@ becomes a client of this interface, swapping its direct
 `dev.lisaos.Inference1` calls for `RequestCall` when it turns tool calls
 into agent actions.
 
+### Who may answer a parked call
+
+Authority comes from the broker, never from the message (ADR-0033).
+agentd asks the bus who owns `dev.lisaos.Consent1` — the desktop consent
+surface, `shell/consent` — and compares that to the transport-assigned
+sender:
+
+| answering peer | withdraw (`false`) | approve a chip | approve a modal |
+|---|---|---|---|
+| the requester | yes, always | yes — the app's own inline affordance | **no** |
+| the consent surface (a different peer) | yes | yes | yes |
+| anyone else | no (`NotYours`) | no | no |
+
+The requester may never approve its own destructive call, whatever the
+consent name says and whether or not anything owns it. The single
+exemption is a point-to-point connection, where there is no broker to
+ask and requester and answerer are the same peer by construction; the
+daemon's own tests use that transport and `main.rs` never builds one.
+
+Before a modal parks, agentd **starts** the consent surface if nothing
+owns the name (`StartServiceByName`, which — unlike `GetNameOwner` —
+activates, and returns only once the name is owned, so the signal cannot
+outrun its listener). Until #244 nothing ever made that call: the surface
+shipped activatable and never once ran, every confirmation resolved to
+"no surface exists", and that resolved in turn to "so the requester
+answers its own call".
+
+A refused approval is recorded as `tool.deny`/`refused`, once per parked
+call, naming the peer and why it was not an independent surface.
+
 ## App manifests
 
 Manifests are Appendix B JSON files loaded (later dir wins on app-id

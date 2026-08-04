@@ -237,25 +237,30 @@ const app = new Gtk.Application({
 });
 let surface = null;
 app.connect('startup', () => {
+    // Subscribe FIRST, own the name second (#244). agentd starts this
+    // process by calling a method on dev.lisaos.Consent1 and emits
+    // ConfirmationRequested as soon as the broker says the name is
+    // owned — so owning the name has to mean "ready", or the very first
+    // prompt is emitted into a session where nobody is listening yet and
+    // the call sits parked until it expires.
     surface = new ConsentSurface(app);
     // No window at startup. The daemon idles until agentd asks.
     app.hold();
+    Gio.bus_own_name(
+        Gio.BusType.SESSION,
+        CONSENT_BUS_NAME,
+        Gio.BusNameOwnerFlags.NONE,
+        null,
+        () => log(`lisa-consentd: owning ${CONSENT_BUS_NAME}`),
+        () => {
+            // Losing the name means another consent surface took it.
+            // Exiting is correct: two dialogs for one call is worse than
+            // one, and agentd only trusts whoever owns the name.
+            logError(new Error(`lost ${CONSENT_BUS_NAME} (another instance running?)`));
+            app.quit();
+        });
 });
 app.connect('activate', () => {});
-
-Gio.bus_own_name(
-    Gio.BusType.SESSION,
-    CONSENT_BUS_NAME,
-    Gio.BusNameOwnerFlags.NONE,
-    null,
-    () => log(`lisa-consentd: owning ${CONSENT_BUS_NAME}`),
-    () => {
-        // Losing the name means another consent surface took it. Exiting
-        // is correct: two dialogs for one call is worse than one, and
-        // agentd only trusts whoever owns the name.
-        logError(new Error(`lost ${CONSENT_BUS_NAME} (another instance running?)`));
-        app.quit();
-    });
 
 app.run([]);
 void surface;
