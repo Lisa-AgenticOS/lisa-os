@@ -24,6 +24,9 @@ import Gio from 'gi://Gio';
 import WebKit from 'gi://WebKit?version=6.0';
 
 import {resolveInput, addressBarAction, DEFAULT_PLACEHOLDER} from './lib/url.js';
+import {
+    AGENT_PROFILE, DEFAULT_PROFILE, dataDirFor,
+} from './lib/profiles.js';
 import {EXTRACT_JS, pageResult} from './lib/extract.js';
 import {McpServer} from './lib/mcp.js';
 import {navigationTarget, clickScript, fillScript} from './lib/actions.js';
@@ -63,13 +66,12 @@ const VERSION = '0.1';
 
 const app = new Adw.Application({application_id: 'app.lisaos.Surfer'});
 let win = null;
-let session = null;
 let tabView = null;
 let urlBar = null;
 let mcp = null;
 
-/// The one network session every tab shares — and the reason logins
-/// survive a restart.
+/// The network session a tab browses in — and the reason logins survive
+/// a restart.
 ///
 /// WebKitGTK keeps cookies in MEMORY unless persistent storage is turned
 /// on explicitly; a WebView built with no session at all also lands in a
@@ -77,16 +79,33 @@ let mcp = null;
 /// other GJS app that touches WebKit. Both were true here until the
 /// first real test: signing into Google worked, and signed you straight
 /// back out on restart.
-function networkSession() {
-    if (session) return session;
-    const data = GLib.build_filenamev([GLib.get_user_data_dir(), 'lisa-surfer']);
-    const cache = GLib.build_filenamev([GLib.get_user_cache_dir(), 'lisa-surfer']);
+/// One `NetworkSession` per profile (#259).
+///
+/// Keyed by name, because a WebView is constructed against a session and
+/// two views in the same profile must share one — a second session on
+/// the same directory is two cookie jars over one file.
+const sessions = new Map();
+
+function networkSession(profile = DEFAULT_PROFILE) {
+    const existing = sessions.get(profile);
+    if (existing) return existing;
+    const base = GLib.build_filenamev([GLib.get_user_data_dir(), 'lisa-surfer']);
+    const cacheBase = GLib.build_filenamev([GLib.get_user_cache_dir(), 'lisa-surfer']);
+    const data = dataDirFor(profile, base);
+    const cache = dataDirFor(profile, cacheBase);
+    if (!data || !cache) {
+        // An unsafe name never reaches a path. Fall back to the agent
+        // profile rather than to the person's: the failure mode of a
+        // wrong-but-safe session is a logged-out browser.
+        return profile === AGENT_PROFILE ? null : networkSession(AGENT_PROFILE);
+    }
     GLib.mkdir_with_parents(data, 0o700);
     GLib.mkdir_with_parents(cache, 0o700);
-    session = new WebKit.NetworkSession({
+    const session = new WebKit.NetworkSession({
         data_directory: data,
         cache_directory: cache,
     });
+    sessions.set(profile, session);
     // The line that actually persists a login. SQLite rather than the
     // plain-text format: it is the one WebKit maintains, and a cookie
     // jar is a credential store in everything but name.
