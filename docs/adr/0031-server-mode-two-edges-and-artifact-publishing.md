@@ -1,6 +1,7 @@
 # ADR-0031: Server mode, the two edges, and artifact publishing
 
-- Status: **proposed** (design only — no code yet; sequenced after v31)
+- **Status:** proposed — design only, no code: there is no `serverd`, no
+  `lisa serve`, and neither network edge exists.
 - Date: 2026-07-26
 - Relates: PLAN §5.11 (Personal Compute Node), §5.12 (Forge), M7;
   ADR-0020 (apps channel), ADR-0023 (slim core, /var grows),

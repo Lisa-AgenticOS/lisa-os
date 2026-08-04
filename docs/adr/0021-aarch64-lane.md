@@ -1,6 +1,9 @@
 # ADR-0021: aarch64 image lane on an Arch Linux ARM base
 
-- **Status:** accepted
+- **Status:** accepted, partially executed — the aarch64 image builds and
+  boots in CI on an ALARM base with the same package set as x86_64. No
+  aarch64 image has been published, and ARM has speech in but not out (no
+  onnxruntime on Arch Linux ARM).
 - **Date:** 2026-07-25
 
 ## Context

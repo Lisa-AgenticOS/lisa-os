@@ -1,6 +1,15 @@
 # ADR-0038: Lisa Desktop — a hard fork of GNOME Shell
 
-- Status: **accepted**; sequencing step 1 (design tokens + lint gate) implemented 2026-08-03; mechanism corrected against the 50.3 source the same day (see below); step 2 grounded in lisa-desktop#1
+- **Status:** accepted, partially executed — and widened by ADR-0048 from
+  the Shell to the whole desktop experience. Step 1 (design tokens + the
+  `check-tokens.py` gate) shipped 2026-08-03. Step 2 lives on
+  `lisa-desktop`'s `vendor-gnome-shell-50.3` branch, not in this repo: the
+  fork builds from a hash-pinned 50.3 tarball, `provides=`/`conflicts=`
+  stock gnome-shell rather than depending on it, and boots headless owning
+  `org.gnome.Shell` — with a deliberately EMPTY Lisa delta, because the
+  milestone is "can we own this". Nobody has logged into it
+  (lisa-desktop#1). `shell/desktop` here is still the extension of the
+  extension era, which step 3 absorbs.
 - Date: 2026-08-02
 - Relates: ADR-0001 (Arch base), ADR-0012 (control-center panel),
   ADR-0035 (the desktop is a prompt), PLAN §3 (desktop environment

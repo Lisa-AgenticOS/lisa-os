@@ -1,6 +1,7 @@
 # ADR-0007: fcitx5-lisa is a C++ addon (thin), logic stays on the daemon side
 
-- **Status:** accepted
+- **Status:** accepted — the addon builds against fcitx5 in CI and its
+  protocol logic is unit-tested (`just ime-test`).
 - **Date:** 2026-07-22
 
 ## Context

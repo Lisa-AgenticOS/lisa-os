@@ -1,6 +1,12 @@
 # ADR-0048 — Lisa Desktop is a desktop, not a patched GNOME
 
-- **Status:** Accepted
+- **Status:** accepted, partially executed — the core-versus-store test is
+  recorded and PLAN §5.8 is rewritten around "we write the apps";
+  `gnome-control-center-lisa` is on a retirement path with nothing removed;
+  GTK4/libadwaita and Mutter stay upstream, indefinitely. The desktop half
+  is ADR-0038 step 2 (see there): it builds and boots headless, and **nobody
+  has logged into a session running it**. Of the named core apps, Files and
+  Photos are a README each.
 - **Date:** 2026-08-04
 - **Extends:** ADR-0038 (fork the Shell, not Mutter). This is the same
   decision widened from *the Shell* to *the desktop experience*, which is

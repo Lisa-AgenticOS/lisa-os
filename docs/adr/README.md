@@ -4,82 +4,115 @@ Any deviation from `docs/PLAN.md` — a dead library, a changed API, a
 superseded model, a better idea — gets an ADR *before* the code changes.
 Never silently improvise (PLAN §0.4).
 
-## What is actually built
+**Read `docs/VISION.md` first.** It is one page and it says what Lisa is,
+what is true today, and what is decided but unbuilt. These 50 files are
+the reasoning behind that page, and they are a *historical record*: an
+ADR says what we chose and why, in the words of the day we chose it.
+Only its status line is kept current.
+
+## The table below is generated
 
 An ADR records a decision, not a delivery. "Accepted" says we chose
-something; it says nothing about whether it exists, and 21 of the 50
-records below carry no status line at all — so this question could not
-be answered by reading them, which is why the table exists.
+something; on its own it says nothing about whether the thing exists —
+so every status line names where the decision actually stands, and this
+table is derived from those lines by
+`os/repo-tools/build-adr-index.py`, which `just lint` runs in `--check`
+mode.
 
-Read it as: **what would a person find on a device today.**
+It is generated because the hand-written version drifted in the way that
+costs the most: it claimed "36 of the 37 records below carry no status
+line" when there were 50 records and all 50 had one, and its
+what-is-built table stopped at ADR-0038, so absence read as "not built"
+when it meant "nobody looked". A page describing 50 files has to be
+derived from those 50 files.
 
-**The table stops at 0038.** ADR-0039 through ADR-0050 have no row yet;
-an entry here is expected to name its evidence (see the note under the
-table), and nobody has done that work. Absence from the table means
-"unassessed", not "not built".
+Read it as: **what would a person find on a device today.** Entries are
+expected to name their evidence — an earlier table listed ADR-0025 among
+the unbuilt because someone grepped for `Agent1` and found tooltips
+instead of following `RunSync` to `dev.lisaos.Harness1`. A table of what
+is built is worth less than nothing if its entries are inferred from a
+grep.
 
-| ADR | Built? | What is missing, and where it is tracked |
-|---|---|---|
-| 0001 immutable base | yes | — |
-| 0002 rust/zbus/axum | yes | — |
-| 0003 two-track delivery | yes | Track I ships; Track L installs onto stock Arch |
-| 0004 flutter lane | partial | SDK is fetched on demand, not on the image (#37) |
-| 0005 GPL-2.0 | yes | — |
-| 0006 monorepo | yes | — |
-| 0007 fcitx5 addon | yes | — |
-| 0008 portal standalone | yes | Installed since v20260730.55 (#153) |
-| 0009 agent bus core | yes | — |
-| 0010 remote providers | yes | PKCE state fixed (#110); needs a live sign-in to confirm |
-| 0011 ambient assistant | partial | The middle is built and verified: `lisa transcribe` (whisper.cpp) → `ambient classify` → `say` (piper), driven from an audio FILE. Missing both ends — live mic capture, wake word, push-to-talk — and the `voiced` daemon. Nothing is installed on a device: no whisper, no piper, no ASR/TTS model (#158) |
-| 0012 control-center panel | yes | — |
-| 0013 harness intents | partial | Sessions/Memory/Skills done. Soul partial; Crons, Hands, Background tasks, Self-improvement not started |
-| 0014 lisa_ui fork | yes | — |
-| 0015 assistant app | partial | Read-tier tools work via Harness1; no write tier, no memory across conversations (#157) |
-| 0016 reverse-DNS naming | yes | — |
-| 0017 plymouth in initrd | yes | Splash→desktop handoff still gaps (#26) |
-| 0018 /var pinned PARTUUID | yes | — |
-| 0019 dedicated /home | yes | — |
-| 0020 app update channel | yes | — |
-| 0021 aarch64 lane | partial | Container-verified; no published image |
-| 0022 rescue boot path | partial | Phase 1 (ESP self-repair) done; user-survivable rescue open (#23) |
-| 0023 slim core, /var grows | partial | Zen migration incomplete (#89) |
-| 0024 CS8409 codec | partial | Packaged; speakers still silent on the reference iMac (#44) |
-| 0025 one agent loop | yes | The Assistant runs on `dev.lisaos.Harness1`, which reaches the Agent Bus through `bus-tools` — one loop, as the ADR asks |
-| 0026 native DRM in initrd | yes | — |
-| 0027 flutter on device | partial | (#37, #48) |
-| 0028 initrd overlay | yes | — |
-| 0029 hard guardrails | partial | Phases 1–2 done; Landlock confinement open (#53); `lisa suggest` still emits a shell string (#88) |
-| 0030 guardrail boundary | yes | The principle now has teeth: #145 and #55 both closed against it |
-| 0031 server mode | **no** | No `serverd`, no `lisa serve` |
-| 0032 construct/lisa contract | yes | harness-core is the shared level |
-| 0033 identity from transport | partial | portal, contextd, remoted, agentd done; sweep for remaining callers unfinished |
-| 0034 user-scope dev tooling | **no** | `lisa dev` not built (#130) |
-| 0035 desktop is a prompt | partial | §4 consent split done (#145); §2 prompt-in-the-dock not started |
-| 0036 assistant acts on its own | **no** | Depends on 0025 |
-| 0037 browser is a Lisa app | partial | Surfer ships; write tools and the agent surface open (#146) |
-| 0038 Lisa Desktop — hard fork of GNOME Shell | accepted, no code | Forks the Shell's JS, NOT Mutter. Supersedes PLAN §3's "we patch, we don't fork the Shell yet" — this is the phase-3 decision that line deferred |
+<!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-Two decisions have **no** implementation at all — 0031 and 0036 — and 0011 has a tested pipeline with no way to speak into it.
+**50 records** — 3 superseded in part, 20 accepted and partly executed, 2 accepted with no code yet, 21 accepted and done, 4 proposed.
 
-An earlier version of this table listed 0025 among them, which was
-wrong: the Assistant is on the harness and calls Agent Bus tools. The
-error came from grepping the window for `Agent1` and finding tooltips,
-rather than following `RunSync` to `dev.lisaos.Harness1`. A table of
-what is built is worth less than nothing if its entries are inferred
-from a grep, so entries here are expected to name the evidence.
+| ADR | Decision | Status | Where it actually stands |
+|---|---|---|---|
+| [0001](0001-arch-immutable-base.md) | Fork Arch Linux; ship an immutable, atomic, image-based OS via mkosi | accepted | the mkosi/UKI A/B image builds, boots, and demonstrates update *and* rollback in CI. |
+| [0002](0002-rust-zbus-axum.md) | Rust with zbus + axum for system daemons | accepted | every daemon under `daemons/` is Rust on zbus, with axum where there is HTTP. |
+| [0003](0003-two-track-delivery.md) | Two-track delivery — Lisa Layer first, immutable image as the product | accepted | both tracks ship: Track L installs onto stock Arch from the signed `[lisa]` index, Track I is the released image. |
+| [0004](0004-flutter-lane-forge.md) | Flutter app lane + the Forge | superseded in part by ADR-0047 | the lane split is no longer in force: GJS + GTK4/Adwaita is the default for Lisa's apps and for Forge output, and Flutter is parked. The Forge itself (PLAN §5.12.1) stands, and the spike findings at the foot of this file stand as history. |
+| [0005](0005-gpl2-license.md) | License the project GPL-2.0-only | accepted | — |
+| [0006](0006-monorepo-staged-extraction.md) | Monorepo with staged extraction | accepted | extended, not superseded, by ADR-0039: none of this ADR's own four triggers has fired; the two that fired are ones it could not have contained. |
+| [0007](0007-fcitx5-addon-cxx.md) | fcitx5-lisa is a C++ addon (thin), logic stays on the daemon side | accepted | the addon builds against fcitx5 in CI and its protocol logic is unit-tested (`just ime-test`). |
+| [0008](0008-portal-standalone-service.md) | The Lisa portal is a standalone session service, consent stays in the shell | accepted | installed on the device since v20260730.55 (#153). |
+| [0009](0009-agent-bus-core.md) | Agent Bus core — D-Bus surface, tier enforcement at the bus, staged MCP transport | accepted, partially executed | the bus, the tier state machine, provenance escalation and the undo journal are live in `daemons/agentd`, and MCP genuinely rides per-app unix sockets (`libs/mcp-bus`, `McpDispatcher`), not in-process dispatch. Open: socket activation (`mcp.activatable` is declared and unimplemented), and the §5.4 acceptance flow end to end. |
+| [0010](0010-remote-providers.md) | BYO remote model providers via a dedicated egress broker (`lisa-remoted`) | accepted | `lisa-remoted` is the sole egress broker for provider traffic; PKCE state fixed (#110). A live sign-in on the device is still the outstanding confirmation. |
+| [0011](0011-ambient-assistant.md) | Lisa Ambient — the always-on, wake-word-free assistant | accepted, partially executed | corrected 2026-08-04, because "NO implementation" was read off the wrong subject. The primitives exist and are proven on the reference iMac (2026-07-31): `lisa listen`/`transcribe` on packaged whisper.cpp, `lisa say` on packaged piper, `lisa ambient classify`, push-to-talk over `dev.lisaos.Voice1`, both engines installed by the image lane and both voice models pinned in the catalog. What does not exist is this ADR's actual subject — the always-on loop (VAD, ring buffer, hard mute, addressed-intent classification running unprompted) and the `voiced` daemon. Nothing in the repo records unprompted (#158). |
+| [0012](0012-gnome-control-center-lisa-panel.md) | A native "Intelligence" panel in a forked gnome-control-center | accepted | the panel ships in the image and runs on the device (v25+), including provider OAuth. ADR-0048 §3 puts `gnome-control-center-lisa` on a path to retirement in favour of `shell/settings`; nothing is removed yet. |
+| [0013](0013-harness-intents-and-coding-agent.md) | The Lisa harness — Siri-style intents + a Claude-Code-level coding agent, on the existing substrate | accepted, partially executed | Sessions, Skills, Memory and the policy layer shipped in `libs/harness-core` and `lisa forge` runs on them. Remaining pillar: Crons, deliberately last (ADR-0025 phase 5). |
+| [0014](0014-lisa-ui-material-fork.md) | lisa_ui becomes the kit Lisa apps import — Material-backed now, vendored fork later | superseded in part by ADR-0047 | `lisa_ui` keeps the name and the role, but it is now the shared **GJS/GTK4** library rather than a Material-backed Flutter kit, and the vendored-fork endgame is parked with the lane. The argument for owning the kit stands; the toolkit it named does not. |
+| [0015](0015-assistant-app.md) | a persistent Assistant chat window — the surface that makes the model usable | accepted, partially executed | the window ships, streams and is ledgered on the device, and read-tier tools reach it through `dev.lisaos.Harness1`. No write tier and no memory across conversations (#157). |
+| [0016](0016-reverse-dns-naming.md) | reverse-DNS identifiers move to the real domains (dev.lisaos.* / app.lisaos.*) | accepted | — |
+| [0017](0017-plymouth-in-initrd.md) | Plymouth + the lisa theme move into the mkosi-initrd | accepted, partially executed | the `simpledrm`-only display clause is amended by ADR-0026 and the delivery mechanism by ADR-0028. Plymouth is genuinely in the initrd and asserted in the nightly; the splash→desktop handoff has never been seen on hardware (#26). |
+| [0018](0018-var-pinned-partuuid.md) | /var is mounted by partition LABEL, not by UUID | accepted | — |
+| [0019](0019-dedicated-home-partition.md) | a dedicated /home partition on fresh installs, weight-split with var | accepted | — |
+| [0020](0020-app-update-channel.md) | app updates decoupled from the OS image | accepted | `lisa apps update/rollback/sync` ship and devices pull payloads. The channel is monolithic, which per-app store versioning will have to change (#239). |
+| [0021](0021-aarch64-lane.md) | aarch64 image lane on an Arch Linux ARM base | accepted, partially executed | the aarch64 image builds and boots in CI on an ALARM base with the same package set as x86_64. No aarch64 image has been published, and ARM has speech in but not out (no onnxruntime on Arch Linux ARM). |
+| [0022](0022-rescue-boot-path.md) | A user-survivable rescue boot path | accepted, partially executed | phases 1–3 are implemented and proven by execution (phase 1 self-repair and phase 3's shell on an unbootable machine are green in ab-recovery; phase 2's resolver refuses a half-written slot on its GPT type in ab-interrupted-transfer). Still missing: the boot ENTRY — the resolver works, nothing offers it in the menu (#23). |
+| [0023](0023-slim-core-var-grows.md) | Slim core, /var grows — apps and heavy payloads leave the image | accepted, partially executed | phase 1 complete and device-verified (the baked `/opt/zen` left both image lanes, #89). Phase 2 (installer pre-pull) not started. Phase 3 (slot shrink) was tried at 7G and reverted the same day: the `du` figure this ADR reasoned from is not the quantity that governs slot size — see "Phase 3, attempted". |
+| [0024](0024-apple-cs8409-out-of-tree-codec.md) | ship an out-of-tree CS8409 codec module for Apple speakers | accepted, partially executed | the module is packaged and re-pinned at every kernel bump, and a mismatched pin fails the build loudly by design. The reference iMac's speakers have still never made a sound through it (#44). |
+| [0025](0025-one-agent-loop.md) | One agent loop — the Lisa harness | accepted, partially executed | one loop exists: the Assistant runs on `dev.lisaos.Harness1` and reaches the Agent Bus through `bus-tools`. Skills carry an enforced tool allowlist that no shipped skill populates (#245); phase 5 (Crons) is not started. |
+| [0026](0026-native-drm-in-initrd.md) | The native GPU driver + its firmware ride the initrd | accepted | — |
+| [0027](0027-flutter-on-device-aarch64-and-forged-app-launch.md) | the Flutter lane on-device — aarch64 SDK, and how a forged app gets launched | superseded in part by ADR-0047 | #37 is closed won't-do, so the on-device Flutter SDK, the aarch64 pin and the forged-app build/launch path are parked with the lane. §3 (Skills live in `skills/<name>/SKILL.md`, installed to `/usr/share/lisa/skills`) is unaffected and in force. |
+| [0028](0028-initrd-overlay-mechanism.md) | Files reach the default initrd through `io.mkosi.initrd`, not `mkosi.initrd/` | accepted | — |
+| [0029](0029-hard-guardrails-for-agent-actions.md) | Hard guardrails for agent actions — policy outside the model | accepted, partially executed | phases 1–3 implemented, with three adversarial review rounds folded in (corpus 49 → 128 denied). Open: Landlock confinement of forge subprocesses (#53), and `lisa suggest` still emits a shell string rather than the structured argv this ADR's own post-mortem calls for (#88). |
+| [0030](0030-the-guardrail-boundary.md) | The guardrail boundary — probabilistic inside, logical outside | accepted | the principle has teeth rather than prose: #145 and #55 were both closed against it, and `lisa guard list\|allow\|forbid` is the owner's out-of-band relaxation, where no tool call can reach it. |
+| [0031](0031-server-mode-two-edges-and-artifact-publishing.md) | Server mode, the two edges, and artifact publishing | proposed | design only, no code: there is no `serverd`, no `lisa serve`, and neither network edge exists. |
+| [0032](0032-construct-and-lisa-one-contract-two-levels.md) | Construct and Lisa — one contract, two levels | proposed | design only, no code. The shared contract (manifest, provenance vocabulary, Ledger event shape, tokens) is defined on the Lisa side only. |
+| [0033](0033-identity-comes-from-the-transport.md) | Identity comes from the transport, not the message | accepted, partially executed | `libs/lisa-peer` is the primitive, and agentd, contextd, harnessd, remoted and the portal all link it. The sweep for the remaining callers is unfinished; the rule itself is CLAUDE.md 6b. |
+| [0034](0034-lisa-dev-user-scope-tooling.md) | `lisa dev` — developer tooling in the user's home, rootless | accepted, partially executed | phase 0 shipped (subuid/subgid, `newuidmap`, the podman runtime set, and an image probe that runs `podman unshare id`). Phase 1 — the `lisa dev` verb itself and the /home disk guard — is not started (#130); there is no `dev` subcommand in `cli/lisa/src`. The two rules it establishes are CLAUDE.md 7a and 7b. |
+| [0035](0035-the-desktop-is-a-prompt.md) | The desktop is a prompt — a floating dock-prompt, no top bar | accepted, partially executed | §4's consent surface shipped: `shell/consent/lisa-consentd.js` and `dev.lisaos.Consent1` split the confirmation UI out of the model host (#135). The rest of the wireframe — §2's prompt in the dock above all — is still design. |
+| [0036](0036-an-assistant-that-acts-on-its-own.md) | An assistant that acts on its own — triggers, trust, and what happens when nobody is watching | proposed | design only, no code; it depends on ADR-0025's loop, which exists, and on triggers, which do not. |
+| [0037](0037-the-browser-is-a-lisa-app.md) | Browser — the web becomes an agent surface, not a vendored binary | accepted, partially executed | Surfer ships in the image with tabs, extract and read-tier tools, verified on the device 2026-08-02; write-tier navigate/click/fill landed 2026-08-03 (#166). Device acceptance of the write path is the open remainder. |
+| [0038](0038-lisa-desktop-a-hard-fork-of-gnome-shell.md) | Lisa Desktop — a hard fork of GNOME Shell | accepted, partially executed | and widened by ADR-0048 from the Shell to the whole desktop experience. Step 1 (design tokens + the `check-tokens.py` gate) shipped 2026-08-03. Step 2 lives on `lisa-desktop`'s `vendor-gnome-shell-50.3` branch, not in this repo: the fork builds from a hash-pinned 50.3 tarball, `provides=`/`conflicts=` stock gnome-shell rather than depending on it, and boots headless owning `org.gnome.Shell` — with a deliberately EMPTY Lisa delta, because the milestone is "can we own this". Nobody has logged into it (lisa-desktop#1). `shell/desktop` here is still the extension of the extension era, which step 3 absorbs. |
+| [0039](0039-the-split-and-the-package-index.md) | The split, and the package index that makes it work | accepted, partially executed | executed through the index going live: repos extracted with history, per-repo packages built by CI, `[lisa]` hosted, signed, and pacman-verified from a clean machine (lisa-os#171). **Step 4 is wired**: `os/mkosi/mkosi.pkgmngr/etc/pacman.d/lisa.conf` configures `[lisa]` for the image build and `mkosi.conf` installs `lisa-desktop-shell` from it by name, in the line stock `gnome-shell` used to occupy. Lisa Desktop is step 4's first consumer, and the only one so far — every other Lisa package still arrives through release.yml's locally built `PackageDirectories=`, which keeps precedence over the index. **Step 5 is started, not finished**: the release job now asserts against the mounted image that the shell is ours, that stock gnome-shell is absent, that the session is present and default, and that the extensions, schemas, dconf defaults and app entries are at paths something reads. What it does not assert — and cannot from CI — is that a human logs in. Step 6 (removal from the monorepo) is untouched. |
+| [0040](0040-docs-live-with-the-code-no-docs-repo.md) | Docs live with the code — there is no docs repo | accepted | docs live with the code; `os/repo-tools/build-knowledge.py` is the one curation step with two consumers (the on-device pack and the lisaos.dev build), gated by `just lint`. |
+| [0041](0041-package-signing-and-the-trust-chain.md) | Package signing and the trust chain | accepted | the `[lisa]` index has published signed since 2026-08-03, with `lisa-keyring` shipping the pinned key. SigLevel flips from Optional to Required one release after devices take the keyring. |
+| [0042](0042-field-device-keyring-policy.md) | The field device runs a blank login keyring | accepted, partially executed | decided 2026-08-03; the change awaits one human visit to the reference iMac, because the keyring password is not remotely known. |
+| [0043](0043-the-model-knows-the-os-through-retrieval.md) | The model knows the OS through retrieval, never through the prompt | accepted, partially executed | phase 1 shipped (#175: the pack, the generator, `system` provenance, `lisa context sync-knowledge`, the session-start unit), and answers were verified semantically on the device. Open: retrieval wiring in the assistant and overlay lanes, `--help` in the pack, and the on-device answer-quality eval. |
+| [0044](0044-retrieval-receipts.md) | Retrieval receipts — contextd vouches for what it returned | proposed | design only; the full design with sequencing is on #55. This file records the decision-shape so it survives sessions. |
+| [0045](0045-calver-for-the-image-semver-for-the-contracts.md) | CalVer for the image, SemVer for the contracts | accepted | both schemes were already in use; this ADR names them and retires the ordinal shorthand that caused the confusion. |
+| [0046](0046-capability-before-storefront.md) | Capability before storefront: what must be true before Lisa distributes somebody else's app | accepted | in force by construction: Lisa distributes nobody else's app, and no storefront exists. Amendment 1 ("source in, source out") is the standing rule for what may ever be distributed; the capability gates it names are tracked by ADR-0049 and #240. |
+| [0047](0047-one-toolkit-gjs-gtk4.md) | One toolkit: GJS + GTK4/Adwaita is the default, Flutter is parked | accepted | GJS + GTK4/Adwaita is the documented default, #37 is closed won't-do, and PLAN §5.8/§5.12 and ADR-0004 carry the correction. Not yet done: `libs/lisa_ui` becoming the shared GJS library — the MCP edge it is meant to de-duplicate still exists in triplicate. |
+| [0048](0048-lisa-desktop-is-a-desktop-not-a-patched-gnome.md) | Lisa Desktop is a desktop, not a patched GNOME | accepted, partially executed | the core-versus-store test is recorded and PLAN §5.8 is rewritten around "we write the apps"; `gnome-control-center-lisa` is on a retirement path with nothing removed; GTK4/libadwaita and Mutter stay upstream, indefinitely. The desktop half is ADR-0038 step 2 (see there): it builds and boots headless, and **nobody has logged into a session running it**. Of the named core apps, Files and Photos are a README each. |
+| [0049](0049-every-app-is-an-agent-surface.md) | Every app is an agent surface: install is the grant, the tier is the gate, the registry is the authority | accepted, not implemented | the decision stands and the mechanism is largely unbuilt. What exists is the table in §"What exists today" (manifests, tiers at the bus, `lisa tools`, the grant log). Not built: registration at install and deregistration at uninstall, the registry as a stateful authority rather than a startup scan, per-app skills, and stored grant state (#240). |
+| [0050](0050-app-tooling-is-cli-and-the-scaffold-carries-the-traps.md) | App tooling is CLI verbs, and the scaffold carries the traps | accepted, not implemented | no code exists: `cli/lisa/src` has no `dev` verb, there is no scaffold generator and no `lisa dev check`. The decision is what the tooling must be when it is written. |
+
+<!-- END GENERATED INDEX -->
 
 ## Process
 
 1. Copy the template below to `NNNN-short-slug.md` (next free number).
-2. Status flows: `proposed` → `accepted` → (`superseded by NNNN`).
-3. Reference the ADR from commits and the affected component README.
+2. Give it a status line in the canonical shape — the generator rejects
+   anything else, and rejects a state outside the vocabulary:
+   `proposed`, `accepted`, `accepted, partially executed`,
+   `accepted, not implemented`, `superseded by ADR-NNNN`,
+   `superseded in part by ADR-NNNN`, `status unverified`.
+   Name the open steps; "largely done" is not a status.
+3. When the state changes, edit the status line and re-run
+   `python3 os/repo-tools/build-adr-index.py`. Do not rewrite the
+   argument — a decision that turned out wrong is more useful with its
+   original reasoning intact and a supersession marker on top.
+4. Reference the ADR from commits and the affected component README.
 
 ## Template
 
 ```markdown
-# ADR-NNNN: Title
+# ADR-NNNN — Title
 
-- **Status:** proposed | accepted | superseded by NNNN
+- **Status:** accepted — one clause on where this actually stands
 - **Date:** YYYY-MM-DD
 
 ## Context
@@ -91,56 +124,3 @@ What we chose, stated imperatively.
 ## Consequences
 What gets easier, what gets harder, what we gave up.
 ```
-
-## Index
-
-- [ADR-0001](0001-arch-immutable-base.md) — Fork Arch; immutable mkosi/UKI/A-B image
-- [ADR-0002](0002-rust-zbus-axum.md) — Rust + zbus + axum for daemons
-- [ADR-0003](0003-two-track-delivery.md) — Two-track delivery: Lisa Layer, then image
-- [ADR-0004](0004-flutter-lane-forge.md) — Flutter app lane + the Forge
-- [ADR-0005](0005-gpl2-license.md) — License: GPL-2.0-only, same as the kernel
-- [ADR-0006](0006-monorepo-staged-extraction.md) — Monorepo with staged extraction (split triggers, not dates)
-- [ADR-0007](0007-fcitx5-addon-cxx.md) — fcitx5-lisa is a thin C++ addon; logic stays daemon-side
-- [ADR-0008](0008-portal-standalone-service.md) — Portal is a standalone session service; consent stays in the shell
-- [ADR-0009](0009-agent-bus-core.md) — Agent Bus core: `dev.lisaos.Agent1`, tier enforcement at the bus, staged MCP transport
-- [ADR-0010](0010-remote-providers.md) — BYO remote providers via the `lisa-remoted` egress broker
-- [ADR-0011](0011-ambient-assistant.md) — Lisa Ambient: always-on, wake-word-free, on-device, ledgered
-- [ADR-0012](0012-gnome-control-center-lisa-panel.md) — Native "Intelligence" panel in a forked gnome-control-center
-- [ADR-0013](0013-harness-intents-and-coding-agent.md) — The Lisa harness: intents + a coding agent on the existing substrate
-- [ADR-0014](0014-lisa-ui-material-fork.md) — lisa_ui is the kit Lisa apps import — Material-backed now, vendored fork later
-- [ADR-0015](0015-assistant-app.md) — Persistent Assistant chat window
-- [ADR-0016](0016-reverse-dns-naming.md) — Reverse-DNS identifiers move to the real domains (dev.lisaos.* / app.lisaos.*)
-- [ADR-0017](0017-plymouth-in-initrd.md) — Plymouth + the lisa theme move into the mkosi-initrd
-- [ADR-0018](0018-var-pinned-partuuid.md) — /var is mounted by partition LABEL, not by UUID
-- [ADR-0019](0019-dedicated-home-partition.md) — Dedicated /home partition on fresh installs, weight-split with var
-- [ADR-0020](0020-app-update-channel.md) — App updates decoupled from the OS image
-- [ADR-0021](0021-aarch64-lane.md) — aarch64 image lane on an Arch Linux ARM base
-- [ADR-0022](0022-rescue-boot-path.md) — User-survivable rescue boot path (pinned rescue UKI + self-repair)
-- [ADR-0023](0023-slim-core-var-grows.md) — Slim core, /var grows: apps and heavy payloads leave the image
-- [ADR-0024](0024-apple-cs8409-out-of-tree-codec.md) — Out-of-tree CS8409 codec module for Apple speakers
-- [ADR-0025](0025-one-agent-loop.md) — One agent loop: sessions, memory, skills and every tool family in a single harness
-- [ADR-0026](0026-native-drm-in-initrd.md) — The native GPU driver + its firmware ride the initrd
-- [ADR-0027](0027-flutter-on-device-aarch64-and-forged-app-launch.md) — The Flutter lane on-device: aarch64 SDK, forged-app build + launch, and where skills live
-- [ADR-0028](0028-initrd-overlay-mechanism.md) — Files reach the default initrd through `io.mkosi.initrd`, not `mkosi.initrd/`
-- [ADR-0029](0029-hard-guardrails-for-agent-actions.md) — Hard guardrails for agent actions: deterministic policy outside the model
-- [ADR-0030](0030-the-guardrail-boundary.md) — The guardrail boundary: probabilistic inside, logical outside — and the owner is outside
-- [ADR-0031](0031-server-mode-two-edges-and-artifact-publishing.md) — Server mode, the two network edges, and artifact publishing (proposed)
-- [ADR-0032](0032-construct-and-lisa-one-contract-two-levels.md) — Construct and Lisa: one contract, two levels (proposed)
-- [ADR-0033](0033-identity-comes-from-the-transport.md) — Identity comes from the transport, not the message (`libs/lisa-peer`)
-- [ADR-0034](0034-lisa-dev-user-scope-tooling.md) — `lisa dev`: developer tooling in the user's home, rootless (proposed)
-- [ADR-0035](0035-the-desktop-is-a-prompt.md) — The desktop is a prompt: a floating dock-prompt, no top bar (proposed)
-- [ADR-0036](0036-an-assistant-that-acts-on-its-own.md) — An assistant that acts on its own: triggers, trust, and what happens when nobody is watching (proposed)
-- [ADR-0037](0037-the-browser-is-a-lisa-app.md) — Browser: the web becomes an agent surface, not a vendored binary (Surfer)
-- [ADR-0038](0038-lisa-desktop-a-hard-fork-of-gnome-shell.md) — Lisa Desktop: a hard fork of GNOME Shell (not Mutter)
-- [ADR-0039](0039-the-split-and-the-package-index.md) — The split, and the `[lisa]` package index that makes it work
-- [ADR-0040](0040-docs-live-with-the-code-no-docs-repo.md) — Docs live with the code; lisaos.dev renders them; no docs repo
-- [ADR-0041](0041-package-signing-and-the-trust-chain.md) — Package signing and the trust chain (key custody, two-phase SigLevel)
-- [ADR-0042](0042-field-device-keyring-policy.md) — The field device runs a blank login keyring (and why that is honest)
-- [ADR-0043](0043-the-model-knows-the-os-through-retrieval.md) — The model knows the OS through retrieval, never through the prompt
-- [ADR-0044](0044-retrieval-receipts.md) — Retrieval receipts: contextd vouches for what it returned (proposed)
-- [ADR-0045](0045-calver-for-the-image-semver-for-the-contracts.md) — CalVer for the image, SemVer for the contracts
-- [ADR-0046](0046-capability-before-storefront.md) — Capability before storefront: what must be true before Lisa distributes somebody else's app
-- [ADR-0047](0047-one-toolkit-gjs-gtk4.md) — One toolkit: GJS + GTK4/Adwaita is the default, Flutter is parked
-- [ADR-0048](0048-lisa-desktop-is-a-desktop-not-a-patched-gnome.md) — Lisa Desktop is a desktop, not a patched GNOME (write the apps; core vs. store)
-- [ADR-0049](0049-every-app-is-an-agent-surface.md) — Every app is an agent surface: install is the grant, the tier is the gate, the registry is the authority
-- [ADR-0050](0050-app-tooling-is-cli-and-the-scaffold-carries-the-traps.md) — App tooling is CLI verbs, not an IDE: every developer verb lives under `lisa dev`, `lisa dev check` is the authority, and the traps become generated code

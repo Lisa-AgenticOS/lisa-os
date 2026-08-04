@@ -1,8 +1,7 @@
 # ADR-0044: Retrieval receipts — contextd vouches for what it returned
 
-- Status: **proposed** (design only, 2026-08-03 — the full design with
-  sequencing is on #55; this ADR records the decision-shape so it
-  survives sessions)
+- **Status:** proposed — design only; the full design with sequencing is on
+  #55. This file records the decision-shape so it survives sessions.
 - Date: 2026-08-03
 - Relates: ADR-0033 (identity from the transport), ADR-0029/0030
   (tiering + the boundary), #55 (the gap and the design), ADR-0043

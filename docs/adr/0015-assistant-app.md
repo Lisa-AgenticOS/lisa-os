@@ -1,6 +1,9 @@
 # ADR-0015: a persistent Assistant chat window — the surface that makes the model usable
 
-- **Status:** accepted
+- **Status:** accepted, partially executed — the window ships, streams and
+  is ledgered on the device, and read-tier tools reach it through
+  `dev.lisaos.Harness1`. No write tier and no memory across conversations
+  (#157).
 - **Date:** 2026-07-24
 
 ## Context

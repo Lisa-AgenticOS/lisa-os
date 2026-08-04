@@ -1,6 +1,7 @@
 # ADR-0002: Rust with zbus + axum for system daemons
 
-- **Status:** accepted
+- **Status:** accepted — every daemon under `daemons/` is Rust on zbus, with
+  axum where there is HTTP.
 - **Date:** 2026-07-20
 
 ## Context

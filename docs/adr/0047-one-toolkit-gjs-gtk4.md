@@ -1,6 +1,9 @@
 # ADR-0047 — One toolkit: GJS + GTK4/Adwaita is the default, Flutter is parked
 
-- **Status:** Accepted
+- **Status:** accepted — GJS + GTK4/Adwaita is the documented default, #37
+  is closed won't-do, and PLAN §5.8/§5.12 and ADR-0004 carry the correction.
+  Not yet done: `libs/lisa_ui` becoming the shared GJS library — the MCP
+  edge it is meant to de-duplicate still exists in triplicate.
 - **Date:** 2026-08-04
 - **Supersedes:** ADR-0004's "Flutter lane" as the *default* for
   user-facing apps and for Forge output. PLAN §5.12 and §314 need the same

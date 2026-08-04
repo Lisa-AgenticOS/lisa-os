@@ -1,6 +1,8 @@
 # ADR-0010: BYO remote model providers via a dedicated egress broker (`lisa-remoted`)
 
-- **Status:** accepted
+- **Status:** accepted — `lisa-remoted` is the sole egress broker for
+  provider traffic; PKCE state fixed (#110). A live sign-in on the device is
+  still the outstanding confirmation.
 - **Date:** 2026-07-22
 
 ## Context

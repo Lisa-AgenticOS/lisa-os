@@ -1,6 +1,15 @@
 # ADR-0011: Lisa Ambient — the always-on, wake-word-free assistant
 
-- **Status:** accepted (design only; NO implementation as of 2026-08-03 — #158 tracks the gap. "Implementation staged" meant "planned in stages", and read as "partially built", which it never was)
+- **Status:** accepted, partially executed — corrected 2026-08-04, because
+  "NO implementation" was read off the wrong subject. The primitives exist
+  and are proven on the reference iMac (2026-07-31): `lisa
+  listen`/`transcribe` on packaged whisper.cpp, `lisa say` on packaged
+  piper, `lisa ambient classify`, push-to-talk over `dev.lisaos.Voice1`,
+  both engines installed by the image lane and both voice models pinned in
+  the catalog. What does not exist is this ADR's actual subject — the
+  always-on loop (VAD, ring buffer, hard mute, addressed-intent
+  classification running unprompted) and the `voiced` daemon. Nothing in the
+  repo records unprompted (#158).
 - **Date:** 2026-07-23
 
 ## Context

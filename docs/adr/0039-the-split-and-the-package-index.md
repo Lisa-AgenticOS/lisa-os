@@ -1,6 +1,21 @@
 # ADR-0039: The split, and the package index that makes it work
 
-- Status: **accepted; executed through the index going live** — repos extracted, per-repo packages built by CI, [lisa] hosted, SIGNED, and pacman-verified from a clean machine (2026-08-03, lisa-os#171). Open: step 4 (image consumes [lisa]), steps 5-6 (integration test, removal)
+- **Status:** accepted, partially executed — executed through the index
+  going live: repos extracted with history, per-repo packages built by CI,
+  `[lisa]` hosted, signed, and pacman-verified from a clean machine
+  (lisa-os#171). **Step 4 is wired**: `os/mkosi/mkosi.pkgmngr/etc/pacman.d/lisa.conf`
+  configures `[lisa]` for the image build and `mkosi.conf` installs
+  `lisa-desktop-shell` from it by name, in the line stock `gnome-shell`
+  used to occupy. Lisa Desktop is step 4's first consumer, and the only
+  one so far — every other Lisa package still arrives through
+  release.yml's locally built `PackageDirectories=`, which keeps
+  precedence over the index. **Step 5 is started, not finished**: the
+  release job now asserts against the mounted image that the shell is
+  ours, that stock gnome-shell is absent, that the session is present
+  and default, and that the extensions, schemas, dconf defaults and app
+  entries are at paths something reads. What it does not assert — and
+  cannot from CI — is that a human logs in. Step 6 (removal from the
+  monorepo) is untouched.
 - Date: 2026-08-02
 - Relates: ADR-0006 (monorepo with staged extraction), ADR-0020 (app
   update channel decoupled from the image), ADR-0034 (install/update

@@ -1,6 +1,9 @@
 # ADR-0024: ship an out-of-tree CS8409 codec module for Apple speakers
 
-- **Status:** accepted
+- **Status:** accepted, partially executed — the module is packaged and
+  re-pinned at every kernel bump, and a mismatched pin fails the build
+  loudly by design. The reference iMac's speakers have still never made a
+  sound through it (#44).
 - **Date:** 2026-07-25
 - **Issue:** #44
 

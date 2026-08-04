@@ -1,9 +1,8 @@
 # ADR-0013: The Lisa harness — Siri-style intents + a Claude-Code-level coding agent, on the existing substrate
 
-- **Status:** accepted, largely implemented (corrected 2026-08-02 — it
-  said `proposed` while `libs/harness-core` had shipped Sessions, Skills,
-  Memory and the policy layer, and `lisa forge` was running on them).
-  Remaining pillar: Crons, deliberately last (ADR-0025 phase 5).
+- **Status:** accepted, partially executed — Sessions, Skills, Memory and
+  the policy layer shipped in `libs/harness-core` and `lisa forge` runs on
+  them. Remaining pillar: Crons, deliberately last (ADR-0025 phase 5).
 - **Date:** 2026-07-24
 
 ## Context

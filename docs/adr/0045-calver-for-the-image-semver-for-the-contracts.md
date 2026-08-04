@@ -1,8 +1,7 @@
 # ADR-0045: CalVer for the image, SemVer for the contracts
 
-- Status: **accepted** (2026-08-04, owner asked "should we use
-  semver?" after an ordinal-shorthand confusion; this is the answer
-  and the shorthand's obituary)
+- **Status:** accepted — both schemes were already in use; this ADR names
+  them and retires the ordinal shorthand that caused the confusion.
 - Date: 2026-08-04
 - Relates: ADR-0001 (A/B image), ADR-0039 (per-repo packages),
   ADR-0016 (versioned D-Bus interface names)

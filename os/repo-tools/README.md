@@ -59,6 +59,30 @@ the way #241 was proved: run it against the broken tree first and watch it
 go red, then fix the tree; a check only ever seen green is a check nobody
 has tested.
 
+## The generators
+
+Two scripts here produce committed output and gate it with `--check`, so
+source and output cannot disagree on `main`:
+
+- **`build-knowledge.py`** — the OS knowledge pack (`docs/knowledge/`)
+  from a curated list of component READMEs (#175, ADR-0040). Consumed by
+  `lisa context sync-knowledge` and the lisaos.dev docs build.
+- **`build-adr-index.py`** — the index table in `docs/adr/README.md`,
+  from each ADR's own `- **Status:**` line. It exists because the
+  hand-written page claimed "36 of the 37 records below carry no status
+  line" while there were 50 records and all 50 had one, and its
+  what-is-built table stopped at ADR-0038, so absence read as "not
+  built". Beyond staleness it rejects three things: a status line not in
+  the canonical shape, a state outside the vocabulary (`proposed`,
+  `accepted`, `accepted, partially executed`, `accepted, not
+  implemented`, `superseded by ADR-NNNN`, `superseded in part by
+  ADR-NNNN`, `status unverified`), and a supersession naming an ADR that
+  does not exist. All four failure modes were checked by breaking the
+  tree and watching each one go red.
+
+Regenerate with the script and no flag; `just lint` runs both with
+`--check`.
+
 ## Backlog (Appendix D)
 
 - `snapshot.sh` — record/advance the pinned snapshot date; advances only

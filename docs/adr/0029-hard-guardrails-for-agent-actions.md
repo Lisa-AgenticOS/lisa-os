@@ -1,8 +1,10 @@
 # ADR-0029: Hard guardrails for agent actions — policy outside the model
 
-- Status: accepted (phases 1–3 implemented; phase 3 landed after this
-  ADR was written and the text below was not updated with it — corrected
-  2026-08-02, see "Phase 3, implemented")
+- **Status:** accepted, partially executed — phases 1–3 implemented, with
+  three adversarial review rounds folded in (corpus 49 → 128 denied). Open:
+  Landlock confinement of forge subprocesses (#53), and `lisa suggest` still
+  emits a shell string rather than the structured argv this ADR's own
+  post-mortem calls for (#88).
 - Date: 2026-07-26
 - Relates: ADR-0025 (one agent loop), PLAN §5.4 (Agent Bus), §5.10 +
   Appendix C (provenance, injection), §5.12.1 (forge tool jail), M5

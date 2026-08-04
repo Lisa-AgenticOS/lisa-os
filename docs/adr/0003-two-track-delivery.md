@@ -1,6 +1,7 @@
 # ADR-0003: Two-track delivery — Lisa Layer first, immutable image as the product
 
-- **Status:** accepted
+- **Status:** accepted — both tracks ship: Track L installs onto stock Arch
+  from the signed `[lisa]` index, Track I is the released image.
 - **Date:** 2026-07-20
 
 ## Context

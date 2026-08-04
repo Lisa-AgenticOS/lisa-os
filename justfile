@@ -36,6 +36,11 @@ lint:
     # stale committed copy would ship the model answers about last
     # month's OS.
     python3 os/repo-tools/build-knowledge.py --check
+    # The ADR index used to be written by hand, and said "36 of the 37
+    # records below" while there were 50. A page describing 50 files
+    # must be derived from them: this rejects a status line outside the
+    # vocabulary, a supersession pointing at nothing, and a stale index.
+    python3 os/repo-tools/build-adr-index.py --check
 
 fmt:
     cargo fmt --all

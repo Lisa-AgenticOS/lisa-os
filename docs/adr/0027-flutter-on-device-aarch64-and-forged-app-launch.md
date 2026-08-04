@@ -1,6 +1,10 @@
 # ADR-0027: the Flutter lane on-device — aarch64 SDK, and how a forged app gets launched
 
-- **Status:** accepted
+- **Status:** superseded in part by ADR-0047 — #37 is closed won't-do, so
+  the on-device Flutter SDK, the aarch64 pin and the forged-app build/launch
+  path are parked with the lane. §3 (Skills live in
+  `skills/<name>/SKILL.md`, installed to `/usr/share/lisa/skills`) is
+  unaffected and in force.
 - **Date:** 2026-07-26
 - Relates: ADR-0004 (Flutter lane), ADR-0014 (lisa_ui), ADR-0016 (naming),
   ADR-0019 (home partition), ADR-0020 (app channel + launcher indirection),

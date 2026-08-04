@@ -1,6 +1,8 @@
 # ADR-0020: app updates decoupled from the OS image
 
-- **Status:** accepted
+- **Status:** accepted — `lisa apps update/rollback/sync` ship and devices
+  pull payloads. The channel is monolithic, which per-app store versioning
+  will have to change (#239).
 - **Date:** 2026-07-25
 
 ## Context

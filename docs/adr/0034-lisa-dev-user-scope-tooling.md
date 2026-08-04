@@ -1,11 +1,10 @@
 # ADR-0034: `lisa dev` — developer tooling in the user's home, rootless
 
-- Status: accepted; **phase 0 implemented 2026-08-01** (subuid/subgid +
-  newuidmap, the podman runtime set, and a probe that runs `podman
-  unshare id` on the built image). Phase 1 — the `lisa dev` verb itself
-  and the /home disk guard — is not started. Was marked "no code" and
-  gated behind
-  the ADR-0033 rollout)
+- **Status:** accepted, partially executed — phase 0 shipped (subuid/subgid,
+  `newuidmap`, the podman runtime set, and an image probe that runs `podman
+  unshare id`). Phase 1 — the `lisa dev` verb itself and the /home disk
+  guard — is not started (#130); there is no `dev` subcommand in
+  `cli/lisa/src`. The two rules it establishes are CLAUDE.md 7a and 7b.
 - Date: 2026-07-26
 - Relates: ADR-0019 (dedicated /home), ADR-0020 (app channel), ADR-0023
   (slim core, /var grows), ADR-0029/0030 (guardrails), PLAN §3, §6

@@ -1,9 +1,10 @@
 # ADR-0043: The model knows the OS through retrieval, never through the prompt
 
-- Status: **accepted; phase 1 implemented 2026-08-03** (#175: pack,
-  generator, `system` provenance, sync, session unit). Open: retrieval
-  wiring in the assistant/overlay lanes, `--help` in the pack, the
-  on-device answer-quality eval.
+- **Status:** accepted, partially executed — phase 1 shipped (#175: the
+  pack, the generator, `system` provenance, `lisa context sync-knowledge`,
+  the session-start unit), and answers were verified semantically on the
+  device. Open: retrieval wiring in the assistant and overlay lanes,
+  `--help` in the pack, and the on-device answer-quality eval.
 - Date: 2026-08-03
 - Relates: ADR-0040 (docs live with the code; one generator, two
   consumers), ADR-0029/0030 (guardrail boundary), #175, #176 (the

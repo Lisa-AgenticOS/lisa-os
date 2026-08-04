@@ -1,7 +1,9 @@
 # ADR-0040: Docs live with the code — there is no docs repo
 
-- Status: **accepted** (decision 2026-08-03, owner asked "should we
-  make lisa docs repo", this is the answer)
+- **Status:** accepted — docs live with the code;
+  `os/repo-tools/build-knowledge.py` is the one curation step with two
+  consumers (the on-device pack and the lisaos.dev build), gated by `just
+  lint`.
 - Date: 2026-08-03
 - Relates: CLAUDE.md rule 10 (document everything we build, only what
   exists), ADR-0039 (the split), #175 (the OS knowledge pack),

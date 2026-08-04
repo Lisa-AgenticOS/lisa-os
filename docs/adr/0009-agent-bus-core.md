@@ -1,6 +1,11 @@
 # ADR-0009: Agent Bus core — D-Bus surface, tier enforcement at the bus, staged MCP transport
 
-- **Status:** accepted
+- **Status:** accepted, partially executed — the bus, the tier state
+  machine, provenance escalation and the undo journal are live in
+  `daemons/agentd`, and MCP genuinely rides per-app unix sockets
+  (`libs/mcp-bus`, `McpDispatcher`), not in-process dispatch. Open: socket
+  activation (`mcp.activatable` is declared and unimplemented), and the §5.4
+  acceptance flow end to end.
 - **Date:** 2026-07-22
 
 ## Context

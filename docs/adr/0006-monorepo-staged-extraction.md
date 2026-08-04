@@ -1,6 +1,8 @@
 # ADR-0006: Monorepo with staged extraction
 
-- **Status:** accepted
+- **Status:** accepted — extended, not superseded, by ADR-0039: none of this
+  ADR's own four triggers has fired; the two that fired are ones it could
+  not have contained.
 - **Date:** 2026-07-21
 
 ## Context

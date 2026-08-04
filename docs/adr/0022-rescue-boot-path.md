@@ -1,12 +1,11 @@
 # ADR-0022: A user-survivable rescue boot path
 
-- Status: accepted; phases 1-3 IMPLEMENTED and proven by execution
-  (corrected 2026-08-02). Phase 1 self-repair and phase 3's shell on an
-  unbootable machine are green in ab-recovery; phase 2's resolver is
-  exercised in ab-interrupted-transfer, where it refuses a half-written
-  slot on its GPT type and boots the good one. **Still missing: the boot
-  ENTRY.** The resolver works; nothing offers it in the menu, because
-  sd-boot selects the rescue UKI as the default (#23).
+- **Status:** accepted, partially executed — phases 1–3 are implemented and
+  proven by execution (phase 1 self-repair and phase 3's shell on an
+  unbootable machine are green in ab-recovery; phase 2's resolver refuses a
+  half-written slot on its GPT type in ab-interrupted-transfer). Still
+  missing: the boot ENTRY — the resolver works, nothing offers it in the
+  menu (#23).
 - Date: 2026-07-25
 - Relates: issue #23, issue #20 (the incident), ADR-0018 (PARTLABEL
   mounts), PLAN §3 (Track I), §6 (updates), M7 (installer/OOBE)

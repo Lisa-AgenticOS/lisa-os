@@ -1,12 +1,10 @@
 # ADR-0023: Slim core, /var grows — apps and heavy payloads leave the image
 
-- Status: accepted; **phase 1 COMPLETE 2026-08-02** — the overlap ended
-  and the baked /opt/zen left both image lanes (#89), verified on the
-  reference device first (`zen-browser --version` answered by the apps
-  channel). Phase 2 = installer pre-pull, not started. **Phase 3 = slot
-  shrink: TRIED AT 7G AND REVERTED the same day** — the `du` figure this
-  ADR reasoned from is not the quantity that governs slot size. See
-  "Phase 3, attempted".
+- **Status:** accepted, partially executed — phase 1 complete and
+  device-verified (the baked `/opt/zen` left both image lanes, #89). Phase 2
+  (installer pre-pull) not started. Phase 3 (slot shrink) was tried at 7G
+  and reverted the same day: the `du` figure this ADR reasoned from is not
+  the quantity that governs slot size — see "Phase 3, attempted".
 - Date: 2026-07-25 (measurements added 2026-07-26)
 - Relates: ADR-0020 (app update channel), ADR-0001/0003 (Track I image),
   issue #37 (Flutter SDK to /var), issue #46 (the 23 GiB flash pain that

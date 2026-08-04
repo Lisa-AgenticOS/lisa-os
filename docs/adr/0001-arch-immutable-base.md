@@ -1,6 +1,7 @@
 # ADR-0001: Fork Arch Linux; ship an immutable, atomic, image-based OS via mkosi
 
-- **Status:** accepted
+- **Status:** accepted — the mkosi/UKI A/B image builds, boots, and
+  demonstrates update *and* rollback in CI.
 - **Date:** 2026-07-20
 
 ## Context

@@ -1,6 +1,9 @@
 # ADR-0046 — Capability before storefront: what must be true before Lisa distributes somebody else's app
 
-- **Status:** Accepted
+- **Status:** accepted — in force by construction: Lisa distributes nobody
+  else's app, and no storefront exists. Amendment 1 ("source in, source
+  out") is the standing rule for what may ever be distributed; the
+  capability gates it names are tracked by ADR-0049 and #240.
 - **Date:** 2026-08-04
 - **Supersedes:** nothing. Extends ADR-0020 (apps channel), ADR-0039 (repo
   split and `[lisa]`), ADR-0029/0030 (guardrails), ADR-0033 (identity from

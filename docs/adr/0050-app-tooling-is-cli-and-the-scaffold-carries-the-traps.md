@@ -1,7 +1,8 @@
 # ADR-0050 — App tooling is CLI verbs, and the scaffold carries the traps
 
-- **Status:** Accepted (decision only — **no code exists**; see
-  "What exists today" and "What this ADR decides")
+- **Status:** accepted, not implemented — no code exists: `cli/lisa/src` has
+  no `dev` verb, there is no scaffold generator and no `lisa dev check`. The
+  decision is what the tooling must be when it is written.
 - **Date:** 2026-08-04
 - **Related:** ADR-0047 (GJS + GTK4 is the one toolkit), ADR-0029/0030
   (the guardrail boundary), ADR-0034 (`lisa dev`, `$HOME` not root),

@@ -1,6 +1,8 @@
 # ADR-0030: The guardrail boundary — probabilistic inside, logical outside
 
-- Status: accepted (implemented 2026-07-26)
+- **Status:** accepted — the principle has teeth rather than prose: #145 and
+  #55 were both closed against it, and `lisa guard list|allow|forbid` is the
+  owner's out-of-band relaxation, where no tool call can reach it.
 - Date: 2026-07-26
 - Amends: [ADR-0029](0029-hard-guardrails-for-agent-actions.md), which
   made `Verdict::Deny` absolute with no override at all

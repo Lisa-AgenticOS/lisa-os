@@ -1,8 +1,9 @@
 # ADR-0017: Plymouth + the lisa theme move into the mkosi-initrd
 
-- **Status:** accepted; the `simpledrm`-only display clause is amended by
-  [ADR-0026](0026-native-drm-in-initrd.md), and the *delivery mechanism*
-  by [ADR-0028](0028-initrd-overlay-mechanism.md)
+- **Status:** accepted, partially executed — the `simpledrm`-only display
+  clause is amended by ADR-0026 and the delivery mechanism by ADR-0028.
+  Plymouth is genuinely in the initrd and asserted in the nightly; the
+  splash→desktop handoff has never been seen on hardware (#26).
 - **Date:** 2026-07-24
 
 ## Context

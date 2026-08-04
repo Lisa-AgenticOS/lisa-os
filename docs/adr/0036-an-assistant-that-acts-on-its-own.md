@@ -1,6 +1,7 @@
 # ADR-0036: An assistant that acts on its own — triggers, trust, and what happens when nobody is watching
 
-- Status: **proposed** (design; no code yet)
+- **Status:** proposed — design only, no code; it depends on ADR-0025's
+  loop, which exists, and on triggers, which do not.
 - Date: 2026-07-27
 - Source: product decision, Flakerim, 2026-07-27 — *"we want to be alive"*
 - Relates: ADR-0029/0030 (guardrails and the boundary), ADR-0025 (one

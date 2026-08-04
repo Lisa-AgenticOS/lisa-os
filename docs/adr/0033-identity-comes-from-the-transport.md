@@ -1,7 +1,9 @@
 # ADR-0033: Identity comes from the transport, not the message
 
-- Status: accepted (primitive implemented + first application 2026-07-26;
-  remaining surfaces tracked as issues)
+- **Status:** accepted, partially executed — `libs/lisa-peer` is the
+  primitive, and agentd, contextd, harnessd, remoted and the portal all link
+  it. The sweep for the remaining callers is unfinished; the rule itself is
+  CLAUDE.md 6b.
 - Date: 2026-07-26
 - Relates: ADR-0030 (the guardrail boundary), PLAN §5.4, §5.5, §5.10,
   Appendix C; issues #55, #56, #93, #94, #97, #99, #100, #101, #106,

@@ -1,11 +1,9 @@
 # ADR-0004: Flutter app lane + the Forge
 
-- **Status:** **superseded in part by ADR-0047 (2026-08-04)** — the lane
-  split below is no longer in force: GJS + GTK4/Adwaita is the default
-  for Lisa's apps and for Forge output, and Flutter is parked. The Forge
-  itself (§5.12.1) stands. Earlier: accepted (spike DONE — its findings
-  are the appendix at the foot of this file; status corrected
-  2026-08-02).
+- **Status:** superseded in part by ADR-0047 — the lane split is no longer
+  in force: GJS + GTK4/Adwaita is the default for Lisa's apps and for Forge
+  output, and Flutter is parked. The Forge itself (PLAN §5.12.1) stands, and
+  the spike findings at the foot of this file stand as history.
 - **Date:** 2026-07-20
 
 ## Context

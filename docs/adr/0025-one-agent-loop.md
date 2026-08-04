@@ -1,6 +1,9 @@
 # ADR-0025: One agent loop — the Lisa harness
 
-- Status: accepted (design; phased implementation)
+- **Status:** accepted, partially executed — one loop exists: the Assistant
+  runs on `dev.lisaos.Harness1` and reaches the Agent Bus through
+  `bus-tools`. Skills carry an enforced tool allowlist that no shipped skill
+  populates (#245); phase 5 (Crons) is not started.
 - Date: 2026-07-26
 - Relates: ADR-0013 (harness program, the pillar model), ADR-0009 (Agent
   Bus), ADR-0015 (Assistant), PLAN §5.4 / §5.12.1, issue #25

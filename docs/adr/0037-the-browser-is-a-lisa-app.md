@@ -1,6 +1,9 @@
 # ADR-0037: Browser — the web becomes an agent surface, not a vendored binary
 
-- Status: **accepted, substantially implemented** (corrected 2026-08-03 — the status said "no code yet" while Surfer was shipping in the image: tabs, extract, read-tier tools since 2026-07-31; opens YouTube, verified on the device 2026-08-02; write-tier navigate/click/fill landed 2026-08-03, #166 — device acceptance of the write path is the open remainder)
+- **Status:** accepted, partially executed — Surfer ships in the image with
+  tabs, extract and read-tier tools, verified on the device 2026-08-02;
+  write-tier navigate/click/fill landed 2026-08-03 (#166). Device acceptance
+  of the write path is the open remainder.
 - Date: 2026-07-29
 - Source: product decision, Flakerim, 2026-07-29 — the aim was "add MCP so
   we can do native browser use", and the engine question fell out of it

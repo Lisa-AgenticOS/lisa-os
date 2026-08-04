@@ -1,6 +1,6 @@
 # ADR-0008: The Lisa portal is a standalone session service, consent stays in the shell
 
-- **Status:** accepted
+- **Status:** accepted — installed on the device since v20260730.55 (#153).
 - **Date:** 2026-07-22
 
 ## Context

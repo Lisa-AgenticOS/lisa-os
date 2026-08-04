@@ -1,6 +1,8 @@
 # ADR-0032: Construct and Lisa — one contract, two levels
 
-- Status: **proposed** (design only — no code yet)
+- **Status:** proposed — design only, no code. The shared contract
+  (manifest, provenance vocabulary, Ledger event shape, tokens) is defined
+  on the Lisa side only.
 - Date: 2026-07-26
 - Relates: PLAN §5.4 + Appendix B (MCP manifest), §5.8 (apps), §5.12
   (Flutter lane), ADR-0004, ADR-0030 (the ontology section)

@@ -1,7 +1,11 @@
 # ADR-0049 — Every app is an agent surface: install is the grant, the tier is the gate, the registry is the authority
 
-- **Status:** Accepted (decision; the mechanism below is largely unbuilt —
-  §"What exists today" says which half is which)
+- **Status:** accepted, not implemented — the decision stands and the
+  mechanism is largely unbuilt. What exists is the table in §"What exists
+  today" (manifests, tiers at the bus, `lisa tools`, the grant log). Not
+  built: registration at install and deregistration at uninstall, the
+  registry as a stateful authority rather than a startup scan, per-app
+  skills, and stored grant state (#240).
 - **Date:** 2026-08-04
 - **Extends:** ADR-0009 (Agent Bus core — tiers enforced in the bus state
   machine), ADR-0013 (the MCP dispatcher), ADR-0025 (one agent loop;

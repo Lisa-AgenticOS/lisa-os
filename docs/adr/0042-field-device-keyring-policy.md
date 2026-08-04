@@ -1,7 +1,8 @@
 # ADR-0042: The field device runs a blank login keyring
 
-- Status: **accepted** (decided 2026-08-03; awaiting one human visit
-  to the iMac to apply — the keyring password is not remotely known)
+- **Status:** accepted, partially executed — decided 2026-08-03; the change
+  awaits one human visit to the reference iMac, because the keyring password
+  is not remotely known.
 - Date: 2026-08-03
 - Relates: #168 (where the hang was found), the mail token fail-fast
   (cli/lisa/src/mail.rs), M7 installer (where the real policy lands)

@@ -1,8 +1,8 @@
 # ADR-0041: Package signing and the trust chain
 
-- Status: **accepted and executed** (decided 2026-08-03 after the owner
-  said "decide for both of us"; the [lisa] index has published signed
-  since the same day)
+- **Status:** accepted — the `[lisa]` index has published signed since
+  2026-08-03, with `lisa-keyring` shipping the pinned key. SigLevel flips
+  from Optional to Required one release after devices take the keyring.
 - Date: 2026-08-03
 - Relates: ADR-0039 (the index), ADR-0034 (no uncontrolled
   dependencies in update paths), lisa-os#171; operational detail lives
