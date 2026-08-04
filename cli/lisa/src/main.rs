@@ -463,6 +463,32 @@ enum AppsCmd {
     /// have yet (Zen browser), leaving installed versions untouched. Run by
     /// lisa-apps-sync.timer and by `lisa update` before it stages a slot.
     Sync,
+    /// Install a payload tarball you already have, instead of fetching one.
+    ///
+    /// For offline media and for testing a build before it is released.
+    /// The release path (`update`/`sync`) verifies every payload against
+    /// the release SHA256SUMS; this one cannot — the file came from you,
+    /// not from a manifest — and says so.
+    Install {
+        /// Channel to install into (`shell`, `runtime`, `zen`).
+        channel: String,
+        /// The `.tar.zst` payload.
+        tarball: PathBuf,
+        /// Version to record for the tree (`YYYYMMDD.run`).
+        #[arg(long)]
+        version: String,
+    },
+    /// Print the directories a launcher searches for CHANNEL, best first
+    /// — the one authority for where `update` installs a payload and
+    /// where /usr/bin/lisa-app then reads it (issue #239).
+    Path {
+        /// Channel to resolve (`shell`, `runtime`, `zen`).
+        channel: String,
+        /// Print the install root instead: the directory `update` writes
+        /// `versions/<ver>` and `current` into.
+        #[arg(long)]
+        base: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -690,6 +716,12 @@ fn run() -> anyhow::Result<()> {
             AppsCmd::Status => apps::status(),
             AppsCmd::Rollback { channel } => apps::rollback(channel.as_deref()),
             AppsCmd::Sync => apps::sync(),
+            AppsCmd::Install {
+                channel,
+                tarball,
+                version,
+            } => apps::install_local(&channel, &tarball, &version),
+            AppsCmd::Path { channel, base } => apps::print_path(&channel, base),
         },
         Command::Remote { cmd } => remote_cmd(cmd),
         Command::Transcribe { audio, model } => {

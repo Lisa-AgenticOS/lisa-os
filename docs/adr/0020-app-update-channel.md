@@ -91,3 +91,51 @@ does change: for `zen` there is no baked tree to fall back to after the
 overlap release, so `rollback` past the oldest installed version leaves
 the payload absent and says so, and the launcher's message — not the
 image — is the floor.
+
+## Amendment, 2026-08-04 (issue #239)
+
+Three releases shipped a channel that reported success and delivered
+nothing, found while verifying 20260804.76 on the reference iMac.
+
+**One function owns the path.** `lisa apps update` unpacked to
+`/var/lib/lisa-apps/versions/<ver>` while `/usr/bin/lisa-app` read
+`/var/lib/lisa-apps/payloads/shell/current`, a directory that did not
+exist — so every launch fell through to the baked `/usr/share/lisa/shell`
+and the updated tree sat unused. Both spellings were individually
+plausible; nothing compared them. Now `Channel::base`/`resolve` in
+`cli/lisa/src/apps.rs` is the only place a payload path is written down,
+`lisa apps path <channel>` publishes it, and `lisa-app` runs that instead
+of carrying a list. The `shell` channel moves to
+`payloads/shell/` alongside `runtime` and `zen`; the two older locations
+are read, never written, so a device mid-upgrade keeps launching what it
+already has. **Adding a fourth path to a launcher is not a fix for this
+class of defect — it is a third spelling.**
+
+**The channel carries the apps.** `release.yml` packed `shell/` only, so
+Mail, Surfer and Preview — installed into the same tree by the package
+since Surfer landed — were absent from the channel that exists to update
+them, and this ADR's promise was false for the three surfaces users spend
+the most time in. Both the package and the release tarball now stage
+through `os/repo-tools/build-apps-payload.sh`. Unchanged: `.desktop`
+files, D-Bus service files and schemas are `/usr` and still ride image
+releases, so the channel updates an app's code, not its registration.
+
+**Status reports reality.** `lisa apps status` printed
+`current: 20260804.76, installed: 20260804.76` while nothing at that
+version could launch, and would have printed the same for a tree that was
+empty, absent, or in the wrong place — the shape of #219 (socket presence
+read as tool availability) and #192 (a comment asserting a bound nothing
+enforced). It now prints the directory a launch would actually use, and
+says plainly when a recorded version is not it. A tree counts as a tree
+only if a probe file inside it exists.
+
+**Every channel is writable by the desktop user.** `lisa apps update`
+failed for the owner of the machine with `Permission denied (os error
+13)` because lisa-apps-sync.service (root) had created
+`payloads/zen` and its `versions/` at 0755 root:lisa. tmpfiles now
+carries a 2775 root:lisa rule for every channel directory — `d` adjusts
+on each boot, which is what repairs the devices already in that state —
+`place_tree` chmods what it creates, and a failed prune warns instead of
+failing an install that already succeeded. ADR-0034 §7b: `sudo lisa apps
+sync` is not an answer, and our own guard denies `escalate.privilege`
+unconditionally.

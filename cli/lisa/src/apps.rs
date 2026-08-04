@@ -16,18 +16,28 @@
 //!
 //! Layout, per channel: `<base>/versions/<ver>/` holds one full tree and
 //! `<base>/current` is a symlink flipped atomically (symlink + rename).
-//! `<base>` is `/var/lib/lisa-apps` (and `/var/lib/lisa-apps/payloads/<name>`
-//! per channel). It sits beside the model store rather than inside
-//! `/var/lib/lisa`, which is a DynamicUser StateDirectory whose real path
-//! (`/var/lib/private/lisa`) no ordinary user can traverse — see APPS_DIR.
-//! The old location is still read, never written, so a device mid-upgrade
-//! keeps resolving what it already has. Integrity:
-//! sha256 against the release's SHA256SUMS manifest (same trust level as the
-//! sysupdate transfer set; GPG signing lands with the M1 signed repo).
+//! `<base>` is `/var/lib/lisa-apps/payloads/<name>`. It sits beside the
+//! model store rather than inside `/var/lib/lisa`, which is a DynamicUser
+//! StateDirectory whose real path (`/var/lib/private/lisa`) no ordinary
+//! user can traverse — see APPS_DIR. Older locations are still read, never
+//! written, so a device mid-upgrade keeps resolving what it already has.
+//! Integrity: sha256 against the release's SHA256SUMS manifest (same trust
+//! level as the sysupdate transfer set; GPG signing lands with the M1
+//! signed repo).
+//!
+//! **`resolve` is the single authority for where a payload is** (issue
+//! #239). `place_tree` writes through `Channel::base`, `resolve` reads
+//! through it, and every launcher that is not this program asks —
+//! `/usr/bin/lisa-app` runs `lisa apps path shell` rather than spelling a
+//! `/var` path of its own. It used to spell one, the two spellings drifted
+//! apart, and for three releases `lisa apps update` unpacked a tree that
+//! nothing ever launched while `lisa apps status` called it current.
 
 use anyhow::{Context, bail};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Where payloads live.
@@ -50,27 +60,40 @@ use std::path::{Path, PathBuf};
 /// tmpfiles rule making it 2775 root:lisa. Payloads use the same shape.
 const APPS_DIR: &str = "/var/lib/lisa-apps";
 
-/// The pre-fix location, still read so trees installed by older releases
-/// keep resolving until they are replaced. Never written.
-const LEGACY_APPS_DIR: &str = "/var/lib/lisa/apps";
+/// Mode for every directory the channel machinery creates: setgid so
+/// unpacked files inherit group `lisa`, group-writable so the DESKTOP USER
+/// can install into a tree root that root created first.
+///
+/// lisa-apps-sync.service runs as root and gets there first on most
+/// devices. Without this, `create_dir_all` left `payloads/zen` and its
+/// `versions/` at 0755 root:lisa and `lisa apps update` failed for the
+/// user with `Permission denied (os error 13)` — ADR-0034 §7b says
+/// nothing user-facing needs sudo, and `escalate.privilege` is an
+/// unoverridable Deny in our own guard, so "run it with sudo" is not an
+/// answer (issue #239 defect 4).
+const DIR_MODE: u32 = 0o2775;
+
+/// Prefix for the absolute system paths this module reads (baked trees,
+/// pre-migration payload locations). Empty in production; a tempdir in
+/// tests, so a test's answer never depends on what the dev host happens
+/// to have in `/usr` or `/var`.
+fn sys_root() -> Option<PathBuf> {
+    std::env::var_os("LISA_APPS_ROOT").map(PathBuf::from)
+}
+
+/// An absolute system path, under `sys_root()` when one is set.
+fn abs(p: &str) -> PathBuf {
+    match sys_root() {
+        Some(r) => r.join(p.trim_start_matches('/')),
+        None => PathBuf::from(p),
+    }
+}
 
 fn apps_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("LISA_APPS_STATE") {
         return PathBuf::from(p);
     }
-    // Prefer the new location. Fall back to the legacy one only when it
-    // exists and the new one does not — an older device that has not yet
-    // taken the release carrying the tmpfiles rule still finds its
-    // payloads, rather than losing them at the moment of upgrade.
-    let current = PathBuf::from(APPS_DIR);
-    if current.is_dir() {
-        return current;
-    }
-    let legacy = PathBuf::from(LEGACY_APPS_DIR);
-    if legacy.is_dir() {
-        return legacy;
-    }
-    current
+    abs(APPS_DIR)
 }
 
 /// The architecture whose payloads this system takes. Overridable so the
@@ -93,8 +116,15 @@ struct Channel {
     /// `<prefix><ver>_<arch>.tar.zst` when `per_arch`.
     prefix: &'static str,
     per_arch: bool,
-    /// State dir under `/var/lib/lisa/apps` ("" = the dir itself).
+    /// State dir under `apps_dir()`. Every channel has one — a channel
+    /// that lived at the root of `apps_dir()` is how the shell tree ended
+    /// up somewhere no launcher looked (#239).
     subdir: &'static str,
+    /// A path inside a tree that must exist for it to count as a tree at
+    /// all. `has_tree`-by-symlink alone reports success for an empty
+    /// directory, which is the shape of defect #239: bookkeeping that is
+    /// true of a state record and false of the running system.
+    probe: &'static str,
     /// Installed version trees to keep (including the current one). Payload
     /// trees are hundreds of MiB; /var is finite.
     keep: usize,
@@ -103,26 +133,40 @@ struct Channel {
     /// install would pull a copy of something it already has, and skew the
     /// tree ahead of the image for no reason (ADR-0020 consequences).
     auto_sync: bool,
-    /// A pre-migration path the image may still carry, reported by `status`
-    /// so an operator can see WHY the browser works on a machine with no
-    /// payload installed. Not a resolution path — that lives in the
-    /// launcher (os/packages/zen-browser/zen-browser.sh).
-    legacy_baked: Option<&'static str>,
+    /// Directories an EARLIER release installed this channel to. Read when
+    /// this channel's own tree is absent; never written. A device
+    /// mid-upgrade keeps launching what it already has.
+    stale: &'static [&'static str],
+    /// The tree the IMAGE bakes, if any — the last thing `resolve`
+    /// returns and the floor `rollback` falls back to.
+    baked: Option<&'static str>,
+    /// Whether that baked tree is a permanent floor (`shell`, `runtime`:
+    /// every image carries one) or a pre-migration leftover the current
+    /// image no longer ships (`zen`). Only the wording differs, but the
+    /// difference is the whole reason `zen` auto-syncs and `shell` does
+    /// not.
+    baked_is_floor: bool,
 }
 
 const CHANNELS: &[Channel] = &[
     Channel {
         name: "shell",
-        what: "GJS shell surfaces — assistant, launcher, Ledger, settings",
+        what: "GJS surfaces and apps — assistant, Ledger, Mail, Surfer, Preview",
         prefix: "lisa-apps_",
         per_arch: false,
-        subdir: "",
+        subdir: "payloads/shell",
+        // Any file under the tree would do; the assistant is the surface
+        // whose absence is noticed first.
+        probe: "assistant/lisa-assistant.js",
         keep: 3,
         auto_sync: false,
-        // The image always bakes /usr/share/lisa/shell; lisa-app falls back
-        // to it, so this is a permanent floor rather than a migration
-        // leftover — nothing to warn about.
-        legacy_baked: None,
+        // Where releases up to 20260804.76 unpacked it (the root of the
+        // state dir, which no launcher ever read — #239), and the
+        // original ADR-0020 location before the DynamicUser move.
+        stale: &["/var/lib/lisa-apps", "/var/lib/lisa/apps"],
+        // The image always bakes this, so it is a permanent floor.
+        baked: Some("/usr/share/lisa/shell"),
+        baked_is_floor: true,
     },
     Channel {
         name: "runtime",
@@ -131,12 +175,15 @@ const CHANNELS: &[Channel] = &[
         // A compiled binary: the payload must match the machine.
         per_arch: true,
         subdir: "payloads/runtime",
+        probe: "bin/lisa",
         keep: 2,
         // The image always bakes the CLI at /usr/lib/lisa/bin/lisa and the
         // resolver falls back to it, so this is a permanent floor, not a
         // migration — nothing to auto-pull on a fresh install.
         auto_sync: false,
-        legacy_baked: None,
+        stale: &["/var/lib/lisa/apps/payloads/runtime"],
+        baked: Some("/usr/lib/lisa"),
+        baked_is_floor: true,
     },
     Channel {
         name: "zen",
@@ -144,20 +191,98 @@ const CHANNELS: &[Channel] = &[
         prefix: "lisa-zen_",
         per_arch: true,
         subdir: "payloads/zen",
+        probe: "zen",
         keep: 2,
         auto_sync: true,
-        legacy_baked: Some("/opt/zen/zen"),
+        stale: &["/var/lib/lisa/apps/payloads/zen"],
+        // Pre-migration images baked this; new ones do not, which is why
+        // this is the one channel that auto-syncs.
+        baked: Some("/opt/zen"),
+        baked_is_floor: false,
     },
 ];
 
+/// Where a tree that `resolve` returned came from.
+#[derive(Debug, PartialEq, Eq)]
+enum Source {
+    /// This channel's own tree on /var, at the version `current` records.
+    Channel(String),
+    /// A location an older release installed to. Read, never written.
+    Stale,
+    /// The copy the image bakes.
+    Baked,
+}
+
+/// A directory a launcher would actually run code out of.
+struct Resolved {
+    dir: PathBuf,
+    source: Source,
+}
+
+impl Resolved {
+    fn what(&self) -> String {
+        match &self.source {
+            Source::Channel(v) => format!("the {v} tree this channel installed"),
+            Source::Stale => "a tree an older release left behind".to_string(),
+            Source::Baked => "the tree the image bakes".to_string(),
+        }
+    }
+}
+
 impl Channel {
     fn base(&self) -> PathBuf {
-        let d = apps_dir();
-        if self.subdir.is_empty() {
-            d
-        } else {
-            d.join(self.subdir)
+        apps_dir().join(self.subdir)
+    }
+
+    /// `<base>/current` — the symlink `place_tree` flips and every reader
+    /// follows. One spelling, one function.
+    fn current_link(&self) -> PathBuf {
+        self.base().join("current")
+    }
+
+    /// Whether `dir` holds a real tree of this channel, rather than an
+    /// empty directory or a dangling symlink. Metadata follows symlinks.
+    fn is_tree(&self, dir: &Path) -> bool {
+        dir.join(self.probe).exists()
+    }
+
+    /// Every directory a launcher should try, best first. This — not a
+    /// path list in a shell script — is what `/usr/bin/lisa-app` and
+    /// `lisa apps status` both go through (#239).
+    fn resolution(&self) -> Vec<Resolved> {
+        let mut out = Vec::new();
+        let cur = self.current_link();
+        if self.is_tree(&cur) {
+            let v = current_version(self).unwrap_or_else(|| "?".into());
+            out.push(Resolved {
+                dir: cur,
+                source: Source::Channel(v),
+            });
         }
+        for s in self.stale {
+            let d = abs(s).join("current");
+            if self.is_tree(&d) {
+                out.push(Resolved {
+                    dir: d,
+                    source: Source::Stale,
+                });
+            }
+        }
+        if let Some(b) = self.baked {
+            let d = abs(b);
+            if self.is_tree(&d) {
+                out.push(Resolved {
+                    dir: d,
+                    source: Source::Baked,
+                });
+            }
+        }
+        out
+    }
+
+    /// The one directory a launch would use, if any.
+    fn resolve(&self) -> Option<Resolved> {
+        self.resolution().into_iter().next()
     }
 
     /// The version an asset name carries, if it belongs to this channel and
@@ -273,13 +398,12 @@ fn install(ch: &Channel, rel: &mut Release, arch: &str) -> anyhow::Result<Outcom
     let Some((asset, ver, url)) = rel.asset_for(ch, arch) else {
         return Ok(Outcome::NotPublished);
     };
-    let base = ch.base();
-    // `has_tree` as well as the version, deliberately: if `current` points
+    // The tree as well as the version, deliberately: if `current` points
     // at a version whose tree is gone (hand-deleted, a truncated /var, a
     // failed rename), the symlink alone would say "already current" and
     // this would refuse to repair the very thing sync() was asked to
     // repair — a browser that stays broken forever.
-    if current_version(&base).as_deref() == Some(ver.as_str()) && has_tree(&base) {
+    if current_version(ch).as_deref() == Some(ver.as_str()) && ch.is_tree(&ch.current_link()) {
         return Ok(Outcome::AlreadyCurrent(ver));
     }
     let expected = rel.expected_sha256(&asset)?;
@@ -314,7 +438,15 @@ fn place_tree(
     let base = ch.base();
     let versions = base.join("versions");
     std::fs::create_dir_all(&versions)
-        .with_context(|| format!("creating {} (run as root)", versions.display()))?;
+        .with_context(|| format!("creating {}", versions.display()))?;
+    // Whoever gets here first — root from lisa-apps-sync.service, or the
+    // desktop user from `lisa apps update` — leaves the tree writable by
+    // group `lisa` for the other (#239 defect 4). Best-effort: only the
+    // owner may chmod, and a directory root already created with the
+    // wrong mode is repaired by tmpfiles at boot, not from here.
+    for d in [versions.as_path(), base.as_path()] {
+        let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(DIR_MODE));
+    }
     let staging = versions.join(format!(".staging-{}-{}", ver, std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
@@ -344,8 +476,74 @@ fn place_tree(
     let _ = std::fs::remove_dir_all(&staging);
     out?;
 
-    flip_current(&base, ver)?;
-    prune(ch, &base)
+    flip_current(ch, ver)?;
+    // Housekeeping, not the install. A tree root another uid unpacked
+    // cannot be removed by this one, and failing an update over that
+    // would leave the device unable to take the payload it has already
+    // verified, unpacked and activated (#239 defect 4, on a device whose
+    // zen trees root installed first).
+    if let Err(e) = prune(ch) {
+        eprintln!("-- {}: could not prune older versions: {e:#}", ch.name);
+    }
+    Ok(())
+}
+
+/// `lisa apps install <channel> <tarball> --version <ver>`: put a payload
+/// you already have on disk into a channel.
+///
+/// The release path verifies every payload against the release manifest.
+/// This one has no manifest to check against — offline media, or a build
+/// under test — so it says that instead of implying a verification it did
+/// not do.
+pub fn install_local(channel: &str, tarball: &Path, ver: &str) -> anyhow::Result<()> {
+    let ch = channels_for(Some(channel))?[0];
+    if ver.is_empty() || ver.contains('/') {
+        bail!("{ver:?} is not a version — expected YYYYMMDD.run");
+    }
+    if !tarball.is_file() {
+        bail!("{} is not a file", tarball.display());
+    }
+    let src = std::fs::canonicalize(tarball)
+        .with_context(|| format!("resolving {}", tarball.display()))?;
+    println!(
+        ">> {}: installing {} as {ver} — NOT verified against a release manifest",
+        ch.name,
+        src.display()
+    );
+    place_tree(ch, ver, &|dest: &Path| {
+        std::fs::copy(&src, dest)
+            .with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+        Ok(())
+    })?;
+    println!(
+        "{}: {ver} is current — it takes effect on the next launch, no reboot",
+        ch.name
+    );
+    Ok(())
+}
+
+/// `lisa apps path <channel>`: the directories a launcher searches, best
+/// first, one per line. `/usr/bin/lisa-app` reads this instead of
+/// carrying a path list of its own (#239 defect 1).
+pub fn print_path(channel: &str, base_only: bool) -> anyhow::Result<()> {
+    let ch = channels_for(Some(channel))?[0];
+    if base_only {
+        println!("{}", ch.base().display());
+        return Ok(());
+    }
+    let found = ch.resolution();
+    if found.is_empty() {
+        bail!(
+            "no {} tree on this system — not on the channel ({}), \
+             not baked by the image",
+            ch.name,
+            ch.base().display()
+        );
+    }
+    for r in found {
+        println!("{}", r.dir.display());
+    }
+    Ok(())
 }
 
 /// Stream `url` into `dest`, hashing as it goes; returns the hex sha256.
@@ -430,7 +628,7 @@ pub fn sync() -> anyhow::Result<()> {
     let arch = payload_arch();
     let missing: Vec<&Channel> = CHANNELS
         .iter()
-        .filter(|c| c.auto_sync && !has_tree(&c.base()))
+        .filter(|c| c.auto_sync && !c.is_tree(&c.current_link()))
         .collect();
     if missing.is_empty() {
         println!("apps sync: every auto-synced payload is already installed");
@@ -458,25 +656,63 @@ pub fn sync() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `lisa apps status`: what is current, what is installed, what is baked.
+/// `lisa apps status`: what is installed, and — the part that matters —
+/// what a launch would ACTUALLY run.
+///
+/// It used to print the state record alone: `shell — current: 20260804.76,
+/// installed: 20260804.76`, which was true of a symlink and false of the
+/// running system, and would have printed the same for a tree that was
+/// empty, absent, or unpacked where no launcher looks (#239 defect 3).
+/// That is the shape of #219 (a socket treated as a working tool) and
+/// #192 (a comment asserting a bound nothing enforced): a report about
+/// bookkeeping presented as a report about reality.
 pub fn status() -> anyhow::Result<()> {
-    println!("payload arch: {}", payload_arch());
+    print!("{}", report()?);
+    Ok(())
+}
+
+fn report() -> anyhow::Result<String> {
+    let mut out = String::new();
+    writeln!(out, "payload arch: {}", payload_arch())?;
     for ch in CHANNELS {
         let base = ch.base();
-        println!("\n{} — {}", ch.name, ch.what);
-        match current_version(&base) {
-            Some(v) if has_tree(&base) => println!("  current: {v}"),
-            Some(v) => println!("  current: {v} (BROKEN — the tree it points at is gone)"),
-            None => println!("  current: (none installed on /var)"),
+        let recorded = current_version(ch);
+        let resolved = ch.resolve();
+        writeln!(out, "\n{} — {}", ch.name, ch.what)?;
+        match &recorded {
+            Some(v) => writeln!(out, "  current: {v}")?,
+            None => writeln!(out, "  current: (none installed on /var)")?,
         }
         for v in installed_versions(&base)? {
-            println!("  installed: {v}");
+            writeln!(out, "  installed: {v}")?;
         }
-        if let Some(baked) = ch.legacy_baked.filter(|p| Path::new(p).exists()) {
-            println!("  fallback: {baked} (baked by the image — pre-migration release)");
+        match &resolved {
+            Some(r) => writeln!(out, "  resolves: {} — {}", r.dir.display(), r.what())?,
+            None => writeln!(
+                out,
+                "  resolves: NOTHING — no usable tree on the channel or in the image"
+            )?,
+        }
+        // The line #239 existed for: say plainly when the recorded
+        // version is not what launches.
+        let running = match &resolved {
+            Some(r) => match &r.source {
+                Source::Channel(v) => Some(v.clone()),
+                _ => None,
+            },
+            None => None,
+        };
+        if let Some(v) = &recorded
+            && running.as_deref() != Some(v.as_str())
+        {
+            writeln!(
+                out,
+                "  !! {v} is recorded but does NOT launch — nothing usable at {}",
+                ch.current_link().display()
+            )?;
         }
     }
-    Ok(())
+    Ok(out)
 }
 
 /// `lisa apps rollback [channel]`: flip to the newest installed version
@@ -485,7 +721,7 @@ pub fn status() -> anyhow::Result<()> {
 pub fn rollback(only: Option<&str>) -> anyhow::Result<()> {
     for ch in channels_for(only)? {
         let base = ch.base();
-        let Some(current) = current_version(&base) else {
+        let Some(current) = current_version(ch) else {
             println!(
                 "{}: already on the baked image tree — nothing to roll back",
                 ch.name
@@ -496,18 +732,18 @@ pub fn rollback(only: Option<&str>) -> anyhow::Result<()> {
         versions.retain(|v| ver_key(v) < ver_key(&current));
         match versions.last() {
             Some(prev) => {
-                flip_current(&base, prev)?;
+                flip_current(ch, prev)?;
                 println!("{}: rolled back to {prev}", ch.name);
             }
             None => {
-                let _ = std::fs::remove_file(base.join("current"));
+                let _ = std::fs::remove_file(ch.current_link());
                 println!(
                     "{}: no older installed version — {}",
                     ch.name,
-                    if ch.auto_sync {
-                        "nothing on /var now; run `lisa apps update` to reinstall"
-                    } else {
+                    if ch.baked_is_floor {
                         "the baked image tree is active again"
+                    } else {
+                        "nothing on /var now; run `lisa apps update` to reinstall"
                     }
                 );
             }
@@ -525,19 +761,13 @@ fn ver_key(v: &str) -> Vec<u64> {
 }
 
 /// The version `current` points at, if any. Does not require the tree to
-/// still exist — see `has_tree` for that.
-fn current_version(base: &Path) -> Option<String> {
-    base.join("current")
+/// still exist — see `Channel::is_tree` for that.
+fn current_version(ch: &Channel) -> Option<String> {
+    ch.current_link()
         .read_link()
         .ok()?
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
-}
-
-/// Whether `current` resolves to a real tree (metadata follows the symlink,
-/// so a dangling link is false).
-fn has_tree(base: &Path) -> bool {
-    std::fs::metadata(base.join("current")).is_ok()
 }
 
 fn installed_versions(base: &Path) -> anyhow::Result<Vec<String>> {
@@ -559,9 +789,10 @@ fn installed_versions(base: &Path) -> anyhow::Result<Vec<String>> {
 /// Drop the oldest trees beyond `ch.keep`, never the current one. Payload
 /// channels put hundreds of MiB per version on a /var that is also the
 /// model store — unbounded history is not an option there.
-fn prune(ch: &Channel, base: &Path) -> anyhow::Result<()> {
-    let current = current_version(base);
-    let versions = installed_versions(base)?;
+fn prune(ch: &Channel) -> anyhow::Result<()> {
+    let base = ch.base();
+    let current = current_version(ch);
+    let versions = installed_versions(&base)?;
     let excess = versions.len().saturating_sub(ch.keep);
     for v in versions.iter().take(excess) {
         if Some(v.as_str()) == current.as_deref() {
@@ -575,12 +806,12 @@ fn prune(ch: &Channel, base: &Path) -> anyhow::Result<()> {
 }
 
 /// Atomic flip: build `current.new` then rename over `current`.
-fn flip_current(base: &Path, ver: &str) -> anyhow::Result<()> {
-    let staging = base.join("current.new");
+fn flip_current(ch: &Channel, ver: &str) -> anyhow::Result<()> {
+    let staging = ch.base().join("current.new");
     let _ = std::fs::remove_file(&staging);
     std::os::unix::fs::symlink(format!("versions/{ver}"), &staging)
         .with_context(|| format!("creating {}", staging.display()))?;
-    std::fs::rename(&staging, base.join("current")).context("flipping the current symlink")?;
+    std::fs::rename(&staging, ch.current_link()).context("flipping the current symlink")?;
     Ok(())
 }
 
@@ -595,17 +826,28 @@ mod tests {
         CHANNELS.iter().find(|c| c.name == name).unwrap()
     }
 
+    /// A version tree that counts as a tree: the channel's probe file is
+    /// what makes it one, so tests build the same thing a payload does.
+    fn make_tree(ch: &Channel, ver: &str) -> PathBuf {
+        let dir = ch.base().join("versions").join(ver);
+        let probe = dir.join(ch.probe);
+        std::fs::create_dir_all(probe.parent().unwrap()).unwrap();
+        std::fs::write(&probe, "// tree\n").unwrap();
+        dir
+    }
+
     #[test]
     fn flip_and_rollback_are_atomic_symlink_swaps() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path()) };
-        let base = chan("shell").base();
-        std::fs::create_dir_all(base.join("versions/1")).unwrap();
-        std::fs::create_dir_all(base.join("versions/2")).unwrap();
+        let ch = chan("shell");
+        let base = ch.base();
+        make_tree(ch, "1");
+        make_tree(ch, "2");
 
-        flip_current(&base, "2").unwrap();
+        flip_current(ch, "2").unwrap();
         assert_eq!(
             base.join("current").read_link().unwrap(),
             Path::new("versions/2")
@@ -624,35 +866,39 @@ mod tests {
         unsafe { std::env::remove_var("LISA_APPS_STATE") };
     }
 
-    /// The zen channel lives beside the ADR-0020 shell tree, not inside it:
-    /// an existing `/var/lib/lisa/apps/versions/<ver>` from an older release
-    /// must keep resolving after this change.
+    /// Every channel owns a directory under `payloads/`, and no channel
+    /// owns the root of the state dir. `shell` used to, and its
+    /// `versions/` then sat next to `payloads/` where nothing looked for
+    /// it (#239).
     #[test]
-    fn channels_do_not_share_state_dirs() {
+    fn every_channel_owns_a_directory_under_payloads() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path()) };
-        let shell = chan("shell").base();
-        let zen = chan("zen").base();
-        assert_eq!(shell, dir.path());
-        assert_eq!(zen, dir.path().join("payloads/zen"));
-
-        std::fs::create_dir_all(shell.join("versions/20260101.1")).unwrap();
-        std::fs::create_dir_all(zen.join("versions/20260102.2")).unwrap();
-        flip_current(&shell, "20260101.1").unwrap();
-        flip_current(&zen, "20260102.2").unwrap();
-        // The zen state dir is a sibling under payloads/, so it is not
-        // mistaken for a shell version tree.
+        for c in CHANNELS {
+            assert_eq!(
+                c.base(),
+                dir.path().join("payloads").join(c.name),
+                "{} is not under payloads/",
+                c.name
+            );
+        }
+        let shell = chan("shell");
+        let zen = chan("zen");
+        make_tree(shell, "20260101.1");
+        make_tree(zen, "20260102.2");
+        flip_current(shell, "20260101.1").unwrap();
+        flip_current(zen, "20260102.2").unwrap();
         assert_eq!(
-            installed_versions(&shell).unwrap(),
+            installed_versions(&shell.base()).unwrap(),
             vec!["20260101.1".to_string()]
         );
         assert_eq!(
-            installed_versions(&zen).unwrap(),
+            installed_versions(&zen.base()).unwrap(),
             vec!["20260102.2".to_string()]
         );
-        assert!(has_tree(&shell) && has_tree(&zen));
+        assert!(shell.is_tree(&shell.current_link()) && zen.is_tree(&zen.current_link()));
         unsafe { std::env::remove_var("LISA_APPS_STATE") };
     }
 
@@ -722,10 +968,10 @@ mod tests {
         let ch = chan("zen"); // keep = 2
         let base = ch.base();
         for v in ["20260101.1", "20260102.2", "20260103.3", "20260104.4"] {
-            std::fs::create_dir_all(base.join("versions").join(v)).unwrap();
+            make_tree(ch, v);
         }
-        flip_current(&base, "20260104.4").unwrap();
-        prune(ch, &base).unwrap();
+        flip_current(ch, "20260104.4").unwrap();
+        prune(ch).unwrap();
         assert_eq!(
             installed_versions(&base).unwrap(),
             vec!["20260103.3".to_string(), "20260104.4".to_string()]
@@ -735,10 +981,10 @@ mod tests {
         // over the keep line, because deleting the running tree would take
         // the browser out from under the user.
         for v in ["20260105.5", "20260106.6"] {
-            std::fs::create_dir_all(base.join("versions").join(v)).unwrap();
+            make_tree(ch, v);
         }
-        flip_current(&base, "20260103.3").unwrap();
-        prune(ch, &base).unwrap();
+        flip_current(ch, "20260103.3").unwrap();
+        prune(ch).unwrap();
         let left = installed_versions(&base).unwrap();
         assert!(
             left.contains(&"20260103.3".to_string()),
@@ -794,7 +1040,7 @@ mod tests {
         // What zen-browser.sh checks, verbatim.
         assert!(base.join("current/zen").is_file(), "no current/zen");
         assert!(base.join("current/browser/omni.ja").is_file());
-        assert_eq!(current_version(&base).as_deref(), Some("20260726.1"));
+        assert_eq!(current_version(ch).as_deref(), Some("20260726.1"));
         // …and nothing is left behind in staging.
         let leftovers: Vec<_> = std::fs::read_dir(base.join("versions"))
             .unwrap()
@@ -814,14 +1060,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path()) };
-        let base = chan("zen").base();
-        std::fs::create_dir_all(base.join("versions/20260726.1")).unwrap();
-        flip_current(&base, "20260726.1").unwrap();
-        assert!(has_tree(&base));
+        let ch = chan("zen");
+        let base = ch.base();
+        make_tree(ch, "20260726.1");
+        flip_current(ch, "20260726.1").unwrap();
+        assert!(ch.is_tree(&ch.current_link()));
 
         std::fs::remove_dir_all(base.join("versions/20260726.1")).unwrap();
-        assert_eq!(current_version(&base).as_deref(), Some("20260726.1"));
-        assert!(!has_tree(&base), "dangling current read as a live tree");
+        assert_eq!(current_version(ch).as_deref(), Some("20260726.1"));
+        assert!(
+            !ch.is_tree(&ch.current_link()),
+            "dangling current read as a live tree"
+        );
         unsafe { std::env::remove_var("LISA_APPS_STATE") };
     }
 
@@ -830,5 +1080,287 @@ mod tests {
         assert!(channels_for(Some("nope")).is_err());
         assert_eq!(channels_for(Some("zen")).unwrap().len(), 1);
         assert_eq!(channels_for(None).unwrap().len(), CHANNELS.len());
+    }
+
+    fn repo(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel)
+    }
+
+    /// Resolution order, on real directories: the channel's own tree wins,
+    /// a tree an older release left behind is next, the baked copy is the
+    /// floor. Every launcher goes through this, so getting the order wrong
+    /// silently downgrades a device to older code.
+    #[test]
+    fn resolution_prefers_the_channel_tree_then_stale_then_baked() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sysroot");
+        // SAFETY: test-scoped env, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("LISA_APPS_STATE", dir.path().join("state"));
+            std::env::set_var("LISA_APPS_ROOT", &root);
+        }
+        let ch = chan("shell");
+        let write = |dir: &Path, tag: &str| {
+            let p = dir.join(ch.probe);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, tag).unwrap();
+        };
+        let read = |r: &Resolved| std::fs::read_to_string(r.dir.join(ch.probe)).unwrap();
+
+        // Only the image copy exists.
+        write(&root.join("usr/share/lisa/shell"), "baked");
+        let r = ch.resolve().unwrap();
+        assert_eq!(r.source, Source::Baked);
+        assert_eq!(read(&r), "baked");
+
+        // A tree an older release unpacked at the root of the state dir —
+        // the exact leftover #239 produced on every updated device.
+        let stale = root.join("var/lib/lisa-apps/versions/20260804.76");
+        write(&stale, "stale");
+        std::os::unix::fs::symlink(
+            "versions/20260804.76",
+            root.join("var/lib/lisa-apps/current"),
+        )
+        .unwrap();
+        let r = ch.resolve().unwrap();
+        assert_eq!(r.source, Source::Stale);
+        assert_eq!(read(&r), "stale");
+
+        // …and the channel's own tree beats both.
+        make_tree(ch, "20260805.1");
+        std::fs::write(
+            ch.base().join("versions/20260805.1").join(ch.probe),
+            "channel",
+        )
+        .unwrap();
+        flip_current(ch, "20260805.1").unwrap();
+        let r = ch.resolve().unwrap();
+        assert_eq!(r.source, Source::Channel("20260805.1".into()));
+        assert_eq!(read(&r), "channel");
+
+        unsafe {
+            std::env::remove_var("LISA_APPS_STATE");
+            std::env::remove_var("LISA_APPS_ROOT");
+        }
+    }
+
+    /// An empty directory behind `current` is not a payload. Reporting one
+    /// as installed is how a state record comes to disagree with the
+    /// running system (#239 defect 3).
+    #[test]
+    fn an_empty_tree_is_not_a_tree() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-scoped env, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("LISA_APPS_STATE", dir.path());
+            std::env::set_var("LISA_APPS_ROOT", dir.path().join("nothing"));
+        }
+        let ch = chan("zen");
+        std::fs::create_dir_all(ch.base().join("versions/20260731.57")).unwrap();
+        flip_current(ch, "20260731.57").unwrap();
+        assert_eq!(current_version(ch).as_deref(), Some("20260731.57"));
+        assert!(ch.resolve().is_none(), "an empty tree resolved");
+        let text = report().unwrap();
+        assert!(
+            text.contains("does NOT launch"),
+            "status called an empty tree current:\n{text}"
+        );
+        unsafe {
+            std::env::remove_var("LISA_APPS_STATE");
+            std::env::remove_var("LISA_APPS_ROOT");
+        }
+    }
+
+    /// Every directory the channel machinery creates must stay writable by
+    /// group `lisa`. lisa-apps-sync.service runs as root and usually gets
+    /// there first; without this the desktop user's `lisa apps update` dies
+    /// with `Permission denied (os error 13)` and the only way forward is
+    /// sudo — which ADR-0034 §7b forbids and our own guard denies
+    /// unconditionally (#239 defect 4).
+    #[test]
+    fn installing_leaves_the_channel_writable_by_the_lisa_group() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-scoped env, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("LISA_APPS_STATE", dir.path().join("state")) };
+        let ch = chan("zen");
+        let tarball = tiny_payload(dir.path(), ch);
+        if tarball.is_none() {
+            eprintln!("skipping: no tar with --zstd on this host");
+            unsafe { std::env::remove_var("LISA_APPS_STATE") };
+            return;
+        }
+        place_tree(ch, "20260731.57", &|dest| {
+            std::fs::copy(tarball.as_ref().unwrap(), dest)?;
+            Ok(())
+        })
+        .unwrap();
+        for d in [ch.base(), ch.base().join("versions")] {
+            let mode = std::fs::metadata(&d).unwrap().permissions().mode() & 0o7777;
+            assert_eq!(
+                mode,
+                DIR_MODE,
+                "{} is {mode:o}, not {DIR_MODE:o} — the other uid cannot install here",
+                d.display()
+            );
+        }
+        unsafe { std::env::remove_var("LISA_APPS_STATE") };
+    }
+
+    /// tmpfiles is what REPAIRS a device that already has the wrong modes:
+    /// `d` adjusts an existing directory on every boot. A channel with no
+    /// rule is a channel that stays broken for the user who owns the
+    /// machine, so the table and the rules are pinned to each other.
+    #[test]
+    fn tmpfiles_covers_every_channel_directory() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-scoped env, serialized by ENV_LOCK.
+        unsafe {
+            std::env::remove_var("LISA_APPS_STATE");
+            std::env::remove_var("LISA_APPS_ROOT");
+        }
+        let conf = std::fs::read_to_string(repo(
+            "os/mkosi/mkosi.extra/usr/lib/tmpfiles.d/lisa-apps.conf",
+        ))
+        .unwrap();
+        let rules: Vec<Vec<&str>> = conf
+            .lines()
+            .filter(|l| l.starts_with('d'))
+            .map(|l| l.split_whitespace().collect())
+            .collect();
+        let has = |path: &Path| {
+            rules.iter().any(|r| {
+                r.get(1) == Some(&path.to_str().unwrap())
+                    && r.get(2) == Some(&"2775")
+                    && r.get(4) == Some(&"lisa")
+            })
+        };
+        for c in CHANNELS {
+            let base = c.base();
+            assert!(has(&base), "no 2775 root:lisa tmpfiles rule for {base:?}");
+            let versions = base.join("versions");
+            assert!(
+                has(&versions),
+                "no 2775 root:lisa tmpfiles rule for {versions:?} — \
+                 root creates it first and the user then cannot stage into it"
+            );
+        }
+        // Track L gets the same rules, or /var/lib/lisa-apps does not
+        // exist there at all (ADR-0034: the layer is a real install path,
+        // not a demo).
+        let pkgbuild = std::fs::read_to_string(repo("os/packages/lisa/PKGBUILD")).unwrap();
+        assert!(
+            pkgbuild.contains("tmpfiles.d/lisa-apps.conf"),
+            "the lisa package does not install the lisa-apps tmpfiles rules"
+        );
+    }
+
+    /// The launchers that CANNOT ask (`/usr/bin/lisa` is how you get the
+    /// CLI in the first place; zen-browser ships in its own package) still
+    /// have to agree with the table. They are pinned here instead — the
+    /// one thing #239 proves is that an unchecked second spelling drifts.
+    #[test]
+    fn the_scripts_that_cannot_ask_are_pinned_to_the_table() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-scoped env, serialized by ENV_LOCK.
+        unsafe {
+            std::env::remove_var("LISA_APPS_STATE");
+            std::env::remove_var("LISA_APPS_ROOT");
+        }
+        let cases = [
+            ("runtime", "os/packages/lisa/lisa-resolver"),
+            ("zen", "os/packages/zen-browser/zen-browser.sh"),
+        ];
+        for (name, script) in cases {
+            let ch = chan(name);
+            let text = std::fs::read_to_string(repo(script)).unwrap();
+            let want = ch.current_link();
+            assert!(
+                text.contains(want.to_str().unwrap()),
+                "{script} does not resolve {} — the channel moved and it did not",
+                want.display()
+            );
+        }
+        // lisa-app asks, so it spells no payload path; the one literal it
+        // does carry is the image's own floor, and that must match too.
+        let launcher = std::fs::read_to_string(repo("os/packages/lisa/lisa-app")).unwrap();
+        let baked = chan("shell").baked.unwrap();
+        assert!(
+            launcher.contains(baked),
+            "lisa-app's last-resort tree is not {baked}"
+        );
+    }
+
+    /// Pruning is housekeeping. An old tree another uid unpacked cannot be
+    /// removed by this one — the state every device that ran
+    /// lisa-apps-sync.service as root is in — and failing the update over
+    /// it would leave the machine unable to take a payload it has already
+    /// downloaded, verified and activated (#239 defect 4).
+    #[test]
+    fn an_unremovable_old_tree_does_not_fail_the_install() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test-scoped env, serialized by ENV_LOCK.
+        unsafe { std::env::set_var("LISA_APPS_STATE", dir.path().join("state")) };
+        let ch = chan("zen"); // keep = 2
+        let done = (|| {
+            let Some(tarball) = tiny_payload(dir.path(), ch) else {
+                eprintln!("skipping: no tar with --zstd on this host");
+                return false;
+            };
+            for v in ["20260701.1", "20260702.2"] {
+                make_tree(ch, v);
+            }
+            // Someone else's tree: read-only, so its contents cannot be
+            // unlinked. Root would sail through this, and root is not who
+            // the test is about.
+            let locked = ch.base().join("versions/20260701.1");
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+            if std::fs::write(locked.join("probe"), "x").is_ok() {
+                eprintln!("skipping: running as root, where nothing is unremovable");
+                let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
+                return false;
+            }
+            place_tree(ch, "20260703.3", &|dest| {
+                std::fs::copy(&tarball, dest)?;
+                Ok(())
+            })
+            .expect("an unprunable old tree failed the install");
+            // The install happened and is current…
+            assert_eq!(current_version(ch).as_deref(), Some("20260703.3"));
+            assert!(ch.resolve().is_some());
+            // …and the tree that could not be removed is still there,
+            // reported rather than silently lost.
+            assert!(locked.is_dir());
+            let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
+            true
+        })();
+        let _ = done;
+        unsafe { std::env::remove_var("LISA_APPS_STATE") };
+    }
+
+    /// A tarball with just the probe file in it, or None on a host whose
+    /// tar has no zstd support.
+    fn tiny_payload(dir: &Path, ch: &Channel) -> Option<PathBuf> {
+        let src = dir.join("payload-src");
+        let probe = src.join(ch.probe);
+        std::fs::create_dir_all(probe.parent().unwrap()).unwrap();
+        std::fs::write(&probe, "#!/bin/sh\n").unwrap();
+        let tarball = dir.join("payload.tar.zst");
+        let made = std::process::Command::new("tar")
+            .args(["--zstd", "-cf"])
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&src)
+            .arg(".")
+            .status();
+        match made {
+            Ok(s) if s.success() => Some(tarball),
+            _ => None,
+        }
     }
 }

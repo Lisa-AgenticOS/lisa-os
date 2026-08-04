@@ -10,16 +10,19 @@ useHead({ title: 'Building apps — Lisa OS developers' })
     <p class="lede">Two lanes today: the GJS shell surfaces that ship in the image (Assistant, Ledger app, Settings, the overlay backend under <code>shell/</code>), and the Flutter lane built on <code>lisa_ui</code>. Apps expose their actions to the system as MCP tools; the Agent Bus enforces confirmation tiers so apps don't have to.</p>
 
     <h2>The <code>lisa-app</code> launcher</h2>
-    <p>Shell apps are interpreted (GJS), so updating them is copying files. <code>/usr/bin/lisa-app &lt;relpath&gt;</code> resolves the apps tree — <code>$LISA_APPS_DIR</code> → <code>/var/lib/lisa/apps/current</code> → the baked <code>/usr/share/lisa/shell</code> fallback — and execs <code>gjs -m</code> on the app entry point. <code>.desktop</code> files and D-Bus activation exec via <code>lisa-app</code>, so an updated tree takes effect on the next app launch, no reboot (ADR-0020).</p>
+    <p>Shell apps are interpreted (GJS), so updating them is copying files. <code>/usr/bin/lisa-app &lt;relpath&gt;</code> execs <code>gjs -m</code> on the app entry point, resolved out of the current apps tree. It does not know where that tree is: it asks <code>lisa apps path shell</code>, the same function <code>lisa apps update</code> installs through, so the writer and the reader cannot disagree (issue #239). <code>.desktop</code> files and D-Bus activation exec via <code>lisa-app</code>, so an updated tree takes effect on the next app launch, no reboot (ADR-0020).</p>
 
     <h2>The app update channel</h2>
     <p>App updates are decoupled from the OS image (ADR-0020): a versioned apps tree lives on the persistent <code>/var</code>, flipped atomically via symlink+rename — no partial states.</p>
     <pre><code>lisa apps update    <span class="c"># fetch lisa-apps_&lt;ver&gt;.tar.zst, verify vs SHA256SUMS, unpack, flip</span>
-lisa apps status    <span class="c"># current and installed apps-tree versions</span>
-lisa apps rollback  <span class="c"># flip back to the previous tree (or the baked image tree)</span></code></pre>
+lisa apps status    <span class="c"># installed versions AND the directory a launch would actually use</span>
+lisa apps rollback  <span class="c"># flip back to the previous tree (or the baked image tree)</span>
+lisa apps path shell<span class="c"># the directories a launcher searches, best first</span></code></pre>
     <ul>
       <li>Same GitHub Releases channel and manifest the OS updates use — one release, two update planes.</li>
-      <li>A broken tree is one <code>lisa apps rollback</code> away; deleting <code>/var/lib/lisa/apps</code> always restores the baked tree.</li>
+      <li>The tree carries the shell surfaces <em>and</em> the apps (Mail, Surfer, Preview) — the same tree the image bakes at <code>/usr/share/lisa/shell</code>, staged by the same script.</li>
+      <li>A broken tree is one <code>lisa apps rollback</code> away; with nothing older installed that restores the baked image tree.</li>
+      <li>No <code>sudo</code>: the payload directories are group-writable for the desktop user (ADR-0034 §7b).</li>
       <li>GNOME Shell <em>extensions</em> load at session start from the baked tree — they're out of scope for this channel and keep riding image releases.</li>
       <li>This channel is the interim: it's superseded by the Flatpak lane when M6 matures.</li>
     </ul>

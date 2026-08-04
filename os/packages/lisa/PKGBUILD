@@ -236,6 +236,14 @@ package_lisa-cli() {
     # carrying — the Zen browser — onto /var once the machine is online.
     # Enabled in the image by mkosi.postinst.chroot; on Track L the admin
     # enables the timer (`systemctl enable --now lisa-apps-sync.timer`).
+    # …and the directories those payloads land in. The SAME file the
+    # image ships, not a copy: 2775 root:lisa is what lets the desktop
+    # user install into a tree root the system service created first
+    # (#239 defect 4, ADR-0034 §7b). Without it Track L has no
+    # /var/lib/lisa-apps at all and the first `lisa apps update` creates
+    # one owned by whoever ran it.
+    install -Dm644 os/mkosi/mkosi.extra/usr/lib/tmpfiles.d/lisa-apps.conf \
+        "$pkgdir/usr/lib/tmpfiles.d/lisa-apps.conf"
     install -Dm644 os/packages/lisa/lisa-apps-sync.service \
         "$pkgdir/usr/lib/systemd/system/lisa-apps-sync.service"
     install -Dm644 os/packages/lisa/lisa-apps-sync.timer \
@@ -332,22 +340,13 @@ package_lisa-shell() {
     # Surface trees under /usr/share/lisa/shell — the path the D-Bus
     # activation file and the desktop entry already reference.
     local share="$pkgdir/usr/share/lisa/shell"
-    install -d "$share"
-    # shell/settings is deliberately NOT shipped: the standalone Lisa
-    # Settings app was merged into GNOME Settings as the Intelligence
-    # panel (ADR-0012 v2). Its source stays in the tree — its lib/ is
-    # still unit-tested and is the reference for the panel's behaviour —
-    # but two settings surfaces on one machine is how the wrong one gets
-    # edited.
-    cp -a shell/overlay-extension shell/launcher shell/desktop shell/ledger-app \
-        shell/assistant shell/consent "$share/"
-    # Surfer (ADR-0037) and Mail: Lisa apps, riding the same GJS tree.
-    # lisa-app resolves entries relative to $share, so "surfer/..." and
-    # "mail/..." work.
-    cp -a apps/surfer apps/mail apps/preview "$share/"
-    rm -rf "$share/surfer/spike" "$share/surfer/tests" "$share/mail/tests" \
-        "$share/preview/tests"
-    rm -rf "$share"/*/tests
+    # The SAME staging script release.yml packs lisa-apps_<ver>.tar.zst
+    # from. Composing this tree here by hand is how the image came to
+    # carry Mail, Surfer and Preview while the update channel did not
+    # (#239 defect 2) — the two lists were one file apart and nothing
+    # compared them. What goes in the tree, and what is excluded from it,
+    # is decided in one place now.
+    bash os/repo-tools/build-apps-payload.sh "$share"
     # Compile the overlay keybinding schema in place so the extension's
     # getSettings() resolves from its own schemas/ directory.
     glib-compile-schemas "$share/overlay-extension/schemas"

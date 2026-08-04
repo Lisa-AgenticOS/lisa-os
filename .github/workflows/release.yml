@@ -613,11 +613,15 @@ jobs:
           sudo chown "$USER:" "lisa_${VER}.root"
           xz -T0 -3 "lisa_${VER}.root"
           zstd -q -T0 -8 --sparse lisa-usb.raw -o "lisa-usb-${VER}.raw.zst"
-          # The app-update channel (ADR-0020): the interpreted shell tree as
+          # The app-update channel (ADR-0020): the interpreted app tree as
           # its own artifact, so `lisa apps update` refreshes apps without an
-          # image update. Packed from the SAME commit as the image.
-          tar --zstd -cf "lisa-apps_${VER}.tar.zst" -C shell \
-            --exclude='*/tests' --exclude='testing' .
+          # image update. Packed from the SAME commit as the image, by the
+          # SAME script the lisa-shell package stages /usr/share/lisa/shell
+          # with — this used to be `tar -C shell .`, which carried none of
+          # apps/, so Mail, Surfer and Preview were absent from the channel
+          # that exists to update them (#239 defect 2).
+          bash os/repo-tools/build-apps-payload.sh apps-payload \
+            "$PWD/lisa-apps_${VER}.tar.zst"
           # The runtime channel (issue #52): the CLI and its skills, so a
           # CLI fix reaches devices without an OS release or a reboot.
           # Per-arch, because this one is a compiled binary — the payload

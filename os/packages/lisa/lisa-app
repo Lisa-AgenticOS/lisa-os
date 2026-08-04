@@ -1,18 +1,49 @@
 #!/bin/sh
-# lisa-app — launch a Lisa shell app from the newest apps tree (ADR-0020).
-# Resolution: $LISA_APPS_DIR → /var/lib/lisa/apps/current → the baked
-# /usr/share/lisa/shell. An updated tree (lisa apps update) takes effect on
-# the next launch; deleting /var/lib/lisa/apps restores the baked tree.
-# Shell script as a launcher hook only (CLAUDE.md rule 4) — all logic lives
-# in `lisa apps` (Rust).
+# lisa-app — launch a Lisa surface or app from the tree that is CURRENT
+# (ADR-0020). `.desktop` entries and D-Bus activation files exec through
+# this, so an updated tree takes effect on the next launch — no reboot.
+#
+# WHERE THAT TREE IS, THIS SCRIPT DOES NOT KNOW. It asks:
+#
+#     lisa apps path shell
+#
+# which prints the directories to try, best first, out of the same
+# function `lisa apps update` installs through (cli/lisa/src/apps.rs).
+#
+# Issue #239 is why. This script used to carry its own list, the list and
+# the installer drifted one directory apart, and for three releases every
+# `lisa apps update` unpacked a tree that nothing ever launched while
+# `lisa apps status` reported it current. A launcher that spells a /var
+# payload path is the bug — adding a fourth path here would be a third
+# spelling, not a fix.
+#
+# Shell script as a launcher hook only (CLAUDE.md rule 4) — all logic
+# lives in `lisa apps` (Rust).
 set -eu
-rel="${1:?usage: lisa-app <relpath-under-shell-tree> [args...]}"
+rel="${1:?usage: lisa-app <relpath-under-apps-tree> [args...]}"
 shift
-for base in "${LISA_APPS_DIR:-}" \
-            /var/lib/lisa-apps/payloads/shell/current \
-            /var/lib/lisa/apps/current \
-            /usr/share/lisa/shell; do
-    [ -n "$base" ] && [ -f "$base/$rel" ] && exec gjs -m "$base/$rel" "$@"
+
+# Newline-separated: `lisa apps path` prints one directory per line.
+IFS='
+'
+found=
+for base in "${LISA_APPS_DIR:-}" $(lisa apps path shell 2>/dev/null || true); do
+    [ -n "$base" ] || continue
+    if [ -f "$base/$rel" ]; then found="$base/$rel"; break; fi
 done
-echo "lisa-app: $rel not found in any apps tree" >&2
-exit 127
+
+# Last resort, and the ONLY path spelled here: the copy this image's own
+# package installed. It is reached when the CLI cannot answer at all — a
+# bad runtime payload, a half-installed system — and exists so an
+# unusable `lisa` cannot take the desktop down with it. Not a payload
+# location: /usr is what pacman put there, and `lisa apps` never writes
+# to it. Pinned to the Rust side by cli/lisa/tests/apps_launcher.rs.
+if [ -z "$found" ] && [ -f "/usr/share/lisa/shell/$rel" ]; then
+    found="/usr/share/lisa/shell/$rel"
+fi
+
+[ -n "$found" ] || {
+    echo "lisa-app: $rel not found in any apps tree — run 'lisa apps status'" >&2
+    exit 127
+}
+exec gjs -m "$found" "$@"
