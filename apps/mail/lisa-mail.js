@@ -43,6 +43,7 @@ import {
 import {ACCENTS, colourFor, railEntries, railIsVisible, shouldSwitch} from './lib/rail.js';
 import {isFavourite, toggleFavourite, visibleFolders} from './lib/favourites.js';
 import {accountStates} from './lib/accountstate.js';
+import {afterAction, composeFrom, saveFolder} from './lib/prefs.js';
 import {
     FOLDER_ORDER, discoverAccounts as accountsUnder, foldersIn, isMaildirFolder,
     listFolder, messageId, messagePath, parseFilename, previewOf, uniqueMatchesId,
@@ -1032,9 +1033,14 @@ function saveAttachment(att) {
         initial_name: safeFilename(att.filename, att.mimeType),
         modal: true,
     });
-    const downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD);
-    if (downloads)
-        dialog.set_initial_folder(Gio.File.new_for_path(downloads));
+    // Where the preference says, else XDG Downloads, else let the dialog
+    // decide — pointing it at an invented path that may not exist is
+    // worse than not setting one (#249).
+    const start = saveFolder(
+        loadConfig(),
+        GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD));
+    if (start)
+        dialog.set_initial_folder(Gio.File.new_for_path(start));
     dialog.save(mainWindow, null, (source, result) => {
         try {
             const file = source.save_finish(result);
@@ -1384,11 +1390,18 @@ function runAction(msg, action) {
         logError(e, `mail: ${action.id} failed`);
         return;
     }
-    // Reload, which re-opens whatever is now at the top — the message
-    // after the one just filed. Clearing the pane instead would punish
-    // the user for acting: archive three messages and you would be
-    // staring at a blank pane three times.
+    // What happens next is a preference now (#249), defaulting to what
+    // this always did: reload, which re-opens whatever is at the top —
+    // the message after the one just filed. Clearing the pane instead
+    // would punish the user for acting: archive three messages and you
+    // would be staring at a blank pane three times. Someone who would
+    // rather not have a message opened for them can say so.
+    const after = afterAction(loadConfig());
+    if (after === 'stay')
+        return;
     loadFolder(currentFolder);
+    if (after === 'list')
+        clearReader();
 }
 
 /// The rename itself. One `Gio.File.move`, no fallback copy: a copy
@@ -2606,6 +2619,89 @@ function openPreferences(parent) {
         page.add(group);
     }
 
+    // --- Reading and composing: preferences for things that exist.
+    //
+    // Rule 10 at the UI layer — every row here adjusts something the app
+    // already does. There is nothing for scheduling, snoozing or
+    // templates, because we have none of them and a page of disabled
+    // rows is intent rendered as behaviour.
+    const flow = new Adw.PreferencesGroup({title: 'Reading and composing'});
+
+    const afterRow = new Adw.ComboRow({
+        title: 'After archiving or trashing',
+        subtitle: 'Opening the next message marks it read as a side effect ' +
+            'of filing a different one',
+        model: Gtk.StringList.new([
+            'Open the next message', 'Go back to the list', 'Stay where I am',
+        ]),
+    });
+    const AFTER_ORDER = ['next', 'list', 'stay'];
+    afterRow.set_selected(Math.max(0, AFTER_ORDER.indexOf(afterAction(loadConfig()))));
+    afterRow.connect('notify::selected', () => {
+        const config = loadConfig();
+        config.afterAction = AFTER_ORDER[afterRow.get_selected()] ?? 'next';
+        if (!saveConfig(config))
+            afterRow.set_subtitle('Could not save this preference');
+    });
+    flow.add(afterRow);
+
+    // Only worth asking with more than one account to choose between.
+    if (store.accounts.length > 1) {
+        const fromRow = new Adw.ComboRow({
+            title: 'Send new messages from',
+            subtitle: 'By default, whichever account you are reading',
+            model: Gtk.StringList.new([
+                'The account I am reading', ...store.accounts.map((a) => a.name),
+            ]),
+        });
+        const pinned = loadConfig().composeFrom;
+        const pinnedAt = store.accounts.findIndex((a) => a.root === pinned);
+        fromRow.set_selected(pinnedAt >= 0 ? pinnedAt + 1 : 0);
+        fromRow.connect('notify::selected', () => {
+            const i = fromRow.get_selected();
+            const config = loadConfig();
+            if (i === 0)
+                delete config.composeFrom;
+            else
+                config.composeFrom = store.accounts[i - 1]?.root;
+            if (!saveConfig(config))
+                fromRow.set_subtitle('Could not save this preference');
+        });
+        flow.add(fromRow);
+    }
+
+    const saveRow = new Adw.ActionRow({
+        title: 'Save attachments to',
+        subtitle: saveFolder(
+            loadConfig(),
+            GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD))
+            ?? 'Ask every time',
+    });
+    const chooseSave = new Gtk.Button({label: 'Choose…', valign: Gtk.Align.CENTER});
+    chooseSave.connect('clicked', () => {
+        const chooser = new Gtk.FileDialog({title: 'Save attachments to', modal: true});
+        chooser.select_folder(dialog.get_root() ?? mainWindow, null, (src, res) => {
+            try {
+                const dir = src.select_folder_finish(res);
+                if (!dir) return;
+                const config = loadConfig();
+                config.attachmentDir = dir.get_path();
+                if (!saveConfig(config)) {
+                    saveRow.set_subtitle('Could not save this preference');
+                    return;
+                }
+                saveRow.set_subtitle(config.attachmentDir);
+            } catch (e) {
+                // A dismissed dialog is a dismissal, not a failure.
+                if (!`${e}`.includes('DISMISSED'))
+                    logError(e, 'mail: could not choose a save folder');
+            }
+        });
+    });
+    saveRow.add_suffix(chooseSave);
+    flow.add(saveRow);
+    page.add(flow);
+
     // --- Why there is, or is not, mail arriving.
     //
     // The same `syncStatus` the main window's banner renders, off the
@@ -2951,7 +3047,18 @@ function sendMessage(fields, account) {
 /// The first `from` in the msmtprc — the same file msmtp will use, so
 /// the From header and the envelope cannot disagree. Reading the config
 /// rather than keeping a second copy is the point: one account list.
+/// Which address a new message is from (#249).
+///
+/// `composeFrom` decides — the account whose folder you are reading, or
+/// the one pinned in Settings. This used to read the FIRST `from` line
+/// in msmtprc regardless, so at eight accounts every reply went out as
+/// whichever address `lisa mail setup` happened to write first.
 function defaultIdentity() {
+    const account = composeFrom(loadConfig(), store?.accounts ?? [], currentAccount);
+    if (account?.name && account.name.includes('@'))
+        return account.name;
+    // No accounts discovered yet (first run, empty Maildir): fall back
+    // to the send config, which is where the address came from anyway.
     const text = readFile(msmtprcPath());
     const m = String(text ?? '').match(/^\s*from\s+(\S+)/m);
     return m ? m[1] : '';
