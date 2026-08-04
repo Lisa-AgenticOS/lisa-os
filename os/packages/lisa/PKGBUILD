@@ -334,6 +334,21 @@ package_lisa-shell() {
     # installs carry them too (#199, the ADR-0034 lesson: a capability
     # that arrives as someone else's accident disappears the same way).
     depends=(gjs libadwaita lisa-cli libqalculate poppler-glib qpdf)
+    # `gnome-shell` is the *name*, not necessarily the stock package:
+    # the image installs lisa-desktop-shell, which provides=(gnome-shell)
+    # and replaces it (ADR-0038/0048). Either satisfies this, which is
+    # the point of naming the provide rather than the package — Track L
+    # layers onto somebody's own Arch install and must not care which
+    # shell is there.
+    #
+    # The three extensions install to /usr/share/gnome-shell/extensions
+    # and are enabled by 10_lisa-shell.gschema.override below. Both of
+    # those reach a Lisa Desktop shell because it installs at /usr:
+    # extensions are found through XDG_DATA_DIRS
+    # (js/misc/fileUtils.js collectFromDatadirs), and the override is
+    # compiled into the same /usr/share/glib-2.0/schemas the shell
+    # reads. A private-prefix shell would have found the files and
+    # ignored the override — see ADR-0038 and the lisa-desktop PKGBUILD.
     optdepends=('gnome-shell: overlay + launcher Shell extensions (GNOME 46+)')
     cd "$pkgbase-$pkgver"
 

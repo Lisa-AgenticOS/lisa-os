@@ -3,7 +3,46 @@
 Living snapshot of where the build actually is, so any machine (or a
 fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
-"where are we on it" companion. **Last updated: 2026-08-02.**
+"where are we on it" companion. **Last updated: 2026-08-04.**
+
+## 2026-08-04 — Lisa Desktop replaces GNOME Shell in the image (#171 step 4)
+
+- **The fork stops sitting beside stock GNOME and takes its place.**
+  `lisa-desktop-shell` now installs at `/usr` with
+  `provides=(gnome-shell)`/`conflicts=(gnome-shell)`; the private
+  `/usr/lib/lisa-desktop` prefix is gone. Stock `gnome-shell` is no
+  longer in the image. Recovery if it fails to start is the previous
+  A/B root slot, then the USB image — not a second desktop.
+- **Two defects the private prefix was carrying, found by looking
+  rather than by a failure.** The activatable `org.gnome.Shell.*`
+  D-Bus services landed in a directory the session bus never scans
+  (that is what the transitional `depends=(gnome-shell)` was
+  borrowing); and `GSETTINGS_SCHEMA_DIR` shadowed `org.gnome.shell`,
+  so `10_lisa-shell.gschema.override` — the file that enables the
+  three Lisa extensions — was bypassed. **Measured with glib:** with
+  the variable set, `gsettings get org.gnome.shell enabled-extensions`
+  returns `[]`; without it, the override's value. Lisa Desktop would
+  have booted looking like stock GNOME with none of Lisa's surfaces in
+  it. Both are gone by construction at `/usr`.
+- **ADR-0039 step 4 is wired**: `os/mkosi/mkosi.pkgmngr/etc/pacman.d/lisa.conf`
+  configures the hosted `[lisa]` index for the image build and
+  `mkosi.conf` installs the shell from it by name. Lisa Desktop is the
+  first consumer; everything else still comes from release.yml's local
+  `PackageDirectories=`, which keeps precedence.
+- **Default session.** GDM has no default-session setting — its
+  fallback is the hardcoded string `"gnome"` (`gdm-session.c`). The
+  lever is the user's saved session in accountsservice, so a factory
+  record ships under `/usr/share/factory` and tmpfiles copies it onto
+  the persistent `/var` (a file baked at the real path would be
+  shadowed by the var partition). The `users/` directory mode is
+  `0700` because accountsservice **refuses to start** otherwise, which
+  would present as a greeter with no users and nothing naming the
+  cause.
+- **Step 5 started, not finished**: release.yml now asserts against the
+  mounted image that the shell is ours, stock is absent, the session is
+  present and default, and the extensions, compiled schemas, dconf db
+  and app entries are where something reads them. **Nobody has logged
+  in.** That needs a person at the iMac and cannot be claimed from CI.
 
 ## 2026-08-03 later — mail joins retrieval; Track L installs from the signed index; Surfer grows
 

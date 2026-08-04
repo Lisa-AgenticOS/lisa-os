@@ -1,0 +1,32 @@
+# What session GDM starts for `lisa` (PLAN §5.7, ADR-0038, ADR-0048).
+#
+# Read by accountsservice as the cached record for this user
+# (USERDIR = /var/lib/AccountsService/users, src/meson.build), handed to
+# GDM through act_user_get_session()/act_user_get_session_type(), and
+# used by gdm-session.c's get_default_session_name() as the user's saved
+# session. It is what makes Lisa Desktop the default rather than a thing
+# you have to pick.
+#
+# WHY THIS FILE HAS TO EXIST AT ALL. GDM has no "default session"
+# setting. When a user has no saved session, gdm-session.c does this:
+#
+#     name = g_strdup ("gnome");
+#     if (get_session_command_for_name (self, name, NULL, NULL)) { ... }
+#
+# — a hardcoded fallback to `gnome.desktop`, which `gnome-session` (a
+# package that stays; ADR-0048 keeps gnome-session as foundation) ships.
+# Installing lisa-desktop.desktop does NOT make it the default; only a
+# saved session does. Checked in gdm 50.0's source, not assumed.
+#
+# `Session` is the .desktop basename without the suffix: GDM does
+# `g_strdup_printf ("%s.desktop", name)` and looks it up across
+# $XDG_DATA_DIRS/wayland-sessions, where lisa-desktop-shell installs
+# /usr/share/wayland-sessions/lisa-desktop.desktop.
+#
+# This is a DEFAULT, not a lock. GDM rewrites this file with whatever
+# the user last chose (gdm_session_settings_save -> act_user_set_session),
+# so picking a different session at the greeter sticks.
+[User]
+Session=lisa-desktop
+SessionType=wayland
+SystemAccount=false

@@ -78,12 +78,46 @@ not `SD_GPT_ROOT_X86_64`/`SD_GPT_ROOT_ARM64`, and `lisa update` stages
 inside a transient `systemd-run` unit so a dropped SSH session cannot
 SIGHUP a partition write half way through.
 
-Desktop (M4 §5.7 host): gdm + gnome-shell + a hand-picked supporting
-set (each justified inline in `mkosi.conf` — no `gnome` group). The
-release build folds in `lisa-shell` (os/packages/lisa), which installs
-and default-enables the assistant overlay + semantic launcher
+Desktop (M4 §5.7 host): gdm + **Lisa Desktop** + a hand-picked
+supporting set (each justified inline in `mkosi.conf` — no `gnome`
+group). `lisa-desktop-shell` is the GNOME Shell fork (ADR-0038), built
+by the `lisa-desktop` repo's own CI and pulled from the hosted `[lisa]`
+index (ADR-0039 step 4; the repo is configured in
+`mkosi.pkgmngr/etc/pacman.d/lisa.conf`). It installs at `/usr` with
+`provides=(gnome-shell)`/`conflicts=(gnome-shell)`, so **stock GNOME
+Shell is not in the image** — the fallback if it fails to start is the
+previous A/B root slot, not a second desktop.
+
+GNOME's *foundation* stays and is not up for removal (ADR-0048): mutter,
+GTK4/libadwaita, `gnome-session`, `gnome-settings-daemon`,
+`gsettings-desktop-schemas`, the portals.
+
+Lisa Desktop is also the **default session**, which needs its own file
+because GDM has no default-session setting — its fallback is the
+hardcoded string `"gnome"` (`gdm-session.c`,
+`get_fallback_session_name`). The only lever is the user's saved session
+in accountsservice, so a factory record ships at
+`mkosi.extra/usr/share/factory/var/lib/AccountsService/users/lisa` and
+`tmpfiles.d/lisa-default-session.conf` copies it onto the persistent
+`/var` on first boot (`/var` is a separate partition, so a file baked at
+the real path would be shadowed — the same trap `lisa-home-factory.conf`
+exists for). It is a default, not a lock: GDM rewrites that file with
+whatever the user last picked at the greeter.
+
+`gnome-session` still ships its own `gnome.desktop`, so "GNOME" remains
+in the greeter's list. Selecting it runs `/usr/bin/gnome-shell`, which
+is Lisa Desktop — the same shell, without Lisa's session drop-in.
+
+The release build folds in `lisa-shell` (os/packages/lisa), which
+installs and default-enables the assistant overlay + semantic launcher
 extensions and the Ledger app, and moves GNOME's input-source switcher
-to Super+Shift+Space so the assistant owns Super+Space (§5.7.1).
+to Super+Shift+Space so the assistant owns Super+Space (§5.7.1). Both
+halves reach the forked shell only because it installs at `/usr`: the
+extensions are found through `XDG_DATA_DIRS`
+(`js/misc/fileUtils.js`, `collectFromDatadirs` — not the shell's
+compiled-in datadir), and `10_lisa-shell.gschema.override` is compiled
+into the same `/usr/share/glib-2.0/schemas` the shell reads. The
+release job asserts all of that against the mounted image.
 Networking on desktop images is NetworkManager over the iwd backend
 (the GNOME shell network indicator only speaks NM; iwd stays the
 supplicant) — the field test proved a CLI-only Wi-Fi story is a dead

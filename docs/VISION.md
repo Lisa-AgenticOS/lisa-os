@@ -188,15 +188,21 @@ nothing appears in the first without something in the tree behind it.
   verb, no scaffold generator, no `lisa dev check` — zero code.
 - **There is no storefront.** Zero code, anywhere. Under ADR-0046 that is
   the decision being honoured, not a gap.
-- **Lisa Desktop has never been logged into.** On
-  `lisa-desktop`'s `vendor-gnome-shell-50.3` branch the fork builds from a
-  hash-pinned 50.3 tarball, replaces stock `gnome-shell` via
-  `provides=`/`conflicts=`, and boots headless owning `org.gnome.Shell` —
-  with a deliberately **empty Lisa delta**, because step 2's milestone is
-  "can we own this". Nobody has selected it at a GDM greeter and got a
-  desktop (lisa-desktop#1). What ships today is still the extension era.
-- **The image does not consume `[lisa]`** — ADR-0039 step 4. Both image
-  workflows still build from locally-built packages.
+- **Lisa Desktop has never been logged into.** The fork builds from a
+  hash-pinned 50.3 tarball, installs at `/usr` and **replaces** stock
+  `gnome-shell` via `provides=`/`conflicts=`, and boots headless owning
+  `org.gnome.Shell` — with a deliberately **empty Lisa delta**, because
+  step 2's milestone is "can we own this". CI proves 197 UI resources
+  byte-identical to Arch's, that no path stock owned went missing, and
+  that `pacman -Dk` is clean after the swap. The image now installs it
+  and makes it the default session. **Nobody has selected it at a GDM
+  greeter and got a desktop** (lisa-desktop#1) — that needs a person at
+  the reference iMac, and no CI job can stand in for it.
+- **The image consumes `[lisa]` for exactly one package** — ADR-0039
+  step 4, wired for `lisa-desktop-shell` via
+  `os/mkosi/mkosi.pkgmngr/etc/pacman.d/lisa.conf`. Everything else
+  still comes from release.yml's locally built `PackageDirectories=`,
+  which keeps precedence over the index.
 - **Ambient — this project's headline idea — is not built.** The
   primitives run; the always-on loop (VAD, ring buffer, hard mute,
   addressed-intent classification running unprompted) and the `voiced`
@@ -220,13 +226,18 @@ nothing appears in the first without something in the tree behind it.
 
 Short, and only what is in flight.
 
-1. **Get a human logged into Lisa Desktop.** The fork builds and boots
-   headless; the whole question is the session — GDM's list,
-   `gnome-session --session=lisa`, and the dock/launcher defects found the
-   moment anyone looks (#255, #262, #263, #266, #267).
-2. **Close ADR-0039 step 4** — the image consumes `[lisa]` instead of a
-   build directory. It is the last step that makes the split real rather
-   than parallel.
+1. **Get a human logged into Lisa Desktop.** The fork builds, boots
+   headless, and is now installed in the image as the default session;
+   the whole remaining question is a real login — GDM's list,
+   `gnome-session --session=lisa`, and the dock/launcher defects found
+   the moment anyone looks (#255, #262, #263, #266, #267). If it fails,
+   recovery is the previous A/B slot at the boot menu, then the USB
+   image; stock GNOME Shell is no longer on the disk.
+2. **Finish ADR-0039 steps 4-6** — step 4 is wired for the shell and
+   should widen to the rest of the packages; step 5 (the integration
+   test) now asserts the desktop against the mounted image but cannot
+   assert a login; step 6 (removing the duplicated source from the
+   monorepo) is untouched.
 3. **Give the refusal a face and the registry a life** — the Settings
    policy page (#253) and the ADR-0049 install/uninstall lifecycle (#240),
    which between them turn "the bus can refuse" into something an owner

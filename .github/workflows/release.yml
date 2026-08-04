@@ -561,6 +561,113 @@ jobs:
           sudo losetup -d "$LOOP"
           [ "$fail" -eq 0 ] || exit 1
           echo "mail chain (mbsync + XOAUTH2 mechanism) present in the image: OK"
+      # ADR-0039 step 5, the integration test the split made necessary:
+      # does the image built from [lisa] carry the desktop it expects?
+      # Under one repo this was structurally guaranteed. It is not any
+      # more — lisa-desktop-shell is built by another repo's CI and
+      # arrives through a hosted index, so "the image has last week's
+      # shell in it" is now a thing that can happen quietly.
+      #
+      # Every assertion below is about a path something else READS.
+      # ADR-0038's own argument for the fork is the incident where an
+      # extension silently did not load and the desktop was stock GNOME
+      # with nobody noticing: a desktop that fails by looking like
+      # something else needs a test that looks.
+      - name: The desktop must be complete in the shipped image (ADR-0038/0039)
+        run: |
+          set -o pipefail
+          LOOP=$(sudo losetup -P --show -f lisa-usb.raw)
+          sudo mkdir -p /mnt/lisadesk
+          sudo mount -o ro "${LOOP}p2" /mnt/lisadesk
+          R=/mnt/lisadesk
+          fail=0
+          say() { echo "FAIL: $*"; fail=1; }
+
+          # -- 1. The shell is ours, and stock is not there ------------
+          # pacman's local db lives in the root tree, so the installed
+          # set is readable straight off the mounted partition.
+          sudo ls "$R/var/lib/pacman/local" > /tmp/installed.txt
+          grep -q '^lisa-desktop-shell-' /tmp/installed.txt \
+            || say "lisa-desktop-shell is not installed — the image has no Lisa Desktop."
+          if grep -q '^gnome-shell-' /tmp/installed.txt; then
+            say "stock gnome-shell is installed; it should have been replaced (provides/conflicts)."
+          fi
+          [ -x "$R/usr/bin/gnome-shell" ] \
+            || say "no /usr/bin/gnome-shell — nothing can start a session."
+
+          # -- 2. GDM can offer the session, and start it --------------
+          for f in usr/share/wayland-sessions/lisa-desktop.desktop \
+                   usr/share/gnome-session/sessions/lisa.session \
+                   usr/lib/systemd/user/lisa-desktop@.service \
+                   usr/lib/systemd/user/gnome-session@lisa.target.d/lisa-session.conf; do
+            [ -e "$R/$f" ] || say "missing $f — the session cannot be selected or cannot start."
+          done
+
+          # -- 3. It is the DEFAULT session ---------------------------
+          # GDM has no default-session setting; its fallback is the
+          # hardcoded string "gnome" (gdm-session.c). The only lever is
+          # the user's saved session in accountsservice, and /var is a
+          # separate partition, so the record ships as a factory copy
+          # that tmpfiles lays down on first boot.
+          A=$R/usr/share/factory/var/lib/AccountsService/users/lisa
+          if ! sudo grep -q '^Session=lisa-desktop$' "$A" 2>/dev/null; then
+            say "the factory accountsservice record does not select lisa-desktop;"
+            echo "      GDM would fall back to its hardcoded \"gnome\"."
+          fi
+          [ -e "$R/usr/lib/tmpfiles.d/lisa-default-session.conf" ] \
+            || say "nothing copies that record onto the persistent /var — it would never be read."
+
+          # -- 4. The three extensions are where the shell looks ------
+          # GNOME Shell scans GLib.get_system_data_dirs() for
+          # gnome-shell/extensions (js/misc/fileUtils.js,
+          # collectFromDatadirs) — XDG_DATA_DIRS, not the shell's
+          # compiled-in datadir. /usr/share is in that list by default.
+          for uuid in lisa-overlay@lisa-os.org lisa-launcher@lisa-os.org \
+                      lisa-desktop@lisa-os.org; do
+            [ -e "$R/usr/share/gnome-shell/extensions/$uuid/extension.js" ] \
+              || say "extension $uuid is not installed where the shell scans."
+          done
+
+          # -- 5. ...and they are ENABLED for the shell that runs ------
+          # This is the assertion the private-prefix build would have
+          # failed. enabled-extensions comes from lisa-shell's
+          # 10_lisa-shell.gschema.override, which only takes effect
+          # because it is compiled into the SAME schema directory the
+          # shell reads. The compiled db is binary; the default value is
+          # a literal string inside it.
+          S=$R/usr/share/glib-2.0/schemas/gschemas.compiled
+          [ -s "$S" ] || say "no compiled gschemas — every default in the image is inert."
+          if ! sudo grep -aq 'lisa-overlay@lisa-os.org' "$S"; then
+            say "the compiled schemas do not carry Lisa's enabled-extensions default."
+            echo "      The desktop would boot looking like stock GNOME with none of"
+            echo "      Lisa's surfaces in it, and nothing would say so."
+          fi
+          sudo grep -aq 'app.lisaos.Surfer.desktop' "$S" \
+            || say "the compiled schemas do not carry Lisa's dock (favorite-apps)."
+
+          # -- 6. The dconf system defaults are compiled --------------
+          # dconf is a settings BACKEND: prefix-independent, and the
+          # layer that survives whichever shell reads it. But the text
+          # in /etc/dconf/db/local.d does nothing until `dconf update`
+          # turns it into the binary db, which postinst does.
+          D=$R/etc/dconf/db/local
+          [ -s "$D" ] || say "/etc/dconf/db/local was never compiled — the app grid and key defaults are inert."
+          sudo grep -aq 'Utilities' "$D" \
+            || say "the compiled dconf db does not carry the app-folder defaults."
+
+          # -- 7. The apps are launchable from the dock ---------------
+          # Gio.AppInfo reads XDG_DATA_DIRS; /usr/share/applications is
+          # the same path for any shell.
+          for d in app.lisaos.Surfer app.lisaos.Assistant; do
+            [ -e "$R/usr/share/applications/$d.desktop" ] \
+              || say "$d.desktop is missing — the dock would render a gap."
+          done
+
+          sudo umount /mnt/lisadesk
+          sudo losetup -d "$LOOP"
+          [ "$fail" -eq 0 ] || exit 1
+          echo "Lisa Desktop is installed, selectable, default, and its extensions,"
+          echo "schemas, dconf defaults and apps are all where something reads them: OK"
       - name: Measure the populated root (ADR-0023 phase 3 input)
         run: |
           set -o pipefail
