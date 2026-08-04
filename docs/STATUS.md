@@ -257,7 +257,10 @@ not pay off the honest next step is `sccache`, not paid runners.
   Also recorded: what the Forge may **produce** is now a security
   boundary sequenced by blast radius (GUI apps → CLI → system units, the
   last gated on Landlock #53), and Lisa's two UI stacks have a stated
-  line — GJS for shell surfaces, Flutter for applications.
+  line — GJS for shell surfaces, Flutter for applications. *(Reversed by
+  ADR-0047 on 2026-08-04: there is one stack, GJS + GTK4/Adwaita, and it
+  covers applications and Forge output too. Kept here as the record of
+  what was decided then, not as current guidance.)*
 - **Hard guardrails for agent actions** (ADR-0029, new crate
   `libs/lisa-guard`, issues #53–#58). An audit of the two agent execution
   surfaces found the Agent Bus genuinely guarded — tiers, provenance
@@ -491,30 +494,25 @@ image (humans) + `lisa_<ver>.root.xz` + `.efi` + `SHA256SUMS`
 update` on demand; `lisa install <disk>` streams the latest release onto
 a disk (proto-installer; guided OOBE is M7).
 
-**Flutter lane (ADR-0004 spike, macOS half):** Flutter 3.44.7 pinned.
-`libs/lisa_ui` on core widgets only (tokens, LisaStreamText, ConsentChip
-— widget-tested). `libs/lisa_flutter` zero-dep OpenAI-compat transport,
-live round trip vs the daemon. Linux half (GTK embedder, fcitx5,
-package:dbus client) pending.
+**forge-harness — `libs/forge-harness` (§5.12.1):**
+plan→edit(jailed)→verify→iterate with guided `{path, content}` edits. The
+verifier is `lisa dev check` (ADR-0050 §4): sources present, no top-level
+`await` in an entry module, and the manifest parsed by **agentd's own**
+`Manifest::from_json` rather than a second grammar. It does not run the
+app's tests and makes no JS syntax claim — `Verifier::Command` is plain
+argv with none of `ShellTool`'s confinement, so a checker that executes
+model-authored code to verify it would hand the loop the escape the jail
+exists to prevent.
 
-**forge-harness — `libs/forge-harness` (§5.12.1 skeleton):**
-plan→edit(jailed)→`dart analyze`→iterate loop with guided `{path,
-content}` edits; tested against real dart analyze.
-
-**Flutter lane on-device (issue #37, ADR-0027):** `lisa forge --setup`
-installs the pinned 3.44.7 SDK to `/var/lib/lisa/flutter` — sha256-pinned
-tarball on x86_64, and on **aarch64** a commit-pinned checkout of the same
-release (Google publishes no arm64 tarball, but does publish the arm64
-Dart SDK and `linux-arm64` engine artifacts; the pinned commit is the id
-Google's own manifest carries). `lisa forge --build` / `--run` generate the
-Linux runner from the SDK template, `flutter build linux --release`,
-install the bundle to `/var/lib/lisa/forge/apps/<app-id>/bundle`
-(stage-then-rename, one rollback generation, ADR-0023) and write a
-`~/.local/share/applications/app.lisaos.forge.<pkg>.desktop` entry.
-**Open:** the Track I image ships no clang/cmake/ninja, so building on an
-immutable device needs the toolchain decision in ADR-0027; Track L and dev
-hosts work today. The end-to-end `flutter build linux` has never run — no
-Linux desktop here.
+**Flutter lane: parked, not shipped (ADR-0047).** GJS + GTK4/Adwaita is
+the default for user-facing apps *and* for Forge output — the toolkit
+every shipped surface actually uses. `libs/lisa_ui` and
+`libs/lisa_flutter` remain in the tree as 16 KB of `lib` and four `.dart`
+files; **#37 (ship the SDK on-device) is closed won't-do**, so there is
+no Flutter runtime on the reference hardware and `flutter build linux`
+has never run. Do not read the lane as working — it has no app, and
+nothing about it is verified. `libs/lisa-guard`'s `ALLOWED_COMMANDS`
+still carries `dart`/`flutter` and no `gjs`/`node`, which is #269.
 
 **Skills (ADR-0025 phase 4 groundwork):** `skills/<name>/SKILL.md` in the
 repo, `/usr/share/lisa/skills` on device; `lisa skills list|show` resolves

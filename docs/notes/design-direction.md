@@ -26,7 +26,7 @@ GNOME's portal maturity is why the plan picked it (§3).
 
 1. **Tokens first:** the Appendix E theme file is the single source of
    design language — shell CSS, GTK/libadwaita, Qt, and `lisa_ui`
-   (Flutter) all read it. One voice across every surface.
+   (GJS/GTK4 since ADR-0047) all read it. One voice across every surface.
 2. **Identity where freedom is total:** first-party apps and `lisa_ui`
    carry the elementary-inspired look first — our widgets, our rules.
 3. **Shell at M4:** extensions + a minimal patch-set on the pinned

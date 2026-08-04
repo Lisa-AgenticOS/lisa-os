@@ -29,7 +29,7 @@ with automatic rollback.
 | **M5** Agent Bus | 🟠 landed | lisa-agentd on main: MCP manifests, registry, tier enforcement at the bus, undo journal, injection gate ✅; MCP wire transport + `lisa tools/call/undo` verbs left |
 | **§5.11** Remote providers | 🟠 landed | lisa-remoted broker ✅ (openai/anthropic/hf/tinker/together/fireworks + custom), routing ✅, `lisa remote` CLI ✅, hardware-aware fit ✅; image packaging + socket bridge left (Linux-verify) |
 | **§5.7.5** Voice / Ambient | 🟠 loop works | STT (whisper) + wake-word ("Hey Lisa") + answer + TTS verified end-to-end (`lisa ambient once`); live-mic capture + on-image packaging left (ADR-0011) |
-| **M6** Apps + Forge | 🟠 loop works | **LisaCode** (`lisa forge`) drives the model→jailed-edit→analyze loop end to end (§5.12.1); lisa_ui + lisa_flutter seeds; GUI Forge + app suite + hot-reload left |
+| **M6** Apps + Forge | 🟠 loop works | **LisaCode** (`lisa forge`) drives the model→jailed-edit→`lisa dev check` loop end to end (§5.12.1), targeting **GJS/GTK4** (ADR-0047); Mail, Surfer, Preview and the shell surfaces ship; GUI Forge + `lisa_ui` as the shared GJS library + hot-reload left |
 | **M7** Personal node + installer | 🟡 groundwork | remote broker = PCN groundwork; `lisa install` proto-installer; OOBE + WireGuard pairing left |
 | **M8** Public alpha ISO | 🟡 channel exists | releases publish; docs site + eval dashboard + security review left |
 
@@ -156,8 +156,10 @@ egress ledgered in the "leaves your hardware" marking.
 **Mid term (M4–M6):**
 - Writing-tools layer 1 (GTK module), voice v1 (whisper + wake word),
   screen-context VLM, §5.7 latency budgets measured on hardware.
-- First-party apps: Notes + Recorder (Flutter lane), Files/Mail/Photos
-  patches. The Forge app on `forge-harness`.
+- First-party apps: Notes + Recorder, and Files + Photos, all GJS/GTK4
+  (ADR-0047) and written by us rather than patched onto GNOME's
+  (ADR-0048) — where a Lisa app does not exist yet, the stock GNOME app
+  ships *unpatched*. The Forge app on `forge-harness`.
 - LoRA adapter lane (Tinker credits available) for task specialization.
 
 **Longer term (M7–M8):**

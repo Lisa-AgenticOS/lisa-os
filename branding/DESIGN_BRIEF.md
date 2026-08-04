@@ -124,10 +124,11 @@ the violet mark only for the OS/brand.
 
 - Desktop surfaces target **GTK4 + libadwaita** visuals (GNOME 50); match
   its layout grammar (header bars, preference groups, rows, toolbars).
-- A parallel **Flutter design system** (`lisa_ui`, core widgets only, no
-  Material/Cupertino) mirrors the same tokens for first-party apps.
+- `lisa_ui` is the **shared GJS/GTK4 library** for first-party apps
+  (ADR-0047 §6), reading the same tokens. The Flutter package that held
+  the name is parked, unshipped, and not the default.
 - Everything ships **light and dark**; the theme is one token source read
-  by GTK, the shell, and Flutter alike.
+  by GTK, the shell, and the apps alike.
 
 Deliver: (a) a token/color/type sheet, (b) the assistant overlay + ambient
 + Intelligence panel as polished light/dark mockups first, then the rest.

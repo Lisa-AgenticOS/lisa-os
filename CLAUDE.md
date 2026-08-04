@@ -119,8 +119,9 @@ Run `just lint && just test` before every commit; CI enforces both.
 
 - Cargo workspace members: `libs/liblisa`, `daemons/inferenced`,
   `daemons/modeld`, `cli/lisa`. New Rust components join the workspace.
-- Non-Rust components (mkosi profiles, GNOME Shell extension, Flutter
-  lane) keep their own toolchains; the `justfile` is the umbrella.
+- Non-Rust components (mkosi profiles, the GJS shell surfaces and apps,
+  the parked Flutter lane) keep their own toolchains; the `justfile` is
+  the umbrella.
 - Dev host may be macOS: everything in the Rust workspace must build and
   test on macOS *and* Linux; `just image`/`just vm` and systemd/portal
   work are Linux-only and run in CI.

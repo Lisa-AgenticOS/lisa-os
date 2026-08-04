@@ -73,8 +73,11 @@ the tool as if it were already there (CLAUDE.md rule 10).
 - **`lisa skills` is built** (`cli/lisa/src/skills.rs`): a system-wide
   search path (`$LISA_SKILLS_DIR`, `$XDG_DATA_HOME/lisa/skills`, the
   runtime channel, `/usr/share/lisa/skills`), earlier wins on a name
-  clash. `skills/build-lisa-ui-app/SKILL.md` still describes the Flutter
-  lane and is being rewritten for GJS.
+  clash. The build skill still described the Flutter lane when this was
+  written; it has since been rewritten for GJS and renamed
+  `skills/build-lisa-app/SKILL.md`, and #243 — which the line above
+  called "not this ADR's to close" — closed with the Forge verifying
+  through `lisa dev check`.
 - **There is no `lisa dev` verb of any kind.** The `Command` enum
   (`cli/lisa/src/main.rs:33-350`) holds 27 verbs and `Dev` is not one of
   them — neither #130's `install`/`shell`/`reset` nor anything in this
