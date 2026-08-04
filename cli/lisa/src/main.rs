@@ -2886,7 +2886,15 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
             // the model leaves the chunks pending, and THIS line is the
             // recovery path: the first sync after `lisa models get`
             // embeds them, unchanged hash or not.
-            let chosen = lisa_contextd::embed::resolve();
+            // The SHORT request timeout, not the default: this runs
+            // inside `TimeoutStartSec=120`, and a socket deadline the
+            // unit outlives is not a deadline. Everything else that
+            // embeds — `lisa context index --embed`, the mail backfill
+            // — keeps `DEFAULT_REQUEST_TIMEOUT`, because a legitimate
+            // slow batch there must not fail.
+            let chosen = lisa_contextd::embed::resolve_with_timeout(
+                lisa_contextd::embed::BOOT_REQUEST_TIMEOUT,
+            );
             if chosen.kind == "inferenced" {
                 // SCOPED to `system` (#192). The unscoped call that
                 // stood here embedded every pending chunk in the store,
@@ -2898,11 +2906,25 @@ fn context_cmd(cmd: ContextCmd) -> anyhow::Result<()> {
                 //
                 // RETRIED (#192) because `After=` orders start, not
                 // readiness: llama-server may still be loading
-                // nomic-embed when this fires. Bounded — 30 seconds of
-                // waiting at worst, inside the unit's 120.
+                // nomic-embed when this fires.
+                //
+                // THREE attempts, not five. The budget now has to cover
+                // the socket timeout as well as the sleeping: worst
+                // case is `max_duration` = 3 × 30s + (2+4)s = 96s,
+                // inside the unit's 120 with 24s to spare for the 5s of
+                // hashing and indexing above. Five attempts would be
+                // 5 × 30 + 30 = 180s, which is the unit's timeout
+                // again — i.e. exactly the bound this change exists to
+                // stop relying on. What the two dropped attempts cost
+                // is 24s of extra backoff, and backoff was never what
+                // rescued a cold start anyway: a nomic-embed load takes
+                // tens of seconds, so neither 6s nor 30s reliably
+                // covers it. What covers it is the designed outcome
+                // below — leave the chunks pending, exit 0, embed on
+                // the next sync.
                 let embedder = lisa_contextd::embed::RetryingEmbedder::new(
                     chosen.embedder.as_ref(),
-                    5,
+                    3,
                     std::time::Duration::from_secs(2),
                 );
                 match store.embed_pending_provenance(&embedder, "system") {

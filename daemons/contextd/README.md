@@ -32,8 +32,22 @@ Implemented and unit-tested (macOS + Linux, no daemon required):
   attempts, base_delay)` retries transport-level errors (connect
   refused, broken pipe, unexpected EOF) with doubling backoff and a
   budget you can compute — `max_backoff()` says how long the worst case
-  sleeps. Errors the server actually answered (HTTP 400, a malformed
-  body, a vector-count mismatch) are returned on the first try.
+  sleeps, `max_duration(request_timeout)` how long it takes in total.
+  Errors the server actually answered (HTTP 400, a malformed body, a
+  vector-count mismatch) are returned on the first try.
+  **A stalled embedder is not an infinite wait**: `InferencedEmbedder`
+  sets a read *and* write timeout on its socket, so a `lisa-inferenced`
+  that accepts the connection and then goes quiet — model loading, a
+  wedged engine — fails with a timeout instead of blocking until
+  systemd kills the caller. It bounds *silence*, not duration: the
+  timeout is per read syscall, so a batch that takes minutes but keeps
+  sending bytes is never cut off. Two profiles, because one number
+  cannot serve both a 120s boot unit and a multi-hour backfill —
+  `DEFAULT_REQUEST_TIMEOUT` (180s) for `lisa context index --embed`,
+  the mail backfill and hybrid search; `BOOT_REQUEST_TIMEOUT` (30s) via
+  `resolve_with_timeout` for `lisa context sync-knowledge`, whose
+  `max_duration` must fit inside `TimeoutStartSec=120`. Both constants
+  carry the measured numbers they are derived from.
   **Which embedder** is decided by `embed::resolve()` and always
   reported: `InferencedEmbedder` when `lisa-inferenced`'s unix socket
   answers, `HashEmbedder` otherwise. The fallback is never quiet — a

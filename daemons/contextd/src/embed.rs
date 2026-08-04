@@ -84,7 +84,71 @@ impl Embedder for HashEmbedder {
 pub struct InferencedEmbedder {
     socket: std::path::PathBuf,
     model: Option<String>,
+    timeout: std::time::Duration,
 }
+
+/// How long one socket read or write may find NOTHING before the engine
+/// is called wedged. **Per syscall, not per request** — the kernel
+/// restarts the clock on every byte that arrives, so this bounds
+/// *silence*, not total duration. That is the property that lets one
+/// number serve a request that takes 30 seconds and a backfill that
+/// takes hours.
+///
+/// The numbers it is derived from, measured on the reference device
+/// (Polaris GPU, nomic-embed-text-v1.5, 2026-08-04):
+///
+/// * one `/v1/embeddings` POST of 64 chunks — the batch size
+///   [`ContextStore::embed_pending`] uses — takes **6.2 s warm**, and
+///   llama-server buffers: it sends nothing at all while computing and
+///   then the whole body at once, so those 6.2 s really are one
+///   unbroken gap between reads rather than a trickle. (The ~128
+///   chunks/min the backfill sustains end-to-end is a *pipeline* rate:
+///   it includes the SQLite commits and the unit's `Nice=10` /
+///   `IOSchedulingClass=idle`, and that work happens between requests,
+///   not during the silence this timeout measures.)
+/// * a cold nomic-embed load is tens of seconds *on top* of that (the
+///   premise of #192's retry loop), so the worst legitimate silence for
+///   a single request is roughly 60 + 6 = **~66 s**.
+///
+/// 180 s is ~2.7× that worst case and ~29× a warm full batch. Anything
+/// slower than this is not a slow batch, it is an engine that stopped.
+pub const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// The same bound for a caller that lives inside a systemd start
+/// timeout, where 180 s would be a promise the unit cannot keep.
+///
+/// `lisa context sync-knowledge` runs under `TimeoutStartSec=120`
+/// (`os/packages/lisa/lisa-knowledge-sync.service`) and wraps its embed
+/// in a [`RetryingEmbedder`], so the budget it has to fit is
+/// `RetryingEmbedder::max_duration` — attempts × this timeout + the
+/// backoff — and not this timeout alone. With the 3 attempts at 2 s the
+/// sync uses: 3 × 30 + (2 + 4) = **96 s**, leaving 24 s of the unit's
+/// 120 for the hashing, indexing and pruning it does first (measured at
+/// 5 s on image 20260803.66).
+///
+/// 30 s is ~4.8× the measured cost of a *full* 64-chunk batch (6.2 s on
+/// the reference device) and the knowledge pack is 28 chunks, so the
+/// headroom on the work itself is large. What 30 s deliberately does
+/// NOT cover is a cold nomic-embed load, which is tens of seconds; that
+/// is by design, and not fatal, because the sync treats a non-answering
+/// embedder as a condition of the machine — it leaves the chunks
+/// pending, exits 0, and the next sync embeds them. Being killed by
+/// systemd instead, which is what happened without this timeout, leaves
+/// a red unit and the same pending chunks.
+pub const BOOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The bound for the `/v1/models` probe in [`InferencedEmbedder::preferred_model`].
+///
+/// Deliberately much shorter than the embedding timeouts because it is
+/// a different kind of call: metadata, no inference, answered from a
+/// list the daemon already holds (single-digit milliseconds on the
+/// device). It also sits on a hotter path — [`resolve`] runs it before
+/// *every* hybrid search — so its stall budget is the one a person
+/// waiting for search results would feel. A stall here costs only the
+/// model name: `preferred_model` returns `None` and the caller embeds
+/// with the daemon's default, which is the same outcome as a daemon
+/// that has not downloaded the embedding model.
+const MODELS_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The model that does embeddings, by name.
 ///
@@ -109,7 +173,18 @@ impl InferencedEmbedder {
     }
 
     pub fn new(socket: std::path::PathBuf, model: Option<String>) -> Self {
-        Self { socket, model }
+        Self {
+            socket,
+            model,
+            timeout: DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+
+    /// Override [`DEFAULT_REQUEST_TIMEOUT`] for a caller whose own
+    /// deadline is tighter than it — see [`BOOT_REQUEST_TIMEOUT`].
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Which model this embedder will name in its requests, if any.
@@ -126,7 +201,16 @@ impl InferencedEmbedder {
     /// `/v1/models` first is what keeps the improvement from being a
     /// regression on the machine that has not run `lisa models get`.
     pub fn preferred_model(socket: &std::path::Path) -> Option<String> {
-        let raw = http_get(socket, "/v1/models").ok()?;
+        Self::preferred_model_within(socket, MODELS_PROBE_TIMEOUT)
+    }
+
+    /// [`Self::preferred_model`] with an explicit stall budget, for a
+    /// caller whose own budget is tighter than [`MODELS_PROBE_TIMEOUT`].
+    pub fn preferred_model_within(
+        socket: &std::path::Path,
+        timeout: std::time::Duration,
+    ) -> Option<String> {
+        let raw = http_get(socket, "/v1/models", timeout).ok()?;
         let json: serde_json::Value = serde_json::from_slice(&raw).ok()?;
         json["data"]
             .as_array()?
@@ -137,10 +221,42 @@ impl InferencedEmbedder {
     }
 }
 
+/// Put a deadline on a connected socket, the same shape `mcp-bus`'s
+/// client uses (`libs/mcp-bus/src/client.rs`): read *and* write, one
+/// value, set once after `connect`.
+///
+/// Both directions, not just read. The POST body for a 64-chunk batch
+/// is hundreds of kilobytes — bigger than a unix socket's send buffer —
+/// so a peer that accepts and then never reads blocks `write_all` just
+/// as thoroughly as one that never writes blocks `read_to_end`.
+///
+/// `connect(2)` itself is not bounded here because
+/// `std::os::unix::net::UnixStream` has no `connect_timeout` (only
+/// `TcpStream` does). It does not need one: connecting to a unix socket
+/// either finds a listener or fails immediately with `ECONNREFUSED` /
+/// `ENOENT`, both of which [`is_transient`] already treats as "the
+/// daemon is not up yet".
+fn bound(
+    stream: &std::os::unix::net::UnixStream,
+    timeout: std::time::Duration,
+) -> Result<(), StoreError> {
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    Ok(())
+}
+
 /// Minimal HTTP/1.1 GET over a unix socket, returning the body.
-fn http_get(socket: &std::path::Path, path: &str) -> Result<Vec<u8>, StoreError> {
+///
+/// `timeout` bounds each individual read and write, so a daemon that
+/// accepts and then goes quiet fails instead of hanging the caller.
+fn http_get(
+    socket: &std::path::Path,
+    path: &str,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, StoreError> {
     use std::io::{Read, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+    bound(&stream, timeout)?;
     let head = format!(
         "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: */*\r\n\r\n"
     );
@@ -173,6 +289,7 @@ impl Embedder for InferencedEmbedder {
         }
         let body = serde_json::to_vec(&body).map_err(io_err)?;
         let mut stream = std::os::unix::net::UnixStream::connect(&self.socket)?;
+        bound(&stream, self.timeout)?;
         // `Connection: close` is what makes read_to_end the whole
         // response: the server hangs up when it is done, so there is no
         // framing to get wrong and no keep-alive state to manage. Host
@@ -268,10 +385,20 @@ impl Embedder for InferencedEmbedder {
 ///
 /// Bounded on purpose (#192): `attempts` total tries with delays of
 /// `base_delay * 2^n`, so the worst case is arithmetic a reader can do
-/// — 5 attempts at 2s is 2+4+8+16 = 30 seconds of waiting, inside a
-/// 120-second oneshot. Only errors a wait can fix are retried; an HTTP
-/// 400 for a model that is not loaded answers just as fast the fourth
-/// time.
+/// — 3 attempts at 2s is 2+4 = 6 seconds of waiting. Only errors a wait
+/// can fix are retried; an HTTP 400 for a model that is not loaded
+/// answers just as fast the fourth time.
+///
+/// Sleeping is no longer the whole story, and [`max_backoff`] alone is
+/// no longer the number to check against a unit's `TimeoutStartSec`.
+/// Now that [`InferencedEmbedder`] has a request timeout, a *transient*
+/// failure can cost up to that timeout before it is even reported —
+/// `TimedOut` and `WouldBlock` are in [`is_transient`], so a stall is
+/// retried like any other transport failure — and the retries multiply
+/// it. [`max_duration`] is the number that includes both.
+///
+/// [`max_backoff`]: RetryingEmbedder::max_backoff
+/// [`max_duration`]: RetryingEmbedder::max_duration
 pub struct RetryingEmbedder<'a> {
     inner: &'a dyn Embedder,
     attempts: u32,
@@ -294,6 +421,28 @@ impl<'a> RetryingEmbedder<'a> {
         (0..self.attempts.saturating_sub(1))
             .map(|n| self.base_delay * 2u32.saturating_pow(n))
             .sum()
+    }
+
+    /// Worst-case wall clock for one `embed` call through this wrapper,
+    /// given the inner embedder's per-request timeout.
+    ///
+    /// `attempts × request_timeout + max_backoff()`. The first term is
+    /// what [`max_backoff`] cannot see: every attempt may spend a full
+    /// `request_timeout` stalled before it fails, and a stall is
+    /// transient, so it is retried. This is the number a caller inside a
+    /// systemd `TimeoutStartSec` has to fit under — with 30 s timeouts
+    /// and 3 attempts at 2 s that is 3×30 + 6 = 96 s, which is what
+    /// `lisa context sync-knowledge` uses inside its 120 s.
+    ///
+    /// Pass [`std::time::Duration::ZERO`] for an inner embedder with no
+    /// socket behind it ([`HashEmbedder`]); the answer is then
+    /// [`max_backoff`].
+    ///
+    /// [`max_backoff`]: RetryingEmbedder::max_backoff
+    pub fn max_duration(&self, request_timeout: std::time::Duration) -> std::time::Duration {
+        request_timeout
+            .saturating_mul(self.attempts)
+            .saturating_add(self.max_backoff())
     }
 }
 
@@ -357,6 +506,21 @@ pub fn resolve() -> Chosen {
     resolve_with(InferencedEmbedder::default_socket())
 }
 
+/// [`resolve`] for a caller whose deadline is tighter than
+/// [`DEFAULT_REQUEST_TIMEOUT`] — today that is `lisa context
+/// sync-knowledge`, which lives inside `TimeoutStartSec=120` and passes
+/// [`BOOT_REQUEST_TIMEOUT`].
+///
+/// Which caller gets what: the *long* default serves everything that is
+/// allowed to take its time — `lisa context index --embed`, the mail
+/// backfill, and hybrid search — because there a 180 s stall budget
+/// only ever fires on a broken engine. The *short* one serves the
+/// callers systemd will kill anyway, where a bound the unit outlives is
+/// the whole point of having one.
+pub fn resolve_with_timeout(timeout: std::time::Duration) -> Chosen {
+    resolve_inner(InferencedEmbedder::default_socket(), timeout)
+}
+
 /// What [`resolve`] picked, and enough to say so out loud.
 ///
 /// `kind` alone was not enough: "inferenced" covers both the pinned
@@ -372,6 +536,10 @@ pub struct Chosen {
 /// so a test can point it at a stub without mutating the process
 /// environment, which is both unsafe and shared between parallel tests.
 pub fn resolve_with(socket: Option<std::path::PathBuf>) -> Chosen {
+    resolve_inner(socket, DEFAULT_REQUEST_TIMEOUT)
+}
+
+fn resolve_inner(socket: Option<std::path::PathBuf>, timeout: std::time::Duration) -> Chosen {
     // Connect, don't stat. A socket file outlives the daemon that made
     // it, so existence would happily select a dead endpoint and turn a
     // startup-time report into a failure at the first embed.
@@ -382,7 +550,11 @@ pub fn resolve_with(socket: Option<std::path::PathBuf>) -> Chosen {
         // and take the daemon's default when it does not. Both are the
         // model-backed path — the difference is quality, not kind, and
         // the Ledger says which via `embedder_model`.
-        let model = InferencedEmbedder::preferred_model(path);
+        // The probe never outlives the caller's own request budget: a
+        // sync with 30s to spend must not lose 10 of them learning a
+        // model NAME, which it can do without.
+        let model =
+            InferencedEmbedder::preferred_model_within(path, timeout.min(MODELS_PROBE_TIMEOUT));
         if model.is_none() {
             tracing::info!(
                 want = EMBEDDING_MODEL,
@@ -392,7 +564,9 @@ pub fn resolve_with(socket: Option<std::path::PathBuf>) -> Chosen {
             );
         }
         return Chosen {
-            embedder: Box::new(InferencedEmbedder::new(path.clone(), model.clone())),
+            embedder: Box::new(
+                InferencedEmbedder::new(path.clone(), model.clone()).with_timeout(timeout),
+            ),
             kind: "inferenced",
             model,
         };
@@ -818,6 +992,364 @@ mod tests {
         })
     }
 
+    /// A server that accepts, reads the whole request, and then says
+    /// NOTHING — the wedged-engine failure mode. It holds the connection
+    /// open (an EOF would be a perfectly good answer for the client to
+    /// act on) until `stop` is set, so the test can shut it down.
+    fn stub_stalling_server(
+        path: std::path::PathBuf,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                // Non-blocking accept so the shutdown flag is checked
+                // even when nobody ever connects.
+                listener.set_nonblocking(true).unwrap();
+                if let Ok((mut sock, _)) = listener.accept() {
+                    sock.set_nonblocking(false).unwrap();
+                    let _ = drain_request(&mut sock);
+                    held.push(sock); // read the request, answer never
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        })
+    }
+
+    /// Run `f` on its own thread and insist it finishes inside
+    /// `deadline`.
+    ///
+    /// This shape is the deliverable, not decoration. The defect under
+    /// test is an unbounded wait, so the natural test — call `embed()`
+    /// against a stalled server and assert — *hangs the suite* when the
+    /// bug is present, and a hung suite reads as CI flakiness rather
+    /// than as a regression. Off-thread with a channel deadline turns
+    /// "waits forever" into a failed assertion with a message.
+    fn within<T: Send + 'static>(
+        deadline: std::time::Duration,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(deadline)
+    }
+
+    /// The defect: `InferencedEmbedder` set no socket timeout, so an
+    /// inferenced that accepted the connection and then stalled — model
+    /// loading, wedged engine — blocked one POST FOREVER. systemd's
+    /// `TimeoutStartSec` was the only bound, which makes the failure
+    /// mode a killed unit instead of an error a caller can act on.
+    #[test]
+    fn a_stalled_server_times_out_instead_of_blocking_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("stalled.sock");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = stub_stalling_server(sock.clone(), stop.clone());
+
+        // Milliseconds, not the shipped 180 s: this asserts that a
+        // deadline EXISTS and is honoured. Which deadline is the right
+        // one is arithmetic, and `the_boot_profile_fits_inside_the_unit_
+        // timeout` is where that is checked.
+        let embedder =
+            InferencedEmbedder::new(sock, None).with_timeout(std::time::Duration::from_millis(300));
+        let got = within(std::time::Duration::from_secs(5), move || {
+            embedder.embed(&["anything".to_string()])
+        });
+
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+
+        let err = got
+            .expect("embed() never returned: the read has no deadline")
+            .expect_err("a server that answers nothing cannot produce vectors");
+        let StoreError::Io(e) = &err else {
+            panic!("expected an io error, got: {err}")
+        };
+        assert!(
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "expected a timeout, got {:?}: {err}",
+            e.kind()
+        );
+    }
+
+    /// The same treatment for the `/v1/models` probe, which had the
+    /// same defect: `preferred_model` is called by `resolve` before
+    /// every hybrid search, so a stalled daemon hung search itself.
+    /// A probe that cannot answer must degrade to "no model named", not
+    /// to "no answer ever".
+    #[test]
+    fn a_stalled_models_probe_times_out_instead_of_blocking_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("stalled-models.sock");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = stub_stalling_server(sock.clone(), stop.clone());
+
+        let probe = sock.clone();
+        let got = within(std::time::Duration::from_secs(5), move || {
+            http_get(&probe, "/v1/models", std::time::Duration::from_millis(300))
+        });
+
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+
+        let err = got
+            .expect("http_get never returned: the read has no deadline")
+            .expect_err("a server that answers nothing has no body to return");
+        let StoreError::Io(e) = &err else {
+            panic!("expected an io error, got: {err}")
+        };
+        assert!(
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "expected a timeout, got {:?}: {err}",
+            e.kind()
+        );
+    }
+
+    /// A server that accepts the connection and then never reads a
+    /// byte — the other half of a wedged peer.
+    fn stub_deaf_server(
+        path: std::path::PathBuf,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                listener.set_nonblocking(true).unwrap();
+                if let Ok((sock, _)) = listener.accept() {
+                    held.push(sock); // accepted, never read
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        })
+    }
+
+    /// The write direction needs its own bound, and its own test.
+    ///
+    /// A 64-chunk `/v1/embeddings` POST is hundreds of kilobytes —
+    /// larger than a unix socket's send buffer on both Linux and macOS
+    /// — so a peer that accepts and then stops reading blocks
+    /// `write_all` for as long as one that stops writing blocks
+    /// `read_to_end`. A read-only timeout would look identical in every
+    /// other test in this file and still hang here.
+    #[test]
+    fn a_deaf_server_times_out_on_the_write_instead_of_blocking_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("deaf.sock");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = stub_deaf_server(sock.clone(), stop.clone());
+
+        // Two megabytes of input, so the body cannot fit in any
+        // platform's socket buffers and `write_all` has to block.
+        let texts = vec!["x".repeat(1024 * 1024), "y".repeat(1024 * 1024)];
+        let embedder =
+            InferencedEmbedder::new(sock, None).with_timeout(std::time::Duration::from_millis(300));
+        let got = within(std::time::Duration::from_secs(5), move || {
+            embedder.embed(&texts)
+        });
+
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+
+        let err = got
+            .expect("embed() never returned: the write has no deadline")
+            .expect_err("a server that reads nothing cannot produce vectors");
+        let StoreError::Io(e) = &err else {
+            panic!("expected an io error, got: {err}")
+        };
+        assert!(
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "expected a timeout, got {:?}: {err}",
+            e.kind()
+        );
+    }
+
+    /// A server that answers correctly but SLOWLY, dribbling the
+    /// response out in `pieces` separated by `gap`.
+    fn stub_trickling_server(
+        path: std::path::PathBuf,
+        pieces: usize,
+        gap: std::time::Duration,
+    ) -> std::thread::JoinHandle<()> {
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
+            if !drain_request(&mut sock) {
+                return;
+            }
+            let body = serde_json::json!({ "data": [{ "embedding": [3.0, 4.0] }] }).to_string();
+            let whole = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let bytes = whole.into_bytes();
+            let per = bytes.len().div_ceil(pieces);
+            for piece in bytes.chunks(per) {
+                std::thread::sleep(gap);
+                if sock.write_all(piece).is_err() {
+                    return;
+                }
+                let _ = sock.flush();
+            }
+        })
+    }
+
+    /// The regression guard for the mail backfill, and the reason the
+    /// timeout is expressed as a *stall* budget rather than a deadline
+    /// on the whole request.
+    ///
+    /// `SO_RCVTIMEO` is per read syscall: it fires only when NO bytes
+    /// arrive for that long, and every byte that does arrive restarts
+    /// the clock. So a server that takes far longer than the timeout in
+    /// total, but never goes quiet for longer than it, must SUCCEED.
+    /// Here: five gaps of 150 ms against a 300 ms budget — 750 ms of
+    /// wall clock, 2.5× the timeout, and not one stall.
+    ///
+    /// Without this test the obvious "fix" — a total deadline on the
+    /// call — would look just as green as the right one, and would fail
+    /// every legitimate multi-minute batch on the device.
+    #[test]
+    fn a_slow_but_progressing_server_is_not_cut_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("trickle.sock");
+        let server = stub_trickling_server(sock.clone(), 5, std::time::Duration::from_millis(150));
+
+        let embedder =
+            InferencedEmbedder::new(sock, None).with_timeout(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let out = embedder
+            .embed(&["anything".to_string()])
+            .expect("a server that keeps sending bytes must not be timed out");
+        let took = started.elapsed();
+
+        assert_eq!(out.len(), 1);
+        assert!(
+            (out[0][0] - 0.6).abs() < 1e-6 && (out[0][1] - 0.8).abs() < 1e-6,
+            "the trickled body must parse to the stub's vector: {:?}",
+            out[0]
+        );
+        // POSITIVE CONTROL for the test itself: if the whole exchange
+        // finished inside one timeout, it never exercised the property
+        // it claims to and would pass against a total-deadline
+        // implementation too.
+        assert!(
+            took > std::time::Duration::from_millis(300),
+            "the trickle finished in {took:?}, inside the 300ms timeout — \
+             this test proved nothing about per-read semantics"
+        );
+        let _ = server.join();
+    }
+
+    /// The timeout has to survive the trip through `resolve`, which is
+    /// where every production caller gets its embedder. A
+    /// `with_timeout` that worked only when a test called it directly
+    /// would leave every real caller exactly as unbounded as before.
+    #[test]
+    fn the_chosen_timeout_reaches_the_embedder_resolve_hands_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("resolved-stall.sock");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = stub_stalling_server(sock.clone(), stop.clone());
+
+        let short = std::time::Duration::from_millis(300);
+        let got = within(std::time::Duration::from_secs(5), move || {
+            // Not `resolve_with`: this is the timeout-carrying path,
+            // and the whole point is that the timeout survives it.
+            let chosen = resolve_inner(Some(sock), short);
+            (
+                chosen.kind,
+                chosen.embedder.embed(&["anything".to_string()]),
+            )
+        });
+
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
+
+        let (kind, out) = got.expect(
+            "resolve_inner or the embedder it returned never came back: the \
+             timeout did not survive the trip through resolve",
+        );
+        // A stalled daemon is still a REACHABLE daemon — falling back to
+        // the hash embedder here would silently poison the store's
+        // vector space (#163), so the choice must stand and the error
+        // must be the embed's.
+        assert_eq!(kind, "inferenced", "a live socket must still win");
+        let err = out.expect_err("a server that answers nothing cannot produce vectors");
+        assert!(
+            matches!(&err, StoreError::Io(e)
+                if matches!(e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)),
+            "expected a timeout from the resolved embedder, got: {err}"
+        );
+    }
+
+    /// The arithmetic the boot profile rests on, checked rather than
+    /// asserted in a comment.
+    ///
+    /// `lisa context sync-knowledge` runs under `TimeoutStartSec=120`
+    /// and now has TWO ways to spend time: sleeping between retries,
+    /// and waiting on a socket that has a deadline. Before this change
+    /// the second term was infinite and systemd was the only bound —
+    /// which is precisely the defect. The unit is only honest if
+    /// `max_duration` fits inside it with room for the sync's own work,
+    /// measured at 5 s on image 20260803.66.
+    #[test]
+    fn the_boot_profile_fits_inside_the_unit_timeout() {
+        let retrying = RetryingEmbedder::new(
+            &HashEmbedder { dim: 2 },
+            3,
+            std::time::Duration::from_secs(2),
+        );
+        assert_eq!(
+            retrying.max_backoff(),
+            std::time::Duration::from_secs(6),
+            "3 attempts at 2s must sleep 2+4 = 6 seconds"
+        );
+        assert_eq!(
+            retrying.max_duration(BOOT_REQUEST_TIMEOUT),
+            std::time::Duration::from_secs(96),
+            "3 attempts × 30s + 6s of backoff is the whole boot budget"
+        );
+
+        // TimeoutStartSec=120 in lisa-knowledge-sync.service, minus the
+        // 5 s of hashing/indexing/pruning the sync does before it ever
+        // reaches the embedder.
+        let unit_budget = std::time::Duration::from_secs(120);
+        let own_work = std::time::Duration::from_secs(5);
+        assert!(
+            retrying.max_duration(BOOT_REQUEST_TIMEOUT) + own_work < unit_budget,
+            "the boot profile can outlive its own unit: {:?} + {own_work:?} >= {unit_budget:?}",
+            retrying.max_duration(BOOT_REQUEST_TIMEOUT)
+        );
+
+        // POSITIVE CONTROL: the assertion above must be capable of
+        // failing. The default timeout is the profile this caller may
+        // NOT use, and the same arithmetic has to say so out loud —
+        // otherwise `max_duration` could be returning anything small
+        // and the check would still pass.
+        assert!(
+            retrying.max_duration(DEFAULT_REQUEST_TIMEOUT) > unit_budget,
+            "the default profile fits inside 120s, so the boot profile is not \
+             buying anything and BOOT_REQUEST_TIMEOUT should not exist"
+        );
+    }
+
     /// A stand-in for GET /v1/models.
     fn stub_models_server(
         path: std::path::PathBuf,
@@ -1153,10 +1685,12 @@ mod tests {
     /// a hang inside a 120-second oneshot.
     #[test]
     fn a_cold_embedder_is_retried_within_a_bounded_budget() {
-        // The number the unit file's timeout is justified against: the
-        // knowledge sync's 5 attempts at 2s can sleep 2+4+8+16 = 30
-        // seconds and no more. A comment claiming that is a claim; this
-        // is the claim being checked.
+        // The backoff series itself, independent of any caller: 5
+        // attempts at 2s can sleep 2+4+8+16 = 30 seconds and no more.
+        // (The knowledge sync uses 3 attempts now that the socket
+        // timeout is part of its budget — see
+        // `the_boot_profile_fits_inside_the_unit_timeout`, which is
+        // where the unit's 120s is actually checked.)
         assert_eq!(
             RetryingEmbedder::new(
                 &HashEmbedder::default(),
