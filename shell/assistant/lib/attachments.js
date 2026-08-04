@@ -73,6 +73,61 @@ export function attachmentsPayload(items) {
 }
 
 /**
+ * How big one attached image may be, in bytes on disk.
+ *
+ * Issue #226: nothing bounded this anywhere, so the first ceiling a
+ * person met was axum's undeclared 2 MiB request default — reached at a
+ * ~1.5 MB file, because base64 is 4/3 of what it carries — and it
+ * arrived as a bare `413` after the round trip.
+ *
+ * 8 MiB is what a full-screen PNG from a large display costs with room
+ * to spare, and it is the number the layers behind it were sized
+ * against: 16 MiB per send → 21.4 MiB of base64 → under harnessd's
+ * 24 MiB `attachments` cap → inside inferenced's 32 MiB request limit.
+ */
+export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
+/** How much all staged attachments may come to for one send. */
+export const MAX_ATTACHMENTS_TOTAL_BYTES = 16 * 1024 * 1024;
+
+/** Bytes → a number a person reads, at one decimal under 10 MB. */
+function mb(bytes) {
+    const n = bytes / (1024 * 1024);
+    return `${n < 10 ? n.toFixed(1).replace(/\.0$/, '') : Math.round(n)} MB`;
+}
+
+/**
+ * Why this image cannot be attached, or null if it can.
+ *
+ * Checked at ATTACH time, not at send time: the person still has the
+ * file dialog in mind and can pick a smaller picture. Learning it after
+ * a round trip, as a `413`, is the whole of #226.
+ *
+ * This is a courtesy, not the bound — harnessd applies the real one, and
+ * a check the caller can skip is not a guard (ADR-0029).
+ *
+ * @param {string} name    the file's name, for the message
+ * @param {number} bytes   its size on disk
+ * @param {{bytes: number}[]} staged  what the composer already holds
+ * @returns {?string}  a sentence for the transcript, or null
+ */
+export function attachmentSizeRefusal(name, bytes, staged) {
+    if (bytes > MAX_ATTACHMENT_BYTES) {
+        return `Cannot attach ${name} — it is ${mb(bytes)}, and one image ` +
+            `may be up to ${mb(MAX_ATTACHMENT_BYTES)}. Scale it down and ` +
+            'try again.';
+    }
+    const already = (staged ?? []).reduce((n, a) => n + (a?.bytes ?? 0), 0);
+    if (already + bytes > MAX_ATTACHMENTS_TOTAL_BYTES) {
+        return `Cannot attach ${name} — together with what is already ` +
+            `attached that comes to ${mb(already + bytes)}, and one message ` +
+            `may carry up to ${mb(MAX_ATTACHMENTS_TOTAL_BYTES)}. Send some ` +
+            'of them separately.';
+    }
+    return null;
+}
+
+/**
  * Why this send cannot happen, or null if it can.
  *
  * A local engine reads text only and says so — lisa-inferenced's llama

@@ -44,7 +44,9 @@ import {
 import {toPangoMarkup} from './lib/markdown.js';
 import {
     IMAGE_MIME_BY_EXT, imageMimeForName, attachmentsPayload, attachmentRefusal,
+    attachmentSizeRefusal,
 } from './lib/attachments.js';
+import {chosenPath, remoteLocationNote} from './lib/chooser.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
@@ -483,10 +485,30 @@ class AssistantWindow {
             this._harness.connectSignal('Finished',
                 (_p, _s, [rid, ok, summary]) =>
                     this._onFinished(Number(rid), ok ? 'ok' : 'error', summary));
+            // Every way out of a run is a Finished signal — so a daemon
+            // that dies mid-run is a run with no way out (#227). The
+            // composer stays on "Stop", `_send` returns early for ever,
+            // and the window is finished for the session with nothing
+            // said. Watching the name is how the bus tells us.
+            this._harnessWatch = Gio.bus_watch_name(
+                Gio.BusType.SESSION, HARNESS_BUS_NAME,
+                Gio.BusNameWatcherFlags.NONE,
+                null,
+                () => this._onBackendVanished());
         } catch (e) {
             this._harness = null;
             this._systemNote(`Assistant backend unavailable: ${e.message}`);
         }
+    }
+
+    /// The harness left the bus. If a run was in flight it is not coming
+    /// back, so end it here rather than leaving the window stuck.
+    _onBackendVanished() {
+        if (this._activeQid === null)
+            return;
+        this._onFinished(this._activeQid, 'error',
+            'The assistant backend stopped while this was running. ' +
+            'It restarts on the next message.');
     }
 
     /// Narrate a tool call as a distinct line, not as assistant prose —
@@ -555,8 +577,17 @@ class AssistantWindow {
             } catch {
                 return; // dismissed
             }
-            if (file)
-                this._attachPath(file.get_path());
+            // A Drive/sftp/camera pick has no local path. That is a
+            // choice this window cannot honour, not a dismissal — say so
+            // (#234), or the button just does nothing for ever.
+            const chosen = chosenPath(file);
+            if (chosen.kind === 'remote') {
+                this._systemNote(remoteLocationNote('attach', chosen.uri));
+                this._scrollToBottom();
+                return;
+            }
+            if (chosen.kind === 'local')
+                this._attachPath(chosen.path);
         });
     }
 
@@ -564,13 +595,36 @@ class AssistantWindow {
     /// and why: a picture that silently fails to attach is one the
     /// person believes was sent.
     _attachPath(path) {
-        if (!path)
+        if (!path) {
+            // The chooser sorts locations out before we get here (#234);
+            // anything reaching this branch is a caller bug, and a
+            // silent return is how that stays invisible for a month.
+            this._systemNote('Could not attach that — it has no file path.');
             return;
+        }
         const name = path.split('/').filter(Boolean).pop() ?? path;
         const mime = imageMimeForName(path);
         if (!mime) {
             this._systemNote(`Cannot attach ${name} — images only ` +
                 `(${Object.keys(IMAGE_MIME_BY_EXT).join(', ')}).`);
+            return;
+        }
+        // Size BEFORE bytes (#226). Asking the filesystem how big it is
+        // costs a stat; reading it first would mean loading whatever was
+        // picked into this process to find out it was too big to send.
+        let size = 0;
+        try {
+            size = Gio.File.new_for_path(path)
+                .query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null)
+                .get_size();
+        } catch (e) {
+            this._systemNote(`Could not read ${name}: ${e.message}`);
+            return;
+        }
+        const tooBig = attachmentSizeRefusal(name, size, this._attachments);
+        if (tooBig) {
+            this._systemNote(tooBig);
+            this._scrollToBottom();
             return;
         }
         let bytes;
@@ -593,7 +647,7 @@ class AssistantWindow {
             logError(e, 'assistant: no thumbnail for the attachment');
         }
         this._addAttachment({
-            name, mime, b64: GLib.base64_encode(bytes), texture,
+            name, mime, bytes: size, b64: GLib.base64_encode(bytes), texture,
         });
     }
 
@@ -614,9 +668,23 @@ class AssistantWindow {
                 const png = texture.save_to_png_bytes();
                 const stamp = new Date().toISOString()
                     .replace(/[:.]/g, '-').slice(0, 19);
+                const name = `pasted-${stamp}.png`;
+                // A pasted screenshot is the biggest thing this window
+                // ever attaches — full resolution, freshly encoded, and
+                // it goes through the same budget as a picked file
+                // (#226).
+                const size = png.get_size();
+                const tooBig = attachmentSizeRefusal(
+                    name, size, this._attachments);
+                if (tooBig) {
+                    this._systemNote(tooBig);
+                    this._scrollToBottom();
+                    return;
+                }
                 this._addAttachment({
-                    name: `pasted-${stamp}.png`,
+                    name,
                     mime: 'image/png',
+                    bytes: size,
                     b64: GLib.base64_encode(png.toArray()),
                     texture,
                 });
@@ -759,8 +827,15 @@ class AssistantWindow {
     _stop() {
         if (this._activeQid === null || !this._harness)
             return;
-        // Fire-and-forget: the backend answers with Finished('cancelled'),
-        // which keeps the partial text and re-enables the composer.
+        // Fire-and-forget: the daemon stops the loop between turns — and
+        // mid-answer, since a half-generated sentence costs nothing to
+        // abandon — then answers Finished with "Stopped.", which keeps
+        // the words that did arrive and re-enables the composer (#227).
+        //
+        // It used to say the backend answered `Finished('cancelled')`.
+        // Nothing did: the flag was set, read into a local variable, and
+        // never acted on, so Stop was a no-op and the run carried on
+        // through its whole turn budget.
         this._harness.CancelRemote(this._activeQid, () => {});
     }
 
@@ -835,21 +910,43 @@ class AssistantWindow {
         this._log.append(label);
     }
 
+    /// Write the conversation out as Markdown.
+    ///
+    /// Three outcomes, three answers (#234). The one `catch` used to
+    /// cover all of them and call every one "Dismissed": a Drive
+    /// destination (no local path), a full disk, a read-only folder —
+    /// the file was simply not there afterwards and nothing had said so.
     _export() {
         const day = new Date().toISOString().slice(0, 10);
         const dialog = new Gtk.FileDialog({
             initial_name: `lisa-conversation-${day}.md`,
         });
         dialog.save(this.window, null, (d, res) => {
+            let file = null;
             try {
-                const file = d.save_finish(res);
-                if (!file)
-                    return;
-                GLib.file_set_contents(file.get_path(),
-                    conversationMarkdown(this._turns, this._models));
+                file = d.save_finish(res);
             } catch {
-                // Dismissed — nothing to do.
+                return; // dismissed
             }
+            const chosen = chosenPath(file);
+            if (chosen.kind === 'remote') {
+                this._systemNote(remoteLocationNote('save to', chosen.uri));
+                this._scrollToBottom();
+                return;
+            }
+            if (chosen.kind !== 'local')
+                return;
+            try {
+                const ok = GLib.file_set_contents(chosen.path,
+                    conversationMarkdown(this._turns, this._models));
+                if (!ok)
+                    throw new Error('the write did not complete');
+                this._systemNote(`Saved to ${chosen.path}`);
+            } catch (e) {
+                this._systemNote(
+                    `Could not save to ${chosen.path}: ${e.message}`);
+            }
+            this._scrollToBottom();
         });
     }
 
@@ -1000,9 +1097,14 @@ class AssistantWindow {
     ///
     /// Nothing here is clever on purpose: a folder chooser, and the path
     /// goes to the daemon, which validates it and refuses the ones that
-    /// would hand over too much. Clicking again re-picks; picking
-    /// nothing clears the grant, so there is always a way to take it
-    /// back that is as easy as giving it.
+    /// would hand over too much. Clicking again re-picks.
+    ///
+    /// A grant is only ever REPLACED here, never dropped as a side
+    /// effect. It used to be `folder ? folder.get_path() : null`, and
+    /// `get_path()` is null for every folder that is not on this machine
+    /// — so choosing a Drive folder revoked the working folder the
+    /// person already had, said nothing, and left the assistant refusing
+    /// to write files for reasons it could not explain (#234).
     _chooseWorkspace() {
         const dialog = new Gtk.FileDialog({title: 'Choose a working folder'});
         // The parent is the GtkWindow, not this controller: GJS cannot
@@ -1015,10 +1117,22 @@ class AssistantWindow {
             } catch {
                 return; // dismissed — leave the current grant alone
             }
-            this._setWorkspace(folder ? folder.get_path() : null);
+            const chosen = chosenPath(folder);
+            if (chosen.kind === 'remote') {
+                this._systemNote(remoteLocationNote('work in', chosen.uri));
+                this._scrollToBottom();
+                return; // and the grant they already had is untouched
+            }
+            if (chosen.kind === 'local')
+                this._setWorkspace(chosen.path);
         });
     }
 
+    /// The `else` branch has no caller today: the chooser only ever
+    /// passes a real path (#234), and nothing else revokes a grant.
+    /// Kept because it is the honest rendering of "no working folder"
+    /// the moment a revoke exists — and NOT described in the README as
+    /// something a person can do, which is how #234 got here.
     _setWorkspace(path) {
         this._workspace = path;
         if (path) {

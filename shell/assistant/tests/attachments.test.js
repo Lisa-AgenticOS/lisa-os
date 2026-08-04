@@ -4,6 +4,7 @@
 import {test, assert, assertEq, finish} from '../../testing/harness.js';
 import {
     imageMimeForName, imagePart, attachmentsPayload, attachmentRefusal,
+    attachmentSizeRefusal, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_TOTAL_BYTES,
 } from '../lib/attachments.js';
 
 test('imageMimeForName maps the extensions inferenced forwards', () => {
@@ -76,6 +77,52 @@ test('an unknown model with an attachment is refused, not waved through', () => 
     // as a confident answer about a picture nobody saw.
     const items = [{name: 'a.png', mime: 'image/png', b64: 'AAAA'}];
     assert(typeof attachmentRefusal(null, items) === 'string');
+});
+
+// ---- size (issue #226) --------------------------------------------------
+//
+// An image over ~1.5 MB came back from the daemons as `413`, after the
+// round trip, with nothing a person could act on. Nothing bounded it at
+// any layer; the only ceiling was axum's undeclared 2 MiB default.
+
+test('a picture inside the budget is not refused', () => {
+    assertEq(attachmentSizeRefusal('shot.png', 1024 * 1024, []), null);
+    assertEq(attachmentSizeRefusal('shot.png', MAX_ATTACHMENT_BYTES, []), null);
+});
+
+test('one oversized picture is refused at attach time, by name and size', () => {
+    const refusal = attachmentSizeRefusal('huge.png', MAX_ATTACHMENT_BYTES + 1, []);
+    assert(typeof refusal === 'string' && refusal.length > 0,
+        'an oversized image must be refused before it is staged');
+    assert(refusal.includes('huge.png'), `names the file: ${refusal}`);
+    // The two numbers a person needs to act: how big it is, and how big
+    // it may be. "Too large" alone is another round trip.
+    assert(/8 MB/.test(refusal), `names the limit: ${refusal}`);
+    assert(/MB/.test(refusal.replace('8 MB', '')), `names the size: ${refusal}`);
+});
+
+test('the budget is for the whole send, not for each picture', () => {
+    // Six 3 MB images are each fine and together are not: the request
+    // carries all of them at once.
+    const staged = [];
+    for (let i = 0; i < 6; i++)
+        staged.push({name: `p${i}.png`, bytes: 3 * 1024 * 1024});
+    const refusal = attachmentSizeRefusal('p6.png', 3 * 1024 * 1024, staged);
+    assert(typeof refusal === 'string' && refusal.length > 0,
+        `18 MB already staged plus 3 MB more must be refused: got ${refusal}`);
+    assert(/together|altogether|total/i.test(refusal),
+        `says it is the total: ${refusal}`);
+});
+
+test('the composer budget stays under what harnessd will accept', () => {
+    // base64 is 4/3 of the bytes; harnessd refuses an `attachments`
+    // option over 24 MiB and inferenced buffers 32 MiB. A composer that
+    // allowed more would tell a person "attached" and the daemon would
+    // then refuse it — #226 with an extra hop.
+    assert(MAX_ATTACHMENTS_TOTAL_BYTES * 4 / 3 < 24 * 1024 * 1024,
+        'the composer allows more base64 than harnessd will take');
+    assert(MAX_ATTACHMENT_BYTES <= MAX_ATTACHMENTS_TOTAL_BYTES,
+        'one picture may not exceed the whole send');
 });
 
 await finish('assistant attachments');

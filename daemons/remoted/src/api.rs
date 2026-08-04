@@ -171,6 +171,15 @@ fn manager_of(
     })
 }
 
+/// The largest request body the broker will buffer (#226).
+///
+/// Same number and same reasoning as `lisa_inferenced::api::
+/// MAX_REQUEST_BYTES`, because this socket carries the same request one
+/// hop further: an attached image can only be answered by a model that
+/// can see one, which is always a remote, so every picture crosses here.
+/// Raising the limit in inferenced alone would only have moved the 413.
+pub const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+
 pub fn router(broker: Arc<Broker>) -> Router {
     router_with_managers(broker, Managers::default())
 }
@@ -186,6 +195,8 @@ pub fn router_with_managers(broker: Arc<Broker>, managers: Managers) -> Router {
         .route("/v1/oauth/{provider}/begin", post(oauth_begin))
         .route("/v1/oauth/{provider}", delete(oauth_logout))
         .layer(axum::Extension(managers))
+        // Explicit, not inherited (#226) — see MAX_REQUEST_BYTES.
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(broker)
 }
 

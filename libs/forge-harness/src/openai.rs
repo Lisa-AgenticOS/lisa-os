@@ -24,8 +24,16 @@ impl Backend for OpenAiBackend {
         let body = request_body(self.model.as_deref(), messages, tools);
         let endpoint = format!("{}/v1/chat/completions", self.url.trim_end_matches('/'));
         let mut response = ureq::post(&endpoint)
+            .config()
+            .http_status_as_error(false)
+            .build()
             .send_json(&body)
             .map_err(|e| ForgeError::Backend(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.body_mut().read_to_string().unwrap_or_default();
+            return Err(ForgeError::Backend(backend_refusal(status.as_u16(), &text)));
+        }
         let json: Value = response
             .body_mut()
             .read_json()
@@ -38,17 +46,36 @@ impl Backend for OpenAiBackend {
         messages: &[Message],
         tools: &[ToolSpec],
         on_delta: &mut dyn FnMut(&str),
+        cancel: &crate::Cancel,
     ) -> Result<AgentAction, ForgeError> {
-        let mut body = request_body(self.model.as_deref(), messages, tools);
-        body["stream"] = json!(true);
+        let body = streaming_request_body(self.model.as_deref(), messages, tools);
         let endpoint = format!("{}/v1/chat/completions", self.url.trim_end_matches('/'));
-        let response = ureq::post(&endpoint)
+        let mut response = ureq::post(&endpoint)
+            .config()
+            // Read the refusal instead of throwing it away (#225). ureq's
+            // default turns a 4xx into `http status: 400` and drops the
+            // body — which is where the daemon put the sentence that
+            // said what was actually wrong.
+            .http_status_as_error(false)
+            .build()
             .send_json(&body)
             .map_err(|e| ForgeError::Backend(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.body_mut().read_to_string().unwrap_or_default();
+            return Err(ForgeError::Backend(backend_refusal(status.as_u16(), &text)));
+        }
 
         let mut acc = Accumulated::default();
         let reader = BufReader::new(response.into_body().into_reader());
         for line in reader.lines() {
+            // Stop, honoured mid-answer (#227). Between frames, so the
+            // socket is dropped at a clean point; abandoning a
+            // half-generated sentence costs nothing, which is exactly
+            // why this is the one place the loop interrupts itself.
+            if cancel.is_cancelled() {
+                return Err(ForgeError::Cancelled);
+            }
             let line = line.map_err(|e| ForgeError::Backend(format!("reading stream: {e}")))?;
             if line.trim().is_empty() {
                 continue;
@@ -59,6 +86,53 @@ impl Backend for OpenAiBackend {
         }
         action_from(acc)
     }
+}
+
+/// A refused request, in words a person can act on.
+///
+/// Issue #225 reached the Assistant window as `backend: http status:
+/// 400` — a sentence that tells its reader nothing except that
+/// something is broken, and nothing at all about what. The daemon had in
+/// fact said exactly what was wrong; ureq's default turns a non-2xx into
+/// a status-only error and discards the body it came with.
+///
+/// So the body is read, and its `error.message` — the OpenAI shape every
+/// backend here speaks — becomes the message. A body in some other shape
+/// is shown as-is rather than dropped: unreadable is still more than a
+/// number.
+pub fn backend_refusal(status: u16, body: &str) -> String {
+    let detail = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| body.trim().chars().take(300).collect());
+    if detail.is_empty() {
+        return format!("the model service refused the request ({status})");
+    }
+    format!("the model service refused the request ({status}): {detail}")
+}
+
+/// The EXACT body this backend puts on the wire for a streaming turn —
+/// tools attached, `stream: true`.
+///
+/// Public, and public for one reason (issue #225). This backend always
+/// streams and always sends `tools`; lisa-inferenced routed a non-empty
+/// `tools` array to a lane whose first act was to refuse `stream: true`
+/// with a 400. Two halves of one system disagreeing about the request
+/// shape, with nothing that could notice — every local-model run in the
+/// Assistant died as `backend: http status: 400`.
+///
+/// So the producer is exported and lisa-inferenced's own test suite
+/// feeds it to its own router (`daemons/inferenced/tests/api.rs`). The
+/// two sides cannot drift apart silently again: changing what this
+/// function emits changes what that test sends.
+pub fn streaming_request_body(
+    model: Option<&str>,
+    messages: &[Message],
+    tools: &[ToolSpec],
+) -> Value {
+    let mut body = request_body(model, messages, tools);
+    body["stream"] = json!(true);
+    body
 }
 
 /// The chat-completions request: history plus tool declarations, one
@@ -83,6 +157,15 @@ pub struct Accumulated {
     /// valid JSON once concatenated — parsing early is the classic
     /// streaming tool-call bug.
     pub call_args: String,
+    /// An error the SERVER reported inside the stream.
+    ///
+    /// lisa-inferenced signals a mid-stream failure as a frame carrying
+    /// `{"error": {"message": …}}` rather than by breaking the HTTP
+    /// response, which is the only thing it can do once the 200 and the
+    /// first chunks have gone out. Nothing here read that field, so an
+    /// engine that failed halfway arrived as an empty `Done("")` — the
+    /// assistant printing nothing at all and calling it an answer.
+    pub error: Option<String>,
 }
 
 /// Fold one SSE `data:` payload into the running result.
@@ -103,6 +186,13 @@ pub fn fold_frame(acc: &mut Accumulated, frame: &str, on_delta: &mut dyn FnMut(&
         // stream is still running and the next frame may complete it.
         return false;
     };
+    // A failure the server could only report in-band, because the 200
+    // already went out. Kept, not swallowed: the alternative is an empty
+    // answer that looks like the model had nothing to say.
+    if let Some(msg) = v["error"]["message"].as_str() {
+        acc.error = Some(msg.to_string());
+        return true;
+    }
     let delta = &v["choices"][0]["delta"];
     if let Some(text) = delta["content"].as_str()
         && !text.is_empty()
@@ -130,6 +220,9 @@ pub fn fold_frame(acc: &mut Accumulated, frame: &str, on_delta: &mut dyn FnMut(&
 
 /// Turn an accumulated stream into the loop's decision.
 pub fn action_from(acc: Accumulated) -> Result<AgentAction, ForgeError> {
+    if let Some(msg) = acc.error {
+        return Err(ForgeError::Backend(msg));
+    }
     match acc.call_name {
         Some(name) => {
             let args = if acc.call_args.trim().is_empty() {
@@ -319,6 +412,65 @@ mod stream_tests {
         assert_eq!(acc.content, "kept");
     }
 
+    /// A failure the server could only report in-band.
+    ///
+    /// Once the 200 and the first chunks have gone out there is no
+    /// status code left to send, so lisa-inferenced puts the failure in
+    /// a frame. Nothing here read that field, so a run whose engine died
+    /// halfway came back as `Done("")` — the Assistant printing an empty
+    /// bubble and calling it an answer (#225).
+    #[test]
+    fn an_error_frame_ends_the_stream_as_an_error_not_as_an_empty_answer() {
+        let (acc, seen) = fold_all(&[
+            r#"data: {"choices":[{"delta":{"content":"parti"}}]}"#,
+            r#"data: {"error":{"message":"llama-server 500: out of memory"}}"#,
+            r#"data: {"choices":[{"delta":{"content":"AFTER"}}]}"#,
+        ]);
+        assert_eq!(seen, "parti", "what arrived before the failure is kept");
+        assert_eq!(
+            acc.error.as_deref(),
+            Some("llama-server 500: out of memory")
+        );
+        match action_from(acc) {
+            Err(ForgeError::Backend(msg)) => assert!(
+                msg.contains("out of memory"),
+                "the reason has to survive: {msg}"
+            ),
+            other => panic!("an error frame must not become an answer: {other:?}"),
+        }
+    }
+
+    /// The message a person actually reads when a request is refused.
+    ///
+    /// It said `backend: http status: 400` for a week — true, and it
+    /// tells its reader nothing. The daemon's own sentence was in the
+    /// body ureq threw away.
+    #[test]
+    fn a_refusal_carries_the_daemons_own_words_not_just_a_number() {
+        let msg = backend_refusal(
+            400,
+            r#"{"error":{"message":"tools must be an array of tool definitions","type":"invalid_request_error"}}"#,
+        );
+        assert!(msg.contains("tools must be an array"), "{msg}");
+        assert!(
+            msg.contains("400"),
+            "the status is still worth having: {msg}"
+        );
+
+        // A body in some other shape is shown, not dropped: unreadable
+        // is still more than a number.
+        let plain = backend_refusal(
+            413,
+            "Failed to buffer the request body: length limit exceeded",
+        );
+        assert!(plain.contains("length limit exceeded"), "{plain}");
+
+        // And an empty body still produces a sentence.
+        let bare = backend_refusal(502, "");
+        assert!(bare.contains("502"), "{bare}");
+        assert!(bare.len() > 10, "a bare status is not a message: {bare}");
+    }
+
     #[test]
     fn empty_arguments_become_an_empty_object_not_a_parse_error() {
         let acc = Accumulated {
@@ -329,6 +481,120 @@ mod stream_tests {
             AgentAction::Call(c) => assert_eq!(c.args, json!({})),
             other => panic!("expected a call, got {other:?}"),
         }
+    }
+}
+
+/// Stop, against a socket that never stops talking (issue #227).
+///
+/// The claim under test is the one a person makes with the button: that
+/// pressing Stop stops the answer arriving, not that it stops the NEXT
+/// answer. Everything else in this file folds frames from a string; this
+/// needs a real connection, because "the read loop is still blocked in
+/// `lines()`" is precisely the failure a string cannot reproduce.
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+    use crate::Backend;
+    use std::io::{BufRead, BufReader as StdBufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// How long the fake model keeps talking. Long enough that reading
+    /// it to the end is unmistakably different from stopping at frame
+    /// three; bounded, so a regression FAILS rather than hanging the
+    /// suite. (Unbounded was tried: without the cancellation check the
+    /// call never returns, which is a true red and a terrible test.)
+    const FRAMES: usize = 400;
+    const FRAME_GAP: Duration = Duration::from_millis(5);
+
+    /// An SSE endpoint that dribbles chunks the way a model does, and
+    /// keeps going long past the moment somebody presses Stop.
+    fn endless_sse_server(sent: Arc<AtomicUsize>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            // Drain the request head so the client's write completes.
+            let mut reader = StdBufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let mut len = 0usize;
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                if line == "\r\n" {
+                    break;
+                }
+                line.clear();
+            }
+            let mut body = vec![0u8; len];
+            let _ = std::io::Read::read_exact(&mut reader, &mut body);
+
+            let mut stream = stream;
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                  Connection: close\r\n\r\n",
+            );
+            for _ in 0..FRAMES {
+                let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"tick \"}}]}\n\n";
+                if stream.write_all(frame.as_bytes()).is_err() || stream.flush().is_err() {
+                    return; // the client hung up — which is the point
+                }
+                sent.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(FRAME_GAP);
+            }
+            let _ = stream.write_all(b"data: [DONE]\n\n");
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn stop_interrupts_an_answer_that_is_still_arriving() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let url = endless_sse_server(Arc::clone(&sent));
+        let mut backend = OpenAiBackend {
+            url,
+            model: Some("m".into()),
+        };
+        let cancel = crate::Cancel::default();
+
+        // Stop, from the other side, the moment words start arriving —
+        // the same thing the button does from the D-Bus thread.
+        let flag = cancel.clone();
+        let mut seen = 0usize;
+        let mut sink = |_: &str| {
+            seen += 1;
+            if seen == 3 {
+                flag.cancel();
+            }
+        };
+
+        let started = Instant::now();
+        let outcome =
+            backend.next_action_streaming(&[Message::user("hello")], &[], &mut sink, &cancel);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(outcome, Err(ForgeError::Cancelled)),
+            "a stopped stream must report that it stopped: {outcome:?}"
+        );
+        // Reading to the end takes FRAMES × FRAME_GAP; stopping at the
+        // third frame takes about three gaps. Half the full run still
+        // fails any implementation that only notices Stop once the
+        // stream has finished.
+        assert!(
+            elapsed < FRAME_GAP * (FRAMES as u32) / 2,
+            "Stop did not interrupt the read: {elapsed:?}"
+        );
+        assert!(seen >= 3, "the words before Stop still arrived: {seen}");
+        assert!(
+            sent.load(Ordering::SeqCst) < FRAMES,
+            "the whole answer arrived anyway, so nothing was interrupted"
+        );
     }
 }
 

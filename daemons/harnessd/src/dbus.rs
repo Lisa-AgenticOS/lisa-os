@@ -26,6 +26,37 @@ use zbus::zvariant::OwnedValue;
 const PATH: &str = "/dev/lisaos/Harness1";
 const NAME: &str = "dev.lisaos.Harness1";
 
+/// The largest `attachments` option this daemon will act on (#226).
+///
+/// The picture arrives as base64 inside a JSON string inside a D-Bus
+/// message, and zbus's receive path costs about three times the wire
+/// size in resident memory (382 MiB observed for a 126 MiB message), so
+/// an unbounded attachment is an out-of-memory kill of the session's
+/// harness dressed up as a question.
+///
+/// 24 MiB sits between the two numbers that matter: above the 21.4 MiB
+/// of base64 the Assistant's composer can produce from its 16 MiB image
+/// budget, and below the 32 MiB request body inferenced will buffer. A
+/// cap under the first refuses pictures a person was told were
+/// attached; one over the second moves the failure a hop further down,
+/// which is how #226 read in the first place.
+///
+/// It bounds what this daemon will ACT on, not what the broker will
+/// deliver: a message's size ceiling belongs to dbus-broker's own
+/// configuration, which is not ours to set from in here.
+pub const MAX_ATTACHMENTS_BYTES: usize = 24 * 1024 * 1024;
+
+/// Both halves of that sentence, checked by the compiler rather than by
+/// a reader. A number that drifts out of the band stops the build.
+const _: () = assert!(
+    MAX_ATTACHMENTS_BYTES > 16 * 1024 * 1024 * 4 / 3,
+    "harnessd would refuse a send the Assistant's composer allows (#226)"
+);
+const _: () = assert!(
+    MAX_ATTACHMENTS_BYTES < 32 * 1024 * 1024,
+    "harnessd would forward more than inferenced will buffer (#226)"
+);
+
 /// Where the model lives: the per-user inferenced companion. The
 /// hardened system daemon on :7777 cannot reach the session's broker
 /// socket, so remote models only work through the companion.
@@ -132,10 +163,25 @@ pub fn parse_history(raw: Option<&str>) -> Vec<forge_harness::Message> {
 /// The validation is deliberately shallow: an array of objects, each
 /// naming a `type`. Anything stricter would be this daemon claiming to
 /// know which modalities exist, which is the claim that goes stale.
+///
+/// SIZE is the exception, and it is not shallow (#226). The composer's
+/// own cap is a courtesy — ADR-0029: a check the caller can skip is not
+/// a bound — so the bound lives here, where every caller on the bus goes
+/// through it.
 pub fn parse_attachments(raw: Option<&str>) -> Result<Vec<serde_json::Value>, String> {
     let Some(raw) = raw else {
         return Ok(Vec::new());
     };
+    // Before parsing, not after: serde_json would build a second copy of
+    // every byte, and the point of the bound is to not hold two.
+    if raw.len() > MAX_ATTACHMENTS_BYTES {
+        return Err(format!(
+            "attachments are too large: {} MiB, and the limit is {} MiB — \
+             attach a smaller image, or scale it down first",
+            raw.len() / (1024 * 1024),
+            MAX_ATTACHMENTS_BYTES / (1024 * 1024),
+        ));
+    }
     let parsed: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("attachments is not JSON: {e}"))?;
     let serde_json::Value::Array(parts) = parsed else {
@@ -437,6 +483,44 @@ mod tests {
         // schema, it forwards it (see inferenced's `Content::Parts`).
         assert_eq!(parts[0]["image_url"]["url"], "data:image/png;base64,AAAA");
     }
+
+    /// Issue #226's server side. The composer's cap is a courtesy a
+    /// caller can skip — this is the bound that holds for every caller
+    /// on the bus, and it is checked on the STRING, before serde_json
+    /// gets a chance to build a second copy of it.
+    #[test]
+    fn an_attachments_option_past_the_cap_is_refused_by_size() {
+        // One part, just over the cap. Valid JSON, valid shape — the
+        // only thing wrong with it is how big it is.
+        let payload = "A".repeat(MAX_ATTACHMENTS_BYTES);
+        let raw = format!(
+            r#"[{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{payload}"}}}}]"#
+        );
+        assert!(raw.len() > MAX_ATTACHMENTS_BYTES);
+        let err = parse_attachments(Some(&raw)).unwrap_err();
+        assert!(
+            err.contains("too large"),
+            "a size refusal must say it was the size: {err}"
+        );
+        // And it must say what the CEILING is, or the person is left
+        // guessing how much smaller "smaller" means. Matched as a whole
+        // phrase: `contains("24")` also matches the size that was sent,
+        // which is 24 MiB here too — a mutation that stopped printing
+        // the limit at all stayed green until this was tightened.
+        assert!(
+            err.contains(&format!(
+                "the limit is {} MiB",
+                MAX_ATTACHMENTS_BYTES / (1024 * 1024)
+            )),
+            "the refusal does not name the limit: {err}"
+        );
+    }
+
+    // That the cap sits above what the composer will send (16 MiB of
+    // image bytes → 21.4 MiB of base64) and below what inferenced will
+    // buffer (32 MiB) is asserted at COMPILE time beside the constant —
+    // a `const _: () = assert!(…)` pair, so a number that drifts out of
+    // the band fails the build instead of one test run.
 
     /// Unlike history, a broken attachment is REFUSED rather than
     /// dropped. Losing a prior turn costs context; losing the picture

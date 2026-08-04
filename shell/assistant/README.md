@@ -8,10 +8,14 @@ actually usable: talk to a **local** model or your **signed-in cloud** models
 that leave the machine. It complements the transient Super+Shift+Space overlay
 (one-shot ask); it does not replace it.
 
-While a reply streams, **Send flips to Stop** (`Overlay1.Cancel` — the partial
-text stays, #11); the entry stays typeable, only sending is gated. The header
-bar **exports the conversation as Markdown** (#8) — cloud turns keep their
-"left this machine" note.
+While a reply streams, **Send flips to Stop** (`Harness1.Cancel`, #11); the
+entry stays typeable, only sending is gated. Stop ends the run between turns
+and mid-answer — the words that already arrived stay, marked `⚠ Stopped.` —
+and it un-sticks the composer. If the harness daemon leaves the bus mid-run
+the window says so and ends the run rather than sitting on "Stop" for ever
+(#227). The header bar **exports the conversation as Markdown** (#8) — cloud
+turns keep their "left this machine" note, and a save that cannot happen says
+why rather than reporting itself as a dismissal (#234).
 
 ## Attachments (#209)
 
@@ -42,8 +46,32 @@ five layers away, after a spinner. `attachmentRefusal` in
 `lib/attachments.js` is the same rule applied where a person can still act
 on it: a courtesy, not the guard. An unknown model fails closed.
 
+**Size is bounded at attach time** (#226): one image up to 8 MiB, and up to
+16 MiB across a whole send. A picture over that is refused by the chip that
+would have held it, naming the file, its size and the ceiling — before a
+round trip, which is where the old answer (`413`) arrived. The composer's
+ceiling is the smallest of a chain: 16 MiB of bytes is 21.4 MiB of base64,
+under harnessd's 24 MiB `attachments` cap, inside inferenced's 32 MiB request
+limit. Those last two are compile-time assertions in their own crates, not
+comments. This one is a courtesy — `parse_attachments` in harnessd is the
+bound that holds for every caller on the bus.
+
+**A location with no local path is refused, not ignored** (#234). GIO returns
+a null path for a Drive mount, an `sftp://` share, a camera — the paperclip,
+the working-folder chooser and export all treated that as "nothing to do", so
+attaching from Drive did nothing at all and choosing a non-local folder
+silently revoked the working-folder grant. `lib/chooser.js` gives the three
+outcomes three names.
+
 Limits, because they are not obvious:
 
+- **A working folder cannot be given back.** The folder button re-picks;
+  nothing revokes. The docstring used to claim "picking nothing clears the
+  grant, so there is always a way to take it back" and that path was
+  unreachable — dismissing the dialog throws and returns. The one thing that
+  did clear a grant was choosing a non-local folder, by accident, silently,
+  which is #234. Closing the window drops it. A deliberate revoke is not
+  built, so this says so rather than describing one.
 - **Images only.** `lisa ask --attach` also takes wav/mp3; nothing in this
   window picks or records audio, so the composer does not offer it.
 - **Thumbnails do not survive a restart.** The stored session shape is
@@ -111,8 +139,11 @@ lisa-inferenced → (remote:*) → remoted broker → Claude / GPT
   marker, Markdown export, turn (de)serialization); unit-tested in
   `tests/model.test.js`.
 - `lib/attachments.js` — pure attachment logic (image mime by extension, the
-  `image_url` content part, the parts payload, the local-model refusal);
-  unit-tested in `tests/attachments.test.js`.
+  `image_url` content part, the parts payload, the local-model refusal, the
+  size budget); unit-tested in `tests/attachments.test.js`.
+- `lib/chooser.js` — what a `Gtk.FileDialog` callback actually returned:
+  dismissed, a local path, or a location with no local path (#234);
+  unit-tested in `tests/chooser.test.js`.
 - `lib/sessions.js` — pure session logic (key layout, records and index,
   titles, ordering, the legacy migration); unit-tested in
   `tests/sessions.test.js`.

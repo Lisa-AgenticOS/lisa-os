@@ -254,6 +254,9 @@ pub struct AgentConfig {
     ///
     /// Empty is the normal case and changes nothing on the wire.
     pub attachments: Vec<Value>,
+    /// The stop button (issue #227). A default one is never set, so a
+    /// caller with nothing to stop the loop with runs exactly as before.
+    pub cancel: crate::Cancel,
 }
 
 impl AgentConfig {
@@ -268,6 +271,7 @@ impl AgentConfig {
             prior_turns: Vec::new(),
             skills: Vec::new(),
             attachments: Vec::new(),
+            cancel: crate::Cancel::default(),
         }
     }
 }
@@ -502,6 +506,13 @@ pub fn forge_agent_with_tools(
     ));
     let mut verifier_output = String::new();
     for turn in 1..=config.max_turns {
+        // Stop, checked where stopping is free (#227): before a turn
+        // begins, and again below once the backend has answered but
+        // before its tool call is dispatched. Never between a tool
+        // starting and finishing.
+        if config.cancel.is_cancelled() {
+            return Err(ForgeError::Cancelled);
+        }
         elide_stale_tool_results(&mut history, config.history_char_budget, 4);
         observe(AgentEvent::Turn {
             n: turn,
@@ -513,8 +524,13 @@ pub fn forge_agent_with_tools(
         // the wait feels, which for a chat surface is most of the thing.
         let action = {
             let mut sink = |d: &str| observe(AgentEvent::Delta(d.to_string()));
-            backend.next_action_streaming(&history, &specs, &mut sink)?
+            backend.next_action_streaming(&history, &specs, &mut sink, &config.cancel)?
         };
+        // The answer is in, nothing has been done with it yet: the last
+        // point at which stopping costs only the words on screen.
+        if config.cancel.is_cancelled() {
+            return Err(ForgeError::Cancelled);
+        }
         match action {
             AgentAction::Done(summary) => {
                 observe(AgentEvent::DoneClaimed);
@@ -935,6 +951,79 @@ mod tests {
             &[reader, writer],
             "write_file"
         ));
+    }
+
+    /// Issue #227: Stop has to stop something.
+    ///
+    /// harnessd set a flag, read it in an observer, assigned the answer
+    /// to a local nothing looked at again — and this loop had no
+    /// cancellation input at all, so a run pressed Stop on kept going
+    /// for its full turn budget, calling tools the whole way. The
+    /// assertion that matters is not "it returned early": it is that the
+    /// TOOL DID NOT RUN.
+    #[test]
+    fn stopping_a_run_stops_it_before_the_next_tool_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let mut backend = ScriptedBackend::repeating(vec![AgentAction::Call(ToolCall {
+            id: "1".into(),
+            name: "write_file".into(),
+            args: serde_json::json!({"path": "should-not-exist.txt", "content": "hi"}),
+        })]);
+        let cancel = crate::Cancel::default();
+        let config = AgentConfig {
+            max_turns: 12,
+            verifier: Verifier::None,
+            cancel: cancel.clone(),
+            ..AgentConfig::new(scratch_ledger(dir.path()))
+        };
+
+        // Pressed while the first turn is under way — the realistic
+        // moment, and the one where a tool call is about to be issued.
+        let mut observe = |ev: AgentEvent| {
+            if matches!(ev, AgentEvent::Turn { .. }) {
+                cancel.cancel();
+            }
+        };
+        let outcome = forge_agent_with_tools(
+            "write a file",
+            &project,
+            &mut backend,
+            &config,
+            &[],
+            &mut observe,
+        );
+
+        assert!(
+            matches!(outcome, Err(ForgeError::Cancelled)),
+            "a stopped run must report that it stopped: {outcome:?}"
+        );
+        assert!(
+            !project.join("should-not-exist.txt").exists(),
+            "the loop ran a tool after it was told to stop"
+        );
+        assert_eq!(
+            backend.calls, 1,
+            "the loop kept asking the model after Stop"
+        );
+    }
+
+    /// And a run nobody stopped is untouched: the flag defaults to unset
+    /// and the loop behaves exactly as it did.
+    #[test]
+    fn an_unstopped_run_is_not_affected_by_the_stop_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut backend = ScriptedBackend::new(vec![AgentAction::Done("all set".into())]);
+        let config = AgentConfig {
+            verifier: Verifier::None,
+            ..AgentConfig::new(scratch_ledger(dir.path()))
+        };
+        let report = forge_agent("do nothing", &project, &mut backend, &config).unwrap();
+        assert_eq!(report.summary, "all set");
     }
 
     /// Issue #54: the loop that edits your files unattended used to

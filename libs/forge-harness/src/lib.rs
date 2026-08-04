@@ -25,7 +25,7 @@ pub use agent::{
     ToolProvider, Verifier, WorkspaceTools, forge_agent, forge_agent_observed,
     forge_agent_with_tools,
 };
-pub use openai::OpenAiBackend;
+pub use openai::{OpenAiBackend, backend_refusal, streaming_request_body};
 pub use shell_tool::{ShellRequest, ShellTool};
 pub use tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 
@@ -49,6 +49,40 @@ pub enum ForgeError {
     /// be written, the loop stops rather than acting unobserved.
     #[error("ledger unavailable — refusing to act: {0}")]
     Ledger(#[from] lisa_ledger::LedgerError),
+    /// Somebody pressed Stop (issue #227). Not a failure of the run —
+    /// the run did what it was told.
+    #[error("Stopped.")]
+    Cancelled,
+}
+
+/// A stop button, shared with whoever is holding one.
+///
+/// Issue #227: harnessd had a flag of its own shape, set it from
+/// `Cancel(run_id)`, read it in an observer, assigned the result to a
+/// local nothing ever looked at again — and the loop had no way to be
+/// told in the first place. Stop was a no-op, and three comments
+/// described what it would have done.
+///
+/// So the flag lives HERE, where the loop is, and the loop consults it.
+/// A daemon cannot hold one that is not wired to anything, because there
+/// is only one kind and the loop takes it.
+///
+/// What it promises, and does not: a turn's BACKEND call is interrupted
+/// — a half-generated sentence costs nothing to abandon — and a TOOL
+/// CALL is not. A tool that has started runs to its end and its result
+/// is recorded; killing a write halfway is how half-done actions
+/// happen. Between those two the loop stops.
+#[derive(Clone, Default)]
+pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancel {
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// One whole-file edit — the argument shape of the `write_file` tool.
@@ -78,14 +112,23 @@ pub trait Backend {
     /// nobody is watching a turn, and for a chat window that difference
     /// is the entire feel of the thing.
     ///
+    /// `cancel` is checked WHILE the answer is arriving (#227): Stop
+    /// has to stop the thing a person is watching, and a partly
+    /// generated sentence is the one piece of work in this loop that
+    /// costs nothing to abandon. An implementation that cannot check
+    /// mid-flight simply returns as usual and the loop stops at the next
+    /// boundary.
+    ///
     /// Default delegates, so a scripted backend stays three lines.
     fn next_action_streaming(
         &mut self,
         messages: &[Message],
         tools: &[ToolSpec],
         on_delta: &mut dyn FnMut(&str),
+        cancel: &Cancel,
     ) -> Result<AgentAction, ForgeError> {
         let _ = &on_delta;
+        let _ = cancel;
         self.next_action(messages, tools)
     }
 }

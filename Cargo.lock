@@ -1419,6 +1419,7 @@ dependencies = [
  "axum",
  "blake3",
  "clap",
+ "forge-harness",
  "futures",
  "http-body-util",
  "liblisa",

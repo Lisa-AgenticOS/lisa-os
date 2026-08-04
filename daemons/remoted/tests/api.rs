@@ -284,6 +284,50 @@ async fn default_consent_refuses_egress_and_ledgers_the_denial() {
     assert!(entries[0].detail.contains("\"egress\":\"remote\""));
 }
 
+/// Issue #226, one hop further out. An attached image only reaches a
+/// model that can see one, and that model is always a remote — so the
+/// picture crosses THIS socket too. Raising inferenced's limit alone
+/// would have moved the 413 here and changed nothing a person could see.
+///
+/// Size is checked before consent: a refusal must be about egress, not
+/// about buffering. So the assertion is only that the answer is not
+/// `413` — 403 (no consent yet) is the correct answer to this request.
+#[tokio::test]
+async fn a_request_bigger_than_axums_default_is_not_refused_for_its_size() {
+    let f = fixture();
+    let filler = "x".repeat(3 * 1024 * 1024);
+    let res = api::router(Arc::clone(&f.broker))
+        .oneshot(chat_request_body(
+            "openai",
+            "prompt",
+            json!({"model": "test-model", "messages": [{"role": "user", "content": filler}]}),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(
+        res.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a 3 MiB request died on the broker's body limit"
+    );
+}
+
+/// And it is still a bound: past the limit the body is refused rather
+/// than buffered.
+#[tokio::test]
+async fn a_request_past_the_limit_is_refused() {
+    let f = fixture();
+    let filler = "x".repeat(api::MAX_REQUEST_BYTES + 1024);
+    let res = api::router(Arc::clone(&f.broker))
+        .oneshot(chat_request_body(
+            "openai",
+            "prompt",
+            json!({"model": "test-model", "messages": [{"role": "user", "content": filler}]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[tokio::test]
 async fn consented_request_proxies_and_is_ledgered_before_and_after() {
     let f = fixture();

@@ -7,9 +7,8 @@
 //! comes back as events on a channel that the D-Bus layer turns into
 //! signals.
 
-use forge_harness::{AgentConfig, AgentEvent, OpenAiBackend, ToolProvider, Verifier};
+use forge_harness::{AgentConfig, AgentEvent, ForgeError, OpenAiBackend, ToolProvider, Verifier};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What the assistant is told it is.
 ///
@@ -105,20 +104,20 @@ pub struct Request {
     pub skills_catalog: String,
 }
 
-/// Cancellation shared with the caller. The loop checks it between
-/// turns; a turn already in flight finishes first, because killing a
-/// tool call halfway is how half-done actions happen.
-#[derive(Clone, Default)]
-pub struct Cancel(Arc<AtomicBool>);
-
-impl Cancel {
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
-    }
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
-}
+/// Cancellation, shared with the loop that has to honour it.
+///
+/// This daemon used to define its own flag of the same shape (#227). It
+/// set it from `Cancel(run_id)`, read it in the progress observer,
+/// assigned the answer to a local nobody looked at again — and the loop
+/// it was meant to stop had no cancellation input at all. Stop was a
+/// no-op, and three comments in two files described what it would have
+/// done: keep the partial text, re-enable the composer, answer
+/// `Finished('cancelled')`. None of it happened.
+///
+/// It is `forge_harness::Cancel` now, which is the loop's own type: a
+/// flag this daemon holds is a flag the loop is reading, because there
+/// is no other kind to hold.
+pub use forge_harness::Cancel;
 
 /// Run one prompt through the harness, reporting progress as it goes.
 ///
@@ -167,14 +166,12 @@ pub fn run(
         system_prompt: system_prompt(&req.workspace, &req.skills_catalog),
         prior_turns: req.history,
         attachments: req.attachments,
+        // The stop button, handed to the thing that can act on it.
+        cancel,
         ..AgentConfig::new(ledger)
     };
 
-    let mut cancelled_at = None;
     let mut observe = |ev: AgentEvent| {
-        if cancel.is_cancelled() && cancelled_at.is_none() {
-            cancelled_at = Some(());
-        }
         match ev {
             AgentEvent::Call { name, detail } => emit(Progress::Tool { name, detail }),
             // The reason streaming exists: a frontend renders these as
@@ -213,6 +210,14 @@ pub fn run(
                 summary: report.summary,
             });
         }
+        // A stop is not a failure, but it is not a finished answer
+        // either: `ok: false` is what un-sticks the composer and puts a
+        // visible mark next to the half-written reply, which is the
+        // honest rendering of "you stopped this".
+        Err(ForgeError::Cancelled) => emit(Progress::Finished {
+            ok: false,
+            summary: "Stopped.".into(),
+        }),
         Err(e) => emit(Progress::Finished {
             ok: false,
             // The frontend shows this to a person, so it says what

@@ -82,6 +82,30 @@ scaffolds, verifies, builds and installs.
   subprocess runs **unconfined and says so** in its own tool output; a
   jail reported but not closed would be worse than none.
 
+- **The streaming request shape is exported, on purpose** (#225,
+  closed). `openai::streaming_request_body` is what
+  `next_action_streaming` puts on the wire — tools attached,
+  `stream: true` — and it is `pub` so `lisa-inferenced`'s own test suite
+  can feed it to its own router. The two used to disagree (the harness
+  streamed, the daemon's tools lane refused `stream: true` with a 400,
+  and every Assistant run died as `backend: http status: 400`) with
+  nothing on either side able to notice. Changing what this function
+  emits now fails a test in the daemon.
+- **A refusal carries the daemon's words** (#225). `backend_refusal`
+  reads the response body instead of letting ureq collapse a non-2xx
+  into `http status: 400` and throw away the sentence that said what was
+  wrong. And an in-band `{"error": …}` SSE frame ends the turn as an
+  error rather than as an empty `Done("")` — an engine that died halfway
+  used to reach a person as a blank reply.
+- **Stop stops the answer, not the action** (#227, closed).
+  `AgentConfig.cancel` is a `Cancel` the loop consults before each turn,
+  after the model answers but before its tool call is dispatched, and
+  between frames while the answer is arriving. A tool that has STARTED
+  runs to its end — killing a write halfway is how half-done actions
+  happen. A stopped run returns `ForgeError::Cancelled`. The flag lives
+  here rather than in a caller because harnessd's own copy of it
+  (#227's actual defect) was set, read into a local, and never acted on:
+  the loop it was meant to stop had no cancellation input at all.
 - **The Ledger is mandatory** (#129, closed). `AgentConfig` has no
   `Default`: constructing one requires deciding where the record goes,
   so an unledgered run does not compile. "No ledger entry, no action" is

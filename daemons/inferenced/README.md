@@ -20,3 +20,43 @@ parts, naming what it cannot see, instead of flattening the image
 away and answering anyway; remote engines forward the parts as they
 arrived. Text-only callers are untouched: a bare string still
 serializes as a bare string on the wire.
+
+**The tools lane, and streaming (#225).** A request with a NON-EMPTY
+`tools` array takes the raw passthrough lane: tool turns carry null
+content and roles the typed `ChatMessage` cannot represent, and the
+child's `tool_calls` have to reach the client verbatim. That lane used
+to answer `stream: true` with a `400` — while its only client,
+`forge-harness` behind every Assistant window, always streams and always
+attaches tools. Every local-model run in the Assistant died as
+`backend: http status: 400`.
+
+It streams now, and the capability does not depend on the engine: the
+`Engine` trait carries `raw_chat_stream` with **no unsupported branch**.
+The llama engine overrides it and forwards llama-server's own SSE frames
+verbatim (`--jinja` emits `delta.tool_calls` fragments and a
+`finish_reason: "tool_calls"`); every other engine gets the trait
+default, which runs `raw_chat` and re-frames the completion as one
+chunk — the words arrive at once instead of one at a time, and nothing
+else is lost. There is no request shape a caller may send that depends
+on which engine happens to be resident.
+
+That the two sides agree is a *test*, not a comment:
+`tests/api.rs::the_body_forge_harness_streams_is_one_this_daemon_accepts`
+builds its request with `forge_harness::openai::streaming_request_body`
+— the function the harness itself calls — and folds the reply with the
+harness's own `fold_frame`. Changing the harness's request shape fails
+this daemon's suite.
+
+**Request size (#226).** `api::MAX_REQUEST_BYTES` is 32 MiB, declared.
+Before it, the limit in force was axum's undeclared 2 MiB default, so an
+attached image over ~1.5 MB (base64 is 4/3 of the file) came back as a
+bare `413` and the image feature could not carry a screenshot. The
+number is sized against the hop before it — harnessd refuses an
+`attachments` option over 24 MiB — and a `const _: () = assert!(…)`
+beside the constant fails the build if it ever drops below that.
+
+**Refusals are ledgered.** A request this daemon will not serve is
+appended as `inference.generate` / `status: "refused"` before the 4xx
+goes out. #225's 400 returned before `ledger_gate` ran, so the fault
+that broke every Assistant run left no Ledger entry at all — and a run
+that failed is exactly the run somebody comes looking for.

@@ -7,7 +7,7 @@
 //! resident model, LoRA hot-swap, VRAM budget arbitration, QoS scheduler.
 
 use crate::config::LlamaConfig;
-use crate::engine::{Engine, EngineError, GenerateRequest, TokenStream};
+use crate::engine::{Engine, EngineError, GenerateRequest, RawFrameStream, TokenStream};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -231,6 +231,84 @@ impl Engine for LlamaEngine {
                 .json()
                 .await
                 .map_err(|e| EngineError::Unavailable(format!("llama-server response: {e}")))
+        })
+    }
+
+    /// The passthrough lane, streamed (#225).
+    ///
+    /// llama-server emits tool calls as deltas under `--jinja` (verified
+    /// on the device against b10093: `delta.tool_calls[].function
+    /// .arguments` arrives in fragments, finishing with
+    /// `finish_reason: "tool_calls"`), so the frames it produces are
+    /// already the frames the client wants. They are forwarded VERBATIM
+    /// — this daemon does not re-model a chunk it did not invent, which
+    /// is the same decision `raw_chat` made for the whole body.
+    fn raw_chat_stream(&self, mut body: serde_json::Value) -> RawFrameStream {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async_stream::stream! {
+            if let Err(e) = inner.ensure_running().await {
+                yield Err(e);
+                return;
+            }
+            body["stream"] = serde_json::Value::Bool(true);
+            // Cap tokens like every other lane: a runaway generation
+            // must not hold the slot for ever (#36).
+            if body
+                .get("max_tokens")
+                .and_then(serde_json::Value::as_u64)
+                .is_none()
+            {
+                body["max_tokens"] = serde_json::json!(2048);
+            }
+            let response = match inner
+                .client
+                .post(inner.endpoint())
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    yield Err(EngineError::Unavailable(format!("llama-server: {e}")));
+                    return;
+                }
+            };
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                yield Err(EngineError::Unavailable(format!(
+                    "llama-server {status}: {}",
+                    text.chars().take(200).collect::<String>()
+                )));
+                return;
+            }
+
+            use futures::StreamExt;
+            let mut bytes = response.bytes_stream();
+            let mut buf = Vec::new();
+            'outer: while let Some(chunk) = bytes.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        yield Err(EngineError::Unavailable(format!("stream error: {e}")));
+                        return;
+                    }
+                };
+                buf.extend_from_slice(&chunk);
+                while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    let line: Vec<u8> = buf.drain(..=pos).collect();
+                    let line = String::from_utf8_lossy(&line);
+                    let Some(data) = line.trim().strip_prefix("data: ") else {
+                        continue;
+                    };
+                    // The caller frames its own [DONE]; forwarding the
+                    // child's would end the client's stream twice.
+                    if data == "[DONE]" {
+                        break 'outer;
+                    }
+                    yield Ok(data.to_string());
+                }
+            }
         })
     }
 

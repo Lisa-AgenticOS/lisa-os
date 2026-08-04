@@ -160,8 +160,20 @@ about them.
 
 - **One thread per run**, and a signal emit builds a small runtime each
   time. Correct, not elegant.
-- **Cancel is cooperative** — a turn already in flight finishes. Killing
-  a tool call halfway is how half-done actions happen.
+- **Cancel is cooperative, and it now does something.** Until #227 it set
+  a flag nothing acted on: the loop had no cancellation input at all, so
+  Stop was a no-op and the run continued through its whole turn budget.
+  The flag is `forge_harness::Cancel` — the loop's own type — and the
+  loop consults it before each turn, after the model answers but before
+  its tool call is dispatched, and between frames of the answer as it
+  arrives. A tool that has STARTED still runs to its end: killing a
+  write halfway is how half-done actions happen. A stopped run answers
+  `Finished(ok=false, "Stopped.")`.
+- **An `attachments` option over 24 MiB is refused** (#226). That bounds
+  what this daemon will act on, not what the broker will deliver: a
+  message-size ceiling belongs to dbus-broker's own configuration.
+  Passing a file descriptor instead of a base64 data URI would remove
+  the amplification entirely, and would be a redesign of the option.
 - **The trigger ceiling is hardcoded to `Prompt`** because every caller
   today is a desktop surface. It must come from `lisa-peer` identity
   before any non-desktop client exists.

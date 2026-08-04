@@ -50,12 +50,82 @@ fn ledger_gate(ledger: &Ledger, event: &LedgerEvent) -> Result<i64, Box<Response
     })
 }
 
+/// The largest request body this daemon will buffer.
+///
+/// Issue #226: there was no such number, so the one in force was axum's
+/// DEFAULT of 2 MiB — nobody chose it, nothing named it, and an attached
+/// image over ~1.5 MB (base64 is 4/3 of the file) came back as a bare
+/// `413`. The feature that shipped in #209 could not carry a screenshot.
+///
+/// 32 MiB is chosen against the hop before it, not picked for looking
+/// round: the Assistant's composer caps one send at 16 MiB of image
+/// bytes, base64 makes that 21.4 MiB, harnessd refuses an `attachments`
+/// option larger than 24 MiB, and the request built from it arrives
+/// here. Every ceiling on the path is above the one before it, so a
+/// picture the composer accepted cannot die three hops later.
+///
+/// It is still a bound: past it the request is refused instead of
+/// buffered, because one unbounded body is enough to take the daemon's
+/// memory with it.
+pub const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+
+/// The chain, enforced where it cannot be skipped: this daemon must
+/// accept everything harnessd will forward. A build that lowers the
+/// limit under the hop before it does not compile.
+const _: () = assert!(
+    MAX_REQUEST_BYTES >= 24 * 1024 * 1024,
+    "inferenced would refuse an attachment harnessd already accepted (#226)"
+);
+
+/// Record a request this daemon would not serve, then refuse it.
+///
+/// Issue #225 arrived with a second, quieter fault: the 400 that broke
+/// every Assistant run was returned BEFORE `ledger_gate`, so the failure
+/// left no Ledger entry at all and the audit log showed a quiet day. A
+/// run that failed is exactly the run you want a record of — the one
+/// somebody will come looking for.
+///
+/// A refusal is never gated on the append succeeding: rule 4 stops an
+/// ACTION that cannot be recorded, and refusing is the absence of one.
+fn ledger_refusal(state: &AppState, raw: &serde_json::Value, why: &str) -> Response {
+    let prompt = raw
+        .get("messages")
+        .map(std::string::ToString::to_string)
+        .unwrap_or_default();
+    let _ = state.ledger.append(&LedgerEvent {
+        kind: "inference.generate".into(),
+        app_id: "host".into(),
+        model: raw
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&state.model_name)
+            .to_string(),
+        input_hash: blake3::hash(prompt.as_bytes()).to_hex().to_string(),
+        preview: preview_of(&prompt),
+        status: "refused".into(),
+        detail: why.chars().take(200).collect(),
+        ..Default::default()
+    });
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": {
+            "message": why,
+            "type": "invalid_request_error",
+        }})),
+    )
+        .into_response()
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/embeddings", post(embeddings))
+        // Explicit, not inherited (#226). Applied to the Router rather
+        // than to one route so a handler added later cannot quietly get
+        // the 2 MiB default back.
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(state)
 }
 
@@ -162,22 +232,20 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
 }
 
 /// The tools/tool-calling lane: ledger the exchange, resolve the engine,
-/// and pass the OpenAI-compat body through verbatim (stream forced off).
+/// and pass the OpenAI-compat body through verbatim.
+///
+/// Streaming is served, not refused (#225). This lane used to answer
+/// `stream: true` with a 400 while its only client — forge-harness,
+/// behind every Assistant window — always streamed and always sent
+/// tools, so every local-model run died as `backend: http status: 400`.
+/// The engine seam now carries `raw_chat_stream` with no unsupported
+/// branch, so the shape a caller may send does not depend on which
+/// engine happens to be resident.
 async fn chat_completions_tools(state: AppState, mut raw: serde_json::Value) -> Response {
-    if raw
+    let streaming = raw
         .get("stream")
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": {
-                "message": "streaming with tools is not supported yet — send stream:false",
-                "type": "invalid_request_error",
-            }})),
-        )
-            .into_response();
-    }
+        .unwrap_or(false);
     let model_req = raw
         .get("model")
         .and_then(serde_json::Value::as_str)
@@ -218,6 +286,53 @@ async fn chat_completions_tools(state: AppState, mut raw: serde_json::Value) -> 
         Ok(e) => e,
         Err(e) => return engine_error_response(e),
     };
+
+    if streaming {
+        // Same slot pool and preemption contract as every other lane.
+        let frames = state
+            .scheduler
+            .admit(priority, engine.raw_chat_stream(raw))
+            .await;
+        let ledger = Arc::clone(&state.ledger);
+        let sse = async_stream::stream! {
+            let mut frames = frames;
+            let mut chunks: i64 = 0;
+            let mut status = String::from("ok");
+            while let Some(item) = frames.next().await {
+                match item {
+                    Ok(frame) => {
+                        chunks += 1;
+                        yield Ok::<_, std::convert::Infallible>(Event::default().data(frame));
+                    }
+                    Err(e) => {
+                        status = if matches!(e, crate::engine::EngineError::Preempted) {
+                            "preempted".into()
+                        } else {
+                            "error".into()
+                        };
+                        yield Ok(Event::default()
+                            .data(serde_json::json!({"error": {"message": e.to_string()}}).to_string()));
+                        break;
+                    }
+                }
+            }
+            let _ = ledger.append(&LedgerEvent {
+                kind: "inference.complete".into(),
+                app_id: "host".into(),
+                model,
+                status,
+                ref_id: Some(entry_id),
+                output_tokens: chunks,
+                duration_ms: started_at.elapsed().as_millis() as i64,
+                ..Default::default()
+            });
+            yield Ok(Event::default().data("[DONE]"));
+        };
+        return Sse::new(sse)
+            .keep_alive(KeepAlive::default())
+            .into_response();
+    }
+
     raw["stream"] = serde_json::Value::Bool(false);
     // Same slot pool and preemption contract as the token lane (#34):
     // a tool turn must not run outside the scheduler's view.
@@ -301,19 +416,15 @@ async fn chat_completions(
         }
         None | Some(serde_json::Value::Null) | Some(serde_json::Value::Array(_)) => {}
         Some(_) => {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": {
-                    "message": "tools must be an array of tool definitions",
-                    "type": "invalid_request_error",
-                }})),
-            )
-                .into_response();
+            return ledger_refusal(&state, &raw, "tools must be an array of tool definitions");
         }
     }
-    let req: ChatCompletionRequest = match serde_json::from_value(raw) {
+    let req: ChatCompletionRequest = match serde_json::from_value(raw.clone()) {
         Ok(r) => r,
         Err(e) => {
+            // Recorded too (#225): a request nobody can serve is still a
+            // request somebody made, and the 422 stays a 422.
+            let _ = ledger_refusal(&state, &raw, &format!("invalid request: {e}"));
             return (
                 axum::http::StatusCode::UNPROCESSABLE_ENTITY,
                 Json(serde_json::json!({"error": {
