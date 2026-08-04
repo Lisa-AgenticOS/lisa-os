@@ -1179,3 +1179,88 @@ fn the_forge_tool_surface_still_does_its_job() {
         assert!(verdict.is_allowed(), "`{program} {args:?}` → {verdict}");
     }
 }
+
+/// A protection written to DISK reaches a real verdict (#253).
+///
+/// The corpus above proves the rule works when `Grant::protections` is
+/// populated by hand. This proves the thing that actually ships: a file
+/// the owner (or Settings) wrote is loaded by `Grant::for_this_user`
+/// and refuses a call that would otherwise be permitted.
+///
+/// That gap is the defect this repo has paid for six times — #241 (a
+/// manifest installed where nothing reads it), #244 (a `.service`
+/// nobody called), #245 (an allowlist parsed and dropped), #255 (a
+/// chord reserved and never bound). A protections file nothing loads
+/// would be the seventh.
+///
+/// Serial by construction: it sets HOME and XDG_CONFIG_HOME, so it must
+/// not run beside another test that reads them. Rust runs each
+/// integration test binary's tests in threads, so this lives in its own
+/// `#[test]` with everything it touches created inside it.
+#[test]
+fn a_protection_on_disk_refuses_a_call_the_guard_would_otherwise_allow() {
+    let dir = std::env::temp_dir().join("lisa-guard-protect-e2e");
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = dir.join("home");
+    let workspace = home.join("dev/app");
+    let protected = workspace.join("client-legal");
+    std::fs::create_dir_all(&protected).unwrap();
+
+    let target = "~/dev/app/client-legal/notes.md";
+    let args = json!({ "path": target });
+    let action = Action {
+        app_id: "app.lisaos.Probe253",
+        tool: "write_file",
+        class: Class::Write,
+        args: &args,
+    };
+
+    // Before: in the workspace, ordinary, not refused outright.
+    let base = Grant {
+        uid: Grant::for_this_user().uid,
+        home: Some(home.clone()),
+        workspace: Some(workspace.clone()),
+        trigger: Trigger::Prompt,
+        trusted_chain: true,
+        ..Grant::default()
+    };
+    assert!(
+        !judge_action(&action, &base).is_hard_no(),
+        "the control must NOT be refused, or the test proves nothing"
+    );
+
+    // The owner writes the file, exactly as Settings would.
+    let config = dir.join("config");
+    let file = lisa_guard::Protections::from_paths([protected.clone()]);
+    file.save(&config.join("lisa").join("guard-protect"))
+        .unwrap();
+
+    // After: the SAME call, judged against a grant built the way the
+    // daemon builds it — nothing set by hand.
+    let loaded = {
+        // SAFETY: single-threaded within this test; the vars are read
+        // synchronously by `for_this_user` on the next line.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("XDG_CONFIG_HOME", &config);
+        }
+        let g = Grant {
+            workspace: Some(workspace),
+            trigger: Trigger::Prompt,
+            trusted_chain: true,
+            ..Grant::for_this_user()
+        };
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        g
+    };
+    let v = judge_action(&action, &loaded);
+    assert!(
+        v.is_hard_no(),
+        "a protection on disk did not reach the verdict: {v:?}"
+    );
+    assert_eq!(v.rule(), Some("owner.protected_path"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

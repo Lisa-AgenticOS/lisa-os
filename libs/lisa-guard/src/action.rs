@@ -168,6 +168,20 @@ impl Grant {
             uid: Some(unsafe { libc::getuid() }),
             #[cfg(not(unix))]
             uid: None,
+            // The owner's own out-of-bounds folders, read ambiently
+            // (#253). HERE and not at each call site, because this is
+            // the one constructor every real grant comes from — a
+            // protection loaded in some paths and not others is a
+            // setting that works until it does not, which is worse than
+            // one that never worked.
+            //
+            // Ambient like `overrides::active()`, and for the same
+            // reason: nothing the model emits reaches it. That argument
+            // is weaker here than there, because tightening is safe from
+            // anywhere — but reading a security file one way in one
+            // place and another way elsewhere is how the two dock lists
+            // in #239 drifted.
+            protections: crate::protections::active(),
             ..Grant::default()
         }
     }

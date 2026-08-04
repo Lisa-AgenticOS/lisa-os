@@ -101,6 +101,78 @@ impl Protections {
     pub fn len(&self) -> usize {
         self.paths.len()
     }
+
+    /// Parse the on-disk form: one absolute path per line, `#` comments.
+    ///
+    /// The same shape as `guard-allow`, deliberately — two files a
+    /// person edits should not have two grammars. A line that is not an
+    /// absolute path is DROPPED rather than rejecting the whole file: a
+    /// typo in one entry must not silently disarm the other nine, which
+    /// is the failure mode of parse-all-or-nothing on a security file.
+    pub fn parse(text: &str) -> Self {
+        let mut out = Protections::default();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if !line.is_empty() {
+                out.add(line);
+            }
+        }
+        out
+    }
+
+    /// The owner's protections file, or an empty set.
+    ///
+    /// Unreadable, absent or empty all mean "no owner protections",
+    /// which is the state every machine starts in. Failing closed here
+    /// would mean refusing everything when the file is missing, which is
+    /// not a safer default — it is a broken one.
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .map(|text| Self::parse(&text))
+            .unwrap_or_default()
+    }
+
+    /// Write the set back, one path per line, with a header saying what
+    /// the file is and which direction it may be edited in.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut text = String::from(
+            "# Folders agents may not change on this machine (#253).\n\
+             #\n\
+             # One absolute path per line. Adding a line TIGHTENS what agents\n\
+             # may do and is always safe. Nothing here can widen anything:\n\
+             # removing a line takes back only what you added, never a rule\n\
+             # Lisa ships. Loosening lives in `guard-allow`, next to this file.\n\
+             #\n\
+             # Written by Settings; safe to edit by hand.\n",
+        );
+        for p in &self.paths {
+            text.push_str(&p.display().to_string());
+            text.push('\n');
+        }
+        std::fs::write(path, text)
+    }
+}
+
+/// Where the owner's protections live.
+///
+/// Beside `guard-allow`, because they are the two halves of one idea and
+/// a person looking for either should find both.
+pub fn protections_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("lisa").join("guard-protect"))
+}
+
+/// The protections in force for this machine's owner.
+pub fn active() -> Protections {
+    protections_path()
+        .map(|p| Protections::load(&p))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -176,6 +248,43 @@ mod tests {
         assert!(!p.covers("/etc/passwd"));
         assert!(!p.covers("/home/me/anything"));
         assert!(crate::rules::is_system_target("/etc"));
+    }
+
+    #[test]
+    fn a_typo_drops_one_line_rather_than_disarming_the_file() {
+        // Parse-all-or-nothing on a SECURITY file is the wrong trade: one
+        // bad line would silently leave the other nine unprotected, and
+        // the person who typed it would have no way to see that.
+        let p = Protections::parse(
+            "# my folders\n             /home/me/Legal\n             Documents/typo          # relative — dropped\n             \n             /home/me/Tax   # trailing comment\n",
+        );
+        assert_eq!(p.len(), 2);
+        assert!(p.covers("/home/me/Legal/contract.pdf"));
+        assert!(p.covers("/home/me/Tax"));
+        assert!(!p.covers("Documents/typo"));
+    }
+
+    #[test]
+    fn a_missing_file_is_no_protections_rather_than_refuse_everything() {
+        // Failing closed here would mean refusing every action on a
+        // machine whose owner never opened the page — not a safer
+        // default, a broken one.
+        let p = Protections::load(Path::new("/nonexistent/guard-protect"));
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn what_save_writes_is_what_load_reads() {
+        let dir = std::env::temp_dir().join("lisa-guard-protect-roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("lisa").join("guard-protect");
+        let want = Protections::from_paths(["/home/me/Legal", "/home/me/Tax"]);
+        want.save(&file).unwrap();
+        assert_eq!(Protections::load(&file), want);
+        // And the header survives a round trip as comments, not as paths.
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with("# Folders agents may not change"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
