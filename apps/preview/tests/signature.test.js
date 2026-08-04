@@ -1,11 +1,9 @@
 import {strokeBounds, normalizeStrokes, stampSize, serializeSignature, deserializeSignature}
     from '../lib/signature.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let passed = 0, failed = 0;
-function ok(cond, name, got) {
-    if (cond) { passed++; console.log(`  ok    ${name}`); }
-    else { failed++; console.log(`  FAIL  ${name}${got !== undefined ? ` (got ${JSON.stringify(got)})` : ''}`); }
-}
+const ok = (cond, name, got) =>
+    test(name, () => assert(cond, got !== undefined ? `got ${JSON.stringify(got)}` : ''));
 
 const scrawl = [
     [{x: 10, y: 20}, {x: 30, y: 40}],
@@ -32,5 +30,4 @@ ok(round.width === sig.width && round.strokes.length === 2, 'serialize/deseriali
 ok(deserializeSignature('not json') === null, 'garbage input is null, not a throw');
 ok(deserializeSignature('{"version":99,"strokes":[]}') === null, 'unknown versions are refused');
 
-console.log(`preview/signature: ${passed} passed, ${failed} failed`);
-if (failed) process.exit(1);
+finish('preview/signature');

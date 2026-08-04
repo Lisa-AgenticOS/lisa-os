@@ -1,14 +1,9 @@
 // Runs under gjs, node or jsc — see `just shell-test`.
 import {kindOf, siblings, MIME_TYPES} from '../lib/formats.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let pass = 0, fail = 0;
-function ok(cond, what) {
-    if (cond) { pass++; console.log(`  ok    ${what}`); }
-    else { fail++; console.log(`  FAIL  ${what}`); }
-}
+const ok = (cond, what) => test(what, () => assert(cond));
 function eq(a, b, what) { ok(JSON.stringify(a) === JSON.stringify(b), `${what} (got ${JSON.stringify(a)})`); }
-
-console.log('preview/formats');
 
 eq(kindOf('/home/lisa/cat.webp'), 'image', 'webp is an image');
 eq(kindOf('/home/lisa/scan.PDF'), 'document', 'extension match is case-insensitive');
@@ -49,5 +44,4 @@ ok(!MIME_TYPES.includes('image/jpg'), 'the invented image/jpg type is not claime
 // them, or the .desktop claims the same type four times.
 eq(MIME_TYPES.length, new Set(MIME_TYPES).size, 'the mime list has no duplicates');
 
-console.log(`preview/formats: ${pass} passed, ${fail} failed`);
-if (fail) throw new Error(`${fail} failed`);
+finish('preview/formats');

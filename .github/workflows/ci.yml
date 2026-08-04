@@ -63,8 +63,14 @@ jobs:
               - 'models/**'
               - 'tests/e2e/**'
               - '.github/workflows/ci.yml'
+            # The JS suites: shell surfaces AND apps, one job, because
+            # `just shell-test` has always globbed both trees. Without
+            # 'apps/**' here an apps-only commit triggered no test job at
+            # all — ~200 cases that CI had never run once (#242).
             shell:
               - 'shell/**'
+              - 'apps/**'
+              - 'justfile'
               - '.github/workflows/ci.yml'
             ime:
               - 'ime/**'
@@ -151,9 +157,15 @@ jobs:
           LISA_REQUIRE_BUS_TESTS: '1'
           LISA_REQUIRE_PIDFD: '1'
 
-  # PLAN §5.7 shell surfaces: pure-logic unit tests (overlay envelope,
-  # launcher ranking, ledger view-model) — runtime-agnostic modules run
-  # under node here, gjs on the image, jsc on macOS dev hosts.
+  # PLAN §5.7 shell surfaces and §5.8 apps: pure-logic unit tests
+  # (overlay envelope, launcher ranking, ledger view-model, Mail's
+  # parsers, Surfer's URL policy, Preview's view math) — runtime-agnostic
+  # modules run under node here, gjs on the image, jsc on macOS dev hosts.
+  #
+  # This runs `just shell-test` rather than restating its glob. The glob
+  # covered apps/*/tests all along; the job did not, so ~200 app cases
+  # were green on their author's laptop and had never once run in CI
+  # (#242). Two lists is how that happens, so there is one list.
   shell-tests:
     runs-on: ubuntu-latest
     # A hung job otherwise burns the 6-hour default. Sized from
@@ -163,11 +175,8 @@ jobs:
     if: needs.changes.outputs.shell == 'true'
     steps:
       - uses: actions/checkout@v7
-      - run: |
-          for t in shell/*/tests/*.test.js; do
-            echo "== $t"
-            node "$t"
-          done
+      - run: sudo apt-get update && sudo apt-get install -y just
+      - run: just shell-test
 
   # PLAN §5.7.3 layer 2 (ADR-0007): compile the fcitx5 addon against
   # real Fcitx5Core headers in an Arch container and run the protocol

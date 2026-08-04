@@ -1,10 +1,8 @@
 import {movePage, removePage, isIdentity, orderChanged, qpdfPageSpec} from '../lib/reorder.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let passed = 0, failed = 0;
-function ok(cond, name, got) {
-    if (cond) { passed++; console.log(`  ok    ${name}`); }
-    else { failed++; console.log(`  FAIL  ${name}${got !== undefined ? ` (got ${JSON.stringify(got)})` : ''}`); }
-}
+const ok = (cond, name, got) =>
+    test(name, () => assert(cond, got !== undefined ? `got ${JSON.stringify(got)}` : ''));
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // --- moving --------------------------------------------------------
@@ -43,5 +41,4 @@ ok(qpdfPageSpec([]) === '', 'empty order, empty spec');
 const big = [399, ...Array.from({length: 399}, (_, i) => i)];
 ok(qpdfPageSpec(big) === '400,1-399', 'large documents compress', qpdfPageSpec(big));
 
-console.log(`preview/reorder: ${passed} passed, ${failed} failed`);
-if (failed) process.exit(1);
+finish('preview/reorder');

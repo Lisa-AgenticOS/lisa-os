@@ -1,11 +1,9 @@
 import {looksBinary, truncateText, humanSize, cardSubtitle, folderSubtitle, mediaClock}
     from '../lib/peek.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let passed = 0, failed = 0;
-function ok(cond, name, got) {
-    if (cond) { passed++; console.log(`  ok    ${name}`); }
-    else { failed++; console.log(`  FAIL  ${name}${got !== undefined ? ` (got ${JSON.stringify(got)})` : ''}`); }
-}
+const ok = (cond, name, got) =>
+    test(name, () => assert(cond, got !== undefined ? `got ${JSON.stringify(got)}` : ''));
 
 ok(!looksBinary(new TextEncoder().encode('plain text\nwith lines')), 'plain text is not binary');
 ok(looksBinary(new Uint8Array([0x1f, 0x8b, 0x00, 0x41])), 'a NUL in the head means binary');
@@ -38,5 +36,4 @@ ok(mediaClock(83 * 1e6) === '1:23', 'seconds render as m:ss', mediaClock(83 * 1e
 ok(mediaClock(3723 * 1e6) === '1:02:03', 'hours render as h:mm:ss', mediaClock(3723 * 1e6));
 ok(mediaClock(0) === '' && mediaClock(NaN) === '', 'unknown duration renders as nothing');
 
-console.log(`preview/peek: ${passed} passed, ${failed} failed`);
-if (failed) process.exit(1);
+finish('preview/peek');

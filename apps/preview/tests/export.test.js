@@ -1,11 +1,9 @@
 import {EXPORT_FORMATS, exportFormats, saveOptions, exportName, rasterScale, pageExportNames}
     from '../lib/export.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let passed = 0, failed = 0;
-function ok(cond, name, got) {
-    if (cond) { passed++; console.log(`  ok    ${name}`); }
-    else { failed++; console.log(`  FAIL  ${name}${got !== undefined ? ` (got ${JSON.stringify(got)})` : ''}`); }
-}
+const ok = (cond, name, got) =>
+    test(name, () => assert(cond, got !== undefined ? `got ${JSON.stringify(got)}` : ''));
 
 const onDevice = exportFormats(['bmp', 'ico', 'avif', 'jpeg', 'png', 'tiff', 'webp']);
 ok(onDevice.length === 5, 'the device set offers all five worthwhile formats', onDevice.map(f => f.key));
@@ -30,5 +28,4 @@ ok(names.length === 3 && names[2] === 'doc — page 3.png', 'all-pages export nu
 
 ok(EXPORT_FORMATS.every(f => f.key && f.label && f.ext), 'every format entry is complete');
 
-console.log(`preview/export: ${passed} passed, ${failed} failed`);
-if (failed) process.exit(1);
+finish('preview/export');

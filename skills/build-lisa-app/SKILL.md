@@ -144,11 +144,14 @@ Getting this wrong is silent. All of it is required:
 
 **The manifest path is the trap (#241).** `SYSTEM_MANIFEST_DIR` is
 `/usr/share/lisa/manifests` (`daemons/agentd/src/main.rs:17`). Preview's
-`install` line in `os/packages/lisa/PKGBUILD` writes to
-`/usr/share/lisa/apps/` instead — a directory nothing reads. It does not
-error, warn or log: the app runs, the window works, the socket appears,
-and the capability simply does not exist. Preview is a shipped core app
-whose declared tools have never reached the model.
+`install` line in `os/packages/lisa/PKGBUILD` wrote to
+`/usr/share/lisa/apps/` instead — a directory nothing reads. It did not
+error, warn or log: the app ran, the window worked, the socket appeared,
+and the capability simply did not exist, for months, in a shipped core
+app. `just lint` now runs `os/repo-tools/check-app-manifests.py`, which
+fails on any manifest the package installs outside that directory (or
+does not install at all) — so getting this wrong is loud now, but only
+because it was silent once.
 
 Note also that the app channel updates an app's *code* but not its
 *registration*: a new tool means a new manifest, and a manifest change

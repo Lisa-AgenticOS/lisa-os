@@ -37,6 +37,28 @@ GNOME Shell extensions still load from the baked tree at session start
 (ADR-0020). `build-zen-payload.sh <arch> <version> [outdir]` builds the
 per-arch Zen payload for the same channel.
 
+## The lint gates
+
+The `check-*.py` scripts here are the mechanisms behind `just lint`. Each
+exists because a defect of its class shipped once and announced itself
+nowhere: `check-workflow-quoting.py` (an apostrophe in a workflow comment),
+`check-user-units.py` (#161), `check-repart-slots.py` (an A/B slot size
+mismatch that only bites on the first update), `check-embedding-model.py`
+(#163), `check-tokens.py` (ADR-0038), and `check-app-manifests.py` (#241 —
+a manifest installed outside `SYSTEM_MANIFEST_DIR`, which costs an app its
+entire agent surface with no error, warning or log line).
+
+They share a shape: read the truth from the consumer rather than restating
+it (`check-app-manifests.py` reads `SYSTEM_MANIFEST_DIR` out of
+`daemons/agentd/src/main.rs`), print one line on success, name the
+offending path on failure, and fail loudly when a sweep matched nothing —
+a check that quietly checks nothing is the failure mode these are for.
+
+Extend by adding a `check-*.py` and a line in the `lint` recipe. Prove it
+the way #241 was proved: run it against the broken tree first and watch it
+go red, then fix the tree; a check only ever seen green is a check nobody
+has tested.
+
 ## Backlog (Appendix D)
 
 - `snapshot.sh` — record/advance the pinned snapshot date; advances only

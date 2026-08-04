@@ -388,8 +388,11 @@ package_lisa-shell() {
     # Assistant chat window: launcher entry + its spark icon (ADR-0015).
     install -Dm644 apps/preview/app.lisaos.Preview.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.Preview.desktop"
+    # The manifest goes where agentd looks and nowhere else: it read only
+    # /usr/share/lisa/manifests all along, so the four tools Preview
+    # declares had never once reached the model (#241).
     install -Dm644 apps/preview/app.lisaos.Preview.json \
-        "$pkgdir/usr/share/lisa/apps/app.lisaos.Preview.json"
+        "$pkgdir/usr/share/lisa/manifests/app.lisaos.Preview.json"
     # The quick-look app id (NoDisplay): Space runs Preview under
     # app.lisaos.PreviewPeek so the desktop can keep peeks out of the
     # dock; this file is how the shell resolves that id to an icon.

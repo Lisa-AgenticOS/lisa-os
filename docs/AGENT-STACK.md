@@ -553,10 +553,12 @@ socket, no process — is still advertised to the model because
 `~/.local/share/lisa/manifests/app.lisaos.Browser.json` was written once
 and never reaped (ADR-0049:51-58).
 
-**A manifest in a directory nothing reads is not a build failure
-(#241).** ADR-0049's first implementation slice asks for that check. It
-does not exist, and `apps/preview`'s manifest is installed to
-`/usr/share/lisa/apps/` — see `docs/ANATOMY-OF-AN-APP.md` §7.
+**A manifest in a directory nothing reads is now a lint failure
+(#241).** ADR-0049's first implementation slice asked for that check;
+`os/repo-tools/check-app-manifests.py` is it, and `apps/preview`'s
+manifest — which installed to `/usr/share/lisa/apps/`, the directory
+that caught nobody's eye for months — now installs where agentd looks.
+See `docs/ANATOMY-OF-AN-APP.md` §7.
 
 **Installed-but-not-available is not a reported state (#219).**
 ADR-0049's slice 2 closes the registry half of the socket-lifecycle

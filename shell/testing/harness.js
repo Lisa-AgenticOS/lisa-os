@@ -64,9 +64,22 @@ export function assert(cond, msg = 'assertion failed') {
 
 /// Await any async tests, then report. `await finish(...)` in a suite
 /// that uses async bodies; a sync-only suite may call it without.
-export async function finish(suite) {
+///
+/// Deliberately NOT an `async function`: with no async bodies to await
+/// this must throw *synchronously*, out of module code, because that is
+/// jsc's only failure signal. jsc has no exit primitive (`quit()` exits
+/// 0) and swallows an unhandled rejection with status 0 — so an `async
+/// finish` reported "1 failed" on a macOS dev host and exited green.
+/// gjs (`imports.system.exit`) and node (`process.exit`) are unaffected;
+/// a suite with async bodies still cannot fail jsc's exit code, which is
+/// why CI runs node.
+export function finish(suite) {
     if (pending.length > 0)
-        await Promise.all(pending);
+        return Promise.all(pending).then(() => report(suite));
+    return report(suite);
+}
+
+function report(suite) {
     log(`${suite}: ${passes} passed, ${failures} failed`);
     if (failures > 0) {
         // Non-zero exit on every supported runtime.

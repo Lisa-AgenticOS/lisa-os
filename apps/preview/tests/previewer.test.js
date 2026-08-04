@@ -1,10 +1,8 @@
 import {showFileAction, BUS_NAME, OBJECT_PATH} from '../lib/previewer-protocol.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let pass = 0, fail = 0;
-function ok(c, w) { if (c) { pass++; console.log(`  ok    ${w}`); } else { fail++; console.log(`  FAIL  ${w}`); } }
+const ok = (cond, what) => test(what, () => assert(cond));
 const eq = (a, b, w) => ok(JSON.stringify(a) === JSON.stringify(b), `${w} (got ${JSON.stringify(a)})`);
-
-console.log('preview/previewer');
 
 // Quick Look's rule: Space on what you are already looking at closes it.
 eq(showFileAction('file:///a.png', {uri: 'file:///a.png', visible: true}, true),
@@ -30,5 +28,4 @@ eq(showFileAction('file:///a.png', {uri: 'file:///a.png', visible: true}, false)
 ok(BUS_NAME === 'org.gnome.NautilusPreviewer', 'the bus name is versionless — Nautilus never dials the 2');
 ok(OBJECT_PATH === '/org/gnome/NautilusPreviewer', 'the object path is versionless too');
 
-console.log(`preview/previewer: ${pass} passed, ${fail} failed`);
-if (fail) throw new Error(`${fail} failed`);
+finish('preview/previewer');

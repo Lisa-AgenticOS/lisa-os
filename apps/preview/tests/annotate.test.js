@@ -1,11 +1,9 @@
 import {normalizeRect, isClick, viewToPage, annotRect, savePathFor, unsavedLabel, COLORS}
     from '../lib/annotate.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let passed = 0, failed = 0;
-function ok(cond, name, got) {
-    if (cond) { passed++; console.log(`  ok    ${name}`); }
-    else { failed++; console.log(`  FAIL  ${name}${got !== undefined ? ` (got ${JSON.stringify(got)})` : ''}`); }
-}
+const ok = (cond, name, got) =>
+    test(name, () => assert(cond, got !== undefined ? `got ${JSON.stringify(got)}` : ''));
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // --- rects ---------------------------------------------------------
@@ -51,5 +49,4 @@ ok(unsavedLabel(0, true) === 'pages reordered — unsaved', 'reorder alone');
 ok(COLORS.highlight.red === 0xffff && COLORS.note.blue === 0xc9c9,
     'colors are 16-bit channels as PopplerColor wants');
 
-console.log(`preview/annotate: ${passed} passed, ${failed} failed`);
-if (failed) process.exit(1);
+finish('preview/annotate');

@@ -1,13 +1,8 @@
 import {zoomStep, fitScale, fitWidthScale, step, rotate, MIN_ZOOM, MAX_ZOOM} from '../lib/view.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let pass = 0, fail = 0;
-function ok(cond, what) {
-    if (cond) { pass++; console.log(`  ok    ${what}`); }
-    else { fail++; console.log(`  FAIL  ${what}`); }
-}
+const ok = (cond, what) => test(what, () => assert(cond));
 const near = (a, b) => Math.abs(a - b) < 1e-6;
-
-console.log('preview/view');
 
 ok(zoomStep(1, +1) === 1.5, 'zoom in from 100% lands on a ladder step');
 ok(zoomStep(1, -1) === 0.67, 'zoom out from 100% lands on a ladder step');
@@ -41,5 +36,4 @@ ok(step(0, 0, +1) === 0, 'an empty document has no page to move to');
 ok(rotate(0, -90) === 270, 'rotating anticlockwise from 0 gives 270, not -90');
 ok(rotate(270, 90) === 0, 'rotation wraps to 0');
 
-console.log(`preview/view: ${pass} passed, ${fail} failed`);
-if (fail) throw new Error(`${fail} failed`);
+finish('preview/view');

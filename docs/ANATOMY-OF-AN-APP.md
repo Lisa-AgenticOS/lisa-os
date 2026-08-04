@@ -557,9 +557,10 @@ pass **vacuously** — `fn()` returned a promise, nothing threw, and the
 test reported "ok" whatever it went on to assert. Under gjs that is not
 fatal, so an async test could be green and empty.
 
-21 of the 30 app test files use the harness. Preview's suite and
-`apps/mail/tests/links.test.js` hand-roll an identical-looking `ok()`
-with a node-only `process.exit(1)`. **For new code, use the harness.**
+All 30 app test files use the harness. Preview's suite and
+`apps/mail/tests/links.test.js` used to hand-roll an identical-looking
+`ok()` with a node-only `process.exit(1)`, which #242 converted once CI
+started running them. **Use the harness.**
 
 ### How to run them
 
@@ -571,13 +572,14 @@ just ci                # lint test shell-test ime-test
 
 `just test` is `cargo test --workspace` and runs no JS.
 
-**Known gap, stated because a doc that implies coverage is worse than
-none.** The CI job `shell-tests` (`.github/workflows/ci.yml:154-170`)
-globs only `shell/*/tests/*.test.js` — it has no `apps/` glob, and
-`ci.yml` has no `apps` path filter, so an apps-only commit triggers no
-test job at all. `.githooks/pre-push` runs `just lint` only. **App tests
-exist, are wired into `just shell-test`, and are enforced by nothing
-automated.** Run `just shell-test` yourself before you commit.
+The CI job `shell-tests` runs `just shell-test` itself — one list, so
+the job cannot cover less than the recipe a developer runs — and
+`apps/**` is in its path filter, so an apps-only commit triggers it.
+That was not true until #242: the job restated the glob as
+`shell/*/tests/*.test.js` and `ci.yml` had no `apps` filter, so roughly
+200 app cases had never run in CI once. `.githooks/pre-push` still runs
+`just lint` only, so `just shell-test` before a commit is still the fast
+way to find out.
 
 ### The house rules
 
@@ -712,7 +714,7 @@ Each of these happened. Each has an issue number.
 
 ### #241 — a manifest in a directory nothing reads
 
-**Install the manifest to `/usr/share/lisa/manifests/`.** Preview's goes
+**Install the manifest to `/usr/share/lisa/manifests/`.** Preview's went
 to `/usr/share/lisa/apps/`:
 
 ```
@@ -722,18 +724,21 @@ os/packages/lisa/PKGBUILD:392      "$pkgdir/usr/share/lisa/apps/app.lisaos.Previ
 
 `SYSTEM_MANIFEST_DIR` is `/usr/share/lisa/manifests`
 (`daemons/agentd/src/main.rs:17`), and a repo-wide search for
-`share/lisa/apps` finds exactly one hit outside the docs: the line above,
-the only thing that ever writes there. **Preview is a shipped core app
-whose declared tools have never reached the model, and nothing anywhere
-reported it.** Mail, Surfer and notes install to the right directory.
+`share/lisa/apps` found exactly one hit outside the docs: the line above,
+the only thing that ever wrote there. **Preview was a shipped core app
+whose declared tools had never reached the model, and nothing anywhere
+reported it.** Mail, Surfer and notes installed to the right directory.
 
 This is the most valuable line in this document. A manifest in the wrong
 directory does not error, does not warn, and does not log. The app runs,
 the socket appears, the window works — and the capability simply does
-not exist. ADR-0049's first implementation slice asks for the check that
-would have caught it: *a manifest installed to a directory the daemon
-does not search is a build failure, not a silent one.* That check does
-not exist yet.
+not exist. ADR-0049's first implementation slice asked for the check
+that would have caught it: *a manifest installed to a directory the
+daemon does not search is a build failure, not a silent one.* That check
+is now `os/repo-tools/check-app-manifests.py`, run by `just lint`: it
+reads the expected directory out of agentd's own constant, finds every
+`lisa_manifest` file in the tree, and fails on any that the PKGBUILD
+installs elsewhere or does not install at all.
 
 If you add an app, verify with:
 

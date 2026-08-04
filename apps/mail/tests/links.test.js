@@ -1,10 +1,8 @@
 import {linkAction} from '../lib/links.js';
+import {assert, finish, test} from '../../../shell/testing/harness.js';
 
-let pass = 0, fail = 0;
-const ok = (c, w) => { if (c) { pass++; console.log(`  ok    ${w}`); } else { fail++; console.log(`  FAIL  ${w}`); } };
+const ok = (cond, what) => test(what, () => assert(cond));
 const is = (uri, action, w) => ok(linkAction(uri).action === action, `${w} (got ${linkAction(uri).action})`);
-
-console.log('mail/links');
 
 is('', 'in-place', 'the message load itself proceeds');
 is('about:blank', 'in-place', 'about:blank is the message load');
@@ -24,5 +22,4 @@ is('javascript:alert(1)', 'refuse', 'javascript: never');
 is('  DATA:text/html,x', 'refuse', 'case and leading space do not evade the check');
 is('  HtTpS://example.com', 'external', 'case does not break the allowlist either');
 
-console.log(`mail/links: ${pass} passed, ${fail} failed`);
-if (fail) throw new Error(`${fail} failed`);
+finish('mail/links');

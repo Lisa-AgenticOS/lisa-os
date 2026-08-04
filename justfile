@@ -29,6 +29,9 @@ lint:
     # shell/app surface hardcodes must be a branding/tokens.json token,
     # and the generated token sheets must match their source.
     python3 os/repo-tools/check-tokens.py
+    # A manifest installed where agentd does not look does not error,
+    # warn or log — the app's tools simply never reach the model (#241).
+    python3 os/repo-tools/check-app-manifests.py
     # The knowledge pack (#175) is generated from component READMEs; a
     # stale committed copy would ship the model answers about last
     # month's OS.
@@ -37,9 +40,11 @@ lint:
 fmt:
     cargo fmt --all
 
-# Shell-surface unit tests (PLAN §5.7): pure-logic modules under
-# shell/*/tests. Runtime-agnostic — first JS runtime found wins:
-# gjs (Linux/image), node (CI), jsc (macOS ships it).
+# Shell- and app-surface unit tests (PLAN §5.7, §5.8): pure-logic
+# modules under shell/*/tests AND apps/*/tests — both trees, which is
+# what the glob below has always covered and what CI now runs (#242).
+# Runtime-agnostic — first JS runtime found wins: gjs (Linux/image),
+# node (CI), jsc (macOS ships it).
 shell-test:
     #!/usr/bin/env bash
     set -euo pipefail
