@@ -5,6 +5,51 @@ fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
 "where are we on it" companion. **Last updated: 2026-08-04.**
 
+## 2026-08-04 late — the shortcuts that were never bound, and a docs sweep
+
+- **Super+Space was reserved everywhere and bound nowhere (#255).** The
+  overlay schema's header named the chord, GNOME's input-source switcher
+  was displaced to Ctrl+Super+Space to keep it free, PLAN §5.7.2
+  specified it — and `shell/launcher` had no `schemas/` directory and no
+  `addKeybinding` call. A search provider with no way to summon the
+  search. It now ships its own gschema, bound in `enable()` and removed
+  in `disable()`. The seat was not empty: the override bound
+  `toggle-overview` to the same chord as a stand-in, which opened the
+  window picker and would have collided the moment the real binding
+  landed.
+- **The dock's pins had never been applied (#263).** `favorite-apps` had
+  been set since 8faf668 under `[org.gnome.settings-daemon.plugins.power]`,
+  a schema with no such key; `glib-compile-schemas` warns once and drops
+  the line, so every image shipped a dock default that did not exist. The
+  device's schema default was still GNOME's stock six. Now in
+  `[org.gnome.shell]` and the image's dconf, ordered by argument:
+  Assistant, Files, Surfer, Mail, Preview, Ledger, Console.
+- **`docs/KEYBOARD.md` is generated (#257)**, from the gschemas and
+  settings files that bind the keys. Its **Bound by** column prints
+  *nothing — reserved, not bound* for a chord with no call site, which is
+  what #255 looked like from the outside and what no hand-written table
+  could show. `just lint` fails on a stale map.
+- **The Forge targets GJS (#243).** Not a `Verifier::Gjs` arm — `lisa dev
+  check`, so the knowledge lives in a verb that CI and a human can run
+  too. It checks sources exist, that no entry module opens with a
+  top-level `await`, and parses the manifest with **agentd's own** parser.
+  It deliberately does not execute the app: `Verifier::Command` has none
+  of `ShellTool`'s confinement.
+- **A skill's tool allowlist is enforced on the production path (#245)**,
+  proved by a stub SSE server driven through `loop_runner::run` rather
+  than by setting `AgentConfig::skills` by hand — which is how the defect
+  survived a green suite. Skill path resolution had three spellings; one
+  loader now, harnessd re-exports it.
+- **Four test suites had been reporting as `undefined`.** `finish()` now
+  refuses an empty name. 573 shell tests, 0 failed, no line says
+  undefined.
+- **Closed:** #37 and #48 (won't-do under ADR-0047 — no Flutter SDK and
+  no build toolchain for a lane with no app), #166, #243, #245, #246,
+  #255*, #257, #263*. **Filed:** #268 (the apps channel ships extension
+  trees the shell can never load), #269 (the guard allowlists `dart` and
+  `flutter`, not `gjs`, so the Forge cannot run what it writes).
+  *\*#255 and #263 await a session restart and an image.*
+
 ## 2026-08-04 — Lisa Desktop replaces GNOME Shell in the image (#171 step 4)
 
 - **The fork stops sitting beside stock GNOME and takes its place.**
