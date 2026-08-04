@@ -196,7 +196,21 @@ export function messagePath(root, folder, dir, filename) {
 /// `entries` is `[{dir, name}]` — supplied by the caller so this stays
 /// pure. Sorted newest first by the Maildir timestamp prefix, which is
 /// the delivery time and is what a mail list is ordered by.
-export function listFolder(folder, entries) {
+///
+/// **Every row carries the account root it was listed from** (#264), and
+/// that is the whole of the fix: an action on a message resolves against
+/// `message.root`, not against whatever account the window happens to be
+/// showing when the button is pressed. It used to resolve against one
+/// mutable module-level string that `Store.use(account)` overwrote, so
+/// a second window — or one click in the sidebar — could send a trash,
+/// an archive or a Save As into a DIFFERENT PERSON'S Maildir. With one
+/// account the two answers were always identical, which is why this
+/// survived until multi-account landed (#67, #222).
+///
+/// `null` when the caller supplied none, never a guess: `movePaths`
+/// refuses a rootless message rather than building a path out of
+/// `undefined`.
+export function listFolder(folder, entries, {root = null} = {}) {
     return (entries ?? [])
         .filter((e) => e && (e.dir === 'cur' || e.dir === 'new'))
         .map((e) => {
@@ -204,6 +218,7 @@ export function listFolder(folder, entries) {
             return {
                 ...meta,
                 folder,
+                root,
                 dir: e.dir,
                 id: messageId(folder, meta.unique),
                 // Maildir names start with the delivery time in seconds.

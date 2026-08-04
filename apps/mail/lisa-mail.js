@@ -46,7 +46,7 @@ import {
 } from './lib/maildir.js';
 import {decodeSubject, messageView} from './lib/message.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
-import {actionsFor, flagChange, moveTo} from './lib/actions.js';
+import {actionsFor, flagChange, movePaths, moveTo} from './lib/actions.js';
 import {agentMayRead, parseMessageId, planFor} from './lib/agent-actions.js';
 import {buildMessage, forwardFields, messageIdFor, replyFields} from './lib/compose.js';
 import {msmtpArgv, sendOutcome, sentFilename} from './lib/send.js';
@@ -67,8 +67,8 @@ import {BUS_NAME as PREVIEWER_NAME, OBJECT_PATH as PREVIEWER_PATH}
 import {kindOf} from '../preview/lib/formats.js';
 
 import {
-    CONFIG_NAME, accountRows, parseConfig, resolveMaildir, serializeConfig,
-    storeSummary, syncStatus, validateMaildir,
+    CONFIG_NAME, accountRows, bannerText, lastSynced, parseConfig, resolveMaildir,
+    serializeConfig, storeSummary, syncStatus, validateMaildir,
 } from './lib/settings.js';
 
 /// WebKit, if this system has it.
@@ -274,24 +274,37 @@ function discoverAccounts(root) {
 /// Deliberately not a cache or a database. A folder is a directory
 /// listing and a message is a file; the expensive thing (parsing a
 /// body) happens when a message is opened, not when a folder is.
+///
+/// # It has no current account, and that is the point (#264)
+///
+/// This class used to carry a mutable `root` naming whichever account
+/// was being looked at, and a `use(account)` that overwrote it. Two
+/// things then shared one answer to "which Maildir": a second window
+/// replaced the store the first was using, and one click in the sidebar
+/// repointed every action in flight. `root` is what `messagePath` builds
+/// on, so a move, a trash, an archive or a Save As could resolve under
+/// an account the message was never in — which is a bug about somebody's
+/// mail, not about window management. With a single account both answers
+/// were always the same string, so it stayed invisible until #67/#222
+/// made multi-account real.
+///
+/// So **every method takes the account root it is to read**, and every
+/// message that comes out of one carries the root it was read from
+/// (`listFolder`, `message`). Nothing here remembers a "current"
+/// anything; the window remembers what it is showing, and an ACTION
+/// resolves against the message rather than against the window.
 class Store {
-    constructor(root) {
-        this.root = root;
-        // Every account under this Maildir, and the subtree each one
-        // owns. `root` stays the *current* account's root so nothing
-        // below this line had to learn about accounts.
-        this.accounts = discoverAccounts(root);
-        this.base = root;
-        if (this.accounts.length > 0)
-            this.root = this.accounts[0].root;
+    constructor(base) {
+        /// The Maildir root itself — what the setting points at, and
+        /// the fallback when it holds no recognisable account at all.
+        this.base = base;
+        // Every account under this Maildir, and the subtree each owns.
+        this.accounts = discoverAccounts(base);
     }
 
-    /// Point the store at one account's subtree.
-    use(account) {
-        const hit = this.accounts.find((a) => a.name === account);
-        if (hit)
-            this.root = hit.root;
-        return !!hit;
+    /// The subtree one account owns, by name, or `null`.
+    rootOf(name) {
+        return this.accounts.find((a) => a.name === name)?.root ?? null;
     }
 
     /// Folder names across every account, for the sidebar's outer level.
@@ -311,19 +324,8 @@ class Store {
         return [...known, ...seen.filter((f) => !FOLDER_ORDER.includes(f)).sort()];
     }
 
-    /// Unread in one folder of one account, without changing `root`.
-    countsIn(accountRoot, folder) {
-        const was = this.root;
-        this.root = accountRoot;
-        try {
-            return this.counts(folder);
-        } finally {
-            this.root = was;
-        }
-    }
-
-    folders() {
-        return foldersIn(this.root, listDir);
+    folders(root) {
+        return foldersIn(root, listDir);
     }
 
     /// The cheap half: what the filenames alone can tell us.
@@ -333,15 +335,17 @@ class Store {
     /// one directory listing however large the folder is. A real inbox
     /// is 3,758 messages — reading every one of them to draw a window
     /// froze the app until it was killed.
-    index(folder) {
+    index(root, folder) {
         const entries = [];
         for (const dir of ['cur', 'new']) {
-            for (const e of listDir(`${this.root}/${folder}/${dir}`)) {
+            for (const e of listDir(`${root}/${folder}/${dir}`)) {
                 if (!e.isDir)
                     entries.push({dir, name: e.name});
             }
         }
-        return listFolder(folder, entries);
+        // Every row remembers which account it came out of, so an action
+        // on it cannot land in another one (#264).
+        return listFolder(folder, entries, {root});
     }
 
     /// The expensive half, for one message: headers, sender, preview.
@@ -350,8 +354,8 @@ class Store {
     /// preview only needs the first paragraph, so a 4 MB message with a
     /// base64 attachment costs the same as a short one. Opening the
     /// message for real still reads all of it — see `message()`.
-    summary(folder, m, head = 0) {
-        const path = messagePath(this.root, folder, m.dir, m.filename) ?? '';
+    summary(root, folder, m, head = 0) {
+        const path = messagePath(root, folder, m.dir, m.filename) ?? '';
         const raw = (head > 0 ? readHead(path, head) : readMessageFile(path)) ?? '';
         const {headerText} = splitMessage(raw);
         const headers = parseHeaders(headerText);
@@ -375,17 +379,17 @@ class Store {
     ///
     /// Paged on purpose. The list is the first thing drawn and nobody
     /// reads the four-thousandth row before the first.
-    messages(folder, limit = PAGE) {
-        return this.index(folder)
+    messages(root, folder, limit = PAGE) {
+        return this.index(root, folder)
             .slice(0, Math.max(0, limit))
-            .map((m) => this.summary(folder, m));
+            .map((m) => this.summary(root, folder, m));
     }
 
     /// How many messages the folder holds, and how many are unread —
     /// both from the index, so the sidebar tells the truth about the
     /// whole folder while the list shows a page of it.
-    counts(folder) {
-        const index = this.index(folder);
+    counts(root, folder) {
+        const index = this.index(root, folder);
         return {total: index.length, unread: unreadCount(index)};
     }
 
@@ -396,13 +400,13 @@ class Store {
     /// results" for a message sitting on disk. Every message is
     /// considered; each costs a bounded header read rather than a whole
     /// file.
-    search(folder, query, limit = 200) {
+    search(root, folder, query, limit = 200) {
         const q = String(query).toLowerCase().trim();
         if (!q)
             return [];
         const out = [];
-        for (const m of this.index(folder)) {
-            const full = this.summary(folder, m, SEARCH_HEAD);
+        for (const m of this.index(root, folder)) {
+            const full = this.summary(root, folder, m, SEARCH_HEAD);
             const hay = `${full.subject} ${full.from.name} ${full.from.address} ${full.preview}`;
             if (hay.toLowerCase().includes(q)) {
                 out.push(full);
@@ -419,16 +423,16 @@ class Store {
     /// file by the same rule. Two lookups with two ideas of which file a
     /// message id names is how an attachment ends up coming from the
     /// wrong message.
-    locate(folder, unique) {
+    locate(root, folder, unique) {
         for (const dir of ['cur', 'new']) {
-            for (const e of listDir(`${this.root}/${folder}/${dir}`)) {
+            for (const e of listDir(`${root}/${folder}/${dir}`)) {
                 // Compare SANITISED to sanitised. `startsWith` against
                 // the raw name never matched on a synced Maildir, where
                 // mbsync's `,U=<uid>` suffix is sanitised in the id and
                 // not on disk (see uniqueMatchesId).
                 if (!uniqueMatchesId(parseFilename(e.name, dir).unique, unique))
                     continue;
-                const path = messagePath(this.root, folder, dir, e.name);
+                const path = messagePath(root, folder, dir, e.name);
                 if (path)
                     return {path, dir, name: e.name};
             }
@@ -444,8 +448,8 @@ class Store {
     /// to be built here, where nothing can reach it — which is how
     /// every reply went out with no In-Reply-To for as long as replying
     /// has existed (#223).
-    message(folder, unique) {
-        const found = this.locate(folder, unique);
+    message(root, folder, unique) {
+        const found = this.locate(root, folder, unique);
         if (!found)
             return null;
         const raw = readMessageFile(found.path);
@@ -454,6 +458,11 @@ class Store {
         const meta = parseFilename(found.name, found.dir);
         return messageView(raw, {
             folder,
+            // The account this file was READ FROM, carried on the object
+            // the toolbar, the composer and the write tools all act on
+            // (#264). An action resolves against this, never against
+            // whatever the window is showing by then.
+            root,
             id: `${folder}/${unique}`,
             unique,
             // The ACTION shape as well as the reading shape:
@@ -484,8 +493,8 @@ class Store {
     /// shrink). `attachmentBytes` returns null rather than a truncated
     /// buffer when even that is not enough (#238) — the caller says so
     /// out loud instead of writing three quarters of somebody's file.
-    attachmentBytes(folder, unique, path) {
-        const found = this.locate(folder, unique);
+    attachmentBytes(root, folder, unique, path) {
+        const found = this.locate(root, folder, unique);
         if (!found)
             return null;
         const raw = readMessageFile(found.path);
@@ -495,7 +504,23 @@ class Store {
     }
 }
 
+/// The Maildir, and the accounts under it.
+///
+/// Module-level, and legitimately so now: this app has exactly ONE
+/// window (see `activate`), the store has no mutable "current account"
+/// left to alias, and it is replaced only when the Maildir *path*
+/// changes in settings — which is a whole-app change, not a per-window
+/// one. What made the old global dangerous was not that it was global,
+/// it was that two windows could write to it and `use()` could repoint
+/// it under a message somebody was acting on.
 let store = null;
+/// The account the window is SHOWING — `{name, root}` from
+/// `store.accounts`, or `null` for a Maildir with no recognisable
+/// account in it.
+///
+/// A view-state variable, deliberately not an action-state one: nothing
+/// resolves a message's path through this. Rows carry their own root.
+let currentAccount = null;
 let currentFolder = 'INBOX';
 /// How many of the current folder are drawn. Reset by loadFolder, grown
 /// by the "load more" row.
@@ -518,7 +543,6 @@ let readerHtml = null;
 /// not on the next launch.
 let allowRemote = true;
 let remoteBanner = null;
-let currentAccountName = null;
 let readerActions = null;
 /// The message on screen, FULLY PARSED — the object `store.message`
 /// returned, not the list row that was clicked. The toolbar, the
@@ -542,6 +566,16 @@ let attachmentList = null;
 const attachmentFiles = new Map();
 
 const app = new Adw.Application({application_id: APP_ID});
+
+/// Which account the window is LISTING from.
+///
+/// Only the list, the sidebar and the search box ask this. An action
+/// never does — it asks the message (`message.root`), which is the
+/// whole of #264. Falls back to the Maildir root itself, which is what
+/// a directory holding no recognisable account still is.
+function browsingRoot() {
+    return currentAccount?.root ?? store.base;
+}
 
 /// A window that fills most of the screen, within reason.
 ///
@@ -638,13 +672,14 @@ function loadFolder(folder, limit = PAGE) {
         listBox.remove(child);
         child = next;
     }
-    const messages = store.messages(folder, limit);
-    const {total} = store.counts(folder);
+    const root = browsingRoot();
+    const messages = store.messages(root, folder, limit);
+    const {total} = store.counts(root, folder);
     if (messages.length === 0) {
         const empty = new Gtk.ListBoxRow({selectable: false});
         empty.set_child(new Adw.StatusPage({
             title: 'Nothing here',
-            description: `No mail in ${folder}. Mail reads a Maildir at ${store.root} — ` +
+            description: `No mail in ${folder}. Mail reads a Maildir at ${root} — ` +
                 'sync one with mbsync or offlineimap and it will appear.',
             vexpand: true,
         }));
@@ -914,7 +949,11 @@ function buildAttachments(full) {
 /// separator past the sanitiser, the file would land outside the
 /// directory we made and this refuses instead.
 function materialise(att) {
-    const key = `${openMessage?.folder}/${openMessage?.unique}#${att.path.join('.')}`;
+    // Keyed by the ACCOUNT too: two accounts can hold the same folder
+    // name, and a key that cannot tell them apart is a key that hands
+    // back the wrong file (#264).
+    const key = `${openMessage?.root}/${openMessage?.folder}/` +
+        `${openMessage?.unique}#${att.path.join('.')}`;
     const cached = attachmentFiles.get(key);
     if (cached && GLib.file_test(cached, GLib.FileTest.EXISTS))
         return cached;
@@ -956,7 +995,12 @@ function attachmentBytesOf(att) {
             'Nothing was written — a partial file would be worse.');
         return null;
     }
-    const bytes = store.attachmentBytes(openMessage.folder, openMessage.unique, att.path);
+    // `openMessage.root` — the account the message was read from, not
+    // the one the sidebar is on (#264). Save As on a message you are
+    // still reading after clicking another account's inbox used to
+    // extract from the wrong Maildir, or from nothing.
+    const bytes = store.attachmentBytes(
+        openMessage.root, openMessage.folder, openMessage.unique, att.path);
     if (!bytes || bytes.length === 0) {
         showNotice('That attachment could not be read from the message file.');
         return null;
@@ -1202,9 +1246,12 @@ function htmlDocument(body) {
 /// nothing was spinning the main loop yet.
 ///
 /// Returns null when there is no config, and the header stays "Mail".
+function mbsyncrcPath() {
+    return GLib.build_filenamev([GLib.get_user_config_dir(), 'lisa', 'mbsyncrc']);
+}
+
 function accountLabel() {
-    const path = GLib.build_filenamev([GLib.get_user_config_dir(), 'lisa', 'mbsyncrc']);
-    const text = readFile(path);
+    const text = readFile(mbsyncrcPath());
     for (const line of text.split('\n')) {
         const m = line.match(/^\s*User\s+(.+?)\s*$/);
         if (m)
@@ -1227,7 +1274,10 @@ function buildToolbar(msg) {
     // first, and fall back to the label: an "Archive" button is worse
     // than an icon and far better than a gap.
     const icons = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
-    for (const action of actionsFor(msg, store.folders(), canSend())) {
+    // The folders of the message's OWN account: whether Archive exists
+    // is a question about where this message lives, not about where the
+    // sidebar is pointing.
+    for (const action of actionsFor(msg, store.folders(msg.root), canSend())) {
         const known = action.icon && icons?.has_icon(action.icon);
         const button = new Gtk.Button({
             ...(known ? {icon_name: action.icon} : {label: action.label}),
@@ -1255,7 +1305,7 @@ function runAction(msg, action) {
         if (action.kind === 'flag') {
             const change = flagChange(msg, action.flag, action.on);
             if (change)
-                applyMove(msg.folder, change, msg.folder);
+                applyMove(msg, change, msg.folder);
         } else if (action.kind === 'send' && action.enabled !== false) {
             const me = defaultIdentity();
             openCompose(action.id === 'reply'
@@ -1265,7 +1315,7 @@ function runAction(msg, action) {
         } else if (action.kind === 'move' && action.enabled !== false) {
             const mv = moveTo(msg, action.folder);
             if (mv)
-                applyMove(msg.folder, mv, mv.toFolder);
+                applyMove(msg, mv, mv.toFolder);
         } else {
             return;
         }
@@ -1283,14 +1333,20 @@ function runAction(msg, action) {
 /// The rename itself. One `Gio.File.move`, no fallback copy: a copy
 /// that half-succeeds leaves the message in two folders, and a maildir
 /// with a duplicate is worse than one with a failed action.
-function applyMove(fromFolder, change, toFolder) {
-    const from = messagePath(store.root, fromFolder, change.fromDir, change.fromName);
-    const to = messagePath(store.root, toFolder, change.toDir, change.toName);
-    if (!from || !to)
-        throw new Error('refusing a path outside the maildir');
-    GLib.mkdir_with_parents(`${store.root}/${toFolder}/${change.toDir}`, 0o700);
-    Gio.File.new_for_path(from).move(
-        Gio.File.new_for_path(to), Gio.FileCopyFlags.NONE, null, null);
+///
+/// **Takes the message, not a folder name** (#264). Both paths come out
+/// of `movePaths`, which resolves them against the account the message
+/// was listed from — the tested decision in lib/actions.js. This used to
+/// build them from `store.root`, one mutable module-level string that a
+/// second window replaced and a sidebar click overwrote, so the file
+/// somebody archived could be renamed inside a different account.
+function applyMove(message, change, toFolder) {
+    const paths = movePaths(message, change, toFolder);
+    if (!paths)
+        throw new Error('refusing a move that names no account, or a path outside the maildir');
+    GLib.mkdir_with_parents(paths.dir, 0o700);
+    Gio.File.new_for_path(paths.from).move(
+        Gio.File.new_for_path(paths.to), Gio.FileCopyFlags.NONE, null, null);
 }
 
 function showMessage(msg) {
@@ -1299,7 +1355,7 @@ function showMessage(msg) {
     // lookup filled the header and left the pane empty — indis-
     // tinguishable from an empty message, and impossible to report.
     // A reader that cannot find the file on disk must say so.
-    const loaded = store.message(msg.folder, msg.unique);
+    const loaded = store.message(msg.root, msg.folder, msg.unique);
     const full = loaded ?? {
         ...msg,
         body: `Could not read this message from the Maildir.\n\n` +
@@ -1367,14 +1423,14 @@ function reloadFolders() {
 
         if (!multi) {
             const a = present[0];
-            folderList.append(folderRow(folder, a, store.countsIn(a.root, folder).unread, false));
+            folderList.append(folderRow(folder, a, store.counts(a.root, folder).unread, false));
             continue;
         }
 
         // One expander per folder, one row per account inside it. The
         // badge on the expander is the folder's total across accounts,
         // which is the number you want when it is collapsed.
-        const total = present.reduce((n, a) => n + store.countsIn(a.root, folder).unread, 0);
+        const total = present.reduce((n, a) => n + store.counts(a.root, folder).unread, 0);
         const expander = new Adw.ExpanderRow({
             title: folder,
             expanded: folder === 'INBOX',
@@ -1385,15 +1441,20 @@ function reloadFolders() {
             }));
         }
         for (const a of present)
-            expander.add_row(folderRow(folder, a, store.countsIn(a.root, folder).unread, true));
+            expander.add_row(folderRow(folder, a, store.counts(a.root, folder).unread, true));
         folderList.append(expander);
     }
 
     const first = folderList.get_row_at_index(0);
-    if (first && first._folder)
+    if (first && first._folder) {
         folderList.select_row(first);
-    else
-        selectFolder(accounts[0], currentFolder || 'INBOX');
+    } else {
+        // `currentAccount` first: a rebuild after a sync must not bounce
+        // somebody out of the account they were reading and back to the
+        // first one. Only a window that has not chosen yet falls through
+        // to accounts[0].
+        selectFolder(currentAccount ?? accounts[0], currentFolder || 'INBOX');
+    }
 }
 
 /// One selectable row: a folder within an account.
@@ -1423,17 +1484,332 @@ function folderRow(folder, account, unread, nested) {
 }
 
 /// Switch to a folder, in an account.
+///
+/// This moves the VIEW and nothing else (#264). It used to call
+/// `store.use(account.name)`, which repointed the one root every action
+/// in the app resolved against — including the message still open in
+/// the reading pane, whose next button press then renamed a file in
+/// this account instead of its own.
 function selectFolder(account, folder) {
-    if (account)
-        store.use(account.name);
-    currentAccountName = account ? account.name : null;
+    currentAccount = account ?? null;
     loadFolder(folder, PAGE);
 }
 
+// ---------------------------------------------------------------------
+// Sync: the button you press, and the failure you could not see (#265).
+//
+// On the reference device `lisa-mail-sync.service` had been failing
+// every five minutes since boot — the login keyring was locked, so
+// `lisa mail token` had nothing to hand mbsync — and Mail said nothing
+// at all. A person saw mail that was silently hours stale and no reason
+// why. The reasoning already existed and was already tested
+// (lib/settings.js `syncStatus`) and this file already imported it;
+// nothing rendered it.
+//
+// What "blocked" means is decided in ONE place, and it is not here.
+// This section gathers facts, hands them to `syncStatus`, and draws the
+// answer. #249 will render the same function per account in Settings.
+// ---------------------------------------------------------------------
+
+/// The banner, the refresh button and the quiet timestamp.
+let syncBanner = null;
+let syncAction = null;
+let refreshButton = null;
+let refreshSpinner = null;
+let refreshStack = null;
+let lastSyncedLabel = null;
+/// One pass at a time. A second press while mbsync is running would
+/// start a second syncer over the same Maildir, which is how a mailbox
+/// gets two writers and a lock file.
+let syncing = false;
+
+/// Has anything written the config that joins an account to mbsync?
+///
+/// The file existing is the honest test, and it is the one input
+/// `syncStatus` had no source for: the settings page never passed
+/// `bridged`, so on a device where `lisa mail setup` had run it still
+/// answered "Nothing is syncing yet — issue #155" and pointed at the
+/// wrong layer.
+function isBridged() {
+    return GLib.file_test(mbsyncrcPath(), GLib.FileTest.EXISTS);
+}
+
+/// Is the login keyring locked?
+///
+/// A property READ, never an unlock: reading `Locked` does not prompt,
+/// so this is safe to call while drawing a window. The same question
+/// `lisa mail token` asks before it refuses (cli/lisa/src/mail.rs), and
+/// asked the same way, so the app and the CLI cannot disagree about the
+/// state of the machine they are both on.
+///
+/// An error is "not locked". A system with no Secret Service at all is
+/// a different, earlier answer that `syncStatus` gives first; failing
+/// open here means a broken property read degrades to the old silence
+/// rather than inventing a refusal.
+function loginKeyringLocked() {
+    try {
+        const reply = Gio.DBus.session.call_sync(
+            'org.freedesktop.secrets', '/org/freedesktop/secrets/collection/login',
+            'org.freedesktop.DBus.Properties', 'Get',
+            new GLib.Variant('(ss)', ['org.freedesktop.Secret.Collection', 'Locked']),
+            new GLib.VariantType('(v)'), Gio.DBusCallFlags.NONE, 1000, null);
+        const value = reply.deepUnpack()[0];
+        // gjs hands a boxed `v` back as a GLib.Variant on some versions
+        // and as the unpacked value on others.
+        return typeof value === 'boolean' ? value : value?.get_boolean?.() === true;
+    } catch {
+        return false;
+    }
+}
+
+/// Everything `syncStatus` needs to answer, observed once.
+///
+/// Gathered here so the banner and the settings page ask the same
+/// questions in the same order; the ANSWER is lib/settings.js's.
+function syncFacts(accounts) {
+    return {
+        mbsync: GLib.find_program_in_path('mbsync') !== null,
+        secretService: hasSecretService(),
+        keyringLocked: loginKeyringLocked(),
+        accounts: accounts ?? [],
+        bridged: isBridged(),
+    };
+}
+
+/// Put the current answer on the banner.
+function showSyncStatus(status) {
+    if (!syncBanner)
+        return;
+    syncAction = status.action ?? null;
+    syncBanner.set_title(bannerText(status));
+    // An empty label is how AdwBanner draws no button. Where there is
+    // nothing to offer, the sentence stands on its own rather than
+    // sitting next to a control that does nothing.
+    syncBanner.set_button_label(syncAction?.label ?? '');
+    syncBanner.set_revealed(status.kind !== 'ok');
+}
+
+/// Re-ask every layer, and redraw the banner.
+///
+/// GOA is asynchronous, so this lands a moment after the window does.
+/// That is the right way round: a mail window that waits for a D-Bus
+/// daemon before it draws is a mail window that does not open on the
+/// machine that is broken.
+function refreshSyncStatus() {
+    goaAccounts()
+        .then((accounts) => showSyncStatus(syncStatus(syncFacts(accounts))))
+        .catch((e) => logError(e, 'mail: could not work out why sync is stuck'));
+}
+
+/// The banner's button, for the states that have one.
+function runSyncAction() {
+    if (syncAction?.id === 'online-accounts') {
+        openOnlineAccounts();
+        return;
+    }
+    if (syncAction?.id === 'unlock-keyring')
+        unlockKeyring();
+}
+
+/// Ask the Secret Service to unlock the login collection.
+///
+/// The issue's point, and the difference between a banner and a help
+/// page: the fix for a locked keyring is that something touches a
+/// credential so the prompt appears, and this app can be that something
+/// instead of describing it. `Unlock` returns either "already open" or
+/// a Prompt object that has to be shown — gnome-keyring draws the
+/// password dialog only when somebody calls `Prompt`.
+function unlockKeyring() {
+    const bus = Gio.DBus.session;
+    bus.call('org.freedesktop.secrets', '/org/freedesktop/secrets',
+        'org.freedesktop.Secret.Service', 'Unlock',
+        new GLib.Variant('(ao)', [['/org/freedesktop/secrets/collection/login']]),
+        new GLib.VariantType('(aoo)'), Gio.DBusCallFlags.NONE, 30000, null,
+        (source, result) => {
+            let prompt = '/';
+            try {
+                [, prompt] = source.call_finish(result).deepUnpack();
+            } catch (e) {
+                syncBanner?.set_title(`Could not ask the keyring to unlock: ${e.message}`);
+                return;
+            }
+            if (prompt && prompt !== '/') {
+                showUnlockPrompt(prompt);
+                return;
+            }
+            // Nothing to prompt for: it was already open, so re-ask
+            // rather than leaving a banner about a state that has gone.
+            refreshSyncStatus();
+        });
+}
+
+/// Draw the prompt the Secret Service handed back, and re-ask when it
+/// finishes — dismissed or not.
+function showUnlockPrompt(path) {
+    const bus = Gio.DBus.session;
+    // Subscribed BEFORE the call: `Completed` can arrive while the
+    // reply to `Prompt` is still in flight, and a listener attached
+    // afterwards would miss it and leave a stale banner.
+    const id = bus.signal_subscribe(
+        null, 'org.freedesktop.Secret.Prompt', 'Completed', path, null,
+        Gio.DBusSignalFlags.NONE, () => {
+            bus.signal_unsubscribe(id);
+            refreshSyncStatus();
+        });
+    bus.call('org.freedesktop.secrets', path, 'org.freedesktop.Secret.Prompt', 'Prompt',
+        new GLib.Variant('(s)', ['']), null, Gio.DBusCallFlags.NONE, 120000, null,
+        (source, result) => {
+            try {
+                source.call_finish(result);
+            } catch (e) {
+                bus.signal_unsubscribe(id);
+                syncBanner?.set_title(`The unlock prompt could not be shown: ${e.message}`);
+            }
+        });
+}
+
+/// When mail last actually arrived from the server.
+///
+/// mbsync rewrites `.mbsyncstate` in every folder it syncs, so the
+/// newest of those across every account is the last pass that completed
+/// — which is the number a person wants and is not the same as "when
+/// did new mail last arrive". Read off the disk rather than remembered
+/// in this process, so it survives a restart and counts the timer's
+/// passes as well as the button's.
+///
+/// `0` when nothing has ever synced, which `lastSynced` renders as
+/// "Never synced" rather than as a very old date.
+function lastSyncSeconds() {
+    const roots = store.accounts.length > 0
+        ? store.accounts.map((a) => a.root)
+        : [store.base];
+    let newest = 0;
+    for (const root of roots) {
+        for (const folder of foldersIn(root, listDir)) {
+            try {
+                const info = Gio.File.new_for_path(`${root}/${folder}/.mbsyncstate`)
+                    .query_info('time::modified', Gio.FileQueryInfoFlags.NONE, null);
+                newest = Math.max(newest, Number(info.get_attribute_uint64('time::modified')));
+            } catch {
+                // No state file in this folder: nothing synced it.
+            }
+        }
+    }
+    return newest;
+}
+
+function updateLastSynced() {
+    lastSyncedLabel?.set_label(lastSynced(lastSyncSeconds(), Date.now() / 1000));
+}
+
+/// Show or hide the spinner in the refresh button.
+function setSyncing(busy) {
+    syncing = busy;
+    refreshButton?.set_sensitive(!busy);
+    refreshButton?.set_tooltip_text(busy ? 'Syncing…' : 'Sync now');
+    if (!refreshStack)
+        return;
+    refreshStack.set_visible_child_name(busy ? 'busy' : 'idle');
+    if (busy)
+        refreshSpinner?.start();
+    else
+        refreshSpinner?.stop();
+}
+
+/// Refresh: one sync pass, then re-read the Maildir.
+///
+/// `lisa mail sync` rather than mbsync directly — it is the same one
+/// command the timer runs, it passes our config rather than
+/// `~/.mbsyncrc`, and it indexes what it fetched into retrieval (#170).
+/// Reimplementing any part of that here would be a second thing to keep
+/// in step.
+function runSync() {
+    if (syncing)
+        return;
+    if (!GLib.find_program_in_path('lisa')) {
+        syncBanner?.set_title('The `lisa` command is not on PATH, so Mail cannot start a sync.');
+        syncBanner?.set_button_label('');
+        syncBanner?.set_revealed(true);
+        return;
+    }
+    setSyncing(true);
+    let proc;
+    try {
+        proc = Gio.Subprocess.new(['lisa', 'mail', 'sync'],
+            Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE);
+    } catch (e) {
+        setSyncing(false);
+        syncBanner?.set_title(`Could not run a sync: ${e.message}`);
+        syncBanner?.set_revealed(true);
+        return;
+    }
+    proc.communicate_utf8_async(null, null, (source, result) => {
+        setSyncing(false);
+        let stderr = '';
+        let ok = false;
+        try {
+            const [, , err] = source.communicate_utf8_finish(result);
+            stderr = err ?? '';
+            // `get_successful`, not `get_exit_status`: the latter is
+            // documented as an error to call on a process that was
+            // signalled, and mbsync is exactly the kind of long
+            // subprocess a session teardown kills.
+            ok = source.get_successful();
+        } catch (e) {
+            stderr = e.message;
+        }
+        // The Maildir has changed under us: a new account subtree can
+        // appear on a first sync, so the store is rebuilt rather than
+        // just the folder redrawn.
+        store = new Store(store.base);
+        // Keep looking at the account the person was looking at — the
+        // fresh object from the new store, never the old one, which
+        // belongs to a Store that no longer exists.
+        currentAccount = store.accounts.find((a) => a.name === currentAccount?.name) ?? null;
+        reloadFolders();
+        updateLastSynced();
+        if (ok) {
+            refreshSyncStatus();
+            return;
+        }
+        // A failed pass says what the command said, on the banner. Then
+        // `syncStatus` gets the last word: if the reason is a state it
+        // knows — a locked keyring, no account — its sentence is the
+        // better one and it replaces this.
+        const said = stderr.split('\n').map((l) => l.trim())
+            .filter(Boolean).slice(-1)[0] ?? 'no reason given';
+        syncBanner?.set_title(`Sync failed: ${said}`);
+        syncBanner?.set_button_label('');
+        syncBanner?.set_revealed(true);
+        syncAction = null;
+        refreshSyncStatus();
+    });
+}
+
 app.connect('activate', () => {
+    // ONE WINDOW (#264).
+    //
+    // GApplication fires `activate` on first launch AND every time a
+    // second instance starts: the new process registers, forwards
+    // `activate` to the running one and exits. This handler used to
+    // build a window unconditionally, so every launch stacked another —
+    // three of them on the reference device, all reading and writing the
+    // same module-level state. Present what is there instead.
+    //
+    // `get_windows().find(…)` rather than the Assistant's
+    // `app.activeWindow ?? …` one-liner: `activeWindow` is the window
+    // with toplevel FOCUS, which is null when the app has none, and
+    // "nothing is focused" is exactly the moment a second launch
+    // happens. The tag is what tells our window from the composer's,
+    // which is an Adw.Window and never registers with the application.
+    const existing = app.get_windows().find((w) => w.__lisaMail);
+    if (existing) {
+        existing.present();
+        return;
+    }
+
     const resolved = maildirRoot();
     store = new Store(resolved.path);
-    store.source = resolved.source;
 
     // Sized against the monitor rather than a fixed guess: 1280x820 is
     // a dialog on the 4K panel this was first seen on. Three panes need
@@ -1446,6 +1822,9 @@ app.connect('activate', () => {
     });
     // The file dialogs the attachment bar puts up need a parent.
     mainWindow = window;
+    // How the next `activate` finds this one instead of building a
+    // second. Set before anything can fail below it.
+    window.__lisaMail = true;
 
     // Pane 1: folders. Populated by reloadFolders() once the rest of
     // the window exists — it selects a row, which loads a folder, which
@@ -1497,7 +1876,7 @@ app.connect('activate', () => {
             listBox.remove(child);
             child = next;
         }
-        const hits = store.search(currentFolder, q);
+        const hits = store.search(browsingRoot(), currentFolder, q);
         if (hits.length === 0) {
             const none = new Gtk.ListBoxRow({selectable: false});
             none.set_child(new Adw.StatusPage({
@@ -1513,6 +1892,25 @@ app.connect('activate', () => {
             listBox.append(messageRow(m));
     });
     listHeader.set_title_widget(search);
+
+    // Refresh, next to the search box (#265). One sync pass, a spinner
+    // while it runs, and the list re-read when it finishes — the app had
+    // no way at all to fetch mail, which on a machine whose timer has
+    // been failing since boot means no way to find out either.
+    const listIcons = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
+    refreshSpinner = new Gtk.Spinner();
+    refreshStack = new Gtk.Stack();
+    // Same fallback rule as every other button in this app: an icon
+    // name that does not resolve draws an empty button, which is
+    // indistinguishable from no button.
+    refreshStack.add_named(listIcons?.has_icon('view-refresh-symbolic')
+        ? new Gtk.Image({icon_name: 'view-refresh-symbolic'})
+        : new Gtk.Label({label: 'Refresh'}), 'idle');
+    refreshStack.add_named(refreshSpinner, 'busy');
+    refreshButton = new Gtk.Button({child: refreshStack, tooltip_text: 'Sync now'});
+    refreshButton.connect('clicked', () => runSync());
+    listHeader.pack_start(refreshButton);
+
     const menu = new Gio.Menu();
     menu.append('Preferences', 'app.preferences');
     menu.append('About Mail', 'app.about');
@@ -1520,6 +1918,23 @@ app.connect('activate', () => {
         icon_name: 'open-menu-symbolic', menu_model: menu, tooltip_text: 'Main menu',
     }));
     listPane.add_top_bar(listHeader);
+
+    // Why nothing is arriving, when nothing is arriving — in
+    // `syncStatus`'s words, over the list rather than buried in a
+    // settings page nobody opens when the app looks fine.
+    syncBanner = new Adw.Banner({revealed: false});
+    syncBanner.connect('button-clicked', () => runSyncAction());
+    listPane.add_top_bar(syncBanner);
+
+    // …and how stale what IS on screen is. Quiet, and always there:
+    // stale mail with a timestamp is a different experience from stale
+    // mail that looks current.
+    lastSyncedLabel = new Gtk.Label({
+        label: '', xalign: 0, margin_top: 4, margin_bottom: 4, margin_start: 12, margin_end: 12,
+        css_classes: ['dim-label', 'caption'],
+    });
+    listPane.add_bottom_bar(lastSyncedLabel);
+
     listPane.set_content(new Gtk.ScrolledWindow({child: listBox, vexpand: true}));
 
     // Pane 3: the reading pane.
@@ -1659,6 +2074,9 @@ app.connect('activate', () => {
     });
     window.set_content(outer);
     reloadFolders();
+    updateLastSynced();
+    // Asked once the window exists, and answered when GOA answers.
+    refreshSyncStatus();
 
     const preferences = new Gio.SimpleAction({name: 'preferences'});
     preferences.connect('activate', () => openPreferences(window));
@@ -1861,9 +2279,14 @@ function openPreferences(parent) {
     location.add(pathRow);
 
     const counts = {};
-    const folders = store.folders();
+    const browsing = browsingRoot();
+    const folders = store.folders(browsing);
+    // `counts().total`, not `messages().length` — `messages` is PAGED
+    // (50 by default), so this row reported "50 messages" for every
+    // folder with more than fifty in it, on a page whose entire purpose
+    // is to say truthfully what is on disk.
     for (const f of folders)
-        counts[f] = store.messages(f).length;
+        counts[f] = store.counts(browsing, f).total;
     location.add(new Adw.ActionRow({
         title: 'On disk now',
         subtitle: storeSummary(folders, counts),
@@ -1906,12 +2329,13 @@ function openPreferences(parent) {
     page.add(reading);
 
     // --- Why there is, or is not, mail arriving.
+    //
+    // The same `syncStatus` the main window's banner renders, off the
+    // same facts (#265). Two surfaces with two opinions about whether
+    // sync is blocked is how a person ends up debugging a layer that is
+    // fine.
     const sync = new Adw.PreferencesGroup({title: 'Syncing'});
-    const status = syncStatus({
-        mbsync: GLib.find_program_in_path('mbsync') !== null,
-        secretService: hasSecretService(),
-        accounts: [],
-    });
+    const status = syncStatus(syncFacts([]));
     const statusRow = new Adw.ActionRow({title: status.title, subtitle: status.detail});
     statusRow.add_prefix(new Gtk.Image({
         icon_name: status.kind === 'ok'
@@ -1951,11 +2375,7 @@ function openPreferences(parent) {
         }
         // The status depends on the accounts, so it is recomputed rather
         // than left showing the answer from before they were known.
-        const next = syncStatus({
-            mbsync: GLib.find_program_in_path('mbsync') !== null,
-            secretService: hasSecretService(),
-            accounts,
-        });
+        const next = syncStatus(syncFacts(accounts));
         statusRow.set_title(next.title);
         statusRow.set_subtitle(next.detail);
     }).catch((e) => logError(e, 'mail: could not list accounts'));
@@ -1979,8 +2399,11 @@ function openPreferences(parent) {
             return;
         const next = maildirRoot(config);
         store = new Store(next.path);
-        store.source = next.source;
+        // A different Maildir has different accounts; the one the window
+        // was showing is not in it. `reloadFolders` picks the first.
+        currentAccount = null;
         reloadFolders();
+        refreshSyncStatus();
     });
 
     dialog.present(parent);
@@ -2002,7 +2425,12 @@ function searchMail({query = '', folder = '', limit = 20} = {}) {
     const q = String(query).toLowerCase().trim();
     if (folder && !agentMayRead(folder))
         return {messages: [], skipped: `${folder} is not served to agents`};
-    const folders = (folder ? [String(folder)] : store.folders()).filter(agentMayRead);
+    // The account the window is on. The Agent Bus surface has always
+    // been scoped to one account — it had no way to name a second — and
+    // it stays that way here rather than quietly widening what a model
+    // can read while fixing where an action lands (#264).
+    const root = browsingRoot();
+    const folders = (folder ? [String(folder)] : store.folders(root)).filter(agentMayRead);
     const out = [];
     for (const f of folders) {
         // The index first, then a bounded read per candidate. Calling
@@ -2010,8 +2438,8 @@ function searchMail({query = '', folder = '', limit = 20} = {}) {
         // about mail would be answered from the newest 50 and never
         // told) or read every byte of a four-thousand-message folder
         // while the caller waits.
-        for (const entry of store.index(f)) {
-            const m = store.summary(f, entry, SEARCH_HEAD);
+        for (const entry of store.index(root, f)) {
+            const m = store.summary(root, f, entry, SEARCH_HEAD);
             const hay = `${m.subject} ${m.from.name} ${m.from.address} ${m.preview}`.toLowerCase();
             if (q && !hay.includes(q))
                 continue;
@@ -2039,7 +2467,7 @@ function readMessage({id = ''} = {}) {
     // guardrail with a door in it.
     if (!agentMayRead(folder))
         return {error: `${folder} is not served to agents — open it in Mail instead`};
-    const msg = store.message(folder, unique);
+    const msg = store.message(browsingRoot(), folder, unique);
     if (!msg)
         return {error: `no message ${id}`};
     return {
@@ -2073,14 +2501,18 @@ function writeAction(tool, args = {}) {
     const parsed = parseMessageId(args.id);
     if (parsed.error)
         return {error: parsed.error};
-    const message = store.message(parsed.folder, parsed.unique);
-    const plan = planFor(tool, message, args, store.folders());
+    const root = browsingRoot();
+    const message = store.message(root, parsed.folder, parsed.unique);
+    const plan = planFor(tool, message, args, store.folders(root));
     if (plan.error)
         return {error: plan.error};
     if (plan.noop)
         return {changed: false, reason: plan.noop, id: args.id};
     try {
-        applyMove(message.folder, plan.change, plan.toFolder);
+        // `message`, which carries the root it was READ from — so a
+        // tool call that arrives while the person is clicking around
+        // the sidebar still renames the file it looked at (#264).
+        applyMove(message, plan.change, plan.toFolder);
     } catch (e) {
         // The rename failed: say so. Returning ok here would tell the
         // model the mail was filed while it sat where it was.
@@ -2125,16 +2557,22 @@ function canSend() {
 ///
 /// tmp/ then rename into cur/, which is the Maildir contract: a reader
 /// that scans mid-write must never see a partial file.
+/// The account a composed message is filed under is the one being
+/// browsed — Sent and Drafts belong to the mailbox you are working in.
+/// Which is exactly the ambiguity that put them in the orphan tree
+/// (#222); it is at least a stated rule now, and it is the same string
+/// the list on screen came from.
 function writeToMaildir(folder, text) {
+    const root = browsingRoot();
     const name = sentFilename(Math.floor(Date.now() / 1000),
         `${GLib.random_int()}_${GLib.getenv('USER') ?? 'lisa'}`);
-    const dir = `${store.root}/${folder}`;
+    const dir = `${root}/${folder}`;
     GLib.mkdir_with_parents(`${dir}/tmp`, 0o700);
     GLib.mkdir_with_parents(`${dir}/cur`, 0o700);
     const tmp = `${dir}/tmp/${name}`;
     if (!GLib.file_set_contents(tmp, text))
         throw new Error(`could not write ${tmp}`);
-    const to = messagePath(store.root, folder, 'cur', name);
+    const to = messagePath(root, folder, 'cur', name);
     if (!to)
         throw new Error('refusing a path outside the maildir');
     Gio.File.new_for_path(tmp).move(Gio.File.new_for_path(to), Gio.FileCopyFlags.NONE, null, null);
@@ -2194,7 +2632,7 @@ function sendMessage(fields, account) {
         return {sent: true, message: 'Sent, but the copy in Sent could not be written'};
     }
     if (draft) {
-        const path = messagePath(store.root, 'Drafts', 'cur', draft);
+        const path = messagePath(browsingRoot(), 'Drafts', 'cur', draft);
         if (path) GLib.unlink(path);
     }
     if (currentFolder === 'Sent' || currentFolder === 'Drafts')

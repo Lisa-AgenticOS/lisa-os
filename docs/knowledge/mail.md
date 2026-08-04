@@ -104,6 +104,33 @@ folders of whichever account the window is on, because a message id is
 folder of the same name are two different folders; asking across both
 would need an id shape that says which.
 
+### An action lands in the account the message came from
+
+**Every message carries the account root it was listed from**, and every
+action resolves against that rather than against whichever account the
+window is showing when the button is pressed (`listFolder` stamps it,
+`movePaths` resolves it, both tested).
+
+This is not decoration. The store used to carry one mutable `root`
+naming the "current" account, and `use(account)` overwrote it — so a
+sidebar click, or a second window, repointed the path builder under a
+message somebody was in the middle of acting on. `root` is what
+`messagePath` builds on, so a move, a trash, an archive or a Save As
+could resolve inside an account the message was never in (#264). With
+one account both answers were the same string, which is why it stayed
+invisible until multi-account landed (#67, #222).
+
+The store now has no current account at all: every method takes the root
+it is to read, and the window's `currentAccount` is view state that
+nothing resolves a path through. A message with no root is refused
+rather than guessed at.
+
+**Mail is a single-window app**, and the same issue is why. GApplication
+fires `activate` on first launch *and* every time a second instance
+starts, so a handler that builds a window unconditionally stacks one per
+launch — three of them on the reference device, all reading and writing
+the same module state. `activate` now presents the window that exists.
+
 The consequence is honest: Mail shows what has been synced, and says so
 when there is nothing rather than pretending to be offline.
 
@@ -132,6 +159,51 @@ nothing else, and it needs neither keyring nor SASL plugin.
 **Nothing in the generated config can destroy mail on the server** —
 every channel carries `Expunge None` and `Remove None`.
 
+### Refresh, and the failure you can finally see
+
+The header has a **refresh button** next to the search box: one
+`lisa mail sync` pass, a spinner while it runs, and the Maildir re-read
+when it finishes. The same one command the timer runs — it passes our
+config rather than `~/.mbsyncrc` and indexes what it fetched (#170), so
+reimplementing any part of it here would be a second thing to keep in
+step.
+
+Under the header, an **`Adw.Banner` carrying `syncStatus()`** whenever
+sync is blocked. On the reference device `lisa-mail-sync.service` had
+been failing every five minutes since boot — the login keyring was
+locked, so `lisa mail token` had nothing to hand mbsync — and Mail said
+nothing at all: hours-stale mail with no reason given (#265). The
+reasoning already existed in `lib/settings.js`, was already tested, and
+was already imported here. Nothing rendered it.
+
+- **`syncStatus()` is the only thing that decides what "blocked"
+  means.** The settings page renders it, the banner renders it, and #249
+  will render it per account. Adding a case there changes every surface;
+  a second opinion anywhere else is how two views of one machine start
+  disagreeing.
+- **The words are the CLI's own.** For a locked keyring that is
+  `lisa mail token`'s message, which names the layer that is stuck, says
+  it is expected after a reboot rather than a fault, and gives the fix.
+  A paraphrase that drops any of the three sends the person nowhere.
+- **A button only where there is one to press.** Each status returns
+  `action: {id, label}` or `null`. A locked keyring offers *Unlock* —
+  the app calls `org.freedesktop.Secret.Service.Unlock` and shows the
+  Prompt, which is what makes the password dialog appear, rather than
+  describing how to make it appear. No connected account offers *Open
+  Online Accounts*. Nothing this app can press installs mbsync, so that
+  banner is a sentence and no button.
+- **Last synced**, quietly, along the bottom of the list: the newest
+  `.mbsyncstate` across every account, which is the last pass that
+  completed. Read off the disk rather than remembered in the process, so
+  it survives a restart and counts the timer's passes as well as the
+  button's. Nothing ever synced reads "Never synced" — the one answer
+  that must not be invented is "just now".
+
+The keyring question is a property *read* (`Locked`), never an unlock
+attempt, so drawing the window cannot raise a prompt. It is the same
+question `lisa mail token` asks, asked the same way, so the app and the
+CLI cannot disagree about the machine they are both on.
+
 ## How it works
 
 | file | what |
@@ -141,10 +213,10 @@ every channel carries `Expunge None` and `Remove None`.
 | `lib/attachments.js` | what is attached, what its bytes are, and what it is safe to call the file. Pure |
 | `lib/maildir.js` | filename flags, listing, ids, path containment, previews |
 | `lib/smart.js` | which pile a message goes in |
-| `lib/actions.js` | what the buttons do, as arithmetic on filenames |
+| `lib/actions.js` | what the buttons do, as arithmetic on filenames — including which account's Maildir the rename lands in (`movePaths`) |
 | `lib/mcp-protocol.js` | JSON-RPC + the provenance tag. Pure |
 | `lib/mcp.js` | the socket |
-| `lib/settings.js` | what the settings page is allowed to say. Pure |
+| `lib/settings.js` | what the settings page **and the window's sync banner** are allowed to say — `syncStatus` is the single decision about what "blocked" means. Pure |
 | `lib/reader.js` | the reading pane's child order, and what Space does in the attachment list. Pure |
 | `lisa-mail.js` | the window; thin over the above |
 
@@ -314,9 +386,11 @@ So the page reports facts and names the gap:
   var a stored preference can silently override is a debugging trap.
 - **Syncing** — the first blocking answer, in the order the layers block
   each other: no mbsync → no keyring (#154) → no account → nothing
-  bridges them (#155). Order is the point. Telling somebody their account
-  is fine while the machine has no syncer sends them to debug the wrong
-  layer.
+  bridges them (#155) → the login keyring is locked (#265). Order is the
+  point. Telling somebody their account is fine while the machine has no
+  syncer sends them to debug the wrong layer, and telling them to unlock
+  a keyring they have no account in does the same. The main window's
+  banner renders this same function.
 - **Accounts** — what GOA reports, including an account with Mail
   switched off, which from inside this app looks identical to no account
   and is a different problem. Adding one opens GNOME Settings rather than
@@ -406,6 +480,10 @@ A real preferences page, not only the diagnostic it started as.
   Toggling it re-renders the message on screen, not just the next one.
 - Maildir location, on-disk counts, and the sync diagnostic that
   explains *why there is no mail* — the reason this page exists at all.
+  The on-disk count is `counts().total`, not `messages().length`: the
+  latter is paged at 50, so the row claimed "50 messages" for every
+  folder holding more, on a page whose whole job is to say truthfully
+  what is on the disk.
 
 ## Limits
 
@@ -422,6 +500,20 @@ A real preferences page, not only the diagnostic it started as.
   **Not yet exercised against a real account** — see the commit for what
   was and was not verified.
 - **No permanent deletion.** Trash is a move; nothing here expunges.
+- **Refresh needs `lisa` on PATH**, because it runs `lisa mail sync`
+  rather than a second copy of that logic. Where it is missing the
+  banner says so instead of the button failing silently.
+- **The unlock still needs a person at the machine.** The banner's
+  *Unlock* raises the Secret Service prompt; typing the login password
+  into it is the one step nothing here can or should do for you. That is
+  the whole shape of the bug (#265): autologin starts a session and
+  never unlocks the keyring, so the fix has always been one human press
+  that nothing was asking for.
+- **The banner and the refresh button are not verified against a real
+  session bus.** The reasoning behind them is unit-tested
+  (`syncStatus`, `bannerText`, `lastSynced`); the D-Bus unlock flow and
+  the subprocess are window code, which this repo has no way to run on a
+  macOS dev host.
 - ~~Actions are the window's, not the agent's.~~ **Done (#167):**
   `flag_message`, `mark_read`, `archive_message`, `trash_message` and
   `move_message` are Write tier, resolved by `lib/agent-actions.js` into

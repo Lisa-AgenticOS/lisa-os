@@ -1,6 +1,9 @@
 // Buttons, as arithmetic on filenames.
 import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
-import {actionsFor, buildName, flagChange, moveTo, splitName, withFlag} from '../lib/actions.js';
+import {
+    actionsFor, buildName, flagChange, movePaths, moveTo, splitName, withFlag,
+} from '../lib/actions.js';
+import {listFolder} from '../lib/maildir.js';
 
 const msg = (over = {}) => ({
     folder: 'INBOX', dir: 'cur', filename: '1753900000.a.host:2,S',
@@ -111,6 +114,61 @@ test('reply and forward follow whether an account exists (#168)', () => {
     assertEq(on.why, '', 'no excuse when it works');
     // Shown either way: a missing reply button reads as unfinished.
     assert(actionsFor(msg, ['INBOX'], false).some((a) => a.id === 'forward'));
+});
+
+// --- which account an action lands in (#264) --------------------------
+//
+// THE TEST THAT WOULD HAVE CAUGHT IT. Every action used to resolve
+// against `store.root`, one mutable module-level string that
+// `Store.use(account)` overwrote — so a second window, or one click in
+// the sidebar, silently repointed the trash/archive/move of a message
+// that was listed from somewhere else.
+
+const WORK = '/home/x/Mail/you_at_work.test';
+const HOME = '/home/x/Mail/you_at_home.test';
+
+test('a listed message remembers which account it was listed from (#264)', () => {
+    const [row] = listFolder('INBOX', [{dir: 'cur', name: '1785529483.a.host:2,S'}], {root: WORK});
+    assertEq(row.root, WORK);
+    // No root supplied is `null`, never a guess. A row with no account
+    // is a row nothing may act on — see the refusal below.
+    assertEq(listFolder('INBOX', [{dir: 'cur', name: '1.a.host:2,S'}])[0].root, null);
+});
+
+test('a move resolves against the listing account, not the current one (#264)', () => {
+    const [row] = listFolder('INBOX', [{dir: 'cur', name: '1785529483.a.host:2,S'}], {root: WORK});
+    const paths = movePaths(row, moveTo(row, 'Trash'), 'Trash');
+    assertEq(paths.from, `${WORK}/INBOX/cur/1785529483.a.host:2,S`);
+    assertEq(paths.to, `${WORK}/Trash/cur/1785529483.a.host:2,S`);
+    assertEq(paths.dir, `${WORK}/Trash/cur`);
+    // The point of the whole issue: whatever else the window is showing
+    // now, THIS message's file is under the account it came from.
+    assert(!paths.from.startsWith(HOME), `${paths.from} escaped into the other account`);
+    assert(!paths.to.startsWith(HOME), `${paths.to} escaped into the other account`);
+});
+
+test('two accounts, two answers, from the same folder name (#264)', () => {
+    // Same folder, same filename, different account — the aliasing was
+    // invisible with one account because both answers were identical.
+    const name = '1785529483.a.host:2,S';
+    const [work] = listFolder('INBOX', [{dir: 'cur', name}], {root: WORK});
+    const [home] = listFolder('INBOX', [{dir: 'cur', name}], {root: HOME});
+    assert(movePaths(work, moveTo(work, 'Archive'), 'Archive').to !==
+           movePaths(home, moveTo(home, 'Archive'), 'Archive').to,
+    'two accounts must not resolve to one path');
+});
+
+test('a message with no account is refused, not guessed at (#264)', () => {
+    const [row] = listFolder('INBOX', [{dir: 'cur', name: '1.a.host:2,S'}]);
+    assertEq(movePaths(row, moveTo(row, 'Trash'), 'Trash'), null);
+    // …and the path checks messagePath already makes are still made
+    // here, because this is the only builder the window calls now.
+    const [ok] = listFolder('INBOX', [{dir: 'cur', name: '1.a.host:2,S'}], {root: WORK});
+    assertEq(movePaths(ok, moveTo(ok, 'Trash'), '../../etc'), null);
+    assertEq(movePaths(ok, {fromDir: 'cur', toDir: 'nowhere', fromName: 'a', toName: 'a'},
+        'Trash'), null);
+    assertEq(movePaths(null, moveTo(ok, 'Trash'), 'Trash'), null);
+    assertEq(movePaths(ok, null, 'Trash'), null);
 });
 
 finish('mail/actions');

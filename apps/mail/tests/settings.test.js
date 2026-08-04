@@ -3,8 +3,8 @@
 // saying nothing.
 import {test, assert, assertEq, finish} from '../../../shell/testing/harness.js';
 import {
-    DEFAULTS, accountRows, parseConfig, resolveMaildir, serializeConfig,
-    storeSummary, syncStatus, validateMaildir,
+    DEFAULTS, accountRows, bannerText, lastSynced, parseConfig, resolveMaildir,
+    serializeConfig, storeSummary, syncStatus, validateMaildir,
 } from '../lib/settings.js';
 
 const account = (over = {}) => ({
@@ -121,6 +121,95 @@ test('the setting survives a restart', () => {
         const round = parseConfig(serializeConfig({maildir: null, showRemoteImages: value}));
         assertEq(round.showRemoteImages, value, `round-trip ${value}`);
     }
+});
+
+// --- the failure a person can finally see (#265) ----------------------
+//
+// On the reference device sync had been failing every five minutes
+// since boot and Mail said nothing. `syncStatus` is the ONE place that
+// decides what "blocked" means — the settings page renders it, the main
+// window's banner renders it, and #249 will render it per account.
+
+const running = {...working, bridged: true};
+
+test('a locked keyring is a blocked state, in the CLI\'s own words (#265)', () => {
+    const status = syncStatus({...running, keyringLocked: true});
+    assertEq(status.kind, 'blocked');
+    assert(status.title.toLowerCase().includes('locked'), status.title);
+    // The CLI's message is good because it says three things: what is
+    // stuck, that it is expected after a reboot, and what to do. A
+    // paraphrase that drops any of them sends the person nowhere.
+    assert(status.detail.includes('reboot'), status.detail);
+    assert(status.detail.includes('token'), status.detail);
+    assert(/unlock/i.test(status.detail), status.detail);
+    // …and it is not invented when the keyring is open.
+    assertEq(syncStatus(running).kind, 'ok');
+});
+
+test('the keyring is only interesting once there is something to unlock for (#265)', () => {
+    // Each check is a precondition for the next being worth reading.
+    // Telling somebody to unlock a keyring they have no account in
+    // sends them to debug the wrong layer, which is what this whole
+    // function exists to prevent.
+    assertEq(syncStatus({...running, keyringLocked: true, mbsync: false}).title,
+        'No syncer installed');
+    assertEq(syncStatus({...running, keyringLocked: true, accounts: []}).title,
+        'No account connected');
+    assertEq(syncStatus({...working, keyringLocked: true}).title, 'Nothing is syncing yet');
+});
+
+test('every status says whether there is anything to press (#265)', () => {
+    // A banner with a dead button is worse than a banner with a
+    // sentence: it teaches people that the buttons do nothing.
+    assertEq(syncStatus({...running, mbsync: false}).action, null,
+        'nothing this app can do installs mbsync');
+    assertEq(syncStatus({...running, secretService: false}).action, null);
+    assertEq(syncStatus({...running, accounts: []}).action.id, 'online-accounts');
+    assertEq(syncStatus({...running, keyringLocked: true}).action.id, 'unlock-keyring');
+    assertEq(syncStatus(running).action, null, 'a working sync has nothing to fix');
+    // Every offered action carries a label, or the banner draws a
+    // button with nothing in it.
+    for (const status of [
+        syncStatus({...running, accounts: []}),
+        syncStatus({...running, keyringLocked: true}),
+    ])
+        assert(status.action.label && status.action.label.length > 2, status.title);
+});
+
+test('the banner carries the whole answer, without stuttering (#265)', () => {
+    // A banner has one line where the settings page has two, and both
+    // halves matter: the title alone does not say what to do, and some
+    // details do not say what is wrong. So they are joined — except
+    // where the detail already opens with its own title, which is a
+    // sentence repeating itself.
+    const locked = syncStatus({...running, keyringLocked: true});
+    assertEq(bannerText(locked), locked.detail);
+    const none = syncStatus({...running, accounts: []});
+    assert(bannerText(none).startsWith('No account connected'), bannerText(none));
+    assert(bannerText(none).endsWith(none.detail), bannerText(none));
+    // Nothing renders as nothing, rather than as ' — '.
+    assertEq(bannerText({title: 'Only a title', detail: ''}), 'Only a title');
+    assertEq(bannerText({}), '');
+    assertEq(bannerText(null), '');
+});
+
+test('stale mail says how stale, and never guesses (#265)', () => {
+    // Mail that looks current and is six hours old is a different
+    // experience from mail that says it is six hours old.
+    const now = 1_800_000_000;
+    assertEq(lastSynced(0, now), 'Never synced');
+    assertEq(lastSynced(null, now), 'Never synced');
+    assertEq(lastSynced('nonsense', now), 'Never synced');
+    assertEq(lastSynced(now, now), 'Synced just now');
+    assertEq(lastSynced(now - 30, now), 'Synced just now');
+    assertEq(lastSynced(now - 60, now), 'Synced 1 minute ago');
+    assertEq(lastSynced(now - 5 * 60, now), 'Synced 5 minutes ago');
+    assertEq(lastSynced(now - 3600, now), 'Synced 1 hour ago');
+    assertEq(lastSynced(now - 6 * 3600, now), 'Synced 6 hours ago');
+    assertEq(lastSynced(now - 26 * 3600, now), 'Synced 1 day ago');
+    assertEq(lastSynced(now - 5 * 86400, now), 'Synced 5 days ago');
+    // A clock that went backwards is not a sync from the future.
+    assertEq(lastSynced(now + 600, now), 'Synced just now');
 });
 
 finish('mail/settings');

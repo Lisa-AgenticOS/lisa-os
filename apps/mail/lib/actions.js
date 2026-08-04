@@ -22,6 +22,8 @@
 // is a separate expunge, and a button labelled with a bin that destroys
 // a message immediately is not a button, it is a trap.
 
+import {messagePath} from './maildir.js';
+
 /// Flags a Maildir filename carries, in the order the spec requires:
 /// ASCII, ascending. Mail clients disagree about a lot; they agree
 /// about this, and a client that writes them unsorted produces files
@@ -104,6 +106,39 @@ export function moveTo(message, folder) {
         // the message is already there.
         toName: buildName(unique, flags),
     };
+}
+
+/// The two paths a change moves between — **resolved against the
+/// account the message was listed from** (#264).
+///
+/// The rename itself is one `Gio.File.move` in the window; this is the
+/// arithmetic in front of it, and it lives here because the thing that
+/// was wrong was not the move but *which Maildir it landed in*. The
+/// window used to build both paths from `store.root`, a single mutable
+/// module-level string: opening a second window replaced it, and
+/// `Store.use(account)` overwrote it on every sidebar click. A trash, an
+/// archive, a Save As or an agent's `archive_message` could therefore
+/// resolve under an account the message was never in.
+///
+/// So the root comes from `message.root`, which `listFolder` stamped
+/// when the row was built and `Store.message` stamps when the file is
+/// read. A message with no root is REFUSED — a rootless message is one
+/// nothing knows the account of, and guessing is exactly the defect.
+///
+/// `null` on any refusal: no root, no change, a folder or filename that
+/// `messagePath` will not build (traversal, separators, a `dir` that is
+/// neither `cur` nor `new`).
+export function movePaths(message, change, toFolder) {
+    const root = message?.root;
+    if (!root || !change)
+        return null;
+    const from = messagePath(root, message.folder, change.fromDir, change.fromName);
+    const to = messagePath(root, toFolder, change.toDir, change.toName);
+    if (!from || !to)
+        return null;
+    // The directory the move needs to exist, built from the same three
+    // checked components rather than re-interpolated by the caller.
+    return {root, from, to, dir: `${root}/${toFolder}/${change.toDir}`};
 }
 
 /// The actions a message can be given, with their current state.
