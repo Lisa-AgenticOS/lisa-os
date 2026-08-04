@@ -74,6 +74,11 @@ export function assert(cond, msg = 'assertion failed') {
 /// a suite with async bodies still cannot fail jsc's exit code, which is
 /// why CI runs node.
 export function finish(suite) {
+    // A suite that reports as `undefined` is one nobody can find in a CI
+    // log — four of them had been printing that way. The name is not
+    // decoration, so it is not optional.
+    if (typeof suite !== 'string' || suite.trim() === '')
+        throw new Error('finish() needs the suite name — it is what a failing run is grepped by');
     if (pending.length > 0)
         return Promise.all(pending).then(() => report(suite));
     return report(suite);

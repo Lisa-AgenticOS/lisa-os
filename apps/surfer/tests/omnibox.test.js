@@ -42,4 +42,4 @@ test('the cap holds with many matching tabs', () => {
     assertEq(s.at(-1).kind, 'search', 'search survives the cap');
 });
 
-finish();
+finish('surfer/omnibox');

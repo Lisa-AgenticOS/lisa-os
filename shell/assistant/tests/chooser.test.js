@@ -53,4 +53,4 @@ test('the note says where, why, and what would work', () => {
         remoteLocationNote('save to', ''));
 });
 
-finish();
+finish('assistant/chooser');

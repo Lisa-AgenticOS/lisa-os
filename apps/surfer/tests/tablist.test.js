@@ -21,4 +21,4 @@ test('long titles truncate with an ellipsis at the limit', () => {
     assertEq(out.at(-1), '…');
 });
 
-finish();
+finish('surfer/tablist');

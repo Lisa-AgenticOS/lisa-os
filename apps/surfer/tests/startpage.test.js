@@ -18,4 +18,4 @@ test('non-go URIs are not ours', () => {
     assertEq(goQuery(''), null);
 });
 
-finish();
+finish('surfer/startpage');
