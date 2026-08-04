@@ -134,3 +134,6 @@ What gets easier, what gets harder, what we gave up.
 - [ADR-0043](0043-the-model-knows-the-os-through-retrieval.md) — The model knows the OS through retrieval, never through the prompt
 - [ADR-0044](0044-retrieval-receipts.md) — Retrieval receipts: contextd vouches for what it returned (proposed)
 - [ADR-0045](0045-calver-for-the-image-semver-for-the-contracts.md) — CalVer for the image, SemVer for the contracts
+- [ADR-0046](0046-capability-before-storefront.md) — Capability before storefront: what must be true before Lisa distributes somebody else's app
+- [ADR-0047](0047-one-toolkit-gjs-gtk4.md) — One toolkit: GJS + GTK4/Adwaita is the default, Flutter is parked
+- [ADR-0048](0048-lisa-desktop-is-a-desktop-not-a-patched-gnome.md) — Lisa Desktop is a desktop, not a patched GNOME (write the apps; core vs. store)

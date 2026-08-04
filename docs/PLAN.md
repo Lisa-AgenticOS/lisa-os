@@ -86,6 +86,22 @@ Grounding first — this is what we're measuring against, based on WWDC26 announ
   the organising idea, which is not a change an extension can make. The
   moat is still the substrate, not the window manager — which is exactly
   why Mutter stays upstream and only the JavaScript is ours.
+- **Phase 3, widened (2026-08-04, ADR-0048): Lisa Desktop is the whole
+  desktop experience, not just the Shell.** "GNOME" to a person using the
+  machine is Files, Photos, Settings, the fonts and the dialogs — so the
+  first-party app set is *written* (§5.8), not patched, and
+  `os/packages/gnome-control-center-lisa` is on a path to retirement in
+  favour of `shell/settings` (conditions in ADR-0048 §3; nothing is
+  removed yet). **GTK4/libadwaita and Mutter stay upstream, indefinitely**
+  — toolkit and compositor are foundation, not experience; owning them
+  buys CVE duty and no identity. Precedent: elementary's Pantheon looks
+  nothing like GNOME and Gala is still a Mutter plugin. The ceiling
+  argument is measured, not assumed: issue #208 showed the system-wide
+  double-Shift gesture is *unreachable* rather than hard, because Mutter
+  does not grant `zwp_input_method_v2` to third-party input methods.
+  Divergence stays narrow and deliberate — input, the prompt surfaces, the
+  dock, agent affordances — and stock everywhere else, because rebase cost
+  scales with the width of the delta.
 - KDE Plasma spin is welcome later; portals + D-Bus keep everything DE-agnostic by construction.
 
 ### Delivery strategy: two tracks (ADR-0003, learned from Omarchy)
@@ -229,7 +245,7 @@ Each spec: purpose → design → interfaces → repo path → acceptance.
 
 ### 5.6 `liblisa` — the SDK (our Foundation Models framework)
 
-**Purpose:** make the right thing the easy thing for app developers, in every language people actually use on Linux. (Lane split: liblisa serves the native GTK/Qt lane; the Flutter lane gets the same API via `lisa_flutter` — see §5.12.)
+**Purpose:** make the right thing the easy thing for app developers, in every language people actually use on Linux. (liblisa serves the GTK/Qt lane, which since ADR-0047 is *the* lane; `lisa_flutter` mirrors the API for the parked Flutter lane — see §5.12.)
 
 **Surface (v1):**
 - **Sessions & streaming:** `LisaSession` with system-prompt, tools, memory binding; token stream as async iterator / GObject signal.
@@ -269,13 +285,33 @@ Wake word (openWakeWord, on-CPU, mic ring buffer stays in-process), streaming AS
 The transparency centerpiece. A first-party app that renders the append-only audit DB: timeline of every model call, context grant, tool execution — filter by app, scope, day; tap an entry to see the prompt envelope (what context chunks, from where, at what provenance). Includes usage stats (tokens by app), grant management shortcuts, and export. If a Golden Gate user asks "what did Siri actually read?" there is no answer; on Lisa this app *is* the answer.
 
 ### 5.8 First-party AI-native apps (proof of the SDK, not a suite for its own sake)
-Ship thin, opinionated forks/extensions of GNOME apps where OS-depth integration matters; **Notes and Recorder are built in the Flutter lane with `lisa_ui` (§5.12) as permanent dogfood of the Forge stack**:
-- **Files:** semantic search bar; "ask this folder" (scoped RAG); auto-suggested organization with confirm-tier batch moves.
-- **Notes (new, small):** local vault, backlinks, every note embedded on save; "ask my notes"; writing tools native.
-- **Mail:** triage/summarize threads, draft-with-context (pulls the thread + your prior style from app memory), all local — the demo that lands hardest with normal users.
-- **Photos:** local VLM captioning/tagging on import (background QoS), natural-language search ("the whiteboard from March").
+**We write the apps; we do not patch GNOME's (ADR-0048).** The earlier plan
+here was "thin, opinionated forks/extensions of GNOME apps"; three patch
+sets were scaffolded (Files, Mail, Photos) and none was ever written, and
+Mail was answered instead by writing `apps/mail`. The app set is GJS +
+GTK4/Adwaita (ADR-0047), MCP-native from the first commit, `app.lisaos.*`.
+Where a Lisa app does not exist yet, the image ships the stock GNOME app
+**unpatched** — that is the interim state, not a gap to close with a patch.
+- **Files (`apps/files`, not started):** semantic search bar; "ask this folder" (scoped RAG); auto-suggested organization with confirm-tier batch moves.
+- **Notes (`apps/notes`):** local vault, backlinks, every note embedded on save; "ask my notes"; writing tools native.
+- **Mail (`apps/mail`, shipped):** triage/summarize threads, draft-with-context (pulls the thread + your prior style from app memory), all local — the demo that lands hardest with normal users.
+- **Photos (`apps/photos`, not started):** local VLM captioning/tagging on import (background QoS), natural-language search ("the whiteboard from March").
 - **Recorder:** live transcription, diarization-lite, meeting summary + action items → offered to the Agent Bus ("add these 3 todos?").
 - **Terminal:** `lisa` CLI preinstalled; inline "explain this error" on non-zero exit (opt-in); `Ctrl+G` natural-language → command with a mandatory review-before-run gate.
+
+**Core versus store (ADR-0048 §5).** Not every first-party app ships with
+the desktop. The test: **an app is core if removing it breaks a promise
+the OS makes** — either the system's thesis depends on it (a tool the
+Agent Bus advertises, a capability the model offers) or it is the default
+handler for something the desktop must handle regardless. As of
+2026-08-04: **core** = Assistant, Files, Preview, Terminal, Surfer, Mail,
+Notes, plus the §5.7 desktop surfaces; **store** = Recorder, Photos when
+it exists, and every future app. The edges are what make the test useful —
+Recorder feels like a system utility and nothing depends on it (store),
+Notes feels like an ordinary app but the bus advertises `search_notes`
+(core). Packaging follows: core versions with the desktop payload, store
+apps get per-app payloads with their own versions, §6 channels and
+rollback — which the monolithic app channel cannot do today (#239).
 
 ### 5.9 Hardware acceleration matrix
 
@@ -305,13 +341,24 @@ Some tasks want a 70B+ model. Apple's answer is their cloud; ours is **your othe
 
 ---
 
-### 5.12 App framework strategy: the Flutter lane + the Forge (ADR-0004)
+### 5.12 App framework strategy: one toolkit (ADR-0047) + the Forge (ADR-0004)
 
-**Decision: two app lanes, one native and one Flutter — and the Flutter lane exists to power the Forge, a Claude Code-style app-building harness shipped in the OS.**
+**Decision (2026-08-04, ADR-0047, superseding ADR-0004's lane split): GJS + GTK4/Adwaita is the default and documented framework for Lisa's own user-facing apps and for everything the Forge generates. Flutter is parked, not deleted.**
 
-**Lane split** — the line is *shell surface versus application*, not preference (ADR-0032 §5):
-- **Native lane (unchanged):** GTK4/libadwaita + Qt via `liblisa` (§5.6) for the shell, portals, Settings, and system apps that must integrate at OS depth (Files, Ledger). GJS specifically where GNOME Shell requires it — the overlay, launcher, Assistant, Ledger app, Settings panel.
-- **Flutter lane (new):** the default framework for user-facing apps, third-party apps, and everything the Forge generates.
+Why the earlier two-lane plan was answered by practice: every shipped
+surface — `shell/*`, `apps/mail`, `apps/surfer`, `apps/preview`, the
+terminal integration — is GJS/GTK4, nothing user-facing was ever written
+in Flutter, and the Flutter lane has no runtime on the reference hardware
+(#37, closed won't-do under ADR-0047). Interpreted source is the reason it
+went that way: a fix reaches the device by `scp`, desktop integration
+(portals, D-Bus activation, AT-SPI, dconf, IME) comes free because GTK4
+*is* the platform, and one toolkit means one token sheet, one test
+harness, one set of idioms. The SDK already serves other languages —
+liblisa's C ABI has Rust, Python, JS and Vala bindings plus an
+OpenAI-compatible endpoint.
+
+- **The one lane:** GJS + GTK4/libadwaita via `liblisa` (§5.6) for the shell, portals, Settings, apps and Forge output. Qt bindings remain for third parties who want them.
+- **Flutter (parked):** `libs/lisa_flutter` keeps its four `.dart` files and its history; the lane is unshipped, unproven on hardware, and not the default. `libs/lisa_ui` keeps its name and becomes the **GJS/GTK4 shared library** — first job, the Agent Bus edge (`mcp-protocol.js` / `mcp.js`), which exists in triplicate today and is why #218 had to be fixed three times.
 
 **What the Forge may produce is a security boundary, not a feature list (ADR-0031 §5).** Sequenced by blast radius, because the capability that makes Lisa able to build anything is the same fact that makes it dangerous:
 1. **GUI apps** — user session, bounded by the tool jail and the command allowlist. Shipping.
@@ -320,34 +367,41 @@ Some tasks want a 70B+ model. Apple's answer is their cloud; ours is **your othe
 
 **The Forge is also the producer half of "make and serve" (ADR-0031 §4):** `--web` emits a static site the machine can publish under the owner's domain, stored with the ADR-0020 apps-channel mechanics. Publishing is a confirm-tier, ledgered, revocable act — never a side effect of having generated something.
 
-**Why Flutter for the generative lane:**
-1. **Hot reload *is* the agent loop.** The harness's iterate cycle (edit → rebuild → observe) drops from ~10 s of native compile to sub-second stateful reload — the single biggest determinant of whether "talk an app into existence" feels magical or miserable.
-2. **One language, declarative UI.** LLMs write Dart/widget trees well; diffs are local and reviewable; one framework means the harness's system prompt, templates, and doc corpus stay small and high-quality instead of spanning GTK+Qt+web.
-3. **The escape hatch is a feature:** apps forged on Lisa can ship to Android/iOS/web/Windows/macOS. "Build it on your desktop, publish it anywhere" is an adoption story no macOS app framework offers.
-4. **The timing on custom design systems is exactly right:** upstream has frozen Material and Cupertino in the framework (April 2026) and is relocating them to standalone `material_ui`/`cupertino_ui` packages, with the core keeping the raw widget/rendering primitives — the officially sanctioned path for building our own design system on the engine.
+**Why the Forge targets GJS (ADR-0047 §4):** generated code should be the
+same shape as hand-written code, so a generated app is reviewable by the
+same people with the same instincts — and an interpreted target means the
+Forge can produce something runnable **without a build toolchain** (#48).
+The iterate cycle is edit → reload the process → observe, with no compile
+step to amortise. It also composes with ADR-0046 Amendment 1's "source in,
+source out": when the artifact *is* the source, a reviewer reads what
+runs.
 
-**`lisa_ui` — our design system on Flutter core widgets:**
-- Lisa design tokens, motion, and typography; **reads the system theme live** (the Appendix E theme system), so Flutter apps re-skin with the desktop — the anti-"foreign toolkit" move.
-- AI-native widgets as first-class citizens: `LisaStreamText` (token streaming, stop, provenance footnotes), `ConsentChip`, `ContextAttachment` (drag a file/scope into a prompt), `VoiceInput`, `LedgerBadge` (tap → this app's Ledger view), plus the boring essentials (lists, forms, dialogs) so no app ever needs `material_ui`.
-- No Material/Cupertino dependency anywhere in the lane.
+**`lisa_ui` — the shared GJS/GTK4 library.** Not a widget set invented up
+front. Its scope, in the order the evidence justifies (ADR-0047): the
+Agent Bus edge first (`mcp-protocol.js`/`mcp.js` — a security boundary
+that exists in triplicate, which is how #218 and #219 each had to be
+found and fixed more than once), then the generated design-token sheet
+(from `branding/tokens.json`, ADR-0038, enforced by `check-tokens.py`),
+then common widgets **only once a second app needs one**. Migration is
+per-module, when someone is already touching the file.
 
-**`lisa_flutter` — Dart SDK bindings:** mirrors `liblisa`'s API (sessions, guided generation, tasks, memory, tools) over D-Bus (Canonical's maintained `dbus` Dart package) with the OpenAI-compat endpoint as fallback transport. Portal identity flows through unchanged; Flutter apps are ordinary Flatpak citizens.
-
-**Embedder reality (verify at spike, pin per release):** the official Linux embedder is GTK-based — which is actually convenient: it runs under Wayland via GTK's backend, and our fcitx5 writing-tools layer and IM stack reach Flutter text fields through the GTK IM context for free. Direct-Wayland third-party embedders (e.g. Sony's) are a later option for kiosk/embedded targets, not a v1 dependency. Governance hedge: the Flutter engine + framework are pinned in our repo snapshot like any other package; we track upstream deliberately and document the community-fork contingency in the ADR.
+**`lisa_flutter` — parked.** Four `.dart` files mirroring `liblisa`'s API
+over D-Bus, retained with their history under ADR-0047 §2. Unshipped,
+unproven on hardware, not the default; nothing plans against it.
 
 #### 5.12.1 The Forge — apps built where they run
 
 **Purpose:** the OS ships the workshop. A first-party agentic harness (think Claude Code, native to the desktop) that takes "make me a…" to an installed, sandboxed app — with the user watching it happen.
 
 **Design:**
-- **Harness core (`libs/forge-harness`):** the agentic loop — plan → edit files → `dart analyze`/build → hot-reload the live preview → capture a screenshot of the preview for VLM self-inspection → iterate. Tools: project FS (jailed to the project dir), analyzer, run-controller, previewer, `lisa_ui` docs retriever (RAG over our own SDK docs — the harness's knowledge of our platform is *ours to curate*, not frozen in model weights).
+- **Harness core (`libs/forge-harness`):** the agentic loop — plan → edit files → lint/validate → restart the live preview → capture a screenshot of the preview for VLM self-inspection → iterate. Tools: project FS (jailed to the project dir), analyzer, run-controller, previewer, `lisa_ui` docs retriever (RAG over our own SDK docs — the harness's knowledge of our platform is *ours to curate*, not frozen in model weights).
 - **Pluggable model backends:** (a) local coder models from the catalog (Qwen-coder-class at Tier 2+, §7 gains a `code` row); (b) **bring-your-own agent: Claude Code (or any agent CLI) slots in as a backend** — it's a CLI, the harness drives it with the same tool jail. Local-first default, frontier-model option, user's key, rendered in the Ledger like everything else.
-- **Forge app:** split view — conversation left, live hot-reloaded preview right; template gallery (`lisa_ui` starter, MCP-tool app, dashboard, game); diff review pane (the user can always see what changed); **Install** → packages as a Flatpak with a *generated capability manifest the user approves* → appears in the launcher.
+- **Forge app:** split view — conversation left, live preview right; template gallery (`lisa_ui` starter, MCP-tool app, dashboard, game); diff review pane (the user can always see what changed); **Install** → packages as a Flatpak with a *generated capability manifest the user approves* → appears in the launcher.
 - **Forged apps are normal citizens, sandbox-first:** zero permissions at birth (no network, no scopes); requesting context/inference goes through the same portal consent as any app; MCP manifest and app-memory namespace generated from templates; provenance-labeled "user-forged" in the Ledger and app info; source always retained, inspectable, re-openable in the Forge.
 
-**Repo:** `forge/{app, harness}`, `libs/{lisa_flutter, lisa_ui}`.
+**Repo:** `forge/{app}`, `libs/{forge-harness, lisa_ui}`.
 
-**Acceptance (M6):** "make me a tip calculator with a big friendly button" → running hot-reloaded preview in < 2 min on reference-16GB with the local coder model; Install → sandboxed Flatpak in the launcher; the forged app calling `summarize()` triggers a normal portal grant; re-open in Forge → "make the button glow" round-trips in < 30 s; full session visible in the Ledger.
+**Acceptance (M6):** "make me a tip calculator with a big friendly button" → running live preview in < 2 min on reference-16GB with the local coder model; Install → sandboxed Flatpak in the launcher; the forged app calling `summarize()` triggers a normal portal grant; re-open in Forge → "make the button glow" round-trips in < 30 s; full session visible in the Ledger.
 
 ---
 
@@ -391,9 +445,9 @@ lisa/
 ├── daemons/{inferenced, modeld, contextd, agentd}/
 ├── portals/xdg-desktop-portal-lisa/
 ├── libs/{liblisa, liblisa-gtk, liblisa-qt, mcp-bus, lisa_flutter, lisa_ui, forge-harness}/
-├── forge/{app}/               # the Forge (agentic app builder, Flutter)
-├── shell/{overlay-extension, launcher, ledger-app}/
-├── apps/{notes, files-patches, mail-patches, photos-patches, recorder, terminal-integration}/
+├── forge/{app}/               # the Forge (agentic app builder, GJS — ADR-0047)
+├── shell/{overlay-extension, launcher, ledger-app, assistant, consent, settings, desktop}/
+├── apps/{notes, mail, files, photos, preview, surfer, recorder, terminal-integration}/
 ├── cli/lisa/                  # ask, call, tools, models, undo, ledger
 ├── ime/fcitx5-lisa/           # writing-tools + dictation input method
 ├── os/{mkosi/, packages/, kernel/, repo-tools/, installer/}
@@ -409,7 +463,7 @@ lisa/
 - **M3 — Context fabric:** files+mail+calendar sources, hybrid retrieval, per-app memory, Settings panel v1. *Accept:* §5.3 block.
 - **M4 — Surfaces:** assistant overlay, semantic launcher, Writing Tools layers 1–2, voice v1, Ledger app. *Accept:* §5.7 budgets.
 - **M5 — Agent Bus:** MCP manifests, `agentd`, confirmation tiers, undo, first-party apps expose tools, injection suite green. *Accept:* §5.4 block.
-- **M6 — Apps, Forge alpha & polish:** §5.8 app set (Notes/Recorder in the Flutter lane), screen context, model adapters (LoRA) trained + shipped, `lisa_ui` v0 + `lisa_flutter` parity samples, **Forge alpha meeting the §5.12.1 acceptance block**.
+- **M6 — Apps, Forge alpha & polish:** §5.8 app set (all GJS/GTK4 — ADR-0047, ADR-0048), screen context, model adapters (LoRA) trained + shipped, `lisa_ui` v0 as the shared GJS library, **Forge alpha meeting the §5.12.1 acceptance block**.
 - **M7 — Personal Compute Node** + nonfree image variant + installer OOBE, which now also chooses **server or desktop** and, for server, which network edge (ADR-0031). Server mode is close to free in *content* — same daemons, no desktop package set — but no minimal no-desktop image is built anywhere yet: every workflow runs a plain `mkosi build` of the one full-desktop definition (the nightly's checks are already implication-shaped so a minimal flavor can join without turning them red).
 - **M8 — Public alpha ISO:** docs site, SDK quickstarts, eval dashboard, security review pass.
 
@@ -422,13 +476,16 @@ Unit per crate; **e2e in QEMU+swtpm** driving the real image (boot → grant →
 - **NPU ecosystem immaturity** → NPUs are declared bonus-lane (§5.9); no feature depends on them.
 - **VRAM contention with games/creative apps** → inferenced yields on fullscreen-game detection (compositor signal) + user "pause AI" quick toggle.
 - **Model licensing shifts** → catalog revocation flags; Apache-first policy keeps the default lineup safe.
-- **Flutter governance/velocity risk (Google roadmap, Linux embedder aging)** → engine + framework pinned in our snapshot; `lisa_ui` depends only on core widget primitives (post-decoupling), never `material_ui`; community-fork contingency documented in ADR-0004; native lane means the OS itself never depends on Flutter.
+- **One toolkit means one basket (ADR-0047)** → GJS gives no static types and stalls on large data (the mail list froze on a 3,758-message inbox until paging landed). Mitigation is the practice already in force: pure logic in testable modules, failing-test-first, mutation checks. A second wall of that kind is evidence, and ADR-0047 names what would reverse the call.
+- **Fork maintenance (ADR-0038, ADR-0048)** → we own security updates for everything vendored, and rebase cost scales with the width of the delta. Discipline: diverge only where the vision requires it (input, the prompt surfaces, the dock, agent affordances), stay stock everywhere else; GTK4/libadwaita and Mutter are never forked.
 - **Forge abuse/footguns (generated apps doing harm)** → forged apps are born permissionless in the sandbox, capability manifests are user-approved diffs, source retained, Ledger provenance; the harness's tool jail confines edits to the project dir.
-- **Upstream friction (GNOME patches)** → keep patches minimal and portal-spec-shaped; propose `org.freedesktop.portal.Inference` upstream early.
+- **Upstream friction (GNOME patches)** → ADR-0048's answer is to stop planning patches: write the apps, fork only the Shell. The patches that remain (`gnome-control-center-lisa`) stay minimal, anchored and guarded until retired; propose `org.freedesktop.portal.Inference` upstream early.
 - **Trust** → the Ledger and measured-egress status are the product answer; never ship a feature that can't be explained in the Ledger.
 
 ## 13. Open questions (seed the ADR log)
-Trademark/brand clearance for “Lisa OS” (the Apple Lisa homage is intentional — confirm it stays homage, not liability; check LISA/ELISA collisions); GNOME patch-set vs. extension-only for M4; sqlite-vec vs. LanceDB at >5M chunks; adapter training stack (axolotl? unsloth?) and eval harness; Matrix-first vs. plugin-neutral chat ingestion; how much of the portal spec to push to freedesktop and when; local coder model pick + eval bar for the Forge; whether more first-party apps converge on the Flutter lane after M6; Forge template set v1.
+Trademark/brand clearance for “Lisa OS” (the Apple Lisa homage is intentional — confirm it stays homage, not liability; check LISA/ELISA collisions); sqlite-vec vs. LanceDB at >5M chunks; adapter training stack (axolotl? unsloth?) and eval harness; Matrix-first vs. plugin-neutral chat ingestion; how much of the portal spec to push to freedesktop and when; local coder model pick + eval bar for the Forge; Forge template set v1; when `gnome-control-center-lisa` can actually be retired (ADR-0048 §3 lists the conditions); whether a Lisa phone is ever more than a parked idea (ADR-0048 says it is not an argument for the desktop fork either way).
+
+*Answered since:* GNOME patch-set vs. extension-only (ADR-0038, then ADR-0048 — fork the Shell, write the apps); whether first-party apps converge on the Flutter lane (ADR-0047 — they converged on GJS/GTK4 instead).
 
 ---
 
@@ -478,9 +535,9 @@ Role-separated envelope: system policy → user turn → context blocks, each fe
 - [ ] ADR-0001 (this distro decision) and ADR-0002 (Rust/zbus/axum stack) written from §3/§5; ADR-0003 (two-track delivery, Appendix E).
 - [ ] `os/layer/`: pacman repo tooling + `install.sh`/`uninstall.sh` for Track L; CI job installs the layer on vanilla-Arch and Omarchy VMs and runs the daemon smoke tests on both.
 - [ ] `os/layer/snapper/`: pre-update snapshot hook (`/` only, quotas off) + Limine sync config for Track L rollback.
-- [ ] Spike: Flutter-on-Lisa — pin engine version, confirm GTK embedder under Wayland, fcitx5 IM round-trip in a Flutter text field, D-Bus call to `inferenced` from Dart (`dbus` package). Output: ADR-0004 appendix with findings.
-- [ ] `libs/lisa_ui` seed: tokens + `LisaStreamText` + `ConsentChip`, themed by the system theme file.
-- [ ] `libs/forge-harness` walking skeleton: plan→edit→analyze→hot-reload loop against a template project, backend = any OpenAI-compat endpoint (so it works off `inferenced` *and* a BYO agent from day one).
+- [x] ~~Spike: Flutter-on-Lisa~~ — dropped by ADR-0047; the lane is parked and #37 closed won't-do.
+- [ ] `libs/lisa_ui` seed (GJS, ADR-0047): the shared `mcp-protocol.js`/`mcp.js` edge first, then the generated token sheet.
+- [ ] `libs/forge-harness` walking skeleton: plan→edit→validate→reload loop against a template project, backend = any OpenAI-compat endpoint (so it works off `inferenced` *and* a BYO agent from day one).
 
 ## Appendix E — Omarchy: what we adopt, what we skip (ADR-0003 rationale)
 

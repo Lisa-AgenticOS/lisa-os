@@ -55,10 +55,18 @@ hard forks: track the delta, not a diverged tree.
 | Package | Upstream | Pinned | Why (ADR) | Delta | Repo |
 |---|---|---|---|---|---|
 | `gnome-control-center-lisa` | gnome-control-center | 50.3 | no plugin API for a sidebar panel (ADR-0012) | panel dir + 2 anchored edits | in-tree `os/packages/` |
-| Files patches | GNOME Files (nautilus) | TBD | Lisa context/agent hooks | patch-set | `apps/files-patches` |
-| Mail patches | GNOME/Geary(?) | TBD | Lisa hooks | patch-set | `apps/mail-patches` |
-| Photos patches | GNOME Photos | TBD | Lisa hooks | patch-set | `apps/photos-patches` |
 | Terminal integration | GNOME Console/VTE | TBD | `lisa` CLI presence | integration | `apps/terminal-integration` |
+
+**No app patch sets (ADR-0048).** This table used to carry rows for Files,
+Mail and Photos. Each was a scaffold directory holding one README that
+said "not started", and no patch was ever written in any of them. We write
+the apps instead: `apps/mail` shipped, `apps/files` and `apps/photos` are
+not-started Lisa apps rather than planned patch sets. Where a Lisa app
+does not exist yet, the image ships the stock GNOME app **unpatched**.
+
+`gnome-control-center-lisa` is the one remaining patch set, and ADR-0048
+§3 puts it on a path to retirement in favour of `shell/settings` — a
+direction, with conditions, not something done today.
 
 Forks stay **thin, maintained patches in-tree** (build upstream at a
 pinned version, drop in our files, apply guarded anchored edits — see

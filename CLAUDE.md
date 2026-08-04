@@ -30,9 +30,10 @@ Run `just lint && just test` before every commit; CI enforces both.
 | `daemons/agentd` | PLAN §5.4 | M5 |
 | `portals/xdg-desktop-portal-lisa` | PLAN §5.5 | M2 |
 | `libs/liblisa` (+ gtk/qt) | PLAN §5.6 | M2 |
-| `shell/*` | PLAN §5.7 | M4 |
-| `apps/*` | PLAN §5.8 | M6 |
-| `libs/lisa_ui`, `libs/lisa_flutter`, `libs/forge-harness`, `forge/` | PLAN §5.12 | M6 |
+| `shell/*` | PLAN §5.7, ADR-0038, ADR-0048 | M4 |
+| `apps/*` (incl. `apps/files`, `apps/photos` — not started) | PLAN §5.8, ADR-0048 | M6 |
+| `libs/lisa_ui`, `libs/forge-harness`, `forge/` | PLAN §5.12, ADR-0047 | M6 |
+| `libs/lisa_flutter` | parked (ADR-0047) | — |
 | `ime/fcitx5-lisa` | PLAN §5.7.3 | M4 |
 | `cli/lisa` | PLAN §5.4 (scriptability) | M1+ |
 | `os/*` | PLAN §3, §6 | M0+ |
@@ -104,6 +105,15 @@ Run `just lint && just test` before every commit; CI enforces both.
    `tests/acl-fuzz` was a README describing a suite that did not exist,
    and `acl.rs` told readers it ran. Documenting intent as if it were
    behaviour is the single most repeated defect in this repo's history.
+11. **We write the apps; we do not patch GNOME's** (ADR-0048). Lisa
+   Desktop is a desktop of our own — the Shell is forked (ADR-0038), the
+   first-party apps are GJS/GTK4 and MCP-native (ADR-0047), and
+   **GTK4/libadwaita and Mutter are never forked**: toolkit and
+   compositor are foundation, not experience. Where a Lisa app does not
+   exist, ship the stock GNOME app *unpatched* — that is the honest
+   interim, not a gap to close with a patch set. Divergence stays narrow
+   and deliberate (input, the prompt surfaces, the dock, agent
+   affordances); rebase cost scales with the width of the delta.
 
 ## Repo mechanics
 

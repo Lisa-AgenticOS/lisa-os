@@ -1,7 +1,11 @@
 # ADR-0004: Flutter app lane + the Forge
 
-- **Status:** accepted (spike DONE — its findings are the appendix at
-  the foot of this file; status corrected 2026-08-02)
+- **Status:** **superseded in part by ADR-0047 (2026-08-04)** — the lane
+  split below is no longer in force: GJS + GTK4/Adwaita is the default
+  for Lisa's apps and for Forge output, and Flutter is parked. The Forge
+  itself (§5.12.1) stands. Earlier: accepted (spike DONE — its findings
+  are the appendix at the foot of this file; status corrected
+  2026-08-02).
 - **Date:** 2026-07-20
 
 ## Context
@@ -13,6 +17,13 @@ prompt/template corpus must stay small. Native GTK/Qt compile times and
 a two-framework corpus fail both tests.
 
 ## Decision
+
+> **Superseded by ADR-0047 (2026-08-04).** The lane split below is kept
+> for the record; it is not what the system does. Ten months of practice
+> answered it the other way: every shipped surface is GJS/GTK4, nothing
+> user-facing was ever written in Flutter, and the Flutter lane has no
+> runtime on the reference hardware. Read ADR-0047 before acting on
+> anything in this section.
 
 Two app lanes (PLAN §5.12):
 
