@@ -437,6 +437,19 @@ function buildWindow() {
         can_focus: false,
     });
     suggestPopover.set_parent(urlBar);
+    // GTK4: a widget attached with set_parent() must be unparented
+    // before its parent is disposed, or GTK finalizes the entry with a
+    // child still on it. Two Surfer sessions on the device ended with
+    // exactly that warning and no coredump, no signal and no JS error —
+    // the process shut down, which from the user's side is
+    // indistinguishable from a crash (#258). Whether that caused the
+    // disappearance is unproven; unclean teardown is a bug either way,
+    // and it is the kind that behaves differently each run.
+    win.connect('close-request', () => {
+        suggestPopover.popdown();
+        suggestPopover.unparent();
+        return false;
+    });
     const rebuildSuggestions = () => {
         const text = urlBar.get_text();
         const tabs = [];

@@ -42,6 +42,10 @@ lint:
     # nobody has to trust a table (#257). A shortcut added, removed or
     # rebound without the map following fails here.
     python3 os/repo-tools/build-keymap.py --check
+    # A GTK4 set_parent() with no unparent() finalizes the parent with a
+    # child attached — two Surfer sessions ended there, with no crash and
+    # no window (#258).
+    python3 os/repo-tools/check-widget-lifecycle.py
     # The knowledge pack (#175) is generated from component READMEs; a
     # stale committed copy would ship the model answers about last
     # month's OS.
