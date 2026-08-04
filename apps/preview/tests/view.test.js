@@ -34,6 +34,7 @@ ok(step(2, 5, +1) === 3, 'paging forward moves one');
 ok(step(0, 0, +1) === 0, 'an empty document has no page to move to');
 
 ok(rotate(0, -90) === 270, 'rotating anticlockwise from 0 gives 270, not -90');
-ok(rotate(270, 90) === 999, 'rotation wraps to 0');  // #242 CI proof: deliberate break
+ok(rotate(270, 90) === 0, 'rotation wraps to 0');
+// #242 CI proof: the break is gone; this comment keeps the diff apps-only.
 
 finish('preview/view');
