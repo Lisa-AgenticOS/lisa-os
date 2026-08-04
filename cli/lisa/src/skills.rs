@@ -132,17 +132,40 @@ mod tests {
             "every shipped skill must parse: {:?}",
             report.skipped
         );
-        let flutter = report
+        let build = report
             .skills
             .iter()
-            .find(|s| s.name == "build-lisa-ui-app")
-            .expect("the Flutter-app skill ships");
-        assert!(!flutter.description.is_empty());
+            .find(|s| s.name == "build-lisa-app")
+            .expect("the app-building skill ships");
+        assert!(!build.description.is_empty());
         // Progressive disclosure: the catalog line is the cheap part, the
         // body is the expensive part and only loads on demand.
-        assert!(flutter.catalog_line().len() < 200);
-        let body = flutter.body().expect("body reads");
-        assert!(body.contains("lisa_ui"), "the import rule is the point");
-        assert!(body.contains("lisa forge"));
+        assert!(build.catalog_line().len() < 200);
+        let body = build.body().expect("body reads");
+        // ADR-0047: GJS + GTK4/Adwaita is the default and Flutter is
+        // parked. This assertion is the reason the skill cannot quietly
+        // drift back — it used to open "Apps on Lisa are Flutter apps".
+        assert!(
+            body.contains("GJS + GTK4/Adwaita is the default toolkit"),
+            "the toolkit is the point"
+        );
+        assert!(body.contains("/usr/share/lisa/manifests/"), "trap #241");
+        // Every tool the allowlist names must be one the loop can
+        // actually dispatch: `list_files` was named for years and does
+        // not exist, so the skill forbade the `list_dir` it meant to use.
+        let known = [
+            "read_file",
+            "list_dir",
+            "grep",
+            "write_file",
+            "edit_file",
+            "run_command",
+            "run_tests",
+            "run_shell",
+            "read_skill",
+        ];
+        for tool in build.tools.as_deref().expect("the skill scopes itself") {
+            assert!(known.contains(&tool.as_str()), "no such tool: {tool}");
+        }
     }
 }
