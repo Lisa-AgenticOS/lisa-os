@@ -268,39 +268,67 @@ export default class LisaDesktopExtension extends Extension {
         // The overview's controls re-show it on state changes, so once
         // is not enough.
         this._connect(Main.overview, 'showing', () => this._dash.hide());
-        this._connect(Main.overview, 'hidden', () => {
-            // The button latches when clicked; nothing unlatches it when
-            // the overview closes by other means (Escape, Super, a
-            // click), leaving it stuck lit and dead to the next press.
-            this._dock.dash.showAppsButton.checked = false;
-        });
 
         // GNOME wires its dash's show-apps button from the overview's
         // own controls, so a Dash used outside the overview has a button
         // that does nothing at all. Wire it to the same destination.
         //
-        // `Main.overview.showApps()` alone was right only from the
-        // desktop: it is `show(APP_GRID)`, and `show()` returns early
-        // when the overview is already up. Pressed from inside the
-        // overview — which is exactly where a person goes looking for
-        // "all apps" — the button latched and nothing happened.
+        // THE PRESS IS AN EVENT, NOT A LATCH (#262).
         //
-        // See `showAppsAction` for the reasoning; the two branches are
-        // unit-tested there, which is the only place they can be.
+        // This used to hang off `notify::checked` and pass that latch to
+        // `showAppsAction` as the intent. It is a toggle button, so the
+        // signal does fire — that part was never broken, and was
+        // verified on the device's own gnome-shell 50.3 by synthesising
+        // a real pointer click (`tests/showapps-smoke.js`). What broke
+        // is that `checked` is *shared, mutable display state*: GNOME's
+        // ControlsManager writes it, our `hidden` handler writes it, a
+        // ctrl+alt+tab focus callback writes it. Reading it back as
+        // intent means any drift between the latch and the overview is
+        // paid for with a press that does nothing — press, tooltip,
+        // silence, no error, which is exactly what was reported.
+        //
+        // `clicked` cannot drift: it is one press, one decision, taken
+        // from where the overview actually is. `checked` is now kept
+        // purely for appearance and is never an input.
         const showApps = this._dock.dash.showAppsButton;
-        this._connect(showApps, 'notify::checked', () => {
+        this._connect(showApps, 'clicked', () => {
+            // `visibleTarget` is the state the overview is heading for,
+            // so a press during the open/close animation is judged
+            // against where it will be, not where it is mid-flight.
             const visible = Main.overview.visibleTarget ?? Main.overview.visible;
-            switch (showAppsAction({overviewVisible: visible, checked: showApps.checked})) {
+            // GNOME's own button IS the app-grid flag: ControlsManager
+            // writes it on every state change (overviewControls.js), so
+            // it says which page an open overview is on. Reading GNOME's
+            // state is not the same mistake as reading our own latch.
+            const gnomeButton = Main.overview.dash.showAppsButton;
+            switch (showAppsAction({
+                overviewVisible: visible,
+                appGridShowing: gnomeButton.checked,
+            })) {
             case 'open-app-grid':
                 Main.overview.showApps();
                 break;
-            case 'mirror':
-                // GNOME's dash is hidden, but its button is still the
-                // thing `ControlsManager` listens to, and a hidden
-                // actor's properties notify exactly the same.
-                Main.overview.dash.showAppsButton.checked = showApps.checked;
+            // GNOME's dash is hidden, but its button is still the thing
+            // `ControlsManager` listens to, and a hidden actor's
+            // properties notify exactly the same.
+            case 'show-app-grid':
+                gnomeButton.checked = true;
+                break;
+            case 'show-windows':
+                gnomeButton.checked = false;
                 break;
             }
+        });
+
+        // Appearance only, both ways. Our button should look latched
+        // while the grid is up and unlatched otherwise; nothing reads
+        // these back, so a missed sync costs a lit pixel, never a press.
+        this._connect(Main.overview, 'hidden', () => {
+            this._dock.dash.showAppsButton.checked = false;
+        });
+        this._connect(Main.overview.dash.showAppsButton, 'notify::checked', () => {
+            this._dock.dash.showAppsButton.checked =
+                Main.overview.dash.showAppsButton.checked;
         });
 
         this._connect(Main.layoutManager, 'monitors-changed', () => {

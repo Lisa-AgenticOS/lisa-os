@@ -61,7 +61,7 @@ export function dockPlacement(monitor, size, margin) {
     return {x, y};
 }
 
-/// What clicking the dock's "Show Applications" button should do.
+/// What pressing the dock's "Show Applications" button should do.
 ///
 /// The dock is a `Dash` built outside the overview, so its show-apps
 /// button is wired by nobody — GNOME connects its own dash's button
@@ -76,24 +76,43 @@ export function dockPlacement(monitor, size, margin) {
 ///
 /// From the desktop that opens the overview on the app grid. From
 /// *inside* the overview `_shown` is already true, so it returns
-/// immediately and the button does nothing at all — which is what a
-/// person sees as "show all apps is broken", because the overview is
-/// where you look for it.
+/// immediately — which is what a person sees as "show all apps is
+/// broken", because the overview is where you look for it. The supported
+/// way to move between pages of an OPEN overview is GNOME's own dash
+/// button: `ControlsManager` listens to its `notify::checked` and eases
+/// the state adjustment between WINDOW_PICKER and APP_GRID.
 ///
-/// The supported way to move between pages of an open overview is
-/// GNOME's own dash button: `ControlsManager` listens to its
-/// `notify::checked` and eases the state adjustment between
-/// WINDOW_PICKER and APP_GRID. Our button mirrors onto it.
+/// ## Why the input is the overview and not the button (#262)
+///
+/// This function used to take `checked` — our own button's latch — as
+/// its input, and the extension drove it from `notify::checked`. That
+/// made a *shared, externally-written property* the source of intent,
+/// and it has one branch that answers 'none': latched while the overview
+/// is closed. A press landing in that state does nothing at all, with no
+/// error — verbatim the reported symptom.
+///
+/// That state is reachable, because our button's only unlatch is the
+/// extension's `hidden` handler and `Overview.hide()` has three paths
+/// that return BEFORE emitting `hidden` (the ctrl+click guard, the
+/// `!this._visible` early return in `_animateNotVisible`, and the
+/// `is_grabbed()` bail in `_syncGrab`, all in gnome-shell 50's
+/// overview.js). Any of them leaves the latch lit over a closed
+/// overview, and the next press is spent unlatching it.
+///
+/// So the press is now an EVENT — `clicked` — and the only input is
+/// where the overview already is. Our button's `checked` is display
+/// state synced FROM the overview, never read back as intent. There is
+/// deliberately no 'none': a press always decides something, which is
+/// the property the tests pin.
 ///
 /// Returns an action name so the decision is testable without GNOME:
 ///   'open-app-grid'  — overview closed: open it straight to the grid.
-///   'mirror'         — overview open: copy `checked` onto GNOME's
-///                      button and let ControlsManager animate.
-///   'none'           — nothing to do.
-export function showAppsAction({overviewVisible, checked}) {
+///   'show-app-grid'  — overview open on the windows: cross to the grid.
+///   'show-windows'   — overview open on the grid: cross back.
+export function showAppsAction({overviewVisible, appGridShowing}) {
     if (!overviewVisible)
-        return checked ? 'open-app-grid' : 'none';
-    // Both directions matter: unchecking is how you get back to the
-    // window picker without closing the overview.
-    return 'mirror';
+        return 'open-app-grid';
+    // Both directions matter: pressing it again is how you get back to
+    // the window picker without closing the overview.
+    return appGridShowing ? 'show-windows' : 'show-app-grid';
 }

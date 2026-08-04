@@ -141,6 +141,7 @@ every channel carries `Expunge None` and `Remove None`.
 | `lib/mcp-protocol.js` | JSON-RPC + the provenance tag. Pure |
 | `lib/mcp.js` | the socket |
 | `lib/settings.js` | what the settings page is allowed to say. Pure |
+| `lib/reader.js` | the reading pane's child order, and what Space does in the attachment list. Pure |
 | `lisa-mail.js` | the window; thin over the above |
 
 `just shell-test` runs the pure half — 135 cases, on any dev host.
@@ -173,14 +174,46 @@ the `text/plain` and `text/html` parts and dropped the rest — so the
 invoice that said *"Dokumenti është bashkëngjitur si PDF"* was a message
 telling you to open a file the reader had thrown away (#211, #169).
 
-Now every non-body part is listed under the sender, with its name, its
-declared type and its size, and three things you can do with it:
+Now every non-body part is listed **below the message body**, with its
+name, its declared type and its size, and three things you can do with
+it:
 
 | action | what happens |
 |---|---|
+| **Single click** | selects the row, and does not open it |
 | **Save As…** | a `Gtk.FileDialog` — **you** choose the directory; the sender's filename is only the suggested name |
-| **Open** (Enter, or the button) | the file is written to a private temp directory and handed to **Preview**, by desktop id |
+| **Open** (double click, Enter, or the button) | the file is written to a private temp directory and handed to **Preview**, by desktop id |
 | **Space** | the same quick look Files has — the transient peek, toggled closed by pressing Space again |
+
+**A single click selects; it used to open (#247).** `Gtk.ListBox`
+defaults `activate-on-single-click` to true, so `row-activated` fired on
+the first click and every click opened the attachment. The comment in
+the source had always said *"Enter (or a double click) opens"* — the
+property was simply never set, so the comment described an intention.
+Setting it is also what makes Space reachable: with single-click
+activation there was no way to select a row without opening it, so the
+selected-row branch of the Space handler could not be reached by mouse,
+and no selection ever persisted long enough to be seen. The first
+attachment is selected when the bar is built, so the selected state is
+visible on arrival and Space works without clicking first.
+
+**The bar sits below the body, pinned.** It used to render between the
+sender and the message. Below the body could mean inside the scrolled
+region or pinned under it, and pinned wins on more than taste: the body
+is a `Gtk.Stack` of a `Gtk.TextView` and a `WebKit.WebView`, and you
+cannot append a GTK widget into a WebView's scrolled content — so
+"inside the scroll" would make the attachment bar behave differently
+depending on whether the sender composed in HTML. Pinned costs nothing
+structurally, because the reading pane's container is not itself
+scrolled and only the body slot expands.
+
+**The order is data, in `lib/reader.js`, not a sequence of `append()`
+calls.** #247 was a layout bug, and a layout expressed as statements in
+a file that needs a GTK host to run is a layout no test can see.
+`READER_ORDER` is a list, `orderedReaderChildren` maps widgets onto it
+and throws on a slot with no widget, and `tests/reader.test.js` pins
+that attachments come after the body. `lisa-mail.js` no longer contains
+an order to get wrong.
 
 Space goes through `org.gnome.NautilusPreviewer` — the *versionless* bus
 name; only the interface carries the `2` — with
@@ -196,6 +229,14 @@ or in any text field behaves exactly as it did. It runs in the capture
 phase (GtkListBox has its own Space binding) with one explicit
 exception — a focused Save or Open button keeps Space, because that is
 how a button is pressed from the keyboard.
+
+The *decision* is `spaceAction` in `lib/reader.js` and is unit-tested:
+the button exemption, the focused-row-beats-selected-row precedence, and
+that Space with nothing to peek is passed on rather than swallowed. The
+*scope* — that a press elsewhere in the window never arrives — is a
+property of where `add_controller` is called and no unit test can
+observe it, which is why it is written down here and in the function's
+own comment rather than claimed as tested.
 
 **Open and Space are different actions.** Open launches Preview proper,
 which stays in the dock; Space is the transient peek, which does not.

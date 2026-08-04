@@ -53,6 +53,7 @@ import {msmtpArgv, sendOutcome, sentFilename} from './lib/send.js';
 import {McpServer} from './lib/mcp.js';
 import {linkAction} from './lib/links.js';
 import {attachmentBytes as partBytes, safeFilename} from './lib/attachments.js';
+import {orderedReaderChildren, spaceAction} from './lib/reader.js';
 
 // Preview is a sibling app in the same tree — `lisa-app` resolves
 // `mail/lisa-mail.js` and `preview/lisa-preview.js` under one base, and
@@ -888,6 +889,18 @@ function buildAttachments(full) {
         row.add_suffix(buttons);
         attachmentList.append(row);
     }
+
+    // Start on the first attachment (#247). Two reasons, and neither is
+    // decoration: it is what makes the selected state *visible* — a
+    // `boxed-list` draws selection perfectly well, but before this
+    // nothing was ever selected long enough to see it, because a single
+    // click opened the attachment instead of selecting it — and it is
+    // what makes Space work on arrival, since the Space handler falls
+    // back to the selected row when focus is on the list itself.
+    //
+    // `select_row` emits `row-selected`, never `row-activated`, so this
+    // cannot open anything.
+    attachmentList.select_row(attachmentList.get_row_at_index(0));
 }
 
 /// Write one attachment to a private temp directory, and return the
@@ -1517,19 +1530,31 @@ app.connect('activate', () => {
         left_margin: 16, right_margin: 16, top_margin: 12, bottom_margin: 16,
         monospace: false,
     });
+    // Not itself scrolled: the scrolling lives inside the body stack,
+    // which is what lets the attachment bar pin under it.
     const readerBox = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL, spacing: 6,
         margin_top: 16, margin_start: 16, margin_end: 16,
     });
-    readerBox.append(readerTitle);
-    readerBox.append(readerFrom);
 
-    // The attachment bar, under the sender and above the body — where
-    // every mail client puts it, and where it is visible before you
-    // start reading a message that says "see attached".
+    // The attachment bar. Where it goes is `READER_ORDER`'s business,
+    // not this line's — see lib/reader.js, and the append loop below.
     attachmentList = new Gtk.ListBox({
         selection_mode: Gtk.SelectionMode.SINGLE,
         css_classes: ['boxed-list'],
+        // SINGLE CLICK SELECTS; A DOUBLE CLICK OPENS (#247).
+        //
+        // `Gtk.ListBox` defaults this to true, so `row-activated` fired
+        // on the FIRST click and every click opened the attachment. The
+        // comment below has always claimed otherwise; the property was
+        // never set, so the comment described an intention rather than
+        // the behaviour.
+        //
+        // This is also what makes the Space peek reachable at all: with
+        // single-click activation there was no way to select a row
+        // without opening it, so the selected-row branch of the Space
+        // handler could never be reached by mouse.
+        activate_on_single_click: false,
     });
     // Enter (or a double click) opens; the buttons in the row do the
     // same two things for a mouse.
@@ -1537,21 +1562,10 @@ app.connect('activate', () => {
         if (row?._attachment)
             openAttachment(row._attachment);
     });
-    // WHICH WIDGET OWNS SPACE, exactly.
-    //
-    // The controller is on the attachment list, so it is only ever on
-    // the event's path while focus is INSIDE that list — a key press in
-    // the message list, in the search entry, or in any text field never
-    // reaches it. Space keeps doing what it does today everywhere else
-    // in this window.
-    //
-    // CAPTURE phase, deliberately: GtkListBox binds Space to its own
-    // cursor-row handling, and a bubble-phase controller would arrive
-    // after the list had already consumed the key. Capturing means one
-    // explicit exception has to be made rather than inherited — a
-    // focused Save/Open button keeps Space, because GtkButton binds it
-    // to activate and stealing it would break the keyboard path to the
-    // two actions in the row.
+    // WHICH WIDGET OWNS SPACE — the reasoning is in `spaceAction`
+    // (lib/reader.js), including why this controller must stay on the
+    // attachment list and nowhere else. This is the binding; the
+    // decision it defers to is unit-tested.
     const attachmentKeys = new Gtk.EventControllerKey({
         propagation_phase: Gtk.PropagationPhase.CAPTURE,
     });
@@ -1559,17 +1573,24 @@ app.connect('activate', () => {
         if (keyval !== Gdk.KEY_space)
             return false;
         const focus = mainWindow?.get_focus?.() ?? null;
-        if (focus instanceof Gtk.Button)
-            return false;
-        // The row the person is on: the focused one, or the selected one
-        // when focus is on the list itself.
+        // Walk out to the row: focus may be on a label inside it.
         let node = focus;
         while (node && node._attachment === undefined)
             node = node.get_parent?.() ?? null;
-        const att = node?._attachment ?? attachmentList.get_selected_row()?._attachment;
-        if (!att)
+        const focusedAttachment = node?._attachment ?? null;
+        const selectedAttachment =
+            attachmentList.get_selected_row()?._attachment ?? null;
+        // `spaceAction` returns WHICH attachment, so the precedence
+        // between a focused row and a stale selection lives in one
+        // tested place rather than being repeated here.
+        const {action, attachment} = spaceAction({
+            focusIsButton: focus instanceof Gtk.Button,
+            focusedAttachment,
+            selectedAttachment,
+        });
+        if (action !== 'peek')
             return false;
-        peekAttachment(att);
+        peekAttachment(attachment);
         return true;
     });
     attachmentList.add_controller(attachmentKeys);
@@ -1577,7 +1598,6 @@ app.connect('activate', () => {
         orientation: Gtk.Orientation.VERTICAL, margin_top: 6, margin_bottom: 6, visible: false,
     });
     attachmentBox.append(attachmentList);
-    readerBox.append(attachmentBox);
 
     const readerScroll = new Gtk.ScrolledWindow({child: readerBody, vexpand: true});
 
@@ -1597,15 +1617,31 @@ app.connect('activate', () => {
         if (openMessage)
             renderBody(openMessage);
     });
-    readerBox.append(remoteBanner);
 
+    // Only the body expands (`READER_EXPANDING_SLOT`), so everything
+    // appended after it is pinned under it rather than scrolling away
+    // with the message. `readerBox` is not itself inside a
+    // ScrolledWindow — the scrolling happens inside this stack.
     readerStack = new Gtk.Stack({vexpand: true});
     readerStack.add_named(readerScroll, 'text');
     if (WebKit) {
         readerHtml = buildWebView();
         readerStack.add_named(readerHtml, 'html');
     }
-    readerBox.append(readerStack);
+
+    // The reading pane's order is DATA, in lib/reader.js, because an
+    // append sequence here is untestable and this one was wrong (#247).
+    // `orderedReaderChildren` throws if a slot has no widget, so a
+    // dropped attachment bar is a crash rather than a silent absence.
+    for (const child of orderedReaderChildren({
+        'title': readerTitle,
+        'from': readerFrom,
+        'remote-banner': remoteBanner,
+        'body': readerStack,
+        'attachments': attachmentBox,
+    }))
+        readerBox.append(child);
+
     const readerPane = new Adw.ToolbarView();
     readerHeader = new Adw.HeaderBar();
     readerHeader.set_title_widget(new Gtk.Label({label: '', visible: false}));

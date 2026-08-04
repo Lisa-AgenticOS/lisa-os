@@ -70,12 +70,31 @@ replaces. An earlier version drew a second rounded panel around it,
 which read as two docks nested inside each other and would have drifted
 out of step with the theme the moment GNOME restyled the dash.
 
-**The show-apps button has to be wired by hand.** GNOME connects its
-dash's button from the overview's own controls, so a `Dash` used outside
-the overview has a button that does nothing when clicked. It is
-connected to `Main.overview.showApps()` and unlatched when the overview
-closes — the button latches on click and nothing else unlatches it, so
-it would otherwise stick lit and dead to the next press.
+**The show-apps button has to be wired by hand, and the press is an
+event — not a latch (#262).** GNOME connects its dash's button from the
+overview's own controls, so a `Dash` used outside the overview has a
+button that does nothing when clicked. Ours hangs off `clicked` and
+decides from where the overview already is; `showAppsAction` in
+`lib/layout.js` holds the decision.
+
+The first version hung off `notify::checked` and passed that latch in as
+the intent, which was wrong twice over:
+
+- **`checked` is shared display state.** GNOME's `ControlsManager`
+  writes it, the ctrl+alt+tab focus callbacks write it, our own `hidden`
+  handler writes it. Coupling it to an action meant *anyone* writing the
+  property performed one — setting `checked = true` by hand opened the
+  overview, which is not what an assignment to a display property should
+  do.
+- **Drift cost a press.** Latched over a closed overview, the next click
+  was spent unlatching it: press, tooltip, silence, no error. Reachable,
+  because `Overview.hide()` has three paths that return *before*
+  emitting `hidden` (the ctrl+click guard, `_animateNotVisible`'s
+  `!this._visible` return, and `_syncGrab`'s `is_grabbed()` bail) while
+  that `hidden` handler was the only thing that unlatched the button.
+
+`checked` is now synced *from* the overview for appearance only, and
+nothing reads it back. A missed sync costs a lit pixel, never a press.
 
 ### The hot corner is GNOME's own HotCorner, mirrored
 
@@ -128,6 +147,32 @@ bottom-right mirrors both axes, so the barriers run *up* and *left* and
 both directions flip to `NEGATIVE_*`. The tests pin that mirroring, and
 that a dock is clamped on-screen and centred on the monitor it belongs
 to rather than on the primary.
+
+### The connection is tested too, not just the decision
+
+`tests/showapps-smoke.js` + `tests/run-showapps-smoke.sh` start a real
+throwaway `gnome-shell --headless`, load this extension, synthesise a
+real pointer press on the real Show Apps button and assert the overview
+lands on the app grid.
+
+```
+shell/desktop/tests/run-showapps-smoke.sh
+```
+
+It needs Linux with gnome-shell ≥ 50, gjs and `dbus-run-session`; on a
+macOS dev host it prints `SKIP` and exits 0. It is **not** wired into
+`just shell-test`, which must stay runnable on any dev host — run it by
+hand on a Linux box, or see the limits below.
+
+This exists because #262 was invisible to every unit test here by
+construction: `showAppsAction` was pure, tested and correct, while the
+wiring feeding it was untested and wrong — the same shape as #241, #244
+and #255. A test that a function returns the right string says nothing
+about whether anything calls it. This one presses the button.
+
+Verified against gnome-shell 50.3 on the reference hardware: red on the
+pre-fix wiring (`a press is not swallowed by a stale latch: expected 2,
+got 1`), green after.
 
 ### State-dependent app icons
 
@@ -185,6 +230,11 @@ the original method.
   question for hardware, not for review.
 - **No settings yet** — no auto-hide, no icon-size control, no choice of
   corner. ADR-0035 does not settle auto-hide either.
+- **The show-apps smoke check is not in CI.** `run-showapps-smoke.sh`
+  runs on demand on a Linux host and skips elsewhere; nothing in the
+  `justfile` or the workflows calls it yet, so it cannot fail a PR. It
+  needs a Linux CI job with a render node, which is a change outside
+  this directory.
 - **Requires a session restart to load.** GNOME Shell only scans the
   extension directories at startup, and on Wayland there is no in-place
   restart, so a newly installed copy needs a logout/login. That is a

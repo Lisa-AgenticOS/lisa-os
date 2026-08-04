@@ -83,22 +83,73 @@ test('odd leftover pixels round rather than producing a fractional position', ()
     assertEq(x, 451);
 });
 
-finish('desktop/layout');
+// ---- the dock's Show Apps button (#262) ------------------------------
+//
+// These four used to sit BELOW `finish()`, which meant they could print
+// `FAIL` and still exit 0 — the suite had already reported. Mutating an
+// assertion proved it: "1 failed" on stdout, `echo $?` said 0. `finish`
+// now runs last, so a failure here fails the build.
 
-test('show-apps from inside the overview mirrors instead of calling showApps()', () => {
-    // The reported bug: in the overview, the dock's button did nothing.
-    // `Overview.show()` returns early when `_shown` is already true, so
-    // `showApps()` is a no-op there — the state has to move through
-    // GNOME's own dash button, which ControlsManager listens to.
-    assertEq(showAppsAction({overviewVisible: true, checked: true}), 'mirror');
-    // And back again: unchecking returns to the window picker rather
-    // than leaving the button latched over a grid it cannot leave.
-    assertEq(showAppsAction({overviewVisible: true, checked: false}), 'mirror');
+test('every press decides something — there is no dead click', () => {
+    // The reported bug (#262): press, tooltip, silence, no error. The
+    // old signature took the button's own `checked` latch as its input
+    // and answered 'none' for `{overviewVisible: false, checked: false}`
+    // — a press that does nothing, by construction. Any drift between
+    // the latch and the overview spent a press on it.
+    //
+    // The press is now an EVENT, not a state, so the only input is where
+    // the overview already is. Exhaustive over that input: no branch may
+    // decide to do nothing.
+    for (const overviewVisible of [true, false]) {
+        for (const appGridShowing of [true, false]) {
+            const action = showAppsAction({overviewVisible, appGridShowing});
+            assertEq(action !== 'none' && !!action, true,
+                `press with overviewVisible=${overviewVisible} ` +
+                `appGridShowing=${appGridShowing} decided ${action}`);
+        }
+    }
 });
 
 test('show-apps from the desktop opens the overview on the grid', () => {
-    assertEq(showAppsAction({overviewVisible: false, checked: true}), 'open-app-grid');
-    // Unchecking while the overview is closed is the reset our own
-    // `hidden` handler performs; it must not reopen anything.
-    assertEq(showAppsAction({overviewVisible: false, checked: false}), 'none');
+    // `showApps()` is `show(APP_GRID)` and works only from the desktop:
+    // `show()` returns early once the overview is up.
+    assertEq(showAppsAction({overviewVisible: false, appGridShowing: false}),
+        'open-app-grid');
+    // The overview is closed, so what the grid "was" showing last time
+    // is not an input. A closed overview always opens on the grid.
+    assertEq(showAppsAction({overviewVisible: false, appGridShowing: true}),
+        'open-app-grid');
 });
+
+test('show-apps inside the overview moves between the two pages', () => {
+    // Inside the overview `showApps()` is a no-op, so the state has to
+    // move through GNOME's own dash button, which ControlsManager
+    // listens to and eases between WINDOW_PICKER and APP_GRID.
+    assertEq(showAppsAction({overviewVisible: true, appGridShowing: false}),
+        'show-app-grid');
+    // Pressing it again on the grid goes back to the windows rather
+    // than latching over a page it cannot leave.
+    assertEq(showAppsAction({overviewVisible: true, appGridShowing: true}),
+        'show-windows');
+});
+
+test('a press is decided by the overview, never by our own button', () => {
+    // The regression this whole issue is about. The dock's button is
+    // display state that other code writes: GNOME's ControlsManager, our
+    // own `hidden` handler, a keyboard focus callback. Reading it back as
+    // INTENT is what produced a button that had to be pressed twice.
+    //
+    // `showAppsAction` cannot regress into that as long as it ignores an
+    // argument named `checked` entirely: same overview, same answer,
+    // whatever the latch says.
+    for (const overviewVisible of [true, false]) {
+        for (const appGridShowing of [true, false]) {
+            const state = {overviewVisible, appGridShowing};
+            assertEq(showAppsAction({...state, checked: true}),
+                showAppsAction({...state, checked: false}),
+                `the latch changed the decision for ${JSON.stringify(state)}`);
+        }
+    }
+});
+
+finish('desktop/layout');
