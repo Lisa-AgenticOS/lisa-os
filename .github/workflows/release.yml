@@ -685,10 +685,23 @@ jobs:
           # gnome-shell/extensions (js/misc/fileUtils.js,
           # collectFromDatadirs) — XDG_DATA_DIRS, not the shell's
           # compiled-in datadir. /usr/share is in that list by default.
+          # The uuid entries are ABSOLUTE symlinks into /usr/share/lisa/
+          # shell (PKGBUILD keeps one install location). From the host a
+          # `-e` through them resolves against the HOST root and fails
+          # on a perfectly good image — the check_enabled -L lesson,
+          # found again by this step's second-ever execution. Resolve
+          # the link inside the image instead: the invariant is that
+          # the link exists AND its target carries extension.js.
           for uuid in lisa-overlay@lisa-os.org lisa-launcher@lisa-os.org \
                       lisa-desktop@lisa-os.org; do
-            [ -e "$R/usr/share/gnome-shell/extensions/$uuid/extension.js" ] \
-              || say "extension $uuid is not installed where the shell scans."
+            L=$R/usr/share/gnome-shell/extensions/$uuid
+            if [ -L "$L" ]; then
+              tgt=$(sudo readlink "$L")
+              [ -e "$R/${tgt#/}/extension.js" ] \
+                || say "extension $uuid links to $tgt, but $tgt/extension.js is not in the image."
+            elif ! sudo test -e "$L/extension.js"; then
+              say "extension $uuid is not installed where the shell scans."
+            fi
           done
 
           # -- 5. ...and they are ENABLED for the shell that runs ------
