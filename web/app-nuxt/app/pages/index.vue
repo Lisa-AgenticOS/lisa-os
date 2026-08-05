@@ -8,7 +8,8 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
 </script>
 
 <template>
-  <div class="wrap">
+  <div class="navbar">
+    <div class="wrap">
     <nav class="nav">
       <!-- The logo and the words "Lisa OS" together, and both visible.
            Google's OAuth review rejected this page for two separate
@@ -39,6 +40,23 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
         <a class="btn solid" :href="releases">Download</a>
       </div>
     </nav>
+    </div>
+    <!-- Narrow screens: the menu above is hidden, so every destination
+         lives here instead of nowhere. -->
+    <div class="navrail">
+      <ul>
+        <li><a href="#what">What it is</a></li>
+        <li><a href="#why">Why Lisa</a></li>
+        <li><a href="#boundary">The boundary</a></li>
+        <li><a href="#ledger">The Ledger</a></li>
+        <li><a href="#screens">Screenshots</a></li>
+        <li><a href="#status">Status</a></li>
+        <li><a :href="docs">Docs</a></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="wrap">
 
     <header class="hero">
       <span class="eyebrow">AI-native Linux · runs on your hardware</span>
@@ -60,6 +78,13 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
         <a class="btn solid lg" :href="releases">Download Lisa OS</a>
         <a class="btn line lg" :href="docs">Read the docs</a>
       </div>
+      <!-- The three things a skeptical reader checks next, before any
+           feature copy: is it real, is it free, can I see inside. -->
+      <p class="trust">
+        <span><i /> Boots on real hardware today</span>
+        <span><i /> GPL-2.0, source in the open</span>
+        <span><i /> No account, no telemetry</span>
+      </p>
     </header>
 
     <!-- What this application is and what it does with the data it asks
@@ -170,27 +195,38 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       </div>
     </section>
 
-    <section id="boundary" class="sec">
-      <div class="lead-2">
-        <span class="eyebrow">The boundary</span>
-        <h2>The guardrails are code the model can't reach.</h2>
-        <p>Most agentic systems keep their safety in the prompt — the model is asked nicely not to do the dangerous thing. Lisa's limits live outside the model, in deterministic code, where no amount of clever text can argue with them.</p>
-      </div>
-      <div class="rows">
-        <div class="frow"><span class="mk">▣</span><div><h3>Tiered by blast radius</h3><p>Reading is silent. Writing shows a chip. Anything destructive stops for a modal you have to answer. The tier is decided by the system before the call is dispatched — not by the model, and not by the app that asked.</p></div></div>
-        <div class="frow"><span class="mk amber">⊘</span><div><h3>Untrusted content can't pull the trigger</h3><p>A web page or an email telling the assistant to delete your files is describing an action it has no authority to cause. Content from untrusted sources is tagged where it enters and can never escalate itself into a privileged call.</p></div></div>
-        <div class="frow"><span class="mk">◇</span><div><h3>One door out</h3><p>Cloud models are welcome — through a single audited broker that holds the keys, marks the egress and writes the entry. The daemons that read your context have no network at all, so there is no second path to close.</p></div></div>
-      </div>
-      <p class="caption">Two tests we hold ourselves to: the boundary must not be reachable from inside — and it sits between the model and your machine, never between you and your own machine.</p>
-    </section>
+  </div>
 
-    <section id="surfaces" class="sec">
-      <div class="lead-2">
-        <span class="eyebrow">Apps as agent surfaces</span>
-        <h2>Your apps aren't just windows — they're capabilities.</h2>
-        <p>Each app declares what it can do as tools an agent may call, and carries its own durable context: your mail app remembers your mail, and only your mail. That is what turns "find the invoice from that supplier and reply that we've paid" from a demo script into the system wiring three apps together — every step tiered, every step on the record.</p>
-      </div>
-    </section>
+  <!-- A band: raised ground, full bleed. The two sections that carry
+       the actual differentiator get their own movement rather than
+       being the third and fourth identical hairline list. -->
+  <div class="band">
+    <div class="wrap">
+      <section id="boundary" class="sec reveal">
+        <div class="lead-2">
+          <span class="eyebrow">The boundary</span>
+          <h2>The guardrails are code the model can't reach.</h2>
+          <p>Most agentic systems keep their safety in the prompt — the model is asked nicely not to do the dangerous thing. Lisa's limits live outside the model, in deterministic code, where no amount of clever text can argue with them.</p>
+        </div>
+        <div class="cards">
+          <div class="card"><span class="mk">▣</span><h3>Tiered by blast radius</h3><p>Reading is silent. Writing shows a chip. Anything destructive stops for a modal you have to answer. The tier is decided by the system before the call is dispatched — not by the model, and not by the app that asked.</p></div>
+          <div class="card"><span class="mk amber">⊘</span><h3>Untrusted content can't pull the trigger</h3><p>A web page or an email telling the assistant to delete your files is describing an action it has no authority to cause. Content from untrusted sources is tagged where it enters and can never escalate itself into a privileged call.</p></div>
+          <div class="card"><span class="mk">◇</span><h3>One door out</h3><p>Cloud models are welcome — through a single audited broker that holds the keys, marks the egress and writes the entry. The daemons that read your context have no network at all, so there is no second path to close.</p></div>
+        </div>
+        <p class="caption">Two tests we hold ourselves to: the boundary must not be reachable from inside — and it sits between the model and your machine, never between you and your own machine.</p>
+      </section>
+
+      <section id="surfaces" class="sec reveal">
+        <div class="lead-2">
+          <span class="eyebrow">Apps as agent surfaces</span>
+          <h2>Your apps aren't just windows — they're capabilities.</h2>
+          <p>Each app declares what it can do as tools an agent may call, and carries its own durable context: your mail app remembers your mail, and only your mail. That is what turns "find the invoice from that supplier and reply that we've paid" from a demo script into the system wiring three apps together — every step tiered, every step on the record.</p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="wrap">
 
     <section class="sec">
       <div class="lead-2">
