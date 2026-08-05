@@ -164,6 +164,12 @@ runs:
         # the release lane, where the local demo versions are adjacent to
         # the real channel's.
         for f in mnt-root/usr/lib/sysupdate.d/*; do
+          # No nullglob in this shell: an empty directory leaves the glob
+          # literal and this loop would create /etc/sysupdate.d/'*' — a
+          # symlink that masks nothing, and the guest then updates to the
+          # PUBLISHED release instead of the build under test, which is
+          # the exact failure this loop exists to prevent.
+          [ -e "$f" ] || { echo "FAIL: image ships no /usr/lib/sysupdate.d transfers — nothing to mask, and nothing to update with"; exit 1; }
           sudo ln -sf /dev/null "mnt-root/etc/sysupdate.d/$(basename "$f")"
         done
         sudo tee mnt-root/etc/sysupdate.d/50-root.conf >/dev/null <<'EOF'
@@ -254,7 +260,29 @@ runs:
             # once >100 MiB has landed — solidly mid-write, past any
             # metadata preamble. The host inspects the corpse.
             systemctl start systemd-networkd
-            for _ in $(seq 1 60); do (echo > /dev/tcp/10.0.2.2/8000) 2>/dev/null && break; sleep 1; done
+            # An HTTP probe, not a bare /dev/tcp handshake: QEMU's slirp
+            # accepts the TCP handshake for its own gateway address
+            # whether or not the host port is alive, so a connect-only
+            # probe "succeeds" against a dead server (#272 — that false
+            # positive cost a full CI round-trip to prove innocent).
+            # Success here means the SERVER ANSWERED with an HTTP line.
+            http_probe() {
+                exec 3<>/dev/tcp/10.0.2.2/8000 || return 1
+                printf 'HEAD /SHA256SUMS HTTP/1.0\r\n\r\n' >&3
+                local line=""
+                read -t 5 -r line <&3
+                exec 3<&- 3>&-
+                case "$line" in HTTP/*) return 0;; *) return 1;; esac
+            }
+            net_ok=""
+            for _ in $(seq 1 60); do
+                if http_probe 2>/dev/null; then net_ok=1; break; fi
+                sleep 1
+            done
+            # Exhaustion is a finding, not a shrug: without this line a
+            # dead server surfaces only as a later sysupdate error that
+            # reads like an OS failure.
+            [ -n "$net_ok" ] || echo "LISA_NET_WAIT_EXHAUSTED (server at 10.0.2.2:8000 never answered HTTP)" > /dev/console
             # PROVE THE PROBE BEFORE TRUSTING IT. The first version read
             # `awk '$3=="vda3"' /proc/diskstats` without checking that the
             # line exists; an empty result makes every later `$(( cur -
@@ -331,7 +359,29 @@ runs:
             systemctl poweroff
         elif [ "$v" = "1" ]; then
             systemctl start systemd-networkd
-            for _ in $(seq 1 60); do (echo > /dev/tcp/10.0.2.2/8000) 2>/dev/null && break; sleep 1; done
+            # An HTTP probe, not a bare /dev/tcp handshake: QEMU's slirp
+            # accepts the TCP handshake for its own gateway address
+            # whether or not the host port is alive, so a connect-only
+            # probe "succeeds" against a dead server (#272 — that false
+            # positive cost a full CI round-trip to prove innocent).
+            # Success here means the SERVER ANSWERED with an HTTP line.
+            http_probe() {
+                exec 3<>/dev/tcp/10.0.2.2/8000 || return 1
+                printf 'HEAD /SHA256SUMS HTTP/1.0\r\n\r\n' >&3
+                local line=""
+                read -t 5 -r line <&3
+                exec 3<&- 3>&-
+                case "$line" in HTTP/*) return 0;; *) return 1;; esac
+            }
+            net_ok=""
+            for _ in $(seq 1 60); do
+                if http_probe 2>/dev/null; then net_ok=1; break; fi
+                sleep 1
+            done
+            # Exhaustion is a finding, not a shrug: without this line a
+            # dead server surfaces only as a later sysupdate error that
+            # reads like an OS failure.
+            [ -n "$net_ok" ] || echo "LISA_NET_WAIT_EXHAUSTED (server at 10.0.2.2:8000 never answered HTTP)" > /dev/console
             if /usr/lib/systemd/systemd-sysupdate update > /tmp/sysupdate.log 2>&1; then
                 tail -5 /tmp/sysupdate.log > /dev/console
                 echo "LISA_UPDATE_DONE" > /dev/console
@@ -480,6 +530,16 @@ runs:
         [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm
         sudo apt-get install -qq -y --no-install-recommends qemu-system-x86 ovmf >/dev/null
         (cd serve && python3 -m http.server 8000 >/dev/null 2>&1 &)
+        # The server is backgrounded with its output discarded, so prove it
+        # serves BEFORE booting the guest — a dead server otherwise
+        # surfaces 6 minutes later as a guest-side pull failure that reads
+        # like an OS regression (#272).
+        server_up=""
+        for _ in $(seq 1 20); do
+          if curl -sf -o /dev/null http://127.0.0.1:8000/SHA256SUMS; then server_up=1; break; fi
+          sleep 1
+        done
+        [ -n "$server_up" ] || { echo "FAIL: local http.server never served SHA256SUMS — harness fault, not the image's"; exit 1; }
         cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
         # 1200s, not the 900 this scenario used when it was nightly-only:
         # the release image's root carries ~8 GiB of packages, so the guest
@@ -552,6 +612,16 @@ runs:
         [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm
         sudo apt-get install -qq -y --no-install-recommends qemu-system-x86 ovmf >/dev/null
         (cd serve && python3 -m http.server 8000 >/dev/null 2>&1 &)
+        # The server is backgrounded with its output discarded, so prove it
+        # serves BEFORE booting the guest — a dead server otherwise
+        # surfaces 6 minutes later as a guest-side pull failure that reads
+        # like an OS regression (#272).
+        server_up=""
+        for _ in $(seq 1 20); do
+          if curl -sf -o /dev/null http://127.0.0.1:8000/SHA256SUMS; then server_up=1; break; fi
+          sleep 1
+        done
+        [ -n "$server_up" ] || { echo "FAIL: local http.server never served SHA256SUMS — harness fault, not the image's"; exit 1; }
         cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
         timeout 1200 qemu-system-x86_64 \
           -machine q35 -accel kvm -accel tcg -m 4G -nographic \

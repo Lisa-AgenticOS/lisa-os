@@ -90,7 +90,15 @@ jobs:
               gpg --dearmor < /src/os/packages/lisa-keyring/lisa-packages.pub > "$KEYS/lisa.gpg"
               printf "%s:4:\n" 737240D11D28E109A474A8E5827E27417AF5982B > "$KEYS/lisa-trusted"
               : > "$KEYS/lisa-revoked"
-              pacman -Syu --noconfirm mkosi
+              pacman -Syu --noconfirm
+              # mkosi pinned from the permanent Arch archive (#271): the
+              # tool that interprets every mkosi.conf in this repo was
+              # the one build input that could change overnight with no
+              # commit — in a repo that pins models by hash and container
+              # bases by digest. 26-5 is what the last green run of this
+              # lane resolved, and what aarch64-image.yml already pins;
+              # bump all lanes together, deliberately.
+              pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
               mkosi --directory os/mkosi summary
               mkosi --directory os/mkosi build
             '
@@ -112,16 +120,32 @@ jobs:
           # cannot see them (or their absence) reliably. The UKI is the
           # authoritative artifact; fall back to lisa.initrd if extraction
           # fails.
+          sudo apt-get update -qq >/dev/null
           sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils zstd >/dev/null
-          OFF=$(( $(sfdisk -J lisa.raw 2>/dev/null | jq -r '.partitiontable.partitions[0].start' || echo 0) * 512 ))
-          if [ "$OFF" -gt 0 ]; then
-            NAME=$(mdir -b -i "lisa.raw@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1 || true)
+          # Bare `lisa.raw` was checked here for weeks while this job's
+          # mkosi writes to os/mkosi/ — sfdisk failed, OFF became 0, and
+          # the fallback below quietly examined the STANDALONE initrd
+          # instead of the UKI that ships. The USB-boot gate (#46) was
+          # green while inspecting the wrong artifact. Same candidate
+          # loop and loud fallback as the display step now.
+          RAW=""
+          for c in os/mkosi/lisa.raw lisa.raw; do [ -f "$c" ] && RAW="$c" && break; done
+          if [ -n "$RAW" ]; then
+            OFF=$(( $(sfdisk -J "$RAW" | jq -r '.partitiontable.partitions[0].start') * 512 ))
+            NAME=$(mdir -b -i "$RAW@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1 || true)
             if [ -n "$NAME" ]; then
-              mcopy -i "lisa.raw@@$OFF" "::/EFI/Linux/$NAME" uki.efi
-              objcopy --dump-section .initrd=initrd.img uki.efi discard.efi || true
+              mcopy -i "$RAW@@$OFF" "::/EFI/Linux/$NAME" uki.efi
+              if ! objcopy --dump-section .initrd=initrd.img uki.efi discard.efi; then
+                echo "WARN: objcopy could not read .initrd from $NAME — sections present:"
+                objdump -h uki.efi 2>&1 | head -30 || echo "  (objdump could not read it either)"
+              fi
             fi
           fi
-          [ -f initrd.img ] || cp os/mkosi/lisa.initrd initrd.img
+          if [ ! -f initrd.img ]; then
+            echo "NOTE: falling back to the standalone os/mkosi/lisa.initrd —"
+            echo "      this checks the built initrd, NOT the one inside the UKI."
+            cp os/mkosi/lisa.initrd initrd.img
+          fi
           python3 - <<'PY'
           import subprocess, sys
           d = open('initrd.img','rb').read()
@@ -154,6 +178,7 @@ jobs:
           # (cf. issue #46). Extraction mirrors the storage/HID step: every
           # zstd frame, because the kernel-modules initrd is appended as
           # separate frames.
+          sudo apt-get update -qq >/dev/null
           sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils zstd >/dev/null
           RAW=""
           for c in os/mkosi/lisa.raw lisa.raw; do [ -f "$c" ] && RAW="$c" && break; done
@@ -266,6 +291,7 @@ jobs:
           # storage/HID and display steps — every zstd frame, because the
           # initrd is a concatenation of independently compressed
           # archives, plus the raw bytes for our uncompressed one.
+          sudo apt-get update -qq >/dev/null
           sudo apt-get install -qq -y --no-install-recommends mtools fdisk jq binutils zstd >/dev/null
           RAW=""
           for c in os/mkosi/lisa.raw lisa.raw; do [ -f "$c" ] && RAW="$c" && break; done
@@ -274,10 +300,17 @@ jobs:
             NAME=$(mdir -b -i "$RAW@@$OFF" ::/EFI/Linux/ | grep -o 'lisa[-_][^/]*\.efi' | grep -v rescue | head -1 || true)
             if [ -n "$NAME" ]; then
               mcopy -i "$RAW@@$OFF" "::/EFI/Linux/$NAME" uki-ovl.efi
-              objcopy --dump-section .initrd=initrd-ovl.img uki-ovl.efi discard-ovl.efi || true
+              if ! objcopy --dump-section .initrd=initrd-ovl.img uki-ovl.efi discard-ovl.efi; then
+                echo "WARN: objcopy could not read .initrd from $NAME — sections present:"
+                objdump -h uki-ovl.efi 2>&1 | head -30 || echo "  (objdump could not read it either)"
+              fi
             fi
           fi
-          [ -f initrd-ovl.img ] || cp os/mkosi/lisa.initrd initrd-ovl.img
+          if [ ! -f initrd-ovl.img ]; then
+            echo "NOTE: falling back to the standalone os/mkosi/lisa.initrd —"
+            echo "      this checks the built initrd, NOT the one inside the UKI."
+            cp os/mkosi/lisa.initrd initrd-ovl.img
+          fi
           python3 - <<'PY'
           import subprocess, sys
           d = open('initrd-ovl.img','rb').read()
@@ -381,16 +414,22 @@ jobs:
           # offline when its slot updated (ADR-0023 phase 1). Without it,
           # such a device loses its browser with no way to know why.
           #
-          # The invariant is "installed IMPLIES enabled", not "installed":
-          # this job builds the MINIMAL image (no NetworkManager, no gdm),
-          # where those units are legitimately absent. Asserting presence
-          # outright made this step fail on an image that was fine.
+          # The invariant is "installed IMPLIES enabled", not "installed".
+          # (The comment here used to say this job builds the MINIMAL
+          # image with no NetworkManager and no gdm — no longer true,
+          # mkosi.conf carries the full desktop set now. The implication
+          # shape stays because it is correct for any flavor, and the
+          # release lane still adds packages this build does not have.)
           # "Enabled" means a .wants symlink exists in EITHER tree: presets
           # and `systemctl enable` write to /etc, while some packages ship
           # their own under /usr/lib. Checking only /etc reports a working
           # image as broken.
           check_enabled() { # <unit> <target>
-            [ -e "mnt-pull/usr/lib/systemd/system/$1" ] || return 0  # not in this flavor
+            # Announce the vacuous branch: a skipped check must be
+            # distinguishable from a passing one (the check_preset
+            # lesson below, applied here too).
+            [ -e "mnt-pull/usr/lib/systemd/system/$1" ] || {
+              echo "SKIP: $1 is not in this image — enablement not checked"; return 0; }
             # -L, not -e: a wants symlink points at the ABSOLUTE path
             # /usr/lib/systemd/system/<unit>, which resolves against the
             # HOST root when the image is loop-mounted here. Every one of
@@ -536,6 +575,29 @@ jobs:
                 fail=1
               }
             done
+          else
+            # This branch has been the ONLY one taken since the nightly
+            # stopped installing lisa-shell (release adds it via
+            # 50-release.conf) — for weeks the gate printed nothing and
+            # was indistinguishable from a pass. Say so, every time.
+            echo "SKIP: /usr/share/lisa/shell not in this image — D-Bus activation files not checked (release lane covers them)"
+          fi
+          # ADR-0039 step 4: the desktop comes from the hosted [lisa]
+          # index, and this nightly is the first job that would see
+          # lisa-desktop drift — yet until now it asserted nothing about
+          # the desktop at all. Presence, stock absence, and the exact
+          # version (printed, so a log diff answers "which shell did
+          # this image get?" without archaeology).
+          shell_pkg=$(ls mnt-pull/var/lib/pacman/local 2>/dev/null | grep '^lisa-desktop-shell-' || true)
+          if [ -z "$shell_pkg" ]; then
+            echo "FAIL: lisa-desktop-shell is not installed — the image has no Lisa Desktop"
+            fail=1
+          else
+            echo "OK: desktop is $shell_pkg (from the [lisa] index)"
+          fi
+          if ls mnt-pull/var/lib/pacman/local 2>/dev/null | grep -q '^gnome-shell-'; then
+            echo "FAIL: stock gnome-shell is in the image alongside the fork"
+            fail=1
           fi
           # A desktop with Online Accounts and no Secret Service is worse
           # than one without Online Accounts: the account is added, the
@@ -655,7 +717,10 @@ jobs:
         with:
           name: lisa-image
           path: os/mkosi/lisa*.raw
-          if-no-files-found: warn
+          # error, not warn: an empty upload keeps this job green and the
+          # four `needs: image` jobs then fail on a missing artifact — a
+          # message about downloads instead of the missing image.
+          if-no-files-found: error
           retention-days: 7
 
   # M0 acceptance (PLAN §10): A/B update + rollback demonstrated. A

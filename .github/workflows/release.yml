@@ -192,9 +192,13 @@ jobs:
               # glslc for its shaders, and the SPIRV-Headers cmake
               # package ggml-vulkan find_package()s on its own;
               # vulkan-icd-loader is its link-time libvulkan.
-              pacman -Syu --noconfirm base-devel rust git mkosi glib2 cmake devtools \
+              # mkosi deliberately NOT in this list: it is pinned from
+              # the permanent Arch archive below (#271) — the same 26-5
+              # every other lane pins. Bump all lanes together.
+              pacman -Syu --noconfirm base-devel rust git glib2 cmake devtools \
                 linux-headers bc fcitx5 vulkan-headers shaderc vulkan-icd-loader \
                 spirv-headers
+              pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
 
               # A cached git source is keyed by DIRECTORY NAME, never
               # by remote, and the cache step falls back to restore-keys
@@ -532,6 +536,9 @@ jobs:
               cp /build/repo-out/*.pkg.tar.* /src/repo-out/
             '
           sudo chown -R "$USER:" lisa-usb.raw repo-out
+          # The container also wrote the derived keyring into the checkout;
+          # left root-owned it breaks any later step that touches the tree.
+          sudo chown -R "$USER:" os/mkosi/mkosi.pkgmngr 2>/dev/null || true
           ls -lh repo-out/
       - name: Boot check — no boot, no release
         run: |
@@ -626,8 +633,19 @@ jobs:
           # pacman's local db lives in the root tree, so the installed
           # set is readable straight off the mounted partition.
           sudo ls "$R/var/lib/pacman/local" > /tmp/installed.txt
-          grep -q '^lisa-desktop-shell-' /tmp/installed.txt \
-            || say "lisa-desktop-shell is not installed — the image has no Lisa Desktop."
+          # The [lisa] index is a rolling tag with no version constraint,
+          # so the shell is the one input this build takes "whatever is
+          # current" of. Presence alone cannot answer "which shell did
+          # this release ship?" a week later — record the exact version
+          # in the log AND the job summary, so the answer is a click,
+          # not archaeology.
+          shell_ver=$(grep '^lisa-desktop-shell-' /tmp/installed.txt || true)
+          if [ -z "$shell_ver" ]; then
+            say "lisa-desktop-shell is not installed — the image has no Lisa Desktop."
+          else
+            echo "desktop: $shell_ver (from the [lisa] index, rolling 'current')"
+            echo "**Desktop:** \`$shell_ver\` (from the [lisa] index at build time)" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if grep -q '^gnome-shell-' /tmp/installed.txt; then
             say "stock gnome-shell is installed; it should have been replaced (provides/conflicts)."
           fi
@@ -855,10 +873,10 @@ jobs:
           **Apps channel:** \`lisa-apps_${VER}.tar.zst\` (shell surfaces) and
           \`lisa-zen_${VER}_x86_64.tar.zst\` / \`lisa-zen_${VER}_aarch64.tar.zst\`
           (Zen browser) update independently of the image — \`lisa apps update\`,
-          no reboot (ADR-0020, ADR-0023). The browser is moving out of the image
-          onto this channel: this release still bakes \`/opt/zen\` as a floor
-          while devices pick up the resolver and the pre-fetch, and
-          \`lisa-apps-sync.timer\` pulls the payload to \`/var\` once online.
+          no reboot (ADR-0020, ADR-0023). The browser lives on this channel:
+          the image ships only \`zen-browser-launcher\` (the .desktop, icons and
+          resolver); the \`/opt/zen\` payload installs under \`/var\` via
+          \`lisa apps\`, and \`lisa-apps-sync.timer\` pulls it once online.
           EOF
           gh release create "v${VER}" \
             --title "Lisa OS ${VER}" \
@@ -876,5 +894,12 @@ jobs:
           # dispatched with `lisa-os=v${VER}` and repo-adds exactly these.
           # Same binaries, second delivery path — never a separate build.
           # Debug split-packages stay out: symbols are index noise.
-          ls repo-out/*.pkg.tar.zst | grep -v -- '-debug-' \
-            | xargs gh release upload "v${VER}"
+          #
+          # NOT `ls | grep | xargs`: grep matching nothing exits 1 but the
+          # pipeline's status is xargs's, and xargs without input happily
+          # runs the upload with no files — a green release publishing an
+          # index update with zero packages, the v20260802.63 shape again.
+          # Count first, refuse zero.
+          pkgs=$(ls repo-out/*.pkg.tar.zst 2>/dev/null | grep -v -- '-debug-' || true)
+          [ -n "$pkgs" ] || { echo "FAIL: no non-debug packages in repo-out/ — refusing to publish an empty package set"; exit 1; }
+          echo "$pkgs" | xargs gh release upload "v${VER}"

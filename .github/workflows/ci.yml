@@ -62,6 +62,14 @@ jobs:
               - 'cli/**'
               - 'models/**'
               - 'tests/e2e/**'
+              # layer-e2e is the only PR-time job that runs
+              # build-packages.sh, i.e. the only one that PACKAGES the
+              # shell and apps trees into lisa-shell. Without these two,
+              # a shell/apps change that breaks packaging (staging,
+              # schema compilation, an installed path) is first caught
+              # by release.yml, mid-release, ~40 minutes in.
+              - 'shell/**'
+              - 'apps/**'
               - '.github/workflows/ci.yml'
             # The JS suites: shell surfaces AND apps, one job, because
             # `just shell-test` has always globbed both trees. Without
@@ -250,7 +258,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: makepkg gnome-control-center-lisa in Arch Linux ARM
         run: |
-          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm@sha256:7ec87e868f830efc13ad1cf308d11f5f022e54d6f8fa3cfbe1d469f05873af80 bash -ec '
             # pacman >= 7 sandbox cannot apply inside the container.
             sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
             pacman -Syu --noconfirm --needed base-devel git devtools >/dev/null
@@ -305,7 +313,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: makepkg llama.cpp in Arch Linux ARM
         run: |
-          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm@sha256:7ec87e868f830efc13ad1cf308d11f5f022e54d6f8fa3cfbe1d469f05873af80 bash -ec '
             sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
             pacman -Syu --noconfirm --needed base-devel git cmake file >/dev/null
             useradd -m builder
@@ -342,7 +350,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: makepkg zen-browser in Arch Linux ARM
         run: |
-          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm:latest bash -ec '
+          sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm@sha256:7ec87e868f830efc13ad1cf308d11f5f022e54d6f8fa3cfbe1d469f05873af80 bash -ec '
             sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
             pacman -Syu --noconfirm --needed base-devel file >/dev/null
             useradd -m builder
@@ -452,10 +460,16 @@ jobs:
       - name: Start daemon
         run: |
           ./target/debug/lisa-inferenced &
+          # The loop needs a failure branch: without one, a daemon that
+          # never comes up just lets the loop run out, and the client
+          # test then fails with a connection error attributed to the
+          # client instead of the daemon that died at startup.
+          up=""
           for _ in $(seq 1 50); do
-            curl -sf 127.0.0.1:7777/health >/dev/null && break
+            if curl -sf 127.0.0.1:7777/health >/dev/null; then up=1; break; fi
             sleep 0.2
           done
+          [ -n "$up" ] || { echo "FAIL: lisa-inferenced never answered /health — daemon startup failed, not the client"; exit 1; }
       - run: pip install openai
       - run: python tests/e2e/openai_client_test.py
 
@@ -474,6 +488,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p lisa-inferenced
       - run: bash tests/e2e/egress-test.sh target/debug/lisa-inferenced
+      # The harness re-states the sandbox directives by hand, so the
+      # tested sandbox and the SHIPPED units are two lists that can
+      # silently disagree. Until every no-egress daemon runs under the
+      # harness, at least pin the invariant to the files that ship:
+      # rule 5 names three daemons that never get network — each of
+      # their unit files must carry IPAddressDeny=any, and modeld (the
+      # one daemon that MAY have egress) must not.
+      - name: Shipped units carry the egress sandbox they were tested with
+        run: |
+          fail=0
+          for u in os/packages/lisa/lisa-inferenced.service \
+                   os/packages/lisa/lisa-inferenced-dbus.service \
+                   os/packages/lisa/lisa-agentd.service \
+                   os/packages/lisa/lisa-contextd-user.service \
+                   os/packages/lisa/lisa-notes.service \
+                   os/packages/lisa/lisa-harnessd.service; do
+            [ -f "$u" ] || { echo "FAIL: $u does not exist"; fail=1; continue; }
+            grep -q '^IPAddressDeny=any' "$u" \
+              || { echo "FAIL: $u lacks IPAddressDeny=any — the no-egress rule is a comment, not a sandbox"; fail=1; }
+          done
+          [ "$fail" -eq 0 ]
 
   # PLAN §10 M0 acceptance: the Track L layer installs and uninstalls
   # cleanly on vanilla Arch (systemd container; Omarchy VM lands later).
