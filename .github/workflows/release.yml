@@ -106,29 +106,8 @@ jobs:
       # last month’s entry the moment the week rolls over, which defeats
       # the rotation entirely — and is precisely how the download cache
       # kept serving a dead llama.cpp clone earlier today.
-      - name: Week stamp for the package cache
-        id: week
-        run: echo "w=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-      - name: Restore built third-party packages
-        # restore + explicit save (below), NOT the combined action: the
-        # combined action saves only when the JOB succeeds, and on
-        # 2026-08-05 four release attempts in a row built llama.cpp
-        # (~the slowest thing in this job), failed at a verification
-        # step near the end, saved nothing — and rebuilt it all on the
-        # next attempt. The packages' cacheability is decided by the
-        # build step succeeding, not by whichever assertion comes after.
-        id: pkgcache
-        uses: actions/cache/restore@v6
-        with:
-          path: .ci-cache/pkgs
-          # EVERY PKGBUILD reachable through use_cached must be hashed
-          # here. A package that is cached but not keyed keeps serving the
-          # previous binary after its recipe changes, so the fix you just
-          # made is not in the image and nothing says so — which is how
-          # whisper.cpp would have gone on shipping a build-tree RUNPATH
-          # after that bug was fixed. Adding a use_cached call without
-          # adding its PKGBUILD here is a silent regression.
-          key: pkgs-v2-${{ runner.os }}-${{ steps.week.outputs.w }}-${{ hashFiles('os/packages/llama.cpp/PKGBUILD', 'os/packages/gnome-control-center-lisa/PKGBUILD', 'os/packages/whisper.cpp/PKGBUILD', 'os/packages/piper/PKGBUILD', 'os/packages/piper/pinned-deps-no-network.patch') }}
+      # (The weekly third-party package cache is gone — ADR-0051: the
+      # ports arrive prebuilt and sha256-pinned from the ports release.)
       - name: Build Lisa packages + versioned image (Arch container)
         # VER arrives via env, NOT as an inline ${{ }} in the script: a run
         # block containing any expression is templated whole, and templated
@@ -137,11 +116,10 @@ jobs:
         env:
           VER: ${{ steps.ver.outputs.ver }}
         run: |
-          mkdir -p .ci-cache/pacman .ci-cache/srcdest .ci-cache/pkgs
+          mkdir -p .ci-cache/pacman .ci-cache/srcdest
           sudo podman run --rm --privileged -v "$PWD":/src -w /src -e VER="$VER" \
             -v "$PWD/.ci-cache/pacman":/var/cache/pacman/pkg \
             -v "$PWD/.ci-cache/srcdest":/srcdest \
-            -v "$PWD/.ci-cache/pkgs":/pkgcache \
             docker.io/library/archlinux:latest bash -ec '
               sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
               # Keep downloads across runs (the cache mount above): pacman
@@ -203,9 +181,13 @@ jobs:
               # mkosi deliberately NOT in this list: it is pinned from
               # the permanent Arch archive below (#271) — the same 26-5
               # every other lane pins. Bump all lanes together.
-              pacman -Syu --noconfirm base-devel rust git glib2 cmake devtools \
-                linux-headers bc fcitx5 vulkan-headers shaderc vulkan-icd-loader \
-                spirv-headers
+              # Slimmed with ADR-0051: vulkan-headers/shaderc/spirv-
+              # headers (llama.cpp), devtools (arch-meson for g-c-c)
+              # left with the port builds. What remains serves the
+              # workspace (rust, glib2 for lisa-shell), lisa-ime
+              # (cmake, fcitx5) and cs8409 (linux-headers, bc).
+              pacman -Syu --noconfirm base-devel rust git glib2 cmake \
+                linux-headers bc fcitx5
               pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
 
               # A cached git source is keyed by DIRECTORY NAME, never
@@ -247,61 +229,10 @@ jobs:
                 fi
               done
 
-              # Reuse a PREBUILT third-party package when one is cached.
-              #
-              # llama.cpp and the gnome-control-center fork are pinned to
-              # fixed versions and change perhaps monthly, yet they were
-              # rebuilt on every dispatch: measured at 294s and 183s, i.e.
-              # ~8 of the ~20 minutes spent in makepkg, thrown away each
-              # time. Our own `lisa` package is NOT cached — it is the
-              # thing being released.
-              #
-              # Arch is rolling, so a package built days ago can reference
-              # a soname that no longer exists, install cleanly (depends
-              # are unversioned) and fail at RUNTIME. The cache key is
-              # rotated weekly, and every restored package is proved to
-              # still link before it is trusted. Anything unresolved and
-              # it is rebuilt.
-              use_cached() {
-                local name=$1 f probe bad bin
-                # NOT a digit-anchored glob: the llama.cpp pkgver is
-                # b10093, so $name-[0-9]* never matched it and the
-                # cache-reuse this function exists for was silently
-                # dead for exactly that package (#194). The open glob
-                # needs the -debug- filter or head -1 can pick a debug
-                # split package over the real one.
-                f=$(ls -1 /pkgcache/$name-*.pkg.tar.* 2>/dev/null | grep -v -- "-debug-" | head -1)
-                [ -n "$f" ] || return 1
-                probe=$(mktemp -d)
-                if ! bsdtar -xf "$f" -C "$probe" 2>/dev/null; then
-                  rm -rf "$probe"; return 1
-                fi
-                bad=0 seen=0
-                while IFS= read -r bin; do
-                  seen=$((seen + 1))
-                  if ldd "$bin" 2>/dev/null | grep -q "not found"; then bad=1; break; fi
-                done < <(find "$probe/usr/bin" "$probe/usr/lib" -type f 2>/dev/null)
-                rm -rf "$probe"
-                # A check that inspected NOTHING has not passed. An empty
-                # or truncated archive would otherwise sail through as
-                # "no unresolved sonames" and ship a package with no
-                # binaries in it.
-                if [ "$seen" -eq 0 ]; then
-                  echo ">> pkgcache: $name extracted no binaries to check — rebuilding"
-                  return 1
-                fi
-                if [ "$bad" -ne 0 ]; then
-                  echo ">> pkgcache: $name has an unresolved soname — rebuilding"
-                  return 1
-                fi
-                echo ">> pkgcache: $name checked $seen file(s), all link"
-                echo ">> pkgcache: reusing $(basename "$f")"
-                cp "$f" /build/repo-out/
-                return 0
-              }
-              cache_built() {  # <glob of freshly built packages>
-                cp $1 /pkgcache/ 2>/dev/null || true
-              }
+              # (The use_cached/pkgcache machinery — weekly cache, ldd
+              # staleness probe — retired with ADR-0051: the ports come
+              # prebuilt and sha256-pinned from the ports release, so
+              # there is no cache to go stale and no rebuild to skip.)
 
               # Packages from a clean checkout of HEAD (makepkg refuses root).
               git clone --quiet /src /build
@@ -320,51 +251,28 @@ jobs:
               printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
               chown -R builder /build
               sudo -u builder bash -c "cd /build && bash os/repo-tools/build-packages.sh /build/repo-out"
-              # The local inference engine (llama-server) — AUR-only, built
-              # from source into the same repo the lisa packages use.
-              if ! use_cached llama.cpp; then
-                sudo -u builder bash -c "cd /build/os/packages/llama.cpp && makepkg --nocheck --skippgpcheck --noconfirm"
-                cp /build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.* /build/repo-out/
-                cache_built "/build/os/packages/llama.cpp/llama.cpp-*.pkg.tar.*"
-              fi
-              # Zen browser — repackage the upstream release tarball. -d:
-              # it is a binary repackage, so its runtime deps gtk3/nss/etc
-              # need not be installed in the build container to package it;
-              # pacman satisfies them at image-install time. Since #51 this
-              # is a SPLIT build: zen-browser-launcher (the .desktop, icons
-              # and /usr/bin/zen-browser resolver — permanent OS contract)
-              # and zen-browser (the /opt/zen payload — leaving the image).
-              # The glob picks up both.
-              sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg -d --nocheck --noconfirm"
-              cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
-              # Voice: the two engines PLAN §5.7.5 needs, neither of which
-              # Arch packages. Until these exist on a device, `lisa
-              # transcribe` and the spoken reply are code with nothing to
-              # run — voice is not degraded, it is absent.
-              #
-              # NOT --nocheck, deliberately, for the same reason as the
-              # SASL plugin below: the check() function in both PKGBUILDs
-              # EXECUTE the built binary. the first version of whisper.cpp
-              # passed a naive run test while carrying a RUNPATH into the
-              # build tree — it resolved its libraries out of
-              # /home/builder and would have failed on every real machine.
-              # A binary that starts on the builder is not the claim worth
-              # testing; the claim is that it starts anywhere.
-              if ! use_cached whisper.cpp; then
-                sudo -u builder bash -c "cd /build/os/packages/whisper.cpp && makepkg --skippgpcheck --noconfirm"
-                cp /build/os/packages/whisper.cpp/whisper.cpp-*.pkg.tar.* /build/repo-out/
-                cache_built "/build/os/packages/whisper.cpp/whisper.cpp-*.pkg.tar.*"
-              fi
-              # piper (TTS) — the OHF-Voice engine, NOT the same-named
-              # gaming-mouse GUI in the Arch repos. -s installs onnxruntime,
-              # which it links against; espeak-ng is pinned in its own
-              # source=() because piper needs an API no espeak-ng release
-              # has (see the PKGBUILD header).
-              if ! use_cached piper; then
-                sudo -u builder bash -c "cd /build/os/packages/piper && makepkg -s --skippgpcheck --noconfirm"
-                cp /build/os/packages/piper/piper-*.pkg.tar.* /build/repo-out/
-                cache_built "/build/os/packages/piper/piper-*.pkg.tar.*"
-              fi
+              # ADR-0051 phase 2: the ports — llama.cpp, whisper.cpp,
+              # piper, zen-browser (+launcher), the g-c-c fork — arrive
+              # PREBUILT from the rolling ports release, pinned by
+              # sha256 in os/packages/ports.lock. They are built by
+              # ports.yml when their PKGBUILDs change, not here and not
+              # per release: four failed dispatches on 2026-08-05 each
+              # recompiled llama.cpp only to die at a later assertion.
+              # A release build assembles; it does not compile pinned
+              # third-party code that has not changed. The digest check
+              # is what makes a rolling tag safe to fetch from — a
+              # clobbered or tampered asset fails HERE, loudly, instead
+              # of shipping. The per-port recipes live on in
+              # os/repo-tools/build-port.sh (ports.yml + aarch64 use
+              # them; aarch64 still builds from source natively).
+              while read -r fname sha; do
+                case "$fname" in ""|\#*) continue ;; esac
+                echo ">> port: $fname"
+                curl -fsSL --retry 3 -o "/build/repo-out/$fname" \
+                  "https://github.com/Lisa-AgenticOS/lisa-os/releases/download/ports/$fname"
+                echo "$sha  /build/repo-out/$fname" | sha256sum -c --quiet - \
+                  || { echo "FAIL: $fname does not match ports.lock — refusing to ship it"; exit 1; }
+              done < /src/os/packages/ports.lock
               # The XOAUTH2 SASL mechanism (issue #155). Cyrus SASL 2.1.28
               # ships anonymous/crammd5/digestmd5/login/ntlm/plain/sasldb/
               # scram and nothing else, so mbsync cannot authenticate to
@@ -385,15 +293,8 @@ jobs:
               # committed key still carries the pinned fingerprint.
               sudo -u builder bash -c "cd /build/os/packages/lisa-keyring && makepkg -s --noconfirm"
               cp /build/os/packages/lisa-keyring/lisa-keyring-*.pkg.tar.* /build/repo-out/
-              # Our forked gnome-control-center: stock 50.3 + the native
-              # Intelligence panel (ADR-0012). -s installs its makedepends;
-              # it takes the gnome-control-center name so the local repo
-              # precedence installs it instead of the stock Arch package.
-              if ! use_cached gnome-control-center; then
-                sudo -u builder bash -c "cd /build/os/packages/gnome-control-center-lisa && makepkg -s --nocheck --skippgpcheck --noconfirm"
-                cp $(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
-                cache_built "$(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-)"
-              fi
+              # (The g-c-c fork arrives through the ports fetch above,
+              # like the other pinned rebuilds — ADR-0051.)
               # Apple CS8409/CS42L83 codec override — internal speakers on
               # the reference iMac18,2 (issue #44, ADR-0024). -d: its deps
               # are the kernel itself, pinned and checked inside the
@@ -548,16 +449,6 @@ jobs:
           # left root-owned it breaks any later step that touches the tree.
           sudo chown -R "$USER:" os/mkosi/mkosi.pkgmngr 2>/dev/null || true
           ls -lh repo-out/
-      - name: Save built third-party packages
-        # Runs the moment the build step is done — BEFORE the boot,
-        # mail-chain and desktop verification steps — so a red assertion
-        # later cannot throw away an hour of compiled packages (see the
-        # restore step's comment for the day that taught this).
-        if: steps.pkgcache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: .ci-cache/pkgs
-          key: pkgs-v2-${{ runner.os }}-${{ steps.week.outputs.w }}-${{ hashFiles('os/packages/llama.cpp/PKGBUILD', 'os/packages/gnome-control-center-lisa/PKGBUILD', 'os/packages/whisper.cpp/PKGBUILD', 'os/packages/piper/PKGBUILD', 'os/packages/piper/pinned-deps-no-network.patch') }}
       - name: Boot check — no boot, no release
         run: |
           set -o pipefail
