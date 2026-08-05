@@ -122,8 +122,13 @@ jobs:
           # adding its PKGBUILD here is a silent regression.
           key: pkgs-v2-${{ runner.os }}-${{ steps.week.outputs.w }}-${{ hashFiles('os/packages/llama.cpp/PKGBUILD', 'os/packages/gnome-control-center-lisa/PKGBUILD', 'os/packages/whisper.cpp/PKGBUILD', 'os/packages/piper/PKGBUILD', 'os/packages/piper/pinned-deps-no-network.patch') }}
       - name: Build Lisa packages + versioned image (Arch container)
+        # VER arrives via env, NOT as an inline ${{ }} in the script: a run
+        # block containing any expression is templated whole, and templated
+        # strings are capped at 21000 characters — this block is ~27k. The
+        # 2026-08-05 release dispatch failed to parse on exactly that.
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
         run: |
-          VER="${{ steps.ver.outputs.ver }}"
           mkdir -p .ci-cache/pacman .ci-cache/srcdest .ci-cache/pkgs
           sudo podman run --rm --privileged -v "$PWD":/src -w /src -e VER="$VER" \
             -v "$PWD/.ci-cache/pacman":/var/cache/pacman/pkg \
