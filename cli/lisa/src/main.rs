@@ -13,6 +13,7 @@ mod dev;
 mod devbox;
 mod doctor;
 mod guard;
+mod install_plan;
 mod mail;
 mod skills;
 mod terminal;
@@ -201,10 +202,17 @@ enum Command {
         app: String,
     },
     /// Write the newest Lisa OS release to a whole disk — ERASES IT.
-    /// The proto-installer (a guided OOBE installer is M7).
+    /// The proto-installer (a guided OOBE installer is M7). Run
+    /// `lisa install --list` first: it shows every disk and, for the ones
+    /// it will not write to, why.
     Install {
         /// Target block device (e.g. /dev/sda). Everything on it is lost.
-        target: PathBuf,
+        #[arg(required_unless_present = "list")]
+        target: Option<PathBuf>,
+        /// Show the disks on this machine and which of them are legal
+        /// targets. Writes nothing.
+        #[arg(long, conflicts_with_all = ["from", "yes"])]
+        list: bool,
         /// Local .raw.zst to write instead of downloading the latest release.
         #[arg(long)]
         from: Option<PathBuf>,
@@ -738,7 +746,22 @@ fn run() -> anyhow::Result<()> {
             completions(shell, &mut std::io::stdout());
             Ok(())
         }
-        Command::Install { target, from, yes } => install_cmd(&target, from, yes),
+        Command::Install {
+            target,
+            list,
+            from,
+            yes,
+        } => {
+            if list {
+                list_install_targets()
+            } else {
+                install_cmd(
+                    &target.expect("clap requires a target unless --list"),
+                    from,
+                    yes,
+                )
+            }
+        }
         Command::Mail { cmd } => match cmd {
             MailCmd::Setup {
                 app_password,
@@ -1076,6 +1099,25 @@ use std::io::IsTerminal;
 pub(crate) const RELEASES_API: &str =
     "https://api.github.com/repos/Lisa-AgenticOS/lisa-os/releases/latest";
 
+/// `lisa install --list` — every whole disk on the machine, and for the
+/// ones that are not legal targets, the reason. Writes nothing.
+///
+/// This exists because the alternative to a picker is a person typing a
+/// device node from memory, and the failure mode of that is the one this
+/// whole module is built to prevent.
+fn list_install_targets() -> anyhow::Result<()> {
+    if !cfg!(target_os = "linux") {
+        bail!("disk topology is read with lsblk — Linux only. Boot the Lisa USB and run it there");
+    }
+    let disks = install_plan::read_topology()?;
+    let facts = install_plan::read_facts();
+    print!(
+        "{}",
+        install_plan::render_targets(&disks, &facts, install_plan::MIN_TARGET_BYTES)
+    );
+    Ok(())
+}
+
 fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Result<()> {
     // Guards: block devices only on Linux and never the running disk;
     // regular-file targets are allowed anywhere (testing, image work).
@@ -1089,25 +1131,51 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
     if is_block && !cfg!(target_os = "linux") {
         bail!("writing block devices is supported on Linux — boot the Lisa USB and run it there");
     }
-    let target_str = target.to_string_lossy();
-    if let Ok(mounts) = std::fs::read_to_string("/proc/mounts")
-        && mounts.lines().any(|l| {
-            l.split_whitespace()
-                .next()
-                .is_some_and(|d| d.starts_with(target_str.as_ref()))
-        })
-    {
-        bail!(
-            "{} has mounted partitions — it looks like the disk this system is running from. \
-             Boot from the USB stick and install to the internal disk instead.",
-            target.display()
-        );
+
+    // Every decision about *which* disk lives in install_plan, where it
+    // is a pure function with tests that have been made to go red. What
+    // used to be here was a `starts_with` over /proc/mounts that could
+    // not see the disk it booted from unless something from it happened
+    // to be mounted, could not tell a partition from a disk, and could
+    // not tell 16 GB from enough (see that module's header).
+    //
+    // Regular files are not planned: writing an image to a file is how
+    // the image lane itself is tested, and there is nothing to destroy.
+    let mut plan = None;
+    if is_block {
+        // The user may have typed a symlink (/dev/disk/by-id/...); lsblk
+        // reports canonical kernel names.
+        let canonical = std::fs::canonicalize(target).unwrap_or_else(|_| target.clone());
+        let disks = install_plan::read_topology()?;
+        let facts = install_plan::read_facts();
+        match install_plan::plan(
+            &canonical.to_string_lossy(),
+            &disks,
+            &facts,
+            install_plan::MIN_TARGET_BYTES,
+        ) {
+            Ok(p) => plan = Some(p),
+            Err(refusal) => bail!("{refusal}\n   `lisa install --list` shows the disks it will."),
+        }
     }
 
     eprintln!(
         "!! {} will be COMPLETELY ERASED — every partition, every file.",
         target.display()
     );
+    if let Some(p) = &plan {
+        eprintln!("   {}", install_plan::human(p.size));
+        if let Some(model) = &p.model {
+            eprintln!("   {model}");
+        }
+        for line in &p.destroys {
+            eprintln!("   erases {line}");
+        }
+        eprintln!(
+            "   (this system is running from {}, not this disk)",
+            p.boot_disk
+        );
+    }
     if !yes {
         eprint!("Type ERASE to continue: ");
         let mut answer = String::new();
