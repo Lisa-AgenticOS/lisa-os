@@ -20,13 +20,13 @@ useHead({ title: 'Lisa OS — developer portal' })
 
     <section class="sec anchor">
       <h2>What shipped this week.</h2>
-      <p>From <code>docs/STATUS.md</code> — verified on real hardware, not aspirational.</p>
+      <p>Summarised from <code>docs/STATUS.md</code>, which records what landed <em>and</em> what has not been seen on a screen yet. Some of the entries below are verified on the reference iMac and say so; others are CI facts. STATUS carries the caveat per item — read it there before relying on any of this.</p>
       <ul class="ship">
         <li><span class="d">Aug 5</span><span><strong>v20260805.81</strong> shipped and is running on the reference hardware: the image now records its own package manifest at <code>/usr/lib/lisa/packages.manifest</code>, so "which packages are in this image?" is answerable from the disk rather than the build log</span></li>
         <li><span class="d">Aug 5</span><span>The <strong>ports lane</strong> (ADR-0051): llama.cpp, whisper.cpp, piper, Zen and the Settings fork are built when their PKGBUILD changes and consumed from <code>os/packages/ports.lock</code> by sha256 — a release assembles, it no longer compiles pinned third-party code that has not changed</span></li>
         <li><span class="d">Aug 5</span><span>The fork family is <code>lisa-desktop-*</code>, and each package now <strong>replaces stock by <code>provides</code>/<code>conflicts</code></strong> rather than taking its name and winning on <code>pkgrel</code> — a race that silently loses the day Arch ships a higher version, which it did</span></li>
         <li><span class="d">Aug 5</span><span>A CI review across all four repos: ~30 findings, the mechanical ones fixed the same day. The dominant class was <em>gates that stayed green while asserting nothing</em> — a skipped branch printing nothing, a fallback examining the wrong artifact, a pipeline whose exit status belonged to the wrong command</span></li>
-        <li><span class="d">Aug 3</span><span>The <code>[lisa]</code> pacman repo is live and <strong>signed</strong> — add one <code>Server=</code> line and install <code>lisa-desktop</code>, <code>lisa-apps</code>, <code>lisa-cli</code> on any Arch machine</span></li>
+        <li><span class="d">Aug 3</span><span>The <code>[lisa]</code> pacman repo is live and <strong>signed</strong> — import the key, add the stanza at <code>SigLevel = Required</code> (<code>os/layer/install.sh</code> does both), and install <code>lisa-desktop</code>, <code>lisa-apps</code>, <code>lisa-cli</code> on any Arch machine</span></li>
         <li><span class="d">Aug 3</span><span>v20260802.63: the browser left the image (−363&nbsp;MiB) — Zen now updates from the apps channel in minutes, no reboot; real semantic search shipped (<code>nomic-embed-text-v1.5</code> behind <code>lisa context</code>, named in every Ledger row)</span></li>
         <li><span class="d">Aug 2</span><span>The split: <a href="https://github.com/Lisa-AgenticOS/lisa-desktop">lisa-desktop</a> (Shell surfaces + IME, becoming a hard fork of GNOME Shell — ADR-0038), <a href="https://github.com/Lisa-AgenticOS/lisa-apps">lisa-apps</a> (Mail, Surfer, Preview), <a href="https://github.com/Lisa-AgenticOS/lisa-packages">lisa-packages</a> (the index) — full history preserved, each building its own package (ADR-0039)</span></li>
         <li><span class="d">Aug 2</span><span>Design tokens: <code>branding/tokens.json</code> is the one source for every surface color, enforced by a lint gate — the fourth violet is now a red build, not a review comment</span></li>
@@ -53,7 +53,7 @@ useHead({ title: 'Lisa OS — developer portal' })
         <div class="part s3 r3">
           <span class="no">03 · Egress</span>
           <p class="big">One audited door</p>
-          <p><code>lisa-remoted</code> is the only daemon with network access. The rest cannot reach it — enforced by the unit sandbox, verified in CI.</p>
+          <p><code>lisa-remoted</code> is the only daemon that may reach the internet. <code>lisa-contextd</code>, <code>lisa-agentd</code> and the app servers get <code>AF_UNIX</code> and nothing else; <code>lisa-inferenced</code> and <code>lisa-harnessd</code> are pinned to loopback because they serve HTTP on <code>127.0.0.1</code>. It is <code>IPAddressDeny=any</code> plus <code>RestrictAddressFamilies=</code> in each unit, and CI proves the sandbox blocks egress against a control that succeeds without it.</p>
         </div>
         <div class="part s4 r3">
           <span class="no">04 · Context</span>

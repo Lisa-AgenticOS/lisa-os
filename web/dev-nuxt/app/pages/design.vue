@@ -38,7 +38,7 @@ const tokens: [string, string, string, string][] = [
     <header class="pagehead">
       <span class="eyebrow">Design</span>
       <h1>One voice, every surface.</h1>
-      <p class="lede">Lisa's direction is elementary-inspired: restrained typography, quiet color, humane defaults, one visual voice (recorded in <a :href="`${repo}/blob/main/docs/notes/design-direction.md`">docs/notes/design-direction.md</a>). Tokens first — a single token source is the design language; the shell CSS, GTK4/Adwaita, and Qt surfaces all read from it.</p>
+      <p class="lede">Lisa's direction is elementary-inspired: restrained typography, quiet color, humane defaults, one visual voice (recorded in <a :href="`${repo}/blob/main/docs/notes/design-direction.md`">docs/notes/design-direction.md</a>). Tokens first — <a :href="`${repo}/blob/main/branding/tokens.json`">branding/tokens.json</a> is the one source, and <code>branding/generate-tokens.py</code> emits every consumable sheet from it: a CSS file carrying GTK <code>@define-color</code> names and custom properties, an ES module for GJS, and the copies these two websites read. A lint gate rebuilds them and fails on drift.</p>
     </header>
 
     <section class="sec anchor">
@@ -99,8 +99,8 @@ const tokens: [string, string, string, string][] = [
     <section class="sec anchor">
       <h2>Principles</h2>
       <ul>
-        <li><strong>Tokens first.</strong> One token source is the design language — shell CSS, GTK4/libadwaita, and Qt all read it (ADR-0038). One voice across every surface.</li>
-        <li><strong>Identity where freedom is total.</strong> First-party apps carry the look first — our widgets, our rules; the GNOME base is kept for portal maturity.</li>
+        <li><strong>Tokens first.</strong> One token source is the design language. The sheets that exist today are CSS (GTK <code>@define-color</code> + custom properties) and an ES module for GJS; a Qt sheet is intent, not code. One voice across every surface.</li>
+        <li><strong>Identity where freedom is total.</strong> First-party apps carry the look first — our apps, our Shell fork (ADR-0038). GTK4/libadwaita and Mutter are never forked: toolkit and compositor are foundation, not experience, and where a Lisa app does not exist yet the stock GNOME app ships <em>unpatched</em> (ADR-0048).</li>
         <li><strong>Restraint.</strong> Quiet color, hairline rules, generous whitespace; the violet earns emphasis by being scarce.</li>
         <li><strong>Honesty in chrome.</strong> Egress is amber, always; consent is a plain question; streaming output shows a stop affordance and its provenance.</li>
       </ul>

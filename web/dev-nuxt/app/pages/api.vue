@@ -70,7 +70,7 @@ r = client.chat.completions.create(
     <section class="sec anchor">
       <h2>D-Bus interfaces</h2>
       <p>Session-bus services under <code>dev.lisaos.*</code>. Rich results are JSON strings — one serialization, so <code>busctl</code> and scripts read them directly. All are tested over zbus peer-to-peer connections and registered on the session bus on real systems.</p>
-      <div class="note amber">Naming note (ADR-0016): the source on <code>main</code> uses <code>dev.lisaos.*</code> / <code>app.lisaos.*</code>; release v20260724.25 still carries the older <code>org.lisa.*</code> names. The rename ships with the next release.</div>
+      <div class="note">Naming note (ADR-0016): the identifiers are <code>dev.lisaos.*</code> for the OS and <code>app.lisaos.*</code> for apps. The rename off the old <code>org.lisa.*</code> names has shipped — no <code>org.lisa.*</code> identifier survives in the tree.</div>
 
       <h3 id="inference1">dev.lisaos.Inference1 — inference sessions</h3>
       <p>Object path <code>/dev/lisaos/Inference1</code> (<a :href="`${repo}/blob/main/daemons/inferenced/src/dbus.rs`">source</a>). The fd-stream contract: <code>OpenSession</code> returns a session object path and the <em>read end of a pipe</em>; tokens stream over that fd as raw UTF-8, and the daemon closes its write end when generation completes — <strong>EOF is end-of-message</strong>.</p>
@@ -102,7 +102,11 @@ Confirm(t call_id, b approve) → (s status, s detail_json)
     <span class="c"># status: "executed" | "failed" | "denied"</span>
 Undo() → (s report_json)                  <span class="c"># revert via the journaled compensation</span>
 signal ConfirmationRequested(t call_id, s spec_json)
-    <span class="c"># spec_json carries the typed-diff material (tool, args, tiers, chain)</span></code></pre>
+    <span class="c"># spec_json carries the typed-diff material (tool, args, tiers, chain)</span>
+signal RefusalReported(t call_id, s report_json)
+    <span class="c"># a REFUSED call: nothing is parked, no Confirm can answer it.</span>
+    <span class="c"># report_json carries no arguments and no command, so nothing</span>
+    <span class="c"># downstream can rebuild the refused action from it.</span></code></pre>
 
       <h3 id="context1">dev.lisaos.Context1 — the context fabric</h3>
       <p>Object path <code>/dev/lisaos/Context1</code>, served by <code>lisa-contextd</code> (<a :href="`${repo}/blob/main/daemons/contextd/src/dbus.rs`">source</a>). Every search appends a <code>context.search[.hybrid|.scoped]</code> ledger entry <em>before</em> the store is queried — if the append fails, the retrieval does not happen. Per-app memory is namespace-isolated: every method takes the app id and no call can cross it.</p>
@@ -167,7 +171,7 @@ signal Finished(t query_id, s status, s detail)</code></pre>
         <span class="k">"additionalProperties"</span>: false,
         <span class="k">"properties"</span>: {
           <span class="k">"title"</span>: { <span class="k">"type"</span>: <span class="k">"string"</span>, <span class="k">"maxLength"</span>: 120 },
-          <span class="k">"body"</span>:  { <span class="k">"type"</span>: <span class="k">"string"</span>, <span class="k">"maxLength"</span>: 4000 }
+          <span class="k">"body"</span>:  { <span class="k">"type"</span>: <span class="k">"string"</span> }
         }
       },
       <span class="k">"undo"</span>: { <span class="k">"tool"</span>: <span class="k">"delete_note"</span>, <span class="k">"map"</span>: { <span class="k">"id"</span>: <span class="k">"$result.id"</span> } }

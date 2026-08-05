@@ -14,7 +14,7 @@ useHead({ title: 'Getting started — Lisa OS developers' })
     <pre><code><span class="c"># Decompress and write to a USB stick (erases the stick):</span>
 zstd -d lisa-usb-*.raw.zst -o lisa.raw
 sudo dd if=lisa.raw of=/dev/&lt;your-usb&gt; bs=4M status=progress oflag=sync</code></pre>
-    <p>Boot from the stick. The image ships a GNOME desktop with the Lisa shell surfaces — verified on a real 2017 iMac as well as QEMU.</p>
+    <p>Boot from the stick. The image ships <strong>Lisa Desktop</strong> — our fork of GNOME Shell (<code>lisa-desktop-shell</code>, ADR-0038/0039), installed in place of the stock shell, plus the Lisa surfaces. GTK4/libadwaita and Mutter are not forked (ADR-0048), and where a Lisa app does not exist yet the stock GNOME app ships unpatched. The reference device is a 2017 iMac; QEMU is the other lane CI boots.</p>
 
     <h2>2. Install to disk</h2>
     <pre><code><span class="c"># From the booted system — writes the newest release onto the
@@ -34,7 +34,7 @@ lisa update --reboot
 lisa apps update
 lisa apps status
 lisa apps rollback</code></pre>
-    <div class="note amber">Honest hardening note (from the release notes): sysupdate currently runs with <code>Verify=no</code> — artifact integrity is sha256 via <code>SHA256SUMS</code>; GPG-signed manifests land with the M1 signed repo.</div>
+    <div class="note amber">Honest hardening note: the OS-image transfers still run with <code>Verify=no</code> (<code>os/mkosi/mkosi.extra/usr/lib/sysupdate.d/</code>) — transport is HTTPS and artifact integrity is sha256 via <code>SHA256SUMS</code>, but the image itself is not GPG-verified yet. The <em>pacman</em> side is signed and verified (the <code>[lisa]</code> index, ADR-0041); sysupdate signing is still open M1 hardening.</div>
 
     <h2>First contact with the intelligence</h2>
     <p>Once booted, the system model is an OpenAI-compatible endpoint on loopback — no keys, no cloud:</p>
@@ -44,7 +44,7 @@ curl 127.0.0.1:7777/v1/chat/completions ...   <span class="c"># any OpenAI clien
     <p>See the <NuxtLink to="/docs/cli">CLI reference</NuxtLink> for every verb and the <NuxtLink to="/api">API reference</NuxtLink> for the HTTP and D-Bus surfaces.</p>
 
     <h2>Building from source</h2>
-    <p>The daemons and CLI are a Rust workspace; <code>just</code> is the umbrella. Requires Rust stable (1.97+).</p>
+    <p>The daemons and CLI are a Rust workspace; <code>just</code> is the umbrella. There is no pinned toolchain in the tree — CI builds on current Rust <code>stable</code>, so that is what the workspace is held to.</p>
     <pre><code>git clone {{ repo }}.git &amp;&amp; cd lisa-os
 just build   <span class="c"># cargo build --workspace</span>
 just test    <span class="c"># cargo test --workspace</span>

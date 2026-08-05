@@ -1,8 +1,19 @@
 # ADR-0050 — App tooling is CLI verbs, and the scaffold carries the traps
 
-- **Status:** accepted, not implemented — no code exists: `cli/lisa/src` has
-  no `dev` verb, there is no scaffold generator and no `lisa dev check`. The
-  decision is what the tooling must be when it is written.
+- **Status:** accepted, partially executed — the checker exists and the
+  scaffold does not. `lisa dev check` is built (`cli/lisa/src/dev.rs`)
+  and is the Forge's default verifier
+  (`Verifier::Command { program: "lisa", args: ["dev", "check"] }`,
+  `cli/lisa/src/main.rs` `default_verifier`), which is how #243 closed;
+  `lisa dev doctor` is built beside it, and `lisa dev` also carries
+  ADR-0034's rootless dev box (`install`/`remove`/`list`/`shell`/`reset`,
+  `cli/lisa/src/devbox.rs`). **`lisa dev new` — the scaffold this ADR is
+  named for — does not exist**, and neither does `lisa dev package`. The
+  previous status line here read "no code exists ... no `lisa dev
+  check`", which was true the day it was written and stale by the next
+  one; a stale status in the *pessimistic* direction is as dangerous as
+  the optimistic kind, because it invites deleting true documentation to
+  match it.
 - **Date:** 2026-08-04
 - **Related:** ADR-0047 (GJS + GTK4 is the one toolkit), ADR-0029/0030
   (the guardrail boundary), ADR-0034 (`lisa dev`, `$HOME` not root),

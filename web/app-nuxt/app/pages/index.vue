@@ -247,11 +247,11 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       <div class="lead-2">
         <span class="eyebrow">See it running</span>
         <h2>Photographed by the OS itself.</h2>
-        <p>These aren't mockups: our CI boots the real image in a VM and screenshots it — every release photographs itself, so what you see here can never drift from what ships.</p>
+        <p>These aren't mockups. A CI job builds the real image, boots it in QEMU through the actual firmware-and-bootloader path, and screendumps the framebuffer; it runs after each nightly image build and publishes the frames as an artifact. The two below were taken from one of those runs and committed here by hand — so they show the build they were captured from, not necessarily last night's.</p>
       </div>
       <div class="shots">
         <figure>
-          <img src="/screens/desktop.png" alt="The Lisa OS GNOME desktop, booted in the CI verification VM" loading="lazy">
+          <img src="/screens/desktop.png" alt="The Lisa OS desktop, booted in the CI verification VM" loading="lazy">
           <figcaption>The desktop, seconds after boot in the CI verification VM.</figcaption>
         </figure>
         <figure>

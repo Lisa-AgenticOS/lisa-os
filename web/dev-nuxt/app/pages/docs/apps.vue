@@ -24,7 +24,7 @@ lisa apps path shell<span class="c"># the directories a launcher searches, best 
       <li>A broken tree is one <code>lisa apps rollback</code> away; with nothing older installed that restores the baked image tree.</li>
       <li>No <code>sudo</code>: the payload directories are group-writable for the desktop user (ADR-0034 §7b).</li>
       <li>GNOME Shell <em>extensions</em> load at session start from the baked tree — they're out of scope for this channel and keep riding image releases.</li>
-      <li>This channel is the interim: it's superseded by the Flatpak lane when M6 matures.</li>
+      <li>This channel is the interim. The intent is Flatpak-first for GUI apps, because the portal is the security boundary — but <strong>nothing Lisa ships is a Flatpak today</strong>, and these apps launch unsandboxed (PLAN §5.8). The portal and <code>lisa-peer</code> already resolve a Flatpak app-id if one appears; nothing produces one yet.</li>
     </ul>
 
     <h2>GJS shell surfaces</h2>
@@ -43,7 +43,7 @@ lisa apps path shell<span class="c"># the directories a launcher searches, best 
 
     <h2>Checking an app: <code>lisa dev check</code></h2>
     <p>One command decides whether a directory is a valid Lisa app (ADR-0050), and it is the same judgement the Forge uses as its verifier — so generated code and hand-written code are held to one standard. It gates on there being source at all, on no top-level <code>await</code> in an entry module (the failure that binds a socket, advertises it and answers nothing, with no error in any log), and on the manifest, parsed by the same code <code>lisa-agentd</code> runs.</p>
-    <pre><code>lisa dev check apps/notes   <span class="c"># exits non-zero, with findings</span>
+    <pre><code>lisa dev check apps/notes   <span class="c"># prints findings and exits non-zero if there are any</span>
 lisa forge "a notes app" --project ~/notes</code></pre>
     <p>It deliberately does not run the app's own tests and makes no JavaScript syntax claim — the verifier runs unconfined, and a checker that executes model-written code in order to verify it would hand the loop the escape the jail exists to prevent.</p>
 

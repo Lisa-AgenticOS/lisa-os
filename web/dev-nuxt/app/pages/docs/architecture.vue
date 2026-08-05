@@ -69,7 +69,7 @@ const adrs = [
       <thead><tr><th>Daemon</th><th>Role</th><th>Spec</th></tr></thead>
       <tbody>
         <tr><td><code>lisa-inferenced</code></td><td>Model runtime &amp; scheduler — the one process that owns compute. Supervises engine children (llama.cpp et al.), arbitrates RAM/VRAM, QoS scheduling (interactive preempts background), guided generation (JSON Schema → GBNF grammar). Exposes D-Bus <code>dev.lisaos.Inference1</code> and OpenAI-compatible HTTP on <code>127.0.0.1:7777</code>.</td><td>PLAN §5.1</td></tr>
-        <tr><td><code>lisa-modeld</code></td><td>Model catalog &amp; store — blake3 content-addressed store, pinned-hash downloads, hardware profiler. The only component allowed network access for model traffic.</td><td>PLAN §5.2</td></tr>
+        <tr><td><code>lisa-modeld</code></td><td>Model catalog &amp; store — blake3 content-addressed store, pinned-hash downloads, hardware profiler. The only component allowed network access for model traffic. Despite the name it ships <strong>no systemd unit</strong>: it is a binary the CLI drives (<code>lisa models</code>), not a supervised daemon. Its D-Bus service and the signed catalog are M1 work.</td><td>PLAN §5.2</td></tr>
         <tr><td><code>lisa-contextd</code></td><td>Context fabric — the personal context index (SQLite FTS5 + vectors) with provenance tags and per-chunk ACLs, plus namespace-isolated per-app durable memory. D-Bus <code>dev.lisaos.Context1</code>.</td><td>PLAN §5.3</td></tr>
         <tr><td><code>lisa-agentd</code></td><td>Agent Bus — apps are MCP servers; the bus holds the tool registry, enforces confirmation tiers (read → silent, write → chip, destructive → modal) at the bus, keeps the undo journal. D-Bus <code>dev.lisaos.Agent1</code>.</td><td>PLAN §5.4, ADR-0009</td></tr>
         <tr><td><code>lisa-remoted</code></td><td>Egress broker — the single ledgered path to BYO remote model providers, with per-scope offload consent (default: nothing leaves). D-Bus <code>dev.lisaos.Remote1</code>.</td><td>ADR-0010, PLAN §5.11</td></tr>
@@ -86,8 +86,9 @@ const adrs = [
     <h2>Egress rules</h2>
     <p>Egress is architecture, not policy (PLAN §5.10):</p>
     <ul>
-      <li><code>lisa-inferenced</code>, <code>lisa-contextd</code>, and <code>lisa-agentd</code> run with <strong>no network access</strong> (systemd sandboxing; verified zero egress in CI).</li>
-      <li>Only <code>lisa-modeld</code> gets network for model downloads, and only <code>lisa-remoted</code> brokers traffic to remote providers — every remote request is ledgered with a <code>remote.*</code> kind and rendered in the dedicated egress color.</li>
+      <li>The mechanism is per-unit systemd sandboxing — <code>IPAddressDeny=any</code> plus <code>RestrictAddressFamilies=</code>, <em>not</em> <code>PrivateNetwork=</code> and not an nftables cgroup deny. <code>lisa-agentd</code>, <code>lisa-contextd</code> and <code>lisa-notes</code> get <code>AF_UNIX</code> and nothing else. <code>lisa-inferenced</code> and <code>lisa-harnessd</code> are allowed loopback only, because they serve HTTP on <code>127.0.0.1</code>.</li>
+      <li><code>lisa-remoted</code> is the one unit with real egress — that is its whole job. Every remote request is ledgered with a <code>remote.*</code> kind and rendered in the dedicated egress color. Model downloads are <code>lisa-modeld</code>'s, which ships no unit at all: it runs on demand behind <code>lisa models</code>, so its network access is the invoking user's, not a daemon's.</li>
+      <li>CI runs <code>tests/e2e/egress-test.sh</code>: it starts the daemon under the unit's exact sandbox directives, proves loopback still serves, proves an outbound fetch from inside the same sandbox fails — and proves the same fetch succeeds <em>outside</em> it, so a green run cannot mean "the network was down".</li>
       <li>Per-scope offload consent (<code>prompt</code>, <code>files</code>, <code>mail</code>, <code>calendar</code>, <code>screen</code>, <code>memory</code>) defaults to <strong>off</strong> — even prompts don't leave until you say so.</li>
     </ul>
 

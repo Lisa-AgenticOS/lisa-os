@@ -38,15 +38,16 @@ lisa update --reboot</code></pre>
 
     <section class="sec anchor">
       <h2>The <code>[lisa]</code> package repo</h2>
-      <p>Already on Arch (or Omarchy)? Lisa's components are ordinary pacman packages in a <strong>signed</strong> repo — the same packages the OS image is assembled from. Add it and install what you want:</p>
-      <pre><code><span class="c"># /etc/pacman.conf — signatures are published; SigLevel goes
-# Required once the keyring package has shipped in the image.</span>
-[lisa]
-SigLevel = Optional TrustAll
+      <p>Already on Arch (or Omarchy)? Lisa's components are ordinary pacman packages in a <strong>signed</strong> repo — the same packages the OS image is assembled from. The supported way in is the installer in the repo, which imports the signing key <em>before</em> it adds the stanza, so no package is ever installed unverified:</p>
+      <pre><code>git clone https://github.com/Lisa-AgenticOS/lisa-os.git
+sudo lisa-os/os/layer/install.sh</code></pre>
+      <p>What it writes to <code>/etc/pacman.conf</code>, if you would rather do it by hand — note <code>SigLevel = Required</code>, which only works once you have locally signed the key below with <code>pacman-key --lsign-key</code>:</p>
+      <pre><code>[lisa]
+SigLevel = Required
 Server = https://github.com/Lisa-AgenticOS/lisa-packages/releases/download/current
 
-<span class="c"># then</span>
-sudo pacman -Sy lisa-cli lisa-apps lisa-desktop</code></pre>
+<span class="c"># then — a FULL upgrade, never `-Sy`: partial upgrades break Arch</span>
+sudo pacman -Syu lisa-keyring lisa-cli lisa-apps lisa-desktop</code></pre>
       <p>Signing key: <em>Lisa OS Package Signing</em>, fingerprint <code>7372&nbsp;40D1&nbsp;1D28&nbsp;E109&nbsp;A474&nbsp;A8E5&nbsp;827E&nbsp;2741&nbsp;7AF5&nbsp;982B</code> — public key <a href="https://github.com/Lisa-AgenticOS/lisa-packages/blob/main/lisa-packages.gpg.asc">in the repo</a>. Each package is built by CI in <a href="https://github.com/Lisa-AgenticOS/lisa-desktop">its</a> <a href="https://github.com/Lisa-AgenticOS/lisa-apps">own</a> <a href="https://github.com/Lisa-AgenticOS/lisa-os">repo</a> and indexed by <a href="https://github.com/Lisa-AgenticOS/lisa-packages">lisa-packages</a> (ADR-0039).</p>
     </section>
 
