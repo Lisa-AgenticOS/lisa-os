@@ -304,3 +304,18 @@ EOF
         /usr/lib/systemd/user/default.target.wants/org.freedesktop.IBus.session.GNOME.service \
         /usr/lib/systemd/user/gnome-session.target.wants/org.freedesktop.IBus.session.GNOME.service
 fi
+
+# The pacman database does not reach the shipped disk: repart gives
+# /var its own (empty, tmpfiles-repopulated) partition and excludes
+# another partition's subtree from the root copy, so /var/lib/pacman
+# ships NOWHERE. "Which packages are in this image?" was therefore
+# unanswerable on the artifact — found when the ADR-0039 step-5
+# desktop check's FIRST execution read the mounted root for the db
+# and got "No such file or directory" (release run 31012229114).
+# Record the answer where it survives: /usr, written here while the
+# db still exists. release.yml and nightly.yml assert against this
+# file; devices get an honest manifest of their image as a bonus.
+if command -v pacman >/dev/null 2>&1 && [ -d /var/lib/pacman/local ]; then
+    install -d /usr/lib/lisa
+    pacman -Q > /usr/lib/lisa/packages.manifest
+fi

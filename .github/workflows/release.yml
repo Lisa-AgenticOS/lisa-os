@@ -630,23 +630,29 @@ jobs:
           say() { echo "FAIL: $*"; fail=1; }
 
           # -- 1. The shell is ours, and stock is not there ------------
-          # pacman's local db lives in the root tree, so the installed
-          # set is readable straight off the mounted partition.
-          sudo ls "$R/var/lib/pacman/local" > /tmp/installed.txt
+          # NOT the pacman db: /var is its own partition and repart
+          # excludes it from the root copy, so /var/lib/pacman ships
+          # nowhere — this step's first execution died on exactly that
+          # (run 31012229114). The postinst writes /usr/lib/lisa/
+          # packages.manifest (pacman -Q) while the db still exists;
+          # that file is on the root partition and survives.
+          M=$R/usr/lib/lisa/packages.manifest
+          sudo test -s "$M" || say "no packages.manifest — postinst did not record the installed set."
+          sudo cat "$M" > /tmp/installed.txt 2>/dev/null || : > /tmp/installed.txt
           # The [lisa] index is a rolling tag with no version constraint,
           # so the shell is the one input this build takes "whatever is
           # current" of. Presence alone cannot answer "which shell did
           # this release ship?" a week later — record the exact version
           # in the log AND the job summary, so the answer is a click,
           # not archaeology.
-          shell_ver=$(grep '^lisa-desktop-shell-' /tmp/installed.txt || true)
+          shell_ver=$(grep '^lisa-desktop-shell ' /tmp/installed.txt || true)
           if [ -z "$shell_ver" ]; then
             say "lisa-desktop-shell is not installed — the image has no Lisa Desktop."
           else
             echo "desktop: $shell_ver (from the [lisa] index, rolling 'current')"
             echo "**Desktop:** \`$shell_ver\` (from the [lisa] index at build time)" >> "$GITHUB_STEP_SUMMARY"
           fi
-          if grep -q '^gnome-shell-' /tmp/installed.txt; then
+          if grep -q '^gnome-shell ' /tmp/installed.txt; then
             say "stock gnome-shell is installed; it should have been replaced (provides/conflicts)."
           fi
           [ -x "$R/usr/bin/gnome-shell" ] \

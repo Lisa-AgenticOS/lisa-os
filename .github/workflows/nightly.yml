@@ -588,16 +588,27 @@ jobs:
           # the desktop at all. Presence, stock absence, and the exact
           # version (printed, so a log diff answers "which shell did
           # this image get?" without archaeology).
-          shell_pkg=$(ls mnt-pull/var/lib/pacman/local 2>/dev/null | grep '^lisa-desktop-shell-' || true)
-          if [ -z "$shell_pkg" ]; then
-            echo "FAIL: lisa-desktop-shell is not installed — the image has no Lisa Desktop"
+          # NOT the pacman db: /var is its own partition and repart
+          # excludes it from the root copy, so /var/lib/pacman ships
+          # nowhere. The postinst records `pacman -Q` into /usr, which
+          # survives — read that (found by release run 31012229114,
+          # the step-5 check's first execution).
+          MFT=mnt-pull/usr/lib/lisa/packages.manifest
+          if [ ! -s "$MFT" ]; then
+            echo "FAIL: no /usr/lib/lisa/packages.manifest — postinst did not record the installed set"
             fail=1
           else
-            echo "OK: desktop is $shell_pkg (from the [lisa] index)"
-          fi
-          if ls mnt-pull/var/lib/pacman/local 2>/dev/null | grep -q '^gnome-shell-'; then
-            echo "FAIL: stock gnome-shell is in the image alongside the fork"
-            fail=1
+            shell_pkg=$(grep '^lisa-desktop-shell ' "$MFT" || true)
+            if [ -z "$shell_pkg" ]; then
+              echo "FAIL: lisa-desktop-shell is not installed — the image has no Lisa Desktop"
+              fail=1
+            else
+              echo "OK: desktop is $shell_pkg (from the [lisa] index)"
+            fi
+            if grep -q '^gnome-shell ' "$MFT"; then
+              echo "FAIL: stock gnome-shell is in the image alongside the fork"
+              fail=1
+            fi
           fi
           # A desktop with Online Accounts and no Secret Service is worse
           # than one without Online Accounts: the account is added, the
