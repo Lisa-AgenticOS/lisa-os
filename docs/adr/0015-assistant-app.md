@@ -3,7 +3,11 @@
 - **Status:** accepted, partially executed — the window ships, streams and
   is ledgered on the device, and read-tier tools reach it through
   `dev.lisaos.Harness1`. No write tier and no memory across conversations
-  (#157).
+  (#157). **Widened by ADR-0053:** this ADR's "one headless backend,
+  many thin frontends" is the pattern Lisa Server extends over a
+  network — the GJS window becomes one frontend among several (web,
+  API, mobile) rather than *the* Assistant, which makes the backend
+  contract public API and something to version deliberately.
 - **Date:** 2026-07-24
 
 ## Context

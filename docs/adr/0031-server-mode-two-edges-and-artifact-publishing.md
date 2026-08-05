@@ -1,7 +1,14 @@
 # ADR-0031: Server mode, the two edges, and artifact publishing
 
-- **Status:** proposed — design only, no code: there is no `serverd`, no
-  `lisa serve`, and neither network edge exists.
+- **Status:** superseded in part by ADR-0053 — still proposed, still no
+  code (no `serverd`, no `lisa serve`, neither edge exists). ADR-0053
+  promotes §1's "server mode is a flavor chosen at install" into a
+  **product** with its own surfaces and a sequencing ladder, and
+  re-decides §2's management/use split: the first server surface is
+  the Assistant as an API/web frontend of the existing backend, not a
+  Cockpit module. §3 (the two network edges) and §4 (artifact
+  publishing) stand, and are what ADR-0053's network-identity work
+  builds on.
 - Date: 2026-07-26
 - Relates: PLAN §5.11 (Personal Compute Node), §5.12 (Forge), M7;
   ADR-0020 (apps channel), ADR-0023 (slim core, /var grows),
@@ -34,6 +41,19 @@ different and much smaller surface, and it is the one worth building.
 ## Decision
 
 ### 1. Server or desktop, chosen at install (M7 OOBE)
+
+> **Revised 2026-08-05 by ADR-0052 + ADR-0053.** Choosing at install
+> stands. Two corrections: the *mechanism* is which image lineage the
+> disk tracks, never a package toggle on a running system (ADR-0052);
+> and the *first step* is a boot profile on the single image rather
+> than a second lineage, because a second lineage doubles the image
+> build and the A/B test matrix before Lisa Server has features to
+> justify it (ADR-0053's ladder). Also note the paragraph below is now
+> optimistic about one thing: since ADR-0039 step 4 the nightly image
+> carries the full desktop set, so "CI already builds a desktop-less
+> image" is no longer true as written — what CI still proves nightly
+> is that the daemons boot without a session, which is the claim that
+> matters.
 
 The installer asks once. Server mode installs `lisa-node` — the daemons,
 the CLI, the model store, no GNOME. This is close to free: the nightly

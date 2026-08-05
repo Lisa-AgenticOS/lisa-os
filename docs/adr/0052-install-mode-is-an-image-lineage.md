@@ -1,8 +1,13 @@
 # ADR-0052 — Install mode (server/desktop) is an image lineage chosen at install, not a package toggle
 
-- **Status:** accepted, not implemented — no server image flavor exists;
-  this records the owner's direction of 2026-08-05 and what makes it
-  cheap now.
+- **Status:** superseded in part by ADR-0053 — the *mechanics* below
+  stand (mode is a lineage, the update channel is part of the mode,
+  never a package toggle), but the framing does not: a few hours
+  after this was written the owner named Lisa Server as a **product**
+  with its own surfaces, not a flavor of the desktop image. ADR-0053
+  carries the product decision and sequences the lineage below to the
+  day Lisa Server earns its own download page; until then server mode
+  is a boot profile on the one image.
 - **Date:** 2026-08-05
 
 ## Context
@@ -62,6 +67,27 @@ adding or removing packages on a running system.**
   half of the release. Sequencing options (build server weekly or
   on-dispatch rather than per-release) are an implementation decision
   for the issue, made against measured build times — not here.
+
+## What ADR-0053 changed about this
+
+Written the same evening, hours apart, and worth keeping both because
+the second corrects the first's *reason* rather than its mechanism:
+
+- **Still true:** mode is decided at install; the update channel is
+  part of the mode; a mode switch is a re-image, never a package
+  toggle; the server image is a strict subset of the desktop one.
+- **No longer the plan for now:** minting a `lisa-server` lineage as
+  the first step. A second lineage doubles the image build *and* the
+  A/B test matrix, and buys nothing until Lisa Server has features of
+  its own (ADR-0053's ladder: headless boot → the Assistant as an API
+  → tenant inference → the server agent). Step one is therefore a
+  **boot profile** on the single image: same bits, mode selects the
+  boot target, reversible with one command. The slots are a fixed 10
+  GiB regardless of content (`os/mkosi/mkosi.repart/10-root.conf`), so
+  a dormant desktop payload on a headless box costs no disk that was
+  not already allocated and no RAM at all.
+- **Unchanged and load-bearing:** when the lineage IS minted, it works
+  exactly as specified below.
 
 ## Consequences
 
