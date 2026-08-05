@@ -53,7 +53,7 @@
 #
 # A bump is ONE commit that a reviewer can read, which is the whole
 # point: what an image contains is decided by the commit that built it.
-lisa-desktop-shell-50.3-1-x86_64.pkg.tar.zst  14480abc8ebf54a698a958eb33030f0e221e45ec9e153d8dc485cf5045d0578e  https://github.com/Lisa-AgenticOS/lisa-desktop/releases/download/v0.2.0/lisa-desktop-shell-50.3-1-x86_64.pkg.tar.zst
+lisa-desktop-shell-50.4-1-x86_64.pkg.tar.zst  a14ee857870e83211725b8a0b7233d2826692380b283c66e872060a577f75401  https://github.com/Lisa-AgenticOS/lisa-desktop/releases/download/v0.3.0/lisa-desktop-shell-50.4-1-x86_64.pkg.tar.zst
 # NOT pinned here, deliberately:
 #   * lisa-desktop-ime / the lisa-desktop meta package — the image
 #     installs neither (the IME addon ships as this repo's own lisa-ime
