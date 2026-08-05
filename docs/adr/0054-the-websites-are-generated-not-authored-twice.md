@@ -1,7 +1,12 @@
 # ADR-0054 — The websites are generated from the repo, not authored twice
 
-- **Status:** accepted, not implemented — the direction is decided; the
-  phases below are tracked as one issue and none has landed.
+- **Status:** accepted, partially executed — phase 0 landed: both
+  sites now derive their
+  colours from `branding/tokens.json`, `check-tokens.py` covers `web`
+  as a surface, and `.github/workflows/web.yml` builds and link-checks
+  both sites on PR. Phases 1–3 (Nuxt UI primitives, `@nuxt/content`
+  over `docs/*.md`, derived news/downloads/API reference) have not
+  landed and are tracked as one issue.
 - **Date:** 2026-08-05
 
 ## Context

@@ -38,7 +38,7 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**54 records** — 5 superseded in part, 22 accepted and partly executed, 2 accepted with no code yet, 21 accepted and done, 4 proposed.
+**54 records** — 5 superseded in part, 23 accepted and partly executed, 1 accepted with no code yet, 21 accepted and done, 4 proposed.
 
 | ADR | Decision | Status | Where it actually stands |
 |---|---|---|---|
@@ -95,7 +95,7 @@ grep.
 | [0051](0051-ports-are-built-on-change-not-per-release.md) | Third-party packages are built on change and consumed by pin, not rebuilt per release | accepted, partially executed | — |
 | [0052](0052-install-mode-is-an-image-lineage.md) | Install mode (server/desktop) is an image lineage chosen at install, not a package toggle | superseded in part by ADR-0053 | the *mechanics* below stand (mode is a lineage, the update channel is part of the mode, never a package toggle), but the framing does not: a few hours after this was written the owner named Lisa Server as a **product** with its own surfaces, not a flavor of the desktop image. ADR-0053 carries the product decision and sequences the lineage below to the day Lisa Server earns its own download page; until then server mode is a boot profile on the one image. |
 | [0053](0053-lisa-server-is-a-product-on-the-shared-core.md) | Lisa Server is a product on the shared core, and its first surface is the Assistant as an API | proposed | design only, no code. Supersedes ADR-0052's framing of server mode as a flavor; ADR-0052's lineage mechanics remain correct for the day Lisa Server earns its own image. |
-| [0054](0054-the-websites-are-generated-not-authored-twice.md) | The websites are generated from the repo, not authored twice | accepted, not implemented | the direction is decided; the phases below are tracked as one issue and none has landed. |
+| [0054](0054-the-websites-are-generated-not-authored-twice.md) | The websites are generated from the repo, not authored twice | accepted, partially executed | phase 0 landed: both sites now derive their colours from `branding/tokens.json`, `check-tokens.py` covers `web` as a surface, and `.github/workflows/web.yml` builds and link-checks both sites on PR. Phases 1–3 (Nuxt UI primitives, `@nuxt/content` over `docs/*.md`, derived news/downloads/API reference) have not landed and are tracked as one issue. |
 
 <!-- END GENERATED INDEX -->
 
