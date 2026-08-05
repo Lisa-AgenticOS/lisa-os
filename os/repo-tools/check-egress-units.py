@@ -83,11 +83,14 @@ NO_EGRESS = {
         "provenance decision advisory."
     ),
     "lisa-harnessd": (
-        "ADR-0025 agent loop. Hosts the MODEL, and is allowed loopback "
-        "(IPAddressAllow=localhost) to reach its inferenced companion on "
-        ":7778 — no further. A model endpoint that could be pointed at "
-        "the internet by configuration is an egress channel with a "
-        "config file for a guard."
+        "ADR-0025 agent loop. Hosts the MODEL, and reaches its inferenced "
+        "companion over %t/lisa/inferenced.sock — a unix socket, so the "
+        "unit takes RestrictAddressFamilies=AF_UNIX and there is no IP "
+        "socket to point anywhere (#288). It used to say 'allowed "
+        "loopback (IPAddressAllow=localhost) to reach :7778', which "
+        "described a confinement a user unit cannot have: a model "
+        "endpoint that could be pointed at the internet by configuration "
+        "is an egress channel with a config file for a guard."
     ),
     "lisa-notes": (
         "ADR-0013 first-party MCP server. Unix socket plus SQLite under "
@@ -146,26 +149,35 @@ NOT_A_DAEMON = {
 EXEMPT = {}
 
 # User-scope units that still permit AF_INET, where IPAddressDeny is a
-# no-op (see the check below for the hardware measurement). These two are
-# NOT confined today — that is #288, and it is a real hole, not a
-# formality. They are listed rather than left failing because a
-# permanently red gate teaches everyone to ignore it; every OTHER unit,
-# and every future one, fails immediately.
-#
-# Both need loopback because they serve or call an HTTP API on 127.0.0.1:
-# inferenced binds :7778 for the shell surfaces, and harnessd calls it.
-# The fix is therefore not a unit edit — it is moving that hop onto the
-# unix socket inferenced ALREADY serves (`--socket %t/lisa/inferenced.sock`),
-# after which both can take RestrictAddressFamilies=AF_UNIX and this list
-# empties. Like EXEMPT above, an entry here whose unit has been fixed is
+# no-op (see the check below for the hardware measurement). An entry here
+# is NOT confined — that is #288, a real hole, not a formality. They are
+# listed rather than left failing because a permanently red gate teaches
+# everyone to ignore it; every OTHER unit, and every future one, fails
+# immediately. Like EXEMPT above, an entry whose unit has been fixed is
 # itself an error, so the list cannot outlive the debt.
+#
+# lisa-harnessd.service WAS the first entry and is gone, which is the
+# mechanism working: the model host now reaches inferenced over
+# %t/lisa/inferenced.sock (the socket the daemon already served for
+# lisa-contextd, #163) and carries RestrictAddressFamilies=AF_UNIX, so
+# the gate refused to pass while the entry was still here.
+#
+# The one that remains is a LISTENER, not a caller, and the difference is
+# why it could not follow: lisa-inferenced binds 127.0.0.1:7778, and two
+# GJS surfaces are still its clients over that port —
+# shell/assistant/lisa-assistant.js (GET /v1/models) and
+# shell/overlay-extension/backend/lisa-overlayd.js (POST
+# /v1/chat/completions, streaming). Both go through libsoup, which has no
+# unix-socket transport. Two ways out, neither of them a unit edit alone:
+# socket-activate the port so the user manager owns the listening fd
+# (RestrictAddressFamilies filters socket(2), never accept(2) on an
+# inherited fd), or move the two callers onto the unix socket or
+# dev.lisaos.Inference1.
 USER_SCOPE_INET_DEBT = {
-    "lisa-harnessd.service": (
-        "Hosts the model and calls inferenced on 127.0.0.1:7778. #288."
-    ),
     "lisa-inferenced-dbus.service": (
-        "Binds 127.0.0.1:7778 for the shell surfaces. Its 47fa7c6 "
-        "'egress sandbox' claimed a confinement user scope cannot give. #288."
+        "LISTENS on 127.0.0.1:7778 for two libsoup callers in shell/ that "
+        "have no unix-socket transport. Its 47fa7c6 'egress sandbox' "
+        "claimed a confinement user scope cannot give. #288."
     ),
 }
 

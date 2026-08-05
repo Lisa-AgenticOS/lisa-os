@@ -10,10 +10,35 @@
 # process running the model must never be the one that approves its own
 # privileged calls.
 #
-# UNLIKE agentd, this one needs the network — but only loopback, to reach
-# the inferenced companion on :7778. Egress belongs to lisa-remoted;
-# IPAddressAllow pins that to localhost so a model endpoint cannot be
-# pointed at the internet by configuration.
+# NO NETWORK, and this time it is enforced (#288). Until 2026-08-06 the
+# unit read "this one needs the network — but only loopback, to reach the
+# inferenced companion on :7778", and claimed IPAddressAllow=localhost
+# pinned it there. It did not. `IPAddressDeny=`/`IPAddressAllow=` install
+# a cgroup BPF program, which an unprivileged user manager cannot load —
+# the journal says so out loud:
+#
+#   lisa-agentd.service: unit configures an IP firewall, but not running
+#   as root.
+#
+# Measured on the reference iMac with two transient USER units:
+#
+#   IPAddressDeny=any + RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+#       -> curl http://example.com   HTTP 200     (reached the world)
+#   IPAddressDeny=any + RestrictAddressFamilies=AF_UNIX
+#       -> curl http://example.com   rc=7         (blocked)
+#
+# So on the shipped device the process that HOSTS THE MODEL — the one an
+# injected instruction is executing inside, which is the whole threat
+# model of ADR-0029/ADR-0030 — could open a TCP connection to any host on
+# the internet. The barrier was a comment.
+#
+# The fix is not a stricter directive; there is no stricter directive
+# available unprivileged. It is removing the reason AF_INET was there:
+# lisa-inferenced already serves the same OpenAI-compatible API on
+# %t/lisa/inferenced.sock (the door lisa-contextd has used since #163),
+# so lisa-harnessd now speaks to it over that socket and can take
+# RestrictAddressFamilies=AF_UNIX — a seccomp filter on socket(2), which
+# needs no privilege and therefore actually applies here.
 [Unit]
 Description=Lisa agent harness (dev.lisaos.Harness1)
 After=dbus.service lisa-agentd.service
@@ -24,9 +49,19 @@ Type=exec
 ExecStart=/usr/bin/lisa-harnessd
 Restart=on-failure
 RestartSec=2
+# The one that bites unprivileged. No AF_INET, no AF_INET6, no AF_NETLINK
+# — the daemon's only sockets are the session bus, the Agent Bus's MCP
+# sockets and inferenced's. There is no IP socket for a model to be
+# pointed at, so there is nothing left for a config file to guard.
+RestrictAddressFamilies=AF_UNIX
+# Kept, and kept deliberately as the SECOND layer rather than the first:
+# it is inert in user scope (above), but tests/e2e/egress-test.sh applies
+# these units with system-scope systemd-run, where it does install, and a
+# system unit for this daemon would need it. Losing a layer should be
+# noticed, which is what os/repo-tools/check-egress-units.py is for.
+# IPAddressAllow=localhost is GONE: it advertised a loopback hop that no
+# longer exists.
 IPAddressDeny=any
-IPAddressAllow=localhost
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 NoNewPrivileges=yes
 PrivateDevices=yes
 ProtectHome=read-only

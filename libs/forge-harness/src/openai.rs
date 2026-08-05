@@ -10,9 +10,27 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 
 /// OpenAI-compat backend (lisa-inferenced or any compatible endpoint).
+///
+/// `url` is either an `http(s)://` endpoint or `unix:<path>` — the same
+/// API served over a unix socket, which is the only shape a caller
+/// confined to `RestrictAddressFamilies=AF_UNIX` can use (#288, and see
+/// [`crate::unix_http`] for why that is the only confinement a user unit
+/// gets).
 pub struct OpenAiBackend {
     pub url: String,
     pub model: Option<String>,
+}
+
+impl OpenAiBackend {
+    /// `(agent, endpoint)` for one request against this backend.
+    ///
+    /// Built per call, exactly as the previous `ureq::post()` was —
+    /// that free function makes a fresh agent every time — so moving to
+    /// an explicit agent changes the transport and nothing else.
+    fn chat_endpoint(&self) -> (ureq::Agent, String) {
+        let (agent, base) = crate::unix_http::agent_for(&self.url);
+        (agent, format!("{base}/v1/chat/completions"))
+    }
 }
 
 impl Backend for OpenAiBackend {
@@ -22,8 +40,9 @@ impl Backend for OpenAiBackend {
         tools: &[ToolSpec],
     ) -> Result<AgentAction, ForgeError> {
         let body = request_body(self.model.as_deref(), messages, tools);
-        let endpoint = format!("{}/v1/chat/completions", self.url.trim_end_matches('/'));
-        let mut response = ureq::post(&endpoint)
+        let (agent, endpoint) = self.chat_endpoint();
+        let mut response = agent
+            .post(&endpoint)
             .config()
             .http_status_as_error(false)
             .build()
@@ -49,8 +68,9 @@ impl Backend for OpenAiBackend {
         cancel: &crate::Cancel,
     ) -> Result<AgentAction, ForgeError> {
         let body = streaming_request_body(self.model.as_deref(), messages, tools);
-        let endpoint = format!("{}/v1/chat/completions", self.url.trim_end_matches('/'));
-        let mut response = ureq::post(&endpoint)
+        let (agent, endpoint) = self.chat_endpoint();
+        let mut response = agent
+            .post(&endpoint)
             .config()
             // Read the refusal instead of throwing it away (#225). ureq's
             // default turns a 4xx into `http status: 400` and drops the
@@ -745,5 +765,100 @@ mod tests {
             parse_response(&response).unwrap(),
             AgentAction::Done("all done, analyzer clean".into())
         );
+    }
+}
+
+/// The whole backend against a unix socket, not just the transport
+/// (#288).
+///
+/// `unix_http`'s own tests prove bytes move; this proves the thing
+/// `lisa-harnessd` actually does — POST a tools+stream turn and fold the
+/// SSE frames into deltas — works when the process is forbidden to open
+/// an IP socket at all. The server answers with `Transfer-Encoding:
+/// chunked`, which is what a streaming lane really sends and what a
+/// hand-rolled `Connection: close` client would have got wrong.
+#[cfg(test)]
+mod unix_socket_tests {
+    use super::*;
+    use crate::Backend;
+    use std::io::Write;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn streams_a_turn_over_the_inferenced_unix_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("inferenced.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+                if line == "\r\n" {
+                    break;
+                }
+                head.push_str(&line);
+            }
+            let mut body = vec![0u8; len];
+            std::io::Read::read_exact(&mut reader, &mut body).unwrap();
+
+            let mut stream = stream;
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                      Transfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            for frame in [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n",
+            ] {
+                write!(stream, "{:x}\r\n{frame}\r\n", frame.len()).unwrap();
+                stream.flush().unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+            (head, String::from_utf8(body).unwrap())
+        });
+
+        let mut backend = OpenAiBackend {
+            url: format!("unix:{}", sock.display()),
+            model: Some("coder".into()),
+        };
+        let mut deltas = String::new();
+        let mut sink = |d: &str| deltas.push_str(d);
+        let action = backend
+            .next_action_streaming(
+                &[Message::user("hi")],
+                &crate::tools::tool_specs(),
+                &mut sink,
+                &crate::Cancel::default(),
+            )
+            .expect("a unix-socket turn must complete");
+
+        let (head, body) = server.join().unwrap();
+        assert!(
+            head.starts_with("POST /v1/chat/completions HTTP/1.1"),
+            "{head}"
+        );
+        let sent: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(sent["stream"], true);
+        assert_eq!(sent["model"], "coder");
+        assert_eq!(deltas, "Hello there");
+        match action {
+            AgentAction::Done(text) => assert_eq!(text, "Hello there"),
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 }

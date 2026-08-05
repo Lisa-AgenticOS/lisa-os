@@ -24,34 +24,62 @@ Type=exec
 Environment=LISA_REMOTED_SOCKET=%t/lisa/remoted.sock
 # --socket serves the same HTTP API on a unix socket, for callers that
 # are forbidden IP sockets outright. lisa-contextd runs with
-# RestrictAddressFamilies=AF_UNIX and IPAddressDeny=any, so it cannot
-# reach :7778 to embed — the loopback port is still a network socket
-# (#163). Spelled out rather than left to the daemon's default, so the
-# path the context fabric depends on is visible in the unit that owns it.
+# RestrictAddressFamilies=AF_UNIX, so it cannot reach :7778 to embed —
+# the loopback port is still a network socket (#163). Spelled out rather
+# than left to the daemon's default, so the path the context fabric
+# depends on is visible in the unit that owns it. As of #288
+# lisa-harnessd — the model host — reaches this daemon the same way, and
+# is confined to AF_UNIX because of it.
 ExecStart=/usr/bin/lisa-inferenced --dbus --bind 127.0.0.1:7778 --socket %t/lisa/inferenced.sock --engine llama --models-dir /var/lib/lisa-models/refs --config /usr/share/lisa/inferenced-remote.toml
 Restart=on-failure
 RestartSec=2
 
-# EGRESS SANDBOX — mirrors lisa-inferenced.service, and it was MISSING
-# until 2026-08-05.
+# NOT CONFINED. Read that before reading the directives.
 #
-# This unit is the per-user companion every Assistant and overlay prompt
-# goes through, and the one wired to the remote tier. Two comments above
-# describe confinement ("gives inferenced NO network access",
-# "RestrictAddressFamilies=AF_UNIX and IPAddressDeny=any") — but those
-# describe the BROKER's role and lisa-contextd's unit respectively, not
-# this file. Nothing here enforced anything: rule 5 was prose in a
-# comment on the very daemon that handles every prompt.
+# Written on 2026-08-05 as an "EGRESS SANDBOX ... mirrors
+# lisa-inferenced.service", it was neither. This unit is installed into
+# /usr/lib/systemd/user/ and runs under `systemd --user`, where
+# IPAddressDeny=/IPAddressAllow= are a NO-OP: they are a cgroup BPF
+# program and an unprivileged user manager cannot load one. The journal
+# says it in as many words —
 #
-# Found by an audit of the WEBSITE's privacy copy, which claims "the
-# daemons that read your context have no network access at all" — the
-# strongest sentence on the marketing site, undercut by the unit that
-# serves it.
+#   lisa-agentd.service: unit configures an IP firewall, but not running
+#   as root.
 #
-# localhost is allowed because the daemon binds 127.0.0.1:7778 by
-# design (the OpenAI-compatible API the shell surfaces call); AF_UNIX
-# carries the remoted socket and the daemon's own unix socket. What
-# this forbids is the thing that matters: a route off the machine.
+# — and it was measured on the reference iMac with transient user units:
+# with AF_INET allowed, `curl http://example.com` returns HTTP 200
+# through exactly these directives. So the 47fa7c6 commit that added
+# them claimed a confinement that did not exist, and this note replaces
+# that claim (#288). The only directive that confines an unprivileged
+# unit is RestrictAddressFamilies=, a seccomp filter on socket(2).
+#
+# WHY AF_INET IS STILL HERE, honestly: this daemon LISTENS on
+# 127.0.0.1:7778, and two GJS surfaces are still its clients over that
+# port — shell/assistant/lisa-assistant.js (GET /v1/models, the model
+# picker) and shell/overlay-extension/backend/lisa-overlayd.js (POST
+# /v1/chat/completions, the streaming chat lane). Both use libsoup, which
+# has no unix-socket transport, so dropping the bind would take the
+# assistant's model list and the overlay's chat lane with it. Taking
+# AF_UNIX here needs one of:
+#
+#   * socket activation — a lisa-inferenced-dbus.socket with
+#     ListenStream=127.0.0.1:7778, so the USER MANAGER creates the
+#     listening socket and passes the fd. RestrictAddressFamilies=
+#     filters socket(2) only, never accept(2) on an inherited fd, so the
+#     daemon could serve :7778 while being unable to create any IP socket
+#     of its own; or
+#   * moving both GJS callers off HTTP onto Gio.SocketClient +
+#     Gio.UnixSocketAddress (hand-framed HTTP, including chunked SSE) or
+#     onto dev.lisaos.Inference1.
+#
+# Until one of those lands this unit is listed in USER_SCOPE_INET_DEBT in
+# os/repo-tools/check-egress-units.py, which is a debt, not a
+# dispensation. What #288 DID close is the sharper half: lisa-harnessd,
+# the process that hosts the model, no longer has AF_INET at all.
+#
+# IPAddressDeny stays as the second layer — inert here, live in
+# tests/e2e/egress-test.sh's system-scope application of these same
+# units, and required by the static gate so that losing it is noticed.
 IPAddressDeny=any
 IPAddressAllow=localhost
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

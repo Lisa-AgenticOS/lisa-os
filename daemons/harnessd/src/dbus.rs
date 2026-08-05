@@ -57,10 +57,60 @@ const _: () = assert!(
     "harnessd would forward more than inferenced will buffer (#226)"
 );
 
-/// Where the model lives: the per-user inferenced companion. The
-/// hardened system daemon on :7777 cannot reach the session's broker
-/// socket, so remote models only work through the companion.
-const DEFAULT_URL: &str = "http://127.0.0.1:7778";
+/// Where the model lives: the per-user inferenced companion, over its
+/// **unix socket**. The hardened system daemon on :7777 cannot reach the
+/// session's broker socket, so remote models only work through the
+/// companion.
+///
+/// A socket, not `http://127.0.0.1:7778`, and that is issue #288 rather
+/// than a preference. This daemon hosts the model, so it is the one
+/// process an injected instruction is executing inside; its only
+/// network barrier was `IPAddressDeny=any`, which **systemd does not
+/// apply to user units** (an IP firewall is cgroup BPF and needs root —
+/// the user manager logs "unit configures an IP firewall, but not
+/// running as root"). The single directive that does confine an
+/// unprivileged unit is `RestrictAddressFamilies=`, a seccomp filter on
+/// `socket(2)`, and taking `AF_UNIX` alone forbids the `:7778` hop
+/// outright. inferenced already serves the same API on
+/// `%t/lisa/inferenced.sock`, so the hop moves rather than the barrier.
+///
+/// Resolved at call time, not baked in: `$XDG_RUNTIME_DIR` is the
+/// session's, and a daemon started by the user manager always has one.
+/// A caller may still pass `url` explicitly — `http://…` for a
+/// developer running unconfined against some other backend — because
+/// under the shipped sandbox that URL simply cannot connect. The
+/// confinement is the mechanism; this is the default.
+fn default_url() -> String {
+    url_from_env(
+        std::env::var_os("LISA_INFERENCED_SOCKET"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    )
+}
+
+/// [`default_url`] with the environment passed in, so the decision can be
+/// tested without a process-wide `set_var` racing every other test.
+///
+/// The same two variables, in the same order, that
+/// `lisa_inferenced::main`'s `unix_socket_path` and contextd's
+/// `InferencedEmbedder::default_socket` read — one path convention, not
+/// three.
+fn url_from_env(
+    socket: Option<std::ffi::OsString>,
+    runtime_dir: Option<std::ffi::OsString>,
+) -> String {
+    let path = socket.map(std::path::PathBuf::from).or_else(|| {
+        runtime_dir
+            .map(std::path::PathBuf::from)
+            .map(|d| d.join("lisa/inferenced.sock"))
+    });
+    match path {
+        Some(p) => format!("{}{}", forge_harness::unix_http::UNIX_SCHEME, p.display()),
+        // No runtime dir at all — a dev shell, a test, an odd login.
+        // Say so by falling back to the port the companion also binds
+        // there, instead of naming a socket that cannot exist.
+        None => "http://127.0.0.1:7778".to_string(),
+    }
+}
 
 /// How much a trigger class is allowed to be trusted (ADR-0036 §1).
 ///
@@ -404,7 +454,7 @@ impl Harness1 {
             skills_catalog: crate::skills::catalog_lines(&skills),
             skills: skills.clone(),
             memory_digest,
-            url: opt_str(&options, "url").unwrap_or_else(|| DEFAULT_URL.to_string()),
+            url: opt_str(&options, "url").unwrap_or_else(default_url),
             model: opt_str(&options, "model"),
             max_turns: 12,
         };
@@ -590,6 +640,28 @@ pub async fn serve(ledger: Arc<lisa_ledger::Ledger>) -> zbus::Result<zbus::Conne
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default backend must be a unix socket, because the unit is
+    /// `RestrictAddressFamilies=AF_UNIX` (#288). A default that named a
+    /// TCP port would leave the daemon unable to answer at all — which
+    /// is exactly what the previous binary does under the new unit:
+    /// `backend: io: Address family not supported by protocol`.
+    #[test]
+    fn the_default_backend_is_the_inferenced_unix_socket() {
+        assert_eq!(
+            url_from_env(None, Some("/run/user/1000".into())),
+            "unix:/run/user/1000/lisa/inferenced.sock"
+        );
+        // The explicit override wins, the way inferenced and contextd
+        // both read it.
+        assert_eq!(
+            url_from_env(Some("/tmp/x.sock".into()), Some("/run/user/1000".into())),
+            "unix:/tmp/x.sock"
+        );
+        // No session at all: say the honest thing rather than name a
+        // socket that cannot exist.
+        assert_eq!(url_from_env(None, None), "http://127.0.0.1:7778");
+    }
 
     /// The rule that keeps an event from pretending to be a person.
     #[test]

@@ -26,6 +26,51 @@ Shaped like `Overlay1`'s Ask/Token/Finished deliberately: the Assistant
 window already renders that vocabulary, so adopting the harness is a
 change of destination, not a rewrite.
 
+`url` defaults to `unix:$XDG_RUNTIME_DIR/lisa/inferenced.sock` (or
+`$LISA_INFERENCED_SOCKET`) — see "No network at all" below for why it is
+a socket and not `http://127.0.0.1:7778`. An `http://…` value still
+works for a developer running the daemon outside its unit; under the
+shipped sandbox it simply cannot connect.
+
+## No network at all (#288)
+
+This daemon hosts the MODEL, which makes it the one process an injected
+instruction is executing inside. Until 2026-08-06 its only network
+barrier was `IPAddressDeny=any` + `IPAddressAllow=localhost`, and **that
+pair does nothing in a user unit**: an IP firewall is a cgroup BPF
+program, which `systemd --user` cannot load. The user manager says so:
+
+```
+lisa-agentd.service: unit configures an IP firewall, but not running as root.
+```
+
+Measured on the reference iMac with two transient *user* units:
+
+```
+IPAddressDeny=any + RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+    -> curl http://example.com   HTTP=200   (reached the world)
+IPAddressDeny=any + RestrictAddressFamilies=AF_UNIX
+    -> curl http://example.com   rc=7       (blocked)
+```
+
+So the model host had unrestricted egress while both gates called it
+no-egress. The only directive that confines an unprivileged unit is
+`RestrictAddressFamilies=`, a seccomp filter on `socket(2)` — and taking
+`AF_UNIX` alone forbids the `:7778` hop outright. The hop therefore
+moved rather than the barrier: `lisa-inferenced` already served the same
+OpenAI-compatible API on `%t/lisa/inferenced.sock` (the door
+`lisa-contextd` has used since #163), so the loop speaks to it there,
+via `forge_harness::unix_http`, and the unit now carries
+`RestrictAddressFamilies=AF_UNIX`.
+
+The proof that both halves hold, on the device, under the new
+directives: `curl http://example.com` → `rc=7`,
+`curl http://127.0.0.1:7778/v1/models` → `rc=7`, and a real streamed
+`Run()` finishing `(1, true, 'The capital of France is Paris.')`. The
+same run against the *previous* binary fails with `backend: io: Address
+family not supported by protocol (os error 97)` — which is what makes
+the confinement a mechanism and not a comment.
+
 ## Attachments (#209)
 
 `attachments` carries OpenAI content parts — the shape `lisa ask
@@ -349,3 +394,18 @@ about them.
   not fixed here: the option is real containment for `run_command`, and
   swapping it for a narrower `ReadWritePaths` is a change to the unit's
   whole confinement story rather than a line.
+- **The unix hop rides on `ureq::unversioned`.** ureq's transport layer
+  is explicitly outside its semver promise, so a ureq minor bump can
+  break `forge_harness::unix_http`. It cannot break it *quietly* — the
+  crate stops compiling — but it is a dependency on an unstable surface,
+  taken because the alternative was hand-rolling chunked
+  transfer-encoding for the streaming lane.
+- **The companion it talks to is still not confined.**
+  `lisa-inferenced-dbus.service` keeps `AF_INET` because it LISTENS on
+  `127.0.0.1:7778` for two libsoup callers in `shell/`
+  (`lisa-assistant.js`'s model picker, `lisa-overlayd.js`'s chat lane),
+  and libsoup has no unix-socket transport. That is the remaining half
+  of #288, recorded in `USER_SCOPE_INET_DEBT` in
+  `os/repo-tools/check-egress-units.py`, and it is a real hole rather
+  than a formality — this daemon being confined does not confine that
+  one.

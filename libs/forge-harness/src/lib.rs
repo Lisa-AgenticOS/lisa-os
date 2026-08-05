@@ -22,6 +22,7 @@ pub mod openai;
 pub mod shell_tool;
 pub mod skills;
 pub mod tools;
+pub mod unix_http;
 
 pub use agent::{
     AgentAction, AgentConfig, AgentEvent, AgentReport, Message, Role, ScriptedBackend,

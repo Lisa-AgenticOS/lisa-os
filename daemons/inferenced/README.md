@@ -2,7 +2,27 @@
 
 Spec: docs/PLAN.md §5.1 — read it before changing this component (CLAUDE.md rule 1).
 
-The one process that owns compute for inference: supervises engine children (llama-server, whisper.cpp, sd.cpp, ONNX), arbitrates VRAM/RAM with QoS classes, exposes D-Bus (dev.lisaos.Inference1) + an OpenAI-compatible endpoint on 127.0.0.1:7777 — and, with `--socket`, the same API on a unix socket for callers that are forbidden IP sockets outright (`lisa-contextd` embeds this way: `RestrictAddressFamilies=AF_UNIX` means loopback is out of reach too, #163). Runs with no network access — enforced by the systemd sandbox in os/packages, verified by the CI egress counter.
+The one process that owns compute for inference: supervises engine children (llama-server, whisper.cpp, sd.cpp, ONNX), arbitrates VRAM/RAM with QoS classes, exposes D-Bus (dev.lisaos.Inference1) + an OpenAI-compatible endpoint on 127.0.0.1:7777 — and, with `--socket`, the same API on a unix socket for callers that are forbidden IP sockets outright (`lisa-contextd` embeds this way: `RestrictAddressFamilies=AF_UNIX` means loopback is out of reach too, #163; `lisa-harnessd`, which hosts the model, joined it there for the same reason in #288). Runs with no network access — enforced by the systemd sandbox in os/packages, verified by the CI egress counter.
+
+**One honest exception to "no network access" (#288).** The per-user
+companion `lisa-inferenced-dbus.service` runs under `systemd --user`,
+where `IPAddressDeny=`/`IPAddressAllow=` are a **no-op** — an IP firewall
+is a cgroup BPF program and an unprivileged user manager cannot load one
+("unit configures an IP firewall, but not running as root", from the
+reference machine's journal). The only directive that confines an
+unprivileged unit is `RestrictAddressFamilies=`, and that unit still
+allows `AF_INET` because it **listens** on 127.0.0.1:7778 for two
+libsoup callers in `shell/` (`lisa-assistant.js`'s model picker and
+`lisa-overlayd.js`'s chat lane); libsoup has no unix-socket transport.
+So on the reference device that instance can in principle open a TCP
+connection off the machine. The system instance
+(`lisa-inferenced.service`) is unaffected — it runs system-scope, where
+the IP filter is installed. Closing the gap needs either socket
+activation for :7778 (`RestrictAddressFamilies` filters `socket(2)`, not
+`accept(2)` on an inherited fd) or moving both GJS callers off HTTP; the
+debt is recorded in `USER_SCOPE_INET_DEBT` in
+`os/repo-tools/check-egress-units.py`, which fails the build if the unit
+is fixed and the entry is not removed.
 
 **M1 state:** real inference works — the llama engine supervises a llama-server child (spawn, /health-gated readiness, kill -9 recovery in ~2 s verified) and proxies streaming completions token-by-token; `lisa ask` produces real model output (`just smoke-real`). The stub engine remains for model-free tests. Guided generation is live: OpenAI `response_format: json_schema` compiles to GBNF via liblisa and constrains the sampler (**1,000/1,000 valid** on the sampled acceptance gate, 2026-07-21). The QoS scheduler preempts background streams for interactive requests within the 250 ms budget (tested). M1 remainder: multi-model residency, LoRA hot-swap, the D-Bus surface, perf budgets on reference hardware.
 

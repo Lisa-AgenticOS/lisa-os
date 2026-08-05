@@ -17,6 +17,35 @@ preview and VLM screenshot self-inspection are still ahead.
 lane's `dart analyze`; and `None`, for surfaces with no project at all
 (the Assistant, `lisa assist`).
 
+## The backend can be reached over a unix socket (#288)
+
+`OpenAiBackend.url` takes either an `http(s)://` endpoint or
+`unix:<path>`:
+
+```rust
+let mut backend = forge_harness::OpenAiBackend {
+    url: "unix:/run/user/1000/lisa/inferenced.sock".into(),
+    model: Some("qwen3-1.7b-instruct-q8".into()),
+};
+```
+
+That exists because `lisa-harnessd` — which hosts the model — could not
+be confined while it needed an IP socket. In a **user** unit
+`IPAddressDeny=`/`IPAddressAllow=` are a no-op (an IP firewall is cgroup
+BPF and needs root; the user manager logs "unit configures an IP
+firewall, but not running as root"). The only directive that bites is
+`RestrictAddressFamilies=`, a seccomp filter on `socket(2)` — so the
+model host takes `AF_UNIX` and reaches `lisa-inferenced` on the socket
+it already served for `lisa-contextd`.
+
+`unix_http` implements this as a ureq **transport**, not as a second HTTP
+client: chunked transfer-encoding, keep-alive and the SSE body reader
+stay ureq's. That matters — the streaming lane really is
+`Transfer-Encoding: chunked`, so the hand-rolled `Connection: close`
+shape `lisa-contextd` uses for `/v1/embeddings` would have needed a
+chunk decoder before it could stream a token. No new dependency was
+added.
+
 ## Attachments on the task turn (#209)
 
 `AgentConfig::attachments` holds OpenAI content parts — an image a
@@ -164,3 +193,9 @@ except the loss of the workflow.
 - Tool arguments and outputs reach the Ledger through `preview_of`,
   which redacts credential-shaped text and strips control characters.
   That is a backstop, not a licence to preview secrets.
+- **The unix transport sits on `ureq::unversioned`** (#288). ureq says
+  outright that its transport and resolver layers are not covered by its
+  semver promise, so a ureq minor bump may break `unix_http`. It cannot
+  break it silently — the crate stops compiling — and the alternative
+  was either a new dependency (rule 7a's neighbourhood) or writing a
+  chunked-encoding HTTP client by hand.
