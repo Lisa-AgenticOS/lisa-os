@@ -5,14 +5,24 @@ Spec: docs/PLAN.md §5.7.3 layer 2, §5.7.5. Milestone: M4. ADR-0007
 
 The input-method trick that reaches text fields through the IM
 protocols — GTK3, Qt, Electron, terminals, XWayland. That is the
-coverage Apple gets via private toolkit hooks, and on stock GNOME
-Wayland it is **not** everything (#208):
+coverage Apple gets via private toolkit hooks, and under GNOME Wayland
+it is **not** everything (#208). Re-checked on the reference iMac,
+build `20260805.81`:
 
 - **GTK4/Wayland-native apps do not route through fcitx.** mutter does
   not grant `zwp_input_method_v2` to third-party input methods — GNOME
-  routes text input to its own ibus path — so `waylandim` loads and
-  unloads on every fcitx5 start. Most of Lisa's own apps are in this
-  set.
+  routes text input to its own ibus path. fcitx5 says so itself, in
+  its own self-diagnosis, on every start:
+
+      waylandmodule.cpp:666] Using Wayland native input method protocol: 0
+
+  Most of Lisa's own apps are in this set. (The earlier diagnosis said
+  the symptom was `waylandim` loading and unloading on every start.
+  That is **not** what this build does: `waylandim` loads and stays
+  loaded, and the only `Unloading addon waylandim` line in the journal
+  is part of the teardown of all nineteen addons when an old instance
+  exits on `--replace`. The mechanism was right, the symptom was
+  someone else's. The line above is the one to check.)
 - **The shell itself routes keys to no IM at all**, so nothing here can
   work on the desktop or in the overview by construction.
 - What *does* work is everything reached by `GTK_IM_MODULE=fcitx` /
@@ -21,10 +31,18 @@ Wayland it is **not** everything (#208):
   before the session starts. (`/etc/profile.d` was the earlier attempt
   and is sourced by login shells only, which the graphical session is
   not — that is why the environment was empty.) Verified on the
-  reference device: the shell's own environ carries all three.
+  reference device: `/proc/<gnome-shell>/environ` carries all three.
 
-Owning this properly needs the compositor — the Lisa Desktop fork
-(ADR-0038) — or libinput-level access. Until then the gesture below is
+**The Shell fork does not change this by itself.** Lisa Desktop ships a
+forked GNOME Shell (ADR-0038/0048) and it is what runs on the device —
+`/usr/share/licenses/lisa-desktop-shell/` exists and
+`/usr/share/licenses/gnome-shell` does not. But **mutter is stock and
+stays stock** (50.4 on the device; ADR-0048 rule: toolkit and
+compositor are foundation, not experience), and bare-modifier gestures
+are decided in libmutter — `overlay-key`, the tap-Super gesture, is
+implemented there and not in the shell binary. So owning a *system-wide*
+double-tap Shift is still an open design question, not a thing the fork
+already grants. Until it is answered the gesture below is
 **toolkit-scoped**, and `Super+Shift+Space` is the summon that works
 everywhere.
 
@@ -68,6 +86,30 @@ bus, measured. What does not happen is real keystrokes reaching fcitx5
 in a GTK4/Wayland app or on the shell, for the reasons above. So this
 fires in a terminal or an XWayland app and not on the desktop.
 
+**As a system-wide gesture it is not bound at all** (#208). Nothing in
+the compositor, the Shell fork, or any of the three Lisa extensions
+binds a double-tap of Shift; the only implementation of the gesture in
+this OS is the state machine in `src/doubleshift.cpp`, which by
+definition can only see the keys fcitx5 is given. On the reference
+device (`20260805.81`) grepping every shipped shell surface for a
+Shift-tap handler finds three source *comments* and no handler:
+
+    $ grep -rniE 'double.?tap|doubleShift|Shift_L|Shift_R|KEY_LEFTSHIFT' \
+        /usr/share/lisa/shell/
+    .../overlay-extension/extension.js:686:  // shape people know from Siri. Double-tap-Shift asks for this;
+    .../overlay-extension/extension.js:700:  // double-tap.
+    .../overlay-extension/extension.js:707:  // A second double-tap while listening means "stop", the same
+
+What *is* live on that device: the addon is installed and loaded
+(`/usr/lib/fcitx5/lisa.so`; `addonmanager.cpp:204] Loaded addon lisa`
+on every fcitx5 start), no `~/.config/fcitx5/conf/lisa.conf` exists so
+`DoubleShiftSummon` sits at its default of True, and the call's target
+is up — `dev.lisaos.Overlay1.UI` is owned by `gnome-shell`. Every part
+of the chain is in place except the one that cannot be: delivery of the
+keystroke. **No one has yet pressed Shift twice on that device and
+watched the overlay appear**, so "works in a GTK3/Qt/XWayland app" is
+still a claim from the injected-event test, not from a keyboard.
+
 On detection the addon calls `Summon("", {})` on the session bus —
 `dev.lisaos.Overlay1.UI` at `/dev/lisaos/Overlay1/UI` (ADR-0016
 names; the authoritative interface XML lives in
@@ -90,11 +132,18 @@ the addon cannot drift from the daemon it talks to. It ships
 `/usr/lib/fcitx5/lisa.so` and the addon registration, plus two things
 without which the addon is present and inert:
 
-- `/etc/profile.d/lisa-ime.sh` — `GTK_IM_MODULE`/`QT_IM_MODULE`/
-  `XMODIFIERS`. GNOME defaults to IBus, so without these fcitx5 runs,
-  the addon loads, and not one key ever reaches it. (GTK4 Wayland apps
-  negotiate text-input-v3 with mutter and ignore these; the variables
-  are for GTK3, Qt and XWayland, which is most of what people run.)
+- `/etc/environment.d/50-lisa-ime.conf` — `GTK_IM_MODULE`/
+  `QT_IM_MODULE`/`XMODIFIERS`. GNOME defaults to IBus, so without these
+  fcitx5 runs, the addon loads, and not one key ever reaches it. (GTK4
+  Wayland apps negotiate text-input-v3 with mutter and ignore these;
+  the variables are for GTK3, Qt and XWayland, which is most of what
+  people run.) **This is the file that works** — the user manager
+  imports `environment.d` before the graphical session starts, so the
+  shell and everything it launches inherit the variables.
+- `/etc/profile.d/lisa-ime.sh` — the earlier attempt at the same thing,
+  still shipped for login shells. It does **nothing** for the graphical
+  session, which is not a login shell; that is why the shell's environ
+  was empty until `environment.d` landed (#208).
 - `/etc/xdg/autostart/fcitx5-lisa.desktop` — starts fcitx5 with the
   session, ordered after GNOME's own ibus-daemon and taking over with
   `--replace`.
@@ -102,10 +151,18 @@ without which the addon is present and inert:
 ## Status
 
 Working first pass of layer 2's proofread action, plus the
-double-tap-Shift overlay summon. **Neither has ever run on a device**:
-until 2026-07-31 nothing built the addon, so it existed only as source
-and unit tests. It is now packaged and in the image lane, and still
-unverified on hardware.
+double-tap-Shift overlay summon. Until 2026-07-31 nothing built the
+addon, so it existed only as source and unit tests.
+
+Where it stands on the reference iMac (`20260805.81`, checked
+2026-08-05, #208): **installed and loading, never exercised from a
+keyboard.** `lisa.so` is on disk, `Loaded addon lisa` appears on every
+fcitx5 start, the IM environment variables reach the session, and the
+overlay owns its bus name. What has *not* been done on hardware is the
+part that would justify the word "works": select text and hit
+Control+Alt+Space, or tap Shift twice in a GTK3/XWayland app and watch
+the overlay. Neither action has been performed on a device, so neither
+is claimed here.
 
 It also did not compile. Arch's fcitx5 exports only the innermost
 include directory from `Fcitx5::Module::DBus`, so the canonical

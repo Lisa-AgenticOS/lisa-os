@@ -92,6 +92,22 @@ for chip/modal consent per the tier table). [this window] waits on
 §5.7.4 screen context (M6); [selection] waits on §5.7.3 layer 3; both
 are reported `unavailable` in Started meta.
 
+**Double-tap Shift is not a binding this extension has (#208).** The
+three keys in `schemas/` — `toggle-overlay` (`<Shift><Super>space`),
+`open-assistant` (`<Super>c`), `push-to-talk` (`<Shift><Super>v`) — are
+the whole of what any Lisa shell surface binds. Nothing here, in
+`shell/launcher`, or in `shell/desktop` watches for a bare modifier
+tap; `extension.js` mentions double-tap-Shift only in comments about
+where the *voice* gesture would come from. The gesture exists solely
+inside the fcitx5 addon (`ime/fcitx5-lisa`), which sees keys only from
+clients that route through fcitx — never from the shell. Verified on
+the reference iMac (`20260805.81`, 2026-08-05): the extension is
+enabled and `toggle-overlay` reads `['<Shift><Super>space']`, and
+grepping `/usr/share/lisa/shell/` for a Shift-tap handler returns
+comments only. A system-wide gesture would have to be answered at the
+compositor, and **mutter is stock** here (50.4) — the Shell fork
+(ADR-0038) does not by itself put bare-modifier taps within reach.
+
 **Push-to-talk (§5.7.5) is wired but has not run on hardware.** The
 logic is unit-tested and the JS parses, but no one has held the key on
 the reference iMac — the two engines it needs (`whisper.cpp`, `piper`)
