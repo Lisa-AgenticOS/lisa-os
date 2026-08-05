@@ -52,6 +52,25 @@ jobs:
               # unread for four nights.
               pacman-key --init
               pacman-key --populate archlinux
+              # Trust the signing key of the [lisa] index IN THE BUILD
+              # SANDBOX, not only in the image (#270).
+              #
+              # ADR-0039 step 4 made the image pull lisa-desktop-shell
+              # from the hosted index, and the first nightly after it
+              # landed died on
+              #
+              #   error: lisa: key "737240D1…7AF5982B" is unknown
+              #   error: keyring is not writable
+              #
+              # The key comes from THIS CHECKOUT, never a keyserver:
+              # ADR-0034 forbids the build depending on infrastructure we
+              # do not control, and `os/packages/lisa-keyring` is where
+              # the trust anchor already lives. `--lsign-key` is what
+              # makes it locally trusted rather than merely present:
+              # importing without signing leaves pacman with a key it
+              # still will not use.
+              pacman-key --add /src/os/packages/lisa-keyring/lisa-packages.pub
+              pacman-key --lsign-key 737240D11D28E109A474A8E5827E27417AF5982B
               pacman -Syu --noconfirm mkosi
               mkosi --directory os/mkosi summary
               mkosi --directory os/mkosi build

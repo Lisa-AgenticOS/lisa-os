@@ -135,6 +135,21 @@ jobs:
               # deletes them after install unless told otherwise, and the
               # 150 MB pinned kernel tarball is re-fetched every build.
               sed -i "s|^#*CleanMethod.*|CleanMethod = KeepCurrent|" /etc/pacman.conf
+              # Trust the [lisa] index in THIS container, which is the
+              # one that later runs `mkosi build` (#270). ADR-0039 step 4
+              # made the image pull lisa-desktop-shell from the hosted
+              # index, and without the trust anchor pacman fails with
+              # "key … is unknown / keyring is not writable" — which is
+              # what took the nightly of 2026-08-05 down.
+              #
+              # From this checkout, never a keyserver: ADR-0034 forbids
+              # the build depending on infrastructure we do not control.
+              # The lsign-key step is the half that matters: an imported
+              # key that is not locally signed is present and unused.
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman-key --add /src/os/packages/lisa-keyring/lisa-packages.pub
+              pacman-key --lsign-key 737240D11D28E109A474A8E5827E27417AF5982B
               echo "SRCDEST=/srcdest" >> /etc/makepkg.conf
               chmod 777 /srcdest
               # glib2: lisa-shell makedepends (build-packages.sh runs
