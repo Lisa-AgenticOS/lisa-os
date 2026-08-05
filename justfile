@@ -54,6 +54,14 @@ lint:
     # stale committed copy would ship the model answers about last
     # month's OS.
     python3 os/repo-tools/build-knowledge.py --check
+    # A boot splash pointed at a theme that no longer exists is a black
+    # screen, and on hardware with no ACPI BGRT image a correct Lisa
+    # splash is ALSO a black screen — so the two are indistinguishable
+    # by eye. #283 shipped dangling for eight days on exactly that
+    # margin. --selftest first: a checker whose own cases do not behave
+    # must not be trusted to have checked anything.
+    os/mkosi/check-plymouth.sh --selftest
+    os/mkosi/check-plymouth.sh os/mkosi/mkosi.extra os/mkosi/initrd-overlay
     # The ADR index used to be written by hand, and said "36 of the 37
     # records below" while there were 50. A page describing 50 files
     # must be derived from them: this rejects a status line outside the
@@ -95,6 +103,12 @@ ime-test:
     c++ -std=c++17 -Wall -Wextra -Iime/fcitx5-lisa/src -o "$out/doubleshift_test" \
         ime/fcitx5-lisa/tests/doubleshift_test.cpp ime/fcitx5-lisa/src/doubleshift.cpp
     "$out/doubleshift_test"
+    # The Wayland-diagnose nag stays suppressed only while
+    # notifications.conf keeps the section form fcitx-config unmarshals
+    # (#191/#201); a flat key parses fine and hides nothing.
+    c++ -std=c++17 -Wall -Wextra -DSOURCE_DIR='"ime/fcitx5-lisa/tests"' \
+        -o "$out/notifications_test" ime/fcitx5-lisa/tests/notifications_test.cpp
+    "$out/notifications_test" ime/fcitx5-lisa/notifications.conf
 
 # What CI runs on every PR.
 ci: lint test shell-test ime-test

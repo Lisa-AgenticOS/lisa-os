@@ -284,16 +284,31 @@ into the script sandbox as `$SRCDIR`, and the release lane copies
 ## Boot splash
 
 `quiet splash` + `console=ttyS0` (`mkosi.conf` `KernelCommandLine=`) hand
-the real display to **Plymouth** so boot shows the Lisa logo on brand
-violet — not scrolling kernel/unit text — between the Mac's Apple logo
-and GDM. All console/kernel/systemd text goes to the serial line, leaving
-tty0 (the framebuffer) clean for Plymouth.
+the real display to **Plymouth** so boot shows the Lisa wordmark — not
+scrolling kernel/unit text — between the Mac's Apple logo and GDM. All
+console/kernel/systemd text goes to the serial line, leaving tty0 (the
+framebuffer) clean for Plymouth.
+
+**It is not violet, and it never was.** This section said "the Lisa logo
+on brand violet" until 2026-08-05; the violet theme was deleted a week
+earlier and nothing here followed. What ships is Arch's stock `bgrt`,
+whose background is `0x000000` — see "What the boot actually looks
+like" below before diagnosing a black screen as a failure.
 
 The splash is Arch's **stock `bgrt` theme**, unmodified, with one file
 swapped: the watermark it draws from the `spinner` theme directory. We
 ship no theme of our own — an earlier custom `lisa.plymouth` was deleted
 because replacing one PNG is the whole requirement, and a fork of a theme
 is a thing to maintain.
+
+The theme is named once, in `etc/plymouth/plymouthd.conf` (both trees),
+which is first in Plymouth's own lookup order and is the file
+`plymouth-set-default-theme` writes. It is **not** named in a
+`themes/default.plymouth` symlink: that is legacy state which the same
+tool deletes, and the one this image used to ship pointed at the theme
+that was removed in 1fec591 — dangling on every device for eight days
+(#283). `check-plymouth.sh` now fails the lint gate on a dangling link,
+on a pin no tree can satisfy, and on the two trees disagreeing.
 
     usr/share/plymouth/themes/spinner/watermark.png   128x37, white Lisa
     usr/share/plymouth/themes/spinner/.lisa-branded   marker, issue #45
@@ -311,12 +326,87 @@ Rendered from `branding/lisa-wordmark-white.svg` (24x7 viewBox):
 Halved from 256x75 on 2026-07-29 — at full size it read as huge on the
 reference iMac's panel.
 
+### What the boot actually looks like
+
+Measured end to end on the reference iMac18,2, `v20260805.81`
+(`systemd-analyze`, `journalctl -b -o short-precise`, `bootctl`). Times
+after the loader are relative to the kernel's first message.
+
+| when | what is on the panel | evidence |
+|---|---|---|
+| 0 – 38.9 s | Apple logo (Mac firmware) | `38.852s (firmware)` |
+| +462 ms | systemd-boot, **no menu** | `462ms (loader)`; `/efi/loader/loader.conf` has `timeout` commented out and two UKIs are present, yet the loader cost under half a second |
+| kernel t=0 | Apple logo still up | `fbcon: Deferring console take-over` — `CONFIG_FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER=y`, and `quiet` + `console=ttyS0` mean nothing writes to tty0 |
+| t=4.558 | **black** — the display re-modesets | `amdgpu 0000:01:00.0: vgaarb: deactivate vga console`, then `fbcon: amdgpudrmfb (fb0) is primary device` |
+| t=5.703 | splash up | `Started Show Plymouth Boot Screen.` |
+| t=13.6 | gdm starts; **no greeter** (autologin) | `Starting GNOME Display Manager` |
+| t=23.0 | gnome-shell owns the display | `Added device '/dev/dri/card1' (amdgpu) using atomic mode setting` |
+| t=28.6 | plymouthd exits | `Finished Hold until boot process finishes up.` |
+
+Three conclusions this replaces guesswork with:
+
+- **There is no dark gap between the splash and GDM.** Plymouth holds
+  the display continuously from t=5.7 to t=28.6, GDM owns the handoff
+  (`plymouth deactivate` / `plymouth quit --retain-splash`, both strings
+  live in `/usr/bin/gdm`; `gdm.service` carries `Conflicts=` and
+  `OnFailure=plymouth-quit.service`), and the CI frame timeline shows
+  the splash in one frame and the shell in the next, ≤2 s apart, with
+  nothing between. There is also no GDM greeter at all — `custom.conf`
+  sets `AutomaticLoginEnable=True`, so the session comes straight up.
+- **The splash and a dark gap look the same on this hardware.** `bgrt`
+  paints `BackgroundStartColor=0x000000` and fills the centre from the
+  ACPI BGRT image; `/sys/firmware/acpi/bgrt/` **does not exist** on this
+  Mac, so there is no centre image and the splash is a black field with
+  a small spinner and the 128×37 watermark at 96% height, for 23
+  seconds. In QEMU/OVMF there *is* a BGRT table, which is why the CI
+  frames show the TianoCore logo centred and the iMac shows nothing
+  there. Anyone reporting "a dark gap, then the desktop" on this machine
+  is reporting the splash.
+- **The one real black window is 1.145 s at the front**, between the
+  firmware logo dying at the amdgpu handover (t=4.558) and Plymouth's
+  first frame (t=5.703). That is the cost of Plymouth binding the
+  *native* driver instead of `simpledrm`, which is the deliberate
+  ADR-0025 / #138 trade — and the ordering is already as tight as it
+  goes: `systemd-modules-load` reports `Inserted module 'amdgpu'` at
+  19:530 and `Starting Show Plymouth Boot Screen...` is logged at
+  19:533, three milliseconds later. The remaining 0.8 s is plymouthd's
+  own start. Nothing in this repo shortens it; keeping `simpledrm`
+  instead would remove the modeset and lose the splash at the handover,
+  which is the bug #138 fixed.
+
+This also closes the standing "systemd-boot may show its menu before
+the splash" follow-up: it does not, and the 462 ms loader time is the
+measurement that says so.
+
+### Checking it
+
+`check-plymouth.sh` reads the trees, not the intent:
+
+    os/mkosi/check-plymouth.sh --selftest          # the checker itself
+    os/mkosi/check-plymouth.sh mkosi.extra initrd-overlay
+
+`just lint` runs both, in that order. It also accepts a built
+`$BUILDROOT` or a mounted image, where the theme directories are really
+present and the pin is checked against them rather than deferred to the
+package. What it rejects: a dangling symlink under `usr/share/plymouth`
+(#283), a `[Daemon] Theme=` that a tree carrying themes cannot satisfy,
+a `Theme=` written outside the `[Daemon]` section, the two trees pinning
+different themes, and the watermark updated in one tree but not the
+other. `--selftest` builds fixtures for every one of those and asserts
+the exit code — it is there because the first draft of the walk used
+`shopt -s globstar`, which bash 3.2 on a macOS dev host does not have,
+so the checker silently inspected nothing and passed a tree containing
+the very bug it was written for. It caught itself.
+
 **Initrd (ADR-0017, mechanism fixed by ADR-0028).** The mkosi image builds
-its own systemd initrd (*mkosi-initrd*, not dracut). It carries **Plymouth +
-the `lisa` theme**, so the violet Lisa splash comes up **during the initrd
-phase — right after the Apple logo**, not only at `sysinit.target` in the
-rooted system. Because the theme ships alongside, this is never the theme-less
-non-Lisa flash — the reason it used to be kept out.
+its own systemd initrd (*mkosi-initrd*, not dracut). It carries **Plymouth,
+the theme pin and the watermark**, so the Lisa splash comes up **during the
+initrd phase — right after the Apple logo**, not only at `sysinit.target` in
+the rooted system. Because the theme config and watermark ship alongside,
+this is never the theme-less non-Lisa flash — the reason it used to be kept
+out. And the initrd's copy is the one that decides: `plymouthd` starts there
+and survives the switch-root as the same PID, so the rooted system's
+`plymouthd.conf` is never consulted for the splash you watch.
 
 > ADR-0017 said this happened through a `mkosi.initrd/` overlay directory.
 > **There is no such convention in mkosi 26** (the version CI installs), and
@@ -334,8 +424,8 @@ the parent may push down. So:
 - **Files** come from **`initrd-overlay/`**, which `mkosi.finalize` packs
   into a cpio and drops in `$ARTIFACTDIR/io.mkosi.initrd/`; mkosi joins
   everything there onto the initrd set (`mkosi.1`, `finalize_initrds()`).
-  That tree carries the Lisa watermark, the
-  `sysinit.target.wants/plymouth-start.service` symlink, the ADR-0022
+  That tree carries the Lisa watermark, `etc/plymouth/plymouthd.conf`,
+  the `sysinit.target.wants/plymouth-start.service` symlink, the ADR-0022
   rescue root resolver + its unit, and the issue #16 boot-disk udev rule.
 - `Initrds=` is deliberately **not** used: it *replaces* the default initrd
   rather than adding to it (`want_default_initrd()`), which on this path is
@@ -348,8 +438,10 @@ Earlier this was a
 rooted-system-only splash with a black window between the Apple logo and
 `sysinit`; on the field iMac that window was long enough to read as "powered
 off" (the reason for this change). `etc/dracut.conf.d/50-lisa-plymouth.conf`
-still pulls Plymouth + the `lisa` theme into any **dracut**-built initrd
-(installed-system regeneration, Track L `os/layer`). `plymouth-quit*.service` /
+still pulls Plymouth into any **dracut**-built initrd
+(installed-system regeneration, Track L `os/layer`); the theme there is
+stock `bgrt` too — there has been no `lisa` theme since 1fec591.
+`plymouth-quit*.service` /
 `plymouth-read-write.service` are held enabled in `00-lisa.preset` so the
 handoff to GDM is not disabled by a stock `disable *` preset. A missing
 or failed splash never blocks boot — Plymouth degrades to blank/text.
@@ -376,11 +468,12 @@ firmware pruning and delete every blob no module declares, Bluetooth's
 to" on the serial log. Under `-nographic` Plymouth finds no DRM device
 and no-ops without touching the serial output.
 
-**Follow-up (needs a graphical boot to verify).** systemd-boot may show
-its menu with text before the splash; if the menu ever appears on the
-real display, set the loader `timeout` to 0 so the Apple logo hands
-straight to the splash. There is no on-disk `loader.conf` to edit here
-yet (mkosi assembles the ESP), so this is left as a verify-in-CI item.
+**Closed follow-up.** "systemd-boot may show its menu with text before
+the splash" was carried here as a verify-on-hardware item. It was
+verified on 2026-08-05 and it does not: `systemd-analyze` reports
+`462ms (loader)` on the reference iMac with two UKIs in
+`/efi/EFI/Linux/` and `timeout` commented out in `/efi/loader/loader.conf`.
+A displayed menu costs seconds. No `loader.conf` change is needed.
 
 ## aarch64 lane (ADR-0021)
 
