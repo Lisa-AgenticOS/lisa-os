@@ -1,0 +1,28 @@
+# The ports lock (ADR-0051): which prebuilt third-party package files
+# the x86_64 image consumes, pinned by sha256. One line per artifact:
+#
+#   <filename>  <sha256>
+#
+# The files live on this repo's rolling `ports` release, built by
+# .github/workflows/ports.yml whenever a port's PKGBUILD changes.
+# Bumping a port is TWO deliberate commits: (1) the PKGBUILD change,
+# which makes ports.yml build and upload the new artifact and print
+# the new lock lines in its job summary; (2) this file, updated from
+# that summary. The release build fetches exactly these files and
+# refuses a digest mismatch — so what an image contains is decided by
+# the commit that built it, never by whatever a rolling tag holds
+# (the #273 principle, applied to the ports).
+#
+# The aarch64 lane is NOT a consumer: it builds every port from source
+# natively (no x86_64 binary is usable there, and upstream ships no
+# Linux arm64 binaries to compare against).
+#
+# Seeded 2026-08-05 from v20260804.77's release assets, after checking
+# each PKGBUILD's pkgver-pkgrel still matches the built artifact.
+llama.cpp-b10093-2-x86_64.pkg.tar.zst  d01ba6c9efb2d3539042fc2dd34b49add7bb99d72cb1414293a4494adf3676e0
+whisper.cpp-v1.9.1-2-x86_64.pkg.tar.zst  f450c8bea7f376cc070995303c21a5b52b8eef01287ee3f1053195177a585e08
+piper-v1.6.0-1-x86_64.pkg.tar.zst  60b75a18a854bbef9ade09b5d4af596d5aa3a399d2a7f4a38dc4f7e28ee58293
+zen-browser-1.21.8b-2-x86_64.pkg.tar.zst  bc24377edc32c502c18d86db67c332a4b5f351b4e3f7cd0e66cbe13cfdb1fe73
+zen-browser-launcher-1.21.8b-2-x86_64.pkg.tar.zst  fd294b4ba3b4342e2f5bf743f17a86fb06ac89388509a0c1621730f988b0fbac
+gnome-control-center-50.3-2-x86_64.pkg.tar.zst  5513b26e6c1781e17b19b3bb7292022f0fcdf6be2e6d6c88fe2e8d3cddef819f
+gnome-keybindings-50.3-2-x86_64.pkg.tar.zst  5b2029177fd233b4bc54f69bc2e4a83ae282f414d1a6005b00c71b4c2f851571

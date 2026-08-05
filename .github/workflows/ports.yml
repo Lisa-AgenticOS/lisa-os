@@ -1,0 +1,109 @@
+# The ports lane (ADR-0051): pinned third-party packages are built when
+# their PKGBUILD changes, not inside every release. llama.cpp changes
+# perhaps monthly and was being compiled on every release dispatch — and
+# on 2026-08-05, on every FAILED release dispatch too, because the cache
+# only saved on job success. A port is built here once, uploaded to the
+# rolling `ports` release, and consumed by release.yml through the
+# sha256 pins in os/packages/ports.lock. Bumping a port is two
+# deliberate commits: the PKGBUILD, then the lock (from this job's
+# summary).
+#
+# The aarch64 image lane keeps building every port from source natively
+# — nothing x86_64 built here is usable there.
+
+name: ports
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'os/packages/llama.cpp/**'
+      - 'os/packages/whisper.cpp/**'
+      - 'os/packages/piper/**'
+      - 'os/packages/zen-browser/**'
+      - 'os/packages/gnome-control-center-lisa/**'
+      - 'os/packages/gnome-online-accounts-lisa/**'
+      - 'os/repo-tools/build-port.sh'
+      - '.github/workflows/ports.yml'
+  workflow_dispatch:
+    inputs:
+      ports:
+        description: >-
+          Space-separated port names to build (default: all six).
+        required: false
+        type: string
+        default: "llama.cpp whisper.cpp piper zen-browser gnome-control-center-lisa gnome-online-accounts-lisa"
+
+permissions:
+  contents: write   # uploads to the `ports` release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the requested ports (Arch container)
+        env:
+          # Dispatch input via env, never interpolated (it is text).
+          # On push, empty — the changed-paths default below applies.
+          PORTS_INPUT: ${{ inputs.ports }}
+        run: |
+          # On push, build only the ports whose files changed; on
+          # dispatch, build what was asked (default all). Building an
+          # unchanged port is wasted but harmless — same pin, same
+          # content, --clobber replaces like with like.
+          if [ -n "$PORTS_INPUT" ]; then
+            PORTS="$PORTS_INPUT"
+          else
+            PORTS=""
+            for p in llama.cpp whisper.cpp piper zen-browser \
+                     gnome-control-center-lisa gnome-online-accounts-lisa; do
+              if git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" -- "os/packages/$p/" | grep -q .; then
+                PORTS="$PORTS $p"
+              fi
+            done
+            # A build-port.sh or workflow change with no port change:
+            # rebuild everything, since the recipes themselves moved.
+            [ -n "$PORTS" ] || PORTS="llama.cpp whisper.cpp piper zen-browser gnome-control-center-lisa gnome-online-accounts-lisa"
+          fi
+          echo "building:$PORTS"
+          mkdir -p out
+          sudo podman run --rm --privileged -v "$PWD":/src -w /src \
+            -e PORTS="$PORTS" \
+            docker.io/library/archlinux:latest bash -ec '
+              sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman -Syu --noconfirm base-devel git cmake devtools glib2 \
+                vulkan-headers shaderc vulkan-icd-loader spirv-headers
+              git clone --quiet /src /build
+              useradd -m builder
+              printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
+              chown -R builder /build
+              for p in $PORTS; do
+                sudo -u builder bash /build/os/repo-tools/build-port.sh "$p" /build/out
+              done
+              mkdir -p /src/out
+              cp /build/out/*.pkg.tar.* /src/out/
+            '
+          sudo chown -R "$USER:" out
+          ls -lh out/
+      - name: Upload to the ports release + print the lock lines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ports --clobber out/*.pkg.tar.*
+          {
+            echo "## New ports.lock lines"
+            echo
+            echo "Replace the matching lines in \`os/packages/ports.lock\`"
+            echo "(and remove any line for a version these supersede):"
+            echo
+            echo '```'
+            (cd out && shasum -a 256 *.pkg.tar.* | awk "{print \$2 \"  \" \$1}")
+            echo '```'
+            echo
+            echo "The release build consumes ONLY what the lock pins —"
+            echo "uploading here changes nothing until the lock commit lands."
+          } >> "$GITHUB_STEP_SUMMARY"
