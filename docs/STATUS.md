@@ -3,7 +3,83 @@
 Living snapshot of where the build actually is, so any machine (or a
 fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
-"where are we on it" companion. **Last updated: 2026-08-04.**
+"where are we on it" companion. **Last updated: 2026-08-05.**
+
+## 2026-08-05 — a release that ships, a CI review, and three decisions
+
+**v20260805.81 is cut and running on the reference iMac.** Getting
+there took four dispatches and each failure was real, not flaky:
+
+1. **#270, the keyring.** ADR-0039 step 4 made the image install
+   `lisa-desktop-shell` from the hosted `[lisa]` index, and mkosi
+   builds its keyring in *its own sandbox*, inheriting nothing — so
+   the first fix (trusting the key in the outer container) failed
+   identically. The working fix seeds the binary keyring into
+   `mkosi.pkgmngr/usr/share/pacman/keyrings/`, derived in CI from the
+   single committed `.pub`.
+2. **The release workflow could not be dispatched at all.** The
+   keyring work pushed a `${{ }}`-bearing `run:` block past GitHub's
+   21,000-character templated-string cap; every dispatch since Aug 4
+   evening had failed to *parse*. Fixed by passing `VER` via `env:`,
+   and there is now a lint gate measuring block length.
+3. **The step-5 desktop check ran for the first time** and found two
+   of its own latent bugs: it read `/var/lib/pacman/local` from the
+   mounted root, but `/var` is its own partition and ships empty — the
+   package database reaches no disk. The image now records
+   `pacman -Q` to **`/usr/lib/lisa/packages.manifest`**, so "which
+   packages are in this image?" is answerable from the artifact.
+   Second: it tested absolute symlinks with `-e` from the host, which
+   resolves against the *host* root and fails on a perfectly good
+   image (the `-L`-not-`-e` lesson, again).
+
+**A CI review across all four repos** (~30 findings; the mechanical
+ones fixed the same day). The dominant class was **gates that stayed
+green while asserting nothing**: a skipped branch that printed
+nothing, a fallback that examined the wrong artifact, a pipeline whose
+exit status belonged to the wrong command. Highlights: the screenshots
+lane had been unable to build since step 4 (the keyring fix never
+propagated); nightly's USB-boot gate was examining the standalone
+initrd rather than the shipped UKI; the release's package upload could
+publish an *empty* index update in a green run. mkosi is now pinned to
+26-5 on every lane and the ALARM base by digest (#271); the
+ab-sysupdate harness can no longer mistake a dead host server for an
+OS regression (#272).
+
+**Three decisions:**
+
+- **ADR-0051 — the ports lane.** llama.cpp, whisper.cpp, piper, Zen
+  and the Settings fork are built when their PKGBUILD changes and
+  consumed by sha256 pin from `os/packages/ports.lock`. A release
+  *assembles*; it no longer compiles pinned third-party code that has
+  not changed. (Four failed dispatches had each recompiled llama.cpp
+  before dying at a later assertion.)
+- **ADR-0052 + ADR-0053 — Lisa Server is a product, not a flavour.**
+  Install mode is an image lineage chosen at install, never a package
+  toggle; and the shared core is *already* headless because rule 5 and
+  the unit sandboxes forced it, so the desktop has always been the
+  first client. The first server surface is the **Assistant as an
+  API** — it needs no new capability and forces the network-identity
+  work everything else waits on (#279, #280).
+- **ADR-0054 — the websites are generated from the repo**, and their
+  stack is Nuxt UI + Tailwind fully. Both sites now derive every
+  colour from `branding/tokens.json`, `check-tokens.py` covers `web`,
+  and `web.yml` builds and link-checks them on every PR. Until today
+  they were the only part of this project shipping with **no CI at
+  all**.
+
+**The fork family is `lisa-desktop-*`**, and each package replaces
+stock via `provides`/`conflicts` rather than taking the stock name and
+winning on `pkgrel` — a race that silently loses the day Arch ships a
+higher version, which it did (50.4, 2026-08-04). `lisa-desktop`'s
+`main` was also fast-forwarded to the v0.2.0 vendor branch: the fork
+that devices boot had existed only on an unmerged branch.
+
+**Found, not fixed:** the iMac runs `lisa-desktop-shell` 50.3 against
+`mutter` 50.4 — fine within a series, a failure to start at the next
+soname bump (#277). And `lisa-desktop-online-accounts` (Lisa's own
+verified Google OAuth client, so the consent screen stops saying
+GNOME) cannot build until the placeholder client secret is replaced —
+its own `build()` guard refuses, correctly (#276).
 
 ## 2026-08-04 night — Mail grows a rail, the guard grows the owner's own refusals
 
@@ -278,7 +354,7 @@ complete; M2 (Ledger) and M3 (context fabric) have working cores. Every
 claim below is enforced by CI on `main`, not aspirational.
 
 - Repo: **github.com/Lisa-AgenticOS/lisa-os** · License: GPL-2.0-only (ADR-0005)
-- Latest release: **v20260725.27** — first release whose sysupdate transfers
+- Latest release: **v20260805.81** — first release whose sysupdate transfers
   carry `ProtectVersion=%A` (the issue-#20 booted-slot guard), gated by the
   nightly's 3-version regression test
 - CI on `main`: green (lint, tests, egress, openai-compat, layer-e2e, gnome-panel-build; nightly image + A/B rollback + sysupdate; release pipeline)
@@ -569,7 +645,7 @@ not pay off the honest next step is `sccache`, not paid runners.
 **Model store — `daemons/modeld` (§5.2):** blake3 content-addressed
 store (dedupe/verify/gc, pinned-hash ingest), hardware profiler (§8
 tiers; `lisa models profile`), HTTP-Range resumable pulls. Catalog
-(`models/catalog/catalog.toml`) carries six fully pinned artifacts:
+(`models/catalog/catalog.toml`) carries seventeen fully pinned artifacts:
 whisper-base-en, gemma-3-1b-it-q8, qwen3-0.6b-instruct-q8,
 qwen3-1.7b-instruct-q8, qwen3-4b-instruct-q4, and
 nomic-embed-text-v1.5 — each downloaded and blake3-verified (issue #7).

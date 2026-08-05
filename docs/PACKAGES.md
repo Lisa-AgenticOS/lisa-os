@@ -59,7 +59,7 @@ hard forks: track the delta, not a diverged tree.
 
 | Package | Upstream | Pinned | Why (ADR) | Delta | Repo |
 |---|---|---|---|---|---|
-| `gnome-control-center-lisa` | gnome-control-center | 50.3 | no plugin API for a sidebar panel (ADR-0012) | panel dir + 2 anchored edits | in-tree `os/packages/` |
+| `lisa-desktop-control-center` | gnome-control-center | 50.3 | no plugin API for a sidebar panel (ADR-0012) | panel dir + 2 anchored edits | in-tree `os/packages/` |
 | Terminal integration | GNOME Console/VTE | TBD | `lisa` CLI presence | integration | `apps/terminal-integration` |
 
 **No app patch sets (ADR-0048).** This table used to carry rows for Files,
@@ -69,13 +69,13 @@ the apps instead: `apps/mail` shipped, `apps/files` and `apps/photos` are
 not-started Lisa apps rather than planned patch sets. Where a Lisa app
 does not exist yet, the image ships the stock GNOME app **unpatched**.
 
-`gnome-control-center-lisa` is the one remaining patch set, and ADR-0048
+`lisa-desktop-control-center` is the one remaining patch set, and ADR-0048
 §3 puts it on a path to retirement in favour of `shell/settings` — a
 direction, with conditions, not something done today.
 
 Forks stay **thin, maintained patches in-tree** (build upstream at a
 pinned version, drop in our files, apply guarded anchored edits — see
-`gnome-control-center-lisa`). We re-pin on a GNOME bump; a moved anchor
+`lisa-desktop-control-center`). We re-pin on a GNOME bump; a moved anchor
 fails the build loudly. A fork only earns its own repo if the patch grows
 past "thin."
 

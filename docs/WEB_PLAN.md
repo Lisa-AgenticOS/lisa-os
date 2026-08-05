@@ -1,5 +1,16 @@
 # Lisa OS — web presence plan
 
+> **⚠ SUPERSEDED by ADR-0054 (2026-08-05).** This plan was written
+> when both domains were parked with no live site and proposed a
+> single static page growing into Astro. Reality: two Nuxt 4 sites
+> are live (`web/app-nuxt`, `web/dev-nuxt`), the stack is Nuxt UI +
+> Tailwind, every colour derives from `branding/tokens.json`, and
+> `.github/workflows/web.yml` gates them. **See ADR-0054 and
+> `web/README.md`.** Kept for the audience split, which still holds:
+> lisaos.app is for people who will run it, lisaos.dev for people
+> building on it.
+
+
 Two domains, two jobs. Companion to `branding/` (identity) and
 `docs/VISION.md` (the story). **Updated: 2026-07-23.**
 

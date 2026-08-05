@@ -51,6 +51,15 @@ jobs:
               - 'cli/**'
               - 'models/**'
               - 'tests/e2e/**'
+              # The unit files. The `egress` job asserts that every
+              # no-egress daemon's SHIPPED unit carries IPAddressDeny —
+              # and that job hangs off this filter, which did not list
+              # os/**. So editing a unit could never trigger the check
+              # that guards it, and lisa-inferenced-dbus.service sat
+              # with NO sandbox at all while a gate "covering" it stayed
+              # green by never running. A gate you cannot reach is not a
+              # gate (2026-08-05).
+              - 'os/packages/lisa/*.service'
               - '.github/workflows/ci.yml'
             layer:
               - 'os/**'

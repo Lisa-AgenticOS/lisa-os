@@ -5,7 +5,7 @@ superseded model, a better idea — gets an ADR *before* the code changes.
 Never silently improvise (PLAN §0.4).
 
 **Read `docs/VISION.md` first.** It is one page and it says what Lisa is,
-what is true today, and what is decided but unbuilt. These 50 files are
+what is true today, and what is decided but unbuilt. These files are
 the reasoning behind that page, and they are a *historical record*: an
 ADR says what we chose and why, in the words of the day we chose it.
 Only its status line is kept current.
@@ -23,8 +23,11 @@ It is generated because the hand-written version drifted in the way that
 costs the most: it claimed "36 of the 37 records below carry no status
 line" when there were 50 records and all 50 had one, and its
 what-is-built table stopped at ADR-0038, so absence read as "not built"
-when it meant "nobody looked". A page describing 50 files has to be
-derived from those 50 files.
+when it meant "nobody looked". A page describing the ADRs has to be
+DERIVED from them — including its own count, which is why no number is
+written by hand above this line. (The prose here said "50 files" while
+the generated table below said 54: the paragraph warning about stale
+counts had a stale count in it. Fixed 2026-08-05.)
 
 Read it as: **what would a person find on a device today.** Entries are
 expected to name their evidence — an earlier table listed ADR-0025 among

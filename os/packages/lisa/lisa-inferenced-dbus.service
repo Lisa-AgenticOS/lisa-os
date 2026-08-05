@@ -32,5 +32,30 @@ ExecStart=/usr/bin/lisa-inferenced --dbus --bind 127.0.0.1:7778 --socket %t/lisa
 Restart=on-failure
 RestartSec=2
 
+# EGRESS SANDBOX — mirrors lisa-inferenced.service, and it was MISSING
+# until 2026-08-05.
+#
+# This unit is the per-user companion every Assistant and overlay prompt
+# goes through, and the one wired to the remote tier. Two comments above
+# describe confinement ("gives inferenced NO network access",
+# "RestrictAddressFamilies=AF_UNIX and IPAddressDeny=any") — but those
+# describe the BROKER's role and lisa-contextd's unit respectively, not
+# this file. Nothing here enforced anything: rule 5 was prose in a
+# comment on the very daemon that handles every prompt.
+#
+# Found by an audit of the WEBSITE's privacy copy, which claims "the
+# daemons that read your context have no network access at all" — the
+# strongest sentence on the marketing site, undercut by the unit that
+# serves it.
+#
+# localhost is allowed because the daemon binds 127.0.0.1:7778 by
+# design (the OpenAI-compatible API the shell surfaces call); AF_UNIX
+# carries the remoted socket and the daemon's own unix socket. What
+# this forbids is the thing that matters: a route off the machine.
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+NoNewPrivileges=yes
+
 [Install]
 WantedBy=default.target

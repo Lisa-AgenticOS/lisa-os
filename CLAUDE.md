@@ -30,9 +30,10 @@ Run `just lint && just test` before every commit; CI enforces both.
 | `daemons/agentd` | PLAN §5.4 | M5 |
 | `portals/xdg-desktop-portal-lisa` | PLAN §5.5 | M2 |
 | `libs/liblisa` (+ gtk/qt) | PLAN §5.6 | M2 |
-| `shell/*` | PLAN §5.7, ADR-0038, ADR-0048 | M4 |
-| `apps/*` (incl. `apps/files`, `apps/photos` — not started) | PLAN §5.8, ADR-0048 | M6 |
-| `libs/lisa_ui`, `libs/forge-harness`, `forge/` | PLAN §5.12, ADR-0047 | M6 |
+| `shell/*` — **also extracted to the `lisa-desktop` repo (ADR-0039); duplicated here pending step 6** | PLAN §5.7, ADR-0038, ADR-0048 | M4 |
+| `apps/*` — **also extracted to `lisa-apps` (ADR-0039)**; incl. `apps/files`, `apps/photos` — not started | PLAN §5.8, ADR-0048 | M6 |
+| `libs/forge-harness`, `forge/` | PLAN §5.12, ADR-0047 | M6 |
+| `libs/lisa_ui` — **still the parked Dart kit; the GJS shared library ADR-0047 §6 asks for is UNBUILT. Do not import this to build an app** | ADR-0047 §6 | — |
 | `libs/lisa_flutter` | parked (ADR-0047) | — |
 | `ime/fcitx5-lisa` | PLAN §5.7.3 | M4 |
 | `cli/lisa` | PLAN §5.4 (scriptability) | M1+ |
@@ -57,8 +58,15 @@ Run `just lint && just test` before every commit; CI enforces both.
    tooling and evals. Shell script only in installers and hooks — never as
    substrate.
 5. **Egress is architecture.** `lisa-inferenced`, `lisa-contextd`, and
-   `lisa-agentd` never get network access; only `lisa-modeld` (model
-   traffic) does. Never add a network dependency to a no-egress daemon.
+   `lisa-agentd` never get network access; **only `lisa-remoted` does**
+   — it is the sole egress broker (ADR-0010, PLAN §4 dataflow rule 2).
+   Never add a network dependency to a no-egress daemon.
+   *(This rule said `lisa-modeld` until 2026-08-05. It was wrong:
+   `modeld` is the content-addressed model store and ships no unit at
+   all, while `remoted` is the one door out. PLAN §5.10 and VISION had
+   both already carried the correction in-line — the operating manual
+   was the last copy still naming the wrong daemon, which is the
+   sharpest possible argument for one source of truth.)*
 6. **Provenance is load-bearing.** Context chunks carry provenance tags;
    untrusted provenance never triggers privileged tool calls without
    escalated confirmation (PLAN §5.10, Appendix C).
@@ -117,6 +125,23 @@ Run `just lint && just test` before every commit; CI enforces both.
 
 ## Repo mechanics
 
+- **Four repos, and this one is not the only source (ADR-0039).**
+  `lisa-desktop` (shell surfaces + IME, and the vendored GNOME Shell
+  fork), `lisa-apps` (Mail, Surfer, Preview) and `lisa-packages` (the
+  signed `[lisa]` index) were extracted on 2026-08-02 with history.
+  **Nothing was deleted here**, so `shell/*` and `apps/*` exist in both
+  places — step 6 (removal) is untouched, and ADR-0039's own failure
+  clause has therefore triggered. Before editing `shell/` or `apps/`,
+  know which tree ships the thing you are changing: the image installs
+  `lisa-desktop-shell` from the hosted index (built by `lisa-desktop`),
+  while the GJS surfaces still ship from this repo's own packaging.
+  See `docs/VISION.md` for the four-repo table and #171 for the
+  remaining steps.
+- **Fork packages replace stock by contract, never by name.** A fork of
+  a GNOME component is `lisa-desktop-<thing>` carrying
+  `provides=`/`conflicts=` on the stock name — not a package that takes
+  the stock name and outranks it by `pkgrel`. That race silently loses
+  the day Arch ships a higher version, which it did on 2026-08-04.
 - Cargo workspace members: `libs/liblisa`, `daemons/inferenced`,
   `daemons/modeld`, `cli/lisa`. New Rust components join the workspace.
 - Non-Rust components (mkosi profiles, the GJS shell surfaces and apps,

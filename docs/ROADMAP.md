@@ -7,8 +7,19 @@ detail) and `docs/PLAN.md` (scope, source of truth).
 
 ## The one-paragraph state
 
+> **⚠ This file is a day-2 snapshot (2026-07-23) and is the most
+> drifted document in the repo.** It has been spot-patched twice
+> without its scorecard, its "what's done" or its date being revised,
+> and it predates ADR-0038/0047/0048 (the fork and the one toolkit),
+> ADR-0039 (the four-repo split), and every 2026-08-05 decision
+> (ADR-0051 ports, ADR-0052/0053 Lisa Server, ADR-0054 websites).
+> **`docs/STATUS.md` is the living snapshot; `docs/adr/README.md` is
+> the decision record.** Read those first; treat what follows as
+> history unless it agrees with them.
+
 In four days Lisa went from a planning document to **a bootable,
-self-updating, immutable OS that runs a GNOME desktop with AI shell
+self-updating, immutable OS that runs a desktop of its own — Lisa
+Desktop, our GNOME Shell fork (ADR-0038, ADR-0048) — with AI shell
 surfaces on real 2017 iMac hardware**, backed by a working inference
 substrate (local models + guided generation + a hardened no-egress
 daemon), an append-only audit Ledger enforced as a hard gate, a context
@@ -95,7 +106,7 @@ egress ledgered in the "leaves your hardware" marking.
   to ship our own `gnome-control-center` (pinned 50.3) with a native
   **Intelligence** panel in the sidebar — g-c-c has no plugin API, so a
   thin maintained patch (panel dir + two anchored edits) is the only way
-  in. Scaffolded `os/packages/gnome-control-center-lisa`: the C panel
+  in. Scaffolded `os/packages/lisa-desktop-control-center`: the C panel
   (`CcPanel`/libadwaita, local models via `lisa models catalog --json` +
   a providers bridge), PKGBUILD, and integration — written against the
   fetched 50.3 API; the sed integration is verified against real upstream

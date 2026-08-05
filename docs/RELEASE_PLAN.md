@@ -1,5 +1,13 @@
 # Lisa OS — Release Plan
 
+> **⚠ HISTORICAL (2026-07-23).** This file's "Unreleased on `main`"
+> table is ~70 releases stale: the GJS AI panel and the Intelligence
+> panel it lists as unbuilt both shipped (ADR-0012, v25+), and it
+> predates the ports lane (ADR-0051). **`docs/STATUS.md` is the
+> living snapshot and `.github/workflows/release.yml` is what a
+> release actually does.** Kept for the reasoning, not the state.
+
+
 When to cut a release, what to batch before one, and the gate every
 release must pass. Companion to `docs/ROADMAP.md` (scope) and the
 "dev ⇄ field loop" section there (mechanics).
@@ -58,7 +66,7 @@ Settings, see **Intelligence**, and Local models populate.
    `app.lisaos.Settings.desktop`). Without it, the native panel's
    "Manage providers" bridge has no target. *Small, low-risk.*
 2. **Build + wire the g-c-c fork** — the CI `gnome-panel-build` job runs
-   `makepkg` for `os/packages/gnome-control-center-lisa` (x86 Arch).
+   `makepkg` for `os/packages/lisa-desktop-control-center` (x86 Arch).
    ✅ **Build is green** (2026-07-23): the full g-c-c + our panel compile
    and link, and the package contains the Intelligence `.desktop`.
    Remaining: publish the built package to the Lisa pacman repo layered

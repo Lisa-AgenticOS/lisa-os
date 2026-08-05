@@ -33,9 +33,14 @@ first.
 
 ## Status
 
-**Alpha.** Lisa is a **bootable, self-updating, immutable OS** running a
-GNOME desktop with AI shell surfaces — verified on a real **2017 iMac** as
-well as QEMU. A/B slots with boot-counting rollback; GitHub Releases *are*
+**Alpha.** Lisa is a **bootable, self-updating, immutable OS** running
+**Lisa Desktop** — our own fork of the GNOME Shell (ADR-0038, ADR-0048),
+which replaces stock `gnome-shell` in the image rather than sitting
+beside it. GTK4/libadwaita and Mutter are foundation and are never
+forked. Verified on a real **2017 iMac** as well as QEMU — with one
+honest caveat: **nobody has yet logged into the forked session on
+hardware** (lisa-desktop#1); what CI proves is that the image contains
+it, is configured to start it, and boots. A/B slots with boot-counting rollback; GitHub Releases *are*
 the update channel (`lisa update` pulls into the inactive slot). The full
 plan and roadmap live in [`docs/PLAN.md`](docs/PLAN.md); decisions in
 [`docs/adr/`](docs/adr/); current state in
