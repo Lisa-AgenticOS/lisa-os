@@ -54,6 +54,73 @@ a{color:var(--violet-ink);text-decoration:none}a:hover{text-decoration:underline
 :root{ --measure:72ch; --grid:22px; }
 .wrap{max-width:none;margin:0;padding:0 clamp(20px,3.4vw,56px)}
 
+/* ── ZONES: the page is vertical columns, not stacked blocks ──────
+   The sheet is divided into full-height column zones and content is
+   PLACED into the zone that suits it: the rail numbers the bands, the
+   label names them, main carries the argument, list carries entries,
+   aside carries the supporting voice. The zones persist down the whole
+   page, so a reader learns where each kind of thing lives — that is
+   what makes the parts talk to each other instead of merely stacking.
+
+   Tones differ per COLUMN, never per row: the vertical structure is
+   the constant and the horizontal bands ride over it. */
+.zones{display:grid;
+  grid-template-columns:
+    [num] 52px [label] 104px [main] minmax(0,6.2fr) [list] minmax(0,2.3fr) [aside] minmax(0,2.6fr);
+  align-items:start;
+  border-top:1px solid var(--line);
+}
+.zones + .zones{border-top:0}
+.zones > *{padding:var(--s-4) clamp(14px,1.4vw,26px) var(--s-5)}
+.z-num{grid-column:num;background:var(--paper);
+  font-family:ui-monospace,Menlo,monospace;font-size:26px;font-weight:700;
+  letter-spacing:-.02em;color:color-mix(in srgb,var(--ink) 22%,transparent);
+  padding-left:0;padding-right:0;text-align:center}
+.z-label{grid-column:label;background:color-mix(in srgb,var(--ink) 4%,var(--paper));
+  font-family:ui-monospace,Menlo,monospace;font-size:15px;color:var(--ink-soft);
+  border-right:1px solid var(--line)}
+.z-main{grid-column:main;background:var(--ground);border-right:1px solid var(--line)}
+.z-list{grid-column:list;background:color-mix(in srgb,var(--ink) 4%,var(--paper));
+  border-right:1px solid var(--line)}
+.z-aside{grid-column:aside;background:var(--ground)}
+.dark .z-label,.dark .z-list{background:color-mix(in srgb,var(--ink) 6%,var(--paper))}
+
+/* Below the fold of a laptop the five zones cannot all survive: the
+   rails fold away first (their content is a label, not the argument),
+   then list and aside drop under main. */
+@media(max-width:1100px){
+  .zones{grid-template-columns:[num] 40px [label] 76px [main] minmax(0,1fr) [list] minmax(0,1fr) [aside] minmax(0,1fr)}
+}
+@media(max-width:820px){
+  .zones{grid-template-columns:[num] 40px [main] minmax(0,1fr)}
+  .z-label{grid-column:main;background:transparent;border-right:0;
+           padding-top:0;padding-bottom:var(--s-2)}
+  .z-main,.z-list,.z-aside{grid-column:main;background:transparent;border-right:0}
+  .z-main{padding-bottom:var(--s-3)}
+  .z-list,.z-aside{padding-top:0}
+  .zones > *{padding-left:0}
+}
+
+/* Zone-local type. The aside is the supporting voice — set in the
+   accent, smaller, and deliberately not competing with main. */
+.z-aside p{color:var(--violet-ink);font-size:16.5px;line-height:1.55;max-width:34ch}
+.dark .z-aside p{color:var(--violet)}
+.z-aside .quiet{color:var(--ink-soft);font-size:15px}
+.z-main > h2{font-size:clamp(24px,2.6vw,34px);max-width:20ch}
+.z-main > p{color:var(--ink-soft);margin-top:12px;max-width:62ch;line-height:1.55}
+.z-list .entry{display:block;padding:14px 0;border-bottom:1px solid var(--line);color:inherit}
+.z-list .entry:first-child{padding-top:0}
+.z-list .entry:last-child{border-bottom:0}
+.z-list .entry:hover{text-decoration:none}
+.z-list .entry .k{display:block;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--violet)}
+.z-list .entry h3{font-size:15.5px;font-weight:700;margin-top:5px;display:flex;gap:8px;align-items:center}
+.z-list .entry h3::after{content:"→";margin-left:auto;color:var(--violet);font-weight:400;
+  transition:transform .16s}
+.z-list .entry:hover h3::after{transform:translateX(3px)}
+@media(prefers-reduced-motion:reduce){.z-list .entry h3::after,.z-list .entry:hover h3::after{transition:none;transform:none}}
+.z-list .entry p{color:var(--ink-soft);font-size:13.5px;line-height:1.5;margin-top:4px}
+
 /* COLUMN GUIDES. The twelve columns are visible as alternating bands
    the whole height of the page — the structure everything is placed
    on, showing rather than implied. Fixed, so the guides stay put
