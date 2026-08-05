@@ -49,7 +49,7 @@ h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balan
 /* Sticky, blurred — this is a docs portal, so the section nav has to
    stay reachable through a long page. Solid fallback where
    backdrop-filter is unsupported. */
-.navbar{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--paper) 82%,transparent);
+.navbar{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--paper) 94%,transparent);
         backdrop-filter:saturate(180%) blur(14px);-webkit-backdrop-filter:saturate(180%) blur(14px);
         border-bottom:1px solid var(--line)}
 @supports not (backdrop-filter:blur(1px)){.navbar{background:var(--paper)}}
@@ -75,8 +75,10 @@ h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balan
 .who button{background:none;border:0;color:var(--ink-faint);cursor:pointer;font-size:13px}.who button:hover{color:var(--ink)}
 
 .hero{padding:var(--s-5) 0 var(--s-2);position:relative}
-.hero::before{content:"";position:absolute;inset:-20% -40% 20% -40%;pointer-events:none;z-index:-1;
-  background:radial-gradient(55% 55% at 40% 40%,color-mix(in srgb,var(--violet) 11%,transparent),transparent 70%)}
+/* Horizontal inset stays at 0 — a negative one overflows the viewport
+   and gives the page a sideways scrollbar on mobile. */
+.hero::before{content:"";position:absolute;inset:-20% 0 20% 0;pointer-events:none;z-index:-1;
+  background:radial-gradient(70% 60% at 40% 40%,color-mix(in srgb,var(--violet) 11%,transparent),transparent 72%)}
 .hero h1{font-size:clamp(34px,5.8vw,54px);margin:var(--s-3) 0 0;max-width:17ch;letter-spacing:-.032em}
 .hero p{font-size:clamp(17px,2vw,20px);color:var(--ink-soft);margin-top:var(--s-3);max-width:60ch;line-height:1.55}
 .hero .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:var(--s-4);align-items:center}
