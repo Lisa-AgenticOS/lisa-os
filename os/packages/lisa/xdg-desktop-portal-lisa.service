@@ -39,5 +39,26 @@ SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 UMask=0077
 
+# EGRESS SANDBOX — and it was MISSING until 2026-08-05 (#285).
+#
+# The comment at the top of this file has said "the portal itself needs
+# no network" since it was written. That was a description, not a
+# mechanism: a process launched under this unit's shipped [Service]
+# block reached example.com, proven by execution once the #275 harness
+# started RUNNING sandboxes instead of grepping for them.
+#
+# It is the same defect as lisa-inferenced-dbus.service (47fa7c6),
+# landing on the one component whose entire job is to sit between an
+# app and what it should not have. A trust boundary that can dial out
+# is a trust boundary in name.
+#
+# AF_UNIX only, matching lisa-contextd/lisa-agentd/lisa-notes: the
+# portal brokers fds over the session bus and reaches
+# dev.lisaos.Inference1 the same way. It never carries model traffic —
+# that is the broker's job, and the broker is the only unit here that
+# may egress (rule 5, PLAN §4 dataflow rule 2).
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+
 [Install]
 WantedBy=default.target

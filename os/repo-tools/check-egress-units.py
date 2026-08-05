@@ -136,16 +136,14 @@ NOT_A_DAEMON = {
 # if an exempt unit gains the directive, so the exemption deletes itself
 # the moment the debt is paid. (Requiring the directive here instead
 # would mean shipping a red gate, which teaches everyone to ignore it.)
-EXEMPT = {
-    "xdg-desktop-portal-lisa.service": (
-        "Carries the per-user hardening subset (NoNewPrivileges, "
-        "LockPersonality, RestrictNamespaces, MemoryDenyWriteExecute, "
-        "SystemCallFilter) but no IPAddressDeny/RestrictAddressFamilies. "
-        "It is not one of rule 5's three named daemons and hardening it "
-        "is a change to os/packages/, not to this gate. Found by the "
-        "same sweep that found lisa-inferenced-dbus."
-    ),
-}
+# Empty, and that is the point. xdg-desktop-portal-lisa.service was the
+# one entry: it carried the per-user hardening subset but no
+# IPAddressDeny/RestrictAddressFamilies, on the component that IS the
+# trust boundary (#285). The exemption lived for exactly as long as it
+# took to harden the unit — the gate refused to pass with both the
+# directive and the exemption present, which is the self-retiring
+# mechanism working rather than a comment claiming it would.
+EXEMPT = {}
 
 # Rule 5 names three daemons. If discovery stops finding a unit for one
 # of them — deleted, renamed, moved out of the installers — the check
