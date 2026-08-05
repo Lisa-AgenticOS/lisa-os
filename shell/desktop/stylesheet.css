@@ -13,6 +13,50 @@
     padding: 0;
 }
 
+/* The prompt, filling the rest of the bar (ADR-0035 §2).
+ *
+ * It borrows the dash's own surface treatment rather than inventing a
+ * panel: the sketch draws ONE bar, and a field that looked like a
+ * different material sitting next to the icons would read as two
+ * things bolted together — which is exactly what §2 says this is not.
+ *
+ * The colours are dark.card / dark.text-primary / ink.ink-300 from
+ * branding/tokens.json. Shell chrome is dark over any wallpaper, so the
+ * dark ramp is the right one here and not a theme guess. */
+.lisa-dock-prompt {
+    background-color: rgba(48, 43, 40, 0.55);  /* dark.card #302B28 */
+    color: #FFF1E9;
+    caret-color: #FFF1E9;
+    selection-background-color: #6D45C9;
+    border: 1px solid transparent;
+    border-radius: 18px;
+    padding: 6px 14px;
+    margin: 4px 6px 4px 10px;
+    font-size: 11pt;
+}
+
+.lisa-dock-prompt StLabel.hint-text {
+    color: #9A8F88;  /* ink.ink-300 — present, and plainly not typed yet */
+}
+
+/* Focus is the only state this field has, and it has to be obvious:
+ * the dock holds a modal grab while it is focused, so a person needs to
+ * see WHY their next click went nowhere. */
+.lisa-dock-prompt:focus {
+    background-color: rgba(48, 43, 40, 0.85);
+    border: 1px solid #9B7BE8;  /* brand.violet-300 */
+}
+
+/* The wireframe's right-pointing triangle, terminating the field. */
+.lisa-dock-prompt-go {
+    icon-size: 16px;
+    color: #9A8F88;
+}
+
+.lisa-dock-prompt:focus .lisa-dock-prompt-go {
+    color: #9B7BE8;
+}
+
 /* The LISA wordmark, top-left — Activities' place and Activities' job.
  *
  * The SVG is 24x7, so the box keeps that ratio (48x14) rather than

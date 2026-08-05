@@ -12,7 +12,7 @@
 // something any session peer can emit, so this is a parser for hostile
 // input, not a settings reader.
 import {test, assert, assertEq, finish} from '../../testing/harness.js';
-import {badgeFor, desktopIdFromUri} from '../lib/badges.js';
+import {BadgeState, badgeFor, desktopIdFromUri, isEmpty} from '../lib/badges.js';
 
 test('an application:// uri yields the desktop id the dock keys on', () => {
     assertEq(desktopIdFromUri('application://app.lisaos.Mail.desktop'),
@@ -95,6 +95,95 @@ test('urgent is carried through as a flag, not as a count', () => {
     assertEq(badgeFor({urgent: true}).count, null);
     assertEq(badgeFor({}).urgent, false);
     assertEq(badgeFor({urgent: 'yes'}).urgent, false, 'only a real boolean counts');
+});
+
+// ---- BadgeState: what survives the Dash throwing its icons away -------
+
+test('a badge is remembered so a Dash rebuild can redraw it', () => {
+    // The Dash rebuilds its whole box when favourites change, when an
+    // app starts, when the icon size settles. Drawing on receipt and
+    // nothing else meant a badge lasted until the next unrelated app
+    // launched and then silently vanished — and Mail only emits on
+    // sync, so "unread mail, no badge" would be the normal state of the
+    // dock within minutes.
+    const state = new BadgeState();
+    const mail = badgeFor({count: 3, 'count-visible': true});
+    state.set('app.lisaos.Mail.desktop', mail);
+    assertEq(state.get('app.lisaos.Mail.desktop').label, '3');
+    assertEq(state.entries(), [['app.lisaos.Mail.desktop', mail]]);
+});
+
+test('clearing a badge forgets it rather than storing a blank', () => {
+    // "Nothing to report" is the resting state of every app on the
+    // machine. Storing it for each one fills the map with apps that
+    // have nothing to say.
+    const state = new BadgeState();
+    state.set('app.lisaos.Mail.desktop', badgeFor({count: 3, 'count-visible': true}));
+    state.set('app.lisaos.Mail.desktop', badgeFor({count: 0, 'count-visible': true}));
+    assertEq(state.get('app.lisaos.Mail.desktop'), null);
+    assertEq(state.entries(), []);
+    assertEq(state.size, 0);
+});
+
+test('progress alone is worth remembering, even with no count', () => {
+    // A download at 40% draws an arc and no number. `isEmpty` must not
+    // read that as nothing.
+    const state = new BadgeState();
+    const dl = badgeFor({progress: 0.4, 'progress-visible': true});
+    assert(!isEmpty(dl));
+    state.set('app.lisaos.Surfer.desktop', dl);
+    assertEq(state.size, 1);
+});
+
+test('the store is bounded, because the emitter list is not ours', () => {
+    // Any session peer may emit for any uri it likes. An unbounded map
+    // is a memory leak with a public trigger.
+    const state = new BadgeState(3);
+    for (let i = 0; i < 50; i++)
+        state.set(`spam${i}.desktop`, badgeFor({count: 1, 'count-visible': true}));
+    assertEq(state.size, 3);
+});
+
+test('re-publishing refreshes an app\'s place, so the quiet one is evicted', () => {
+    // Insertion order decides who goes when the bound is hit. A plain
+    // `Map.set` on an existing key does NOT move it, so without an
+    // explicit re-insert the app that keeps publishing is exactly the
+    // app that gets thrown out — which is Mail, badging every sync,
+    // losing its slot to something that spoke once and went quiet.
+    //
+    // An earlier version of this test looped "publish Mail, publish
+    // junk" and passed even with the re-insert removed: Mail was
+    // evicted mid-loop and re-added by its own next call, so the final
+    // state looked identical. It asserted nothing. This spells the
+    // ordering out instead.
+    const state = new BadgeState(3);
+    const badge = badgeFor({count: 1, 'count-visible': true});
+    state.set('a.desktop', badge);
+    state.set('quiet.desktop', badge);
+    state.set('c.desktop', badge);
+    // `a` speaks again; `quiet` is now the oldest thing in the store.
+    state.set('a.desktop', badgeFor({count: 2, 'count-visible': true}));
+    state.set('newcomer.desktop', badge);
+
+    assertEq(state.size, 3);
+    assert(state.get('a.desktop') !== null, 'the app that kept publishing stayed');
+    assertEq(state.get('a.desktop').label, '2', 'and kept its newest number');
+    assertEq(state.get('quiet.desktop'), null, 'the one that went quiet went');
+});
+
+test('a nameless app cannot occupy a slot', () => {
+    const state = new BadgeState();
+    state.set('', badgeFor({count: 1, 'count-visible': true}));
+    state.set(null, badgeFor({count: 1, 'count-visible': true}));
+    assertEq(state.size, 0);
+});
+
+test('clear() takes everything off, so disable() is a real undo', () => {
+    const state = new BadgeState();
+    state.set('a.desktop', badgeFor({count: 1, 'count-visible': true}));
+    state.set('b.desktop', badgeFor({count: 2, 'count-visible': true}));
+    state.clear();
+    assertEq(state.entries(), []);
 });
 
 finish('desktop/badges');

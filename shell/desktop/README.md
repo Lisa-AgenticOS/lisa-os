@@ -16,7 +16,12 @@ wireframe:
 3. **The top bar is reordered** to the sketch: the `LISA` wordmark at the
    left, the workspace switcher moved into the centre the clock vacates,
    and the clock moved right to sit with the quick settings.
-4. **The wordmark opens a menu** — **About Lisa OS**, the Lisa apps, and
+4. **The dock carries a prompt** (ADR-0035 §2): a permanent text field
+   filling the rest of the bar. Type a program name and it launches;
+   type anything else and it goes to the assistant.
+5. **Dock icons carry state** (#190): an app publishes a count over the
+   Unity LauncherEntry convention and the dock draws a badge.
+6. **The wordmark opens a menu** — **About Lisa OS**, the Lisa apps, and
    the session actions, including the **Log Out** GNOME hides on a
    single-user autologin machine (#139).
 
@@ -28,8 +33,14 @@ wireframe:
    now carries the version next to a Check for Updates button, so the
    menu had become a second, dumber copy of a live surface.
 
-The prompt half of ADR-0035's bar is **not** here yet. This extension
-owns the dock and the corner; the entry field is the next slice.
+What is **not** built of ADR-0035 §2: the launcher merge. §2 says
+`shell/launcher` stops being a separate window and becomes this bar's
+expanded state, "growing upward into results as you type", with
+Super+Space and Super+Shift+Space both landing here. None of that is
+here. The bar takes one line of text and routes it; it shows no
+results, ranks nothing, and neither chord is bound to it. Super+Space
+still opens the launcher (#255) and Super+Shift+Space still opens the
+overlay.
 
 ## How it works
 
@@ -70,6 +81,17 @@ replaces. An earlier version drew a second rounded panel around it,
 which read as two docks nested inside each other and would have drifted
 out of step with the theme the moment GNOME restyled the dash.
 
+**Placement is deferred to before-redraw.** `_reposition()` is called
+from `notify::width`, `notify::height` and `icon-size-changed`, all of
+which fire *during* the layout pass, and moving an actor from inside its
+own allocation made the shell log `Can't update stage views actor …
+LisaDock … needs an allocation` — the cosmetic warning #262 recorded
+and nobody attributed. A `BEFORE_REDRAW` later also coalesces the
+several signals one dash rebuild emits into the single placement they
+all want. Measured on gnome-shell 50.3, same harness, same provoked
+rebuilds: **33 warnings before, 0 after**, and 33 on the pre-change dock
+too — it was never the prompt's doing.
+
 **The show-apps button has to be wired by hand, and the press is an
 event — not a latch (#262).** GNOME connects its dash's button from the
 overview's own controls, so a `Dash` used outside the overview has a
@@ -95,6 +117,79 @@ the intent, which was wrong twice over:
 
 `checked` is now synced *from* the overview for appearance only, and
 nothing reads it back. A missed sync costs a lit pixel, never a press.
+
+### The prompt is an input surface and nothing else
+
+The entry sits to the right of the Dash in the same panel — one bar,
+which is ADR-0035 §2's actual claim ("Not a dock with a search box
+bolted on"). `lib/prompt.js` decides what a submission means, with no
+GNOME imports, and `tests/prompt.test.js` covers it.
+
+**Where a submission goes.** An exact match on an installed app's name
+or its desktop-id stem launches that app; everything else is handed to
+`dev.lisaos.Overlay1.UI.Summon`, which opens the assistant overlay with
+the query already submitted. Prefixes deliberately do **not** launch:
+until the bar grows a result list there is nothing on screen to
+disambiguate against, and opening a window the person never named is a
+worse failure than a sentence reaching the assistant, which they can
+read and ignore.
+
+**The dock never sees the answer.** It sends a string over D-Bus and
+forgets — no `dev.lisaos.Overlay1` client, no query id, no token
+stream, and no confirmation dialog. That last one is ADR-0035 §4, which
+says a dock owning the prompt must not also own consent; a surface that
+never receives a reply cannot grow one by accident. It is the third
+thin frontend on one headless backend (PLAN §5.7.1), not a second
+implementation of it.
+
+**Focus.** ADR-0035: *"A permanent text entry must never steal focus."*
+The only route in is a press that lands in the field. The dock is not
+registered with `Main.ctrlAltTabManager`, so the shell's focus chain
+never reaches it, and nothing focuses on hover. Escape is two-stage —
+it clears text first, and only an already-empty field hands the
+keyboard back.
+
+**A modal grab, and why.** An `St.Entry` in chrome receives keystrokes
+only while no window has focus; Mutter routes the keyboard to the
+focused window otherwise. So a press takes `Main.pushModal` on the dock
+(the same mechanism, for the same reason, as the assistant overlay) and
+submit/Escape/click-outside release it. Two consequences worth knowing:
+a click outside the dock is *consumed* to release the grab rather than
+delivered to what is under it, and the caret is dropped in an idle,
+because setting the key focus from inside the entry's own key handler
+does not stick.
+
+The last two paragraphs are not analysis — they are what
+`tests/dock-prompt-smoke.js` measured. Before it ran, the press handler
+was on `button-press-event`, which the entry's own `ClutterText`
+consumes for caret placement, so **no grab was ever taken**. In a
+headless shell with no windows the field still took text (nothing else
+had focus) and every visible symptom was absent; on a real desktop it
+would have been dead the moment any window was focused. The fix is
+`captured-event`, and the smoke asserts `stage.get_grab_actor()` now.
+
+### Dock badges: apps publish, we render (#190)
+
+`com.canonical.Unity.LauncherEntry.Update` — a convention we did not
+invent, which every toolkit and Electron app already emits, so a
+third-party app badges with **no Lisa-specific code** and our dock is
+just another consumer. `lib/badges.js` parses it as hostile input: a
+count is believed only if it is a real non-negative integer, an
+`app_uri` only if it is a plausible desktop id (so a peer cannot badge
+somebody else's icon), and `count-visible: false` is the only way to
+say "clear it" — a badge that cannot be dismissed is impossible by
+construction.
+
+`BadgeState` remembers what each app last said, bounded at 64 apps
+because the emitter list is not ours to bound. That store exists for
+one reason: **the Dash destroys its icon actors**. It reuses an item
+for an app that stays in the list, but unpin/repin — or a
+non-favourite whose last window closes and reopens — destroys the
+actor and builds a new one, taking the badge with it. `child-added` on
+the dash box re-applies. Actor references go stale; what an app said
+about itself does not.
+
+Mail is the first emitter (`apps/mail/lib/launcher.js`).
 
 ### The hot corner is GNOME's own HotCorner, mirrored
 
@@ -174,6 +269,29 @@ Verified against gnome-shell 50.3 on the reference hardware: red on the
 pre-fix wiring (`a press is not swallowed by a stale latch: expected 2,
 got 1`), green after.
 
+### The prompt and the badges are pressed, not reasoned about
+
+`tests/dock-prompt-smoke.js` + `tests/run-dock-prompt-smoke.sh` start a
+real throwaway `gnome-shell --headless`, load this extension, and drive
+it with a virtual pointer and a virtual keyboard:
+
+```
+shell/desktop/tests/run-dock-prompt-smoke.sh
+```
+
+It clicks the prompt, checks the dock took the keyboard grab, types,
+presses Return and asserts the call arrived at a stub owning the real
+`dev.lisaos.Overlay1.UI` name on the real bus; Escape clears then
+releases; a program name launches a program that leaves a file behind;
+a badge is drawn from a real signal, survives an icon being destroyed
+and recreated, and is cleared by `count: 0`. Any line the extension
+logs fails the run, because a `logError` inside a signal handler never
+reaches the transcript.
+
+Same isolation as the show-apps smoke — read that file's header before
+touching either. Verified on gnome-shell 50.3 on the reference iMac:
+17 assertions green, and red on the pre-fix wiring described above.
+
 ### State-dependent app icons
 
 An app that ships an icon named `<icon>-active` in hicolor gets it
@@ -206,10 +324,12 @@ the original method.
 
 ## How to extend it
 
-- **The prompt field** (ADR-0035 §2) belongs in the same panel as the
-  Dash, to the right of it, and should hand queries to
-  `dev.lisaos.Overlay1` — the launcher becomes this bar's expanded
-  state, not a second window.
+- **The results list** is the rest of ADR-0035 §2: the bar grows upward
+  as you type, `shell/launcher`'s ranking moves in, and both chords land
+  here. That change is where prefix matching becomes safe, because there
+  would finally be something on screen to disambiguate against.
+- **A new badge field** (progress arcs, `urgent`) is parsed and carried
+  by `lib/badges.js` already; what is missing is the drawing.
 - **Anything visual** goes in `stylesheet.css`; the Dash's own
   background is zeroed there so the outer panel does not double-frame.
 - **Anything with arithmetic in it** goes in `lib/layout.js` with a
@@ -230,11 +350,20 @@ the original method.
   question for hardware, not for review.
 - **No settings yet** — no auto-hide, no icon-size control, no choice of
   corner. ADR-0035 does not settle auto-hide either.
-- **The show-apps smoke check is not in CI.** `run-showapps-smoke.sh`
-  runs on demand on a Linux host and skips elsewhere; nothing in the
-  `justfile` or the workflows calls it yet, so it cannot fail a PR. It
-  needs a Linux CI job with a render node, which is a change outside
-  this directory.
+- **The prompt has no history, no completion and no results.** Up-arrow
+  does nothing; there is no way to see what an exact match would launch
+  before pressing Return.
+- **A click outside the dock is eaten while the prompt is focused.** The
+  modal grab has no way to forward it, which is the trade the assistant
+  overlay already makes. One click to leave the field, and the dock's own
+  icons keep working because they are inside the grab.
+- **Progress and `urgent` are parsed and not drawn.** An app emitting
+  either gets no arc and no highlight today.
+- **Neither smoke check is in CI.** `run-showapps-smoke.sh` and
+  `run-dock-prompt-smoke.sh` run on demand on a Linux host and skip
+  elsewhere; nothing in the `justfile` or the workflows calls them, so
+  they cannot fail a PR. Both need a Linux CI job with a render node,
+  which is a change outside this directory.
 - **Requires a session restart to load.** GNOME Shell only scans the
   extension directories at startup, and on Wayland there is no in-place
   restart, so a newly installed copy needs a logout/login. That is a

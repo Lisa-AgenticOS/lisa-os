@@ -75,3 +75,82 @@ export function badgeFor(props) {
         urgent: p.urgent === true,
     };
 }
+
+/// Does this badge draw anything at all?
+export function isEmpty(badge) {
+    return (badge?.label ?? null) === null && (badge?.progress ?? null) === null;
+}
+
+/// The most distinct apps one session will remember a badge for.
+///
+/// A bound, because the emitter list is not ours to bound: any session
+/// peer may emit for any uri it likes, and an unbounded map is a memory
+/// leak with a public trigger. 64 is far past a plausible dock and far
+/// short of a problem.
+const MAX_TRACKED = 64;
+
+/// The last thing each app published about itself.
+///
+/// # Why a store exists at all
+///
+/// Badges are drawn onto the Dash's icon actors, and **the Dash throws
+/// those actors away** — it rebuilds its whole box whenever favourites
+/// change, an app starts, or the icon size settles. Drawing on receipt
+/// and nothing else meant a badge survived until the next unrelated app
+/// launched, then silently vanished until the app happened to emit
+/// again. Mail emits on sync, so "unread mail, no badge" would have been
+/// the normal state of the dock within minutes.
+///
+/// The earlier comment against keeping a map — that it "would go stale
+/// silently" — was about the wrong thing. Actor references do go stale.
+/// *What an app said about itself* does not: it is the app's own truth
+/// and stays true until the app says otherwise. So this stores payloads,
+/// never actors, and the dock re-applies it after every rebuild.
+export class BadgeState {
+    constructor(max = MAX_TRACKED) {
+        this._max = max;
+        this._byId = new Map();
+    }
+
+    /// Record what `desktopId` published. An empty badge is a *removal*
+    /// rather than a stored blank: "nothing to report" is the resting
+    /// state of every app on the machine, and storing it for each one
+    /// would fill the map with apps that have nothing to say.
+    ///
+    /// Returns the badge, so a caller can record and draw in one line.
+    set(desktopId, badge) {
+        if (typeof desktopId !== 'string' || desktopId === '')
+            return badge;
+        if (isEmpty(badge)) {
+            this._byId.delete(desktopId);
+            return badge;
+        }
+        // Re-insert to keep Map's insertion order meaningful: the
+        // oldest key is the one evicted, so a peer spraying new uris
+        // cannot push out an app that keeps publishing.
+        this._byId.delete(desktopId);
+        this._byId.set(desktopId, badge);
+        while (this._byId.size > this._max)
+            this._byId.delete(this._byId.keys().next().value);
+        return badge;
+    }
+
+    /// What to draw for one app, or `null`.
+    get(desktopId) {
+        return this._byId.get(desktopId) ?? null;
+    }
+
+    /// Every badge to re-apply after the Dash rebuilds, as
+    /// `[desktopId, badge]` pairs.
+    entries() {
+        return [...this._byId.entries()];
+    }
+
+    get size() {
+        return this._byId.size;
+    }
+
+    clear() {
+        this._byId.clear();
+    }
+}

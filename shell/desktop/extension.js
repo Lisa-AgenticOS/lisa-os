@@ -19,8 +19,11 @@
 //    moved out of the centre to sit with the quick settings on the
 //    right.
 //
-// The prompt half of ADR-0035's bar is NOT here yet: this extension owns
-// the dock and the corner, and the entry field is the next slice.
+// 4. **The bar carries the prompt** (ADR-0035 §2): a permanent entry
+//    filling the rest of the bar, which launches a program when you
+//    type its name and hands anything else to the assistant. What is
+//    still missing from §2 is the launcher merge — this bar shows no
+//    results and neither chord lands here. See the README.
 //
 // Geometry lives in lib/layout.js and is unit-tested — barrier
 // directions are invisible until a pointer is pushed into a real corner,
@@ -42,9 +45,13 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.js';
 import {Dash} from 'resource:///org/gnome/shell/ui/dash.js';
 
-import {badgeFor, desktopIdFromUri} from './lib/badges.js';
+import {BadgeState, badgeFor, desktopIdFromUri} from './lib/badges.js';
 
 import {bottomRightBarriers, bottomRightOf, dockPlacement, showAppsAction} from './lib/layout.js';
+import {
+    ASSISTANT_BUS_NAME, ASSISTANT_METHOD, ASSISTANT_OBJECT_PATH, ASSISTANT_SIGNATURE,
+    keyAction, submission,
+} from './lib/prompt.js';
 import {activeIconName, candidatePaths, shouldUseActive, isTransientPeek} from './lib/stateicon.js';
 
 /// Gap between the dock and the bottom edge of the screen. The dock
@@ -205,6 +212,109 @@ function openSystemSettings() {
     }
 }
 
+/// How wide the prompt is, as a share of the monitor, and the bounds it
+/// may not leave. The sketch draws it as the widest thing in the bar —
+/// wider than the app icons put together — but a 4K panel would make a
+/// literal share of that comical, and a small laptop would leave no
+/// room to type.
+const PROMPT_SHARE = 0.26;
+const PROMPT_MIN = 260;
+const PROMPT_MAX = 560;
+
+/// The prompt half of ADR-0035 §2's bar: "One bar: apps on the left,
+/// the prompt filling the rest."
+///
+/// Emits `submitted` with the text and nothing else. It does not know
+/// what happens next — whether a program starts or the assistant
+/// answers is `lib/prompt.js`'s decision and the extension's call, and
+/// keeping that out of the widget is what keeps the widget a text
+/// field.
+const DockPrompt = GObject.registerClass({
+    Signals: {
+        'submitted': {param_types: [GObject.TYPE_STRING]},
+        // "Somebody clicked me and wants to type" / "I am done with the
+        // keyboard". The dock cannot take the keyboard on its own — that
+        // needs a modal grab, which belongs to the extension.
+        'focus-wanted': {},
+        'focus-dropped': {},
+    },
+}, class DockPrompt extends St.Entry {
+    _init() {
+        super._init({
+            style_class: 'lisa-dock-prompt',
+            // Both halves of what the bar is for, in the order ADR-0035
+            // argues them: asking is the new thing, launching is the
+            // familiar one.
+            hint_text: 'Ask Lisa, or type an app name',
+            can_focus: true,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        // The wireframe's right-pointing triangle, "terminating" the
+        // field. A secondary icon rather than a sibling button because
+        // it must sit INSIDE the rounded field, and because St.Entry
+        // already makes it clickable and reachable.
+        this.set_secondary_icon(new St.Icon({
+            style_class: 'lisa-dock-prompt-go',
+            icon_name: 'go-next-symbolic',
+        }));
+        this.connect('secondary-icon-clicked', () => this._submit());
+        this.clutter_text.connect('key-press-event',
+            (_text, event) => this._onKey(event));
+        // The ONLY route into the keyboard. Not hover, and not the
+        // shell's focus chain: the dock never registers with
+        // `Main.ctrlAltTabManager`, so tabbing between shell surfaces
+        // does not land here. ADR-0035: "A permanent text entry must
+        // never steal focus."
+        //
+        // `captured-event`, NOT `button-press-event`. The press lands on
+        // the entry's own `ClutterText`, which handles it to place the
+        // caret and stops it there — so a bubbling handler on the entry
+        // never runs. The capture phase walks DOWN to the target, so it
+        // sees the press whatever the target does with it afterwards.
+        //
+        // This is not a theoretical distinction. With the bubbling
+        // version the caret still moved and the field still took text
+        // *in a headless shell with no windows*, because with nothing
+        // focused the stage gets keys for free — and it would have been
+        // dead on a real desktop the moment any window had focus.
+        // `tests/dock-prompt-smoke.js` is what said so.
+        this.connect('captured-event', (_actor, event) => {
+            const type = event.type();
+            if (type === Clutter.EventType.BUTTON_PRESS ||
+                type === Clutter.EventType.TOUCH_BEGIN)
+                this.emit('focus-wanted');
+            return Clutter.EVENT_PROPAGATE;
+        });
+    }
+
+    _onKey(event) {
+        switch (keyAction(event.get_key_symbol(), {hasText: this.get_text() !== ''})) {
+        case 'submit':
+            this._submit();
+            return Clutter.EVENT_STOP;
+        case 'clear':
+            this.set_text('');
+            return Clutter.EVENT_STOP;
+        case 'release':
+            this.emit('focus-dropped');
+            return Clutter.EVENT_STOP;
+        default:
+            return Clutter.EVENT_PROPAGATE;
+        }
+    }
+
+    /// Cleared BEFORE the signal, not after: whatever handles this may
+    /// open a window and take the pointer with it, and coming back to
+    /// find your last question still sitting in the bar reads as a
+    /// prompt that did not go anywhere.
+    _submit() {
+        const text = this.get_text();
+        this.set_text('');
+        this.emit('submitted', text);
+    }
+});
+
 /// The always-visible dock: GNOME's Dash in a floating rounded panel.
 const LisaDock = GObject.registerClass(
 class LisaDock extends St.BoxLayout {
@@ -219,6 +329,21 @@ class LisaDock extends St.BoxLayout {
         // never off-duty.
         this.dash.show();
         this.add_child(this.dash);
+        // Apps on the left, the prompt filling the rest (ADR-0035 §2).
+        this.prompt = new DockPrompt();
+        this.add_child(this.prompt);
+    }
+
+    /// Re-draw every remembered badge (#190).
+    ///
+    /// Called on `child-added` because that is the exact moment a badge
+    /// is lost: the Dash throws its icon actors away and builds new ones
+    /// whenever favourites change or an app starts, and a badge painted
+    /// onto the old actor goes with it. The state is `BadgeState`, which
+    /// holds what apps SAID rather than what was drawn.
+    applyBadges(state) {
+        for (const [desktopId, badge] of state.entries())
+            this.setBadge(desktopId, badge);
     }
 
     /// Draw (or clear) a count badge on one dock item (#190).
@@ -265,7 +390,15 @@ class LisaDock extends St.BoxLayout {
     reposition(monitor) {
         if (!monitor)
             return;
-        this.dash.setMaxSize(Math.round(monitor.width * 0.9), DOCK_HEIGHT);
+        const promptWidth = Math.round(Math.min(PROMPT_MAX,
+            Math.max(PROMPT_MIN, monitor.width * PROMPT_SHARE)));
+        this.prompt.set_width(promptWidth);
+        // The Dash's budget is what is left of the bar, not the whole
+        // bar: handing it 90% of the monitor and then adding the prompt
+        // beside it is how a dock ends up wider than the screen it
+        // floats on.
+        this.dash.setMaxSize(
+            Math.max(0, Math.round(monitor.width * 0.9) - promptWidth), DOCK_HEIGHT);
         // Ask for the natural size only AFTER setMaxSize, or the first
         // frame is laid out against the previous monitor's budget.
         const [, width] = this.get_preferred_width(-1);
@@ -280,6 +413,21 @@ export default class LisaDesktopExtension extends Extension {
         this._signals = [];
 
         this._dock = new LisaDock();
+        // What each app last said about itself (#190). Kept because the
+        // Dash destroys and rebuilds its icons — see BadgeState.
+        this._badges = new BadgeState();
+        this._connect(this._dock.dash._box, 'child-added',
+            () => this._dock?.applyBadges(this._badges));
+        this._connect(this._dock.prompt, 'submitted', (_p, text) => this._submit(text));
+        this._connect(this._dock.prompt, 'focus-wanted', () => this._focusPrompt());
+        this._connect(this._dock.prompt, 'focus-dropped', () => this._releasePrompt());
+        // A fullscreen window takes the screen, and `trackFullscreen`
+        // hides the dock — but a modal grab held by a hidden actor is a
+        // keyboard nobody can get back.
+        this._connect(this._dock, 'notify::visible', () => {
+            if (!this._dock.visible)
+                this._releasePrompt();
+        });
         // Unity LauncherEntry (#190): the convention every toolkit
         // already emits, so a third-party app badges with no
         // Lisa-specific code. Subscribed with a null sender — any peer
@@ -301,7 +449,11 @@ export default class LisaDesktopExtension extends Extension {
                     const plain = {};
                     for (const [k, v] of Object.entries(props ?? {}))
                         plain[k] = v?.deepUnpack ? v.deepUnpack() : v;
-                    this._dock?.setBadge(id, badgeFor(plain));
+                    // Recorded first, drawn second. An app that emits
+                    // before its icon is in the dash — Mail publishing
+                    // on startup, before it is running — would otherwise
+                    // have said its piece to nobody.
+                    this._dock?.setBadge(id, this._badges.set(id, badgeFor(plain)));
                 } catch (e) {
                     // A malformed signal is a missing badge, never a
                     // broken shell.
@@ -418,6 +570,175 @@ export default class LisaDesktopExtension extends Extension {
         this._installStateIcons();
     }
 
+    // ---- the prompt (ADR-0035 §2) ---------------------------------------
+
+    /// Give the prompt the keyboard.
+    ///
+    /// A modal grab, because without one an `St.Entry` in chrome only
+    /// receives keystrokes while no window is focused: Mutter routes the
+    /// keyboard to the focused window otherwise, and the entry would
+    /// take text on an empty desktop and silently drop it everywhere
+    /// else. Same mechanism the assistant overlay uses, for the same
+    /// reason, in `shell/overlay-extension/extension.js`.
+    ///
+    /// The cost is the overlay's cost too, and worth naming: a grab eats
+    /// every pointer event on the screen, so the click that takes you
+    /// away from the prompt is consumed rather than delivered. One click
+    /// to leave, and the dock's own icons keep working because they are
+    /// inside the grabbed tree.
+    _focusPrompt() {
+        if (this._promptGrab)
+            return;
+        this._promptGrab = Main.pushModal(this._dock, {
+            actionMode: Shell.ActionMode.NORMAL,
+        });
+        // Decided by coordinates on the grab actor, not by event target:
+        // under a grab the propagation chain is truncated at the grabbed
+        // actor and outside presses are retargeted INTO it, so where the
+        // press really landed survives only as its screen position.
+        this._outsideClickId = this._dock.connect('captured-event', (actor, event) => {
+            const type = event.type();
+            if (type !== Clutter.EventType.BUTTON_PRESS &&
+                type !== Clutter.EventType.TOUCH_BEGIN)
+                return Clutter.EVENT_PROPAGATE;
+            const [x, y] = event.get_coords();
+            const [ax, ay] = this._dock.get_transformed_position();
+            const [aw, ah] = this._dock.get_transformed_size();
+            if (x < ax || x > ax + aw || y < ay || y > ay + ah) {
+                this._releasePrompt();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+        this._dock.prompt.grab_key_focus();
+    }
+
+    /// Hand the keyboard back to whatever had it.
+    _releasePrompt() {
+        if (this._outsideClickId) {
+            this._dock?.disconnect(this._outsideClickId);
+            this._outsideClickId = 0;
+        }
+        if (!this._promptGrab)
+            return;
+        Main.popModal(this._promptGrab);
+        this._promptGrab = null;
+        // The caret has to go too, or the entry keeps a blinking cursor
+        // it can no longer type into — a text field that looks like it
+        // is listening and is not.
+        //
+        // IN AN IDLE, and this is not defensive habit: every caller
+        // here is inside the entry's own key-press handler, and setting
+        // the focus to null from inside event delivery does not stick.
+        // Measured on the device (`tests/dock-prompt-smoke.js`) — the
+        // synchronous version left the caret in the dock after both
+        // Return and Escape, and the smoke run said so twice before
+        // this line existed.
+        this._focusDropId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._focusDropId = 0;
+            // Unless somebody has clicked back into the prompt in the
+            // meantime, in which case dropping focus would be taking
+            // the keyboard away from a person who just asked for it.
+            if (!this._promptGrab)
+                global.stage.set_key_focus(null);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    /// One submission from the bar.
+    ///
+    /// The keyboard goes back FIRST, whatever the text turns out to
+    /// mean: an app about to open wants the focus, and so does the
+    /// assistant layer about to appear. A grab still held while another
+    /// surface takes the screen is the one failure here that a person
+    /// cannot get out of with the mouse.
+    _submit(text) {
+        this._releasePrompt();
+        const route = submission(text, this._appCandidates(text));
+        switch (route.kind) {
+        case 'launch': {
+            const app = Shell.AppSystem.get_default().lookup_app(route.id);
+            // Between the lookup that produced the candidate and this
+            // line, an app can be uninstalled. Asking is a better
+            // failure than nothing happening.
+            if (app) {
+                app.activate();
+                return;
+            }
+            this._ask(route.prompt);
+            return;
+        }
+        case 'ask':
+            this._ask(route.prompt);
+            return;
+        default:
+        }
+    }
+
+    /// Installed apps that could answer to this text.
+    ///
+    /// `Gio.DesktopAppInfo.search` is GNOME's own index — the same one
+    /// the overview's app search uses — so an app is findable here
+    /// exactly when it is findable there. It returns ranked GROUPS;
+    /// only the first is
+    /// consulted, because a name that is an exact match is in the first
+    /// group by construction and the rest are progressively weaker
+    /// guesses that `lib/prompt.js` would refuse anyway.
+    _appCandidates(text) {
+        const term = String(text ?? '').trim();
+        if (term === '')
+            return [];
+        let groups = [];
+        try {
+            groups = Gio.DesktopAppInfo.search(term);
+        } catch (e) {
+            logError(e, 'lisa-desktop: app search failed');
+            return [];
+        }
+        const system = Shell.AppSystem.get_default();
+        const candidates = [];
+        for (const id of groups[0] ?? []) {
+            const app = system.lookup_app(id);
+            if (app)
+                candidates.push({id, name: app.get_name()});
+        }
+        return candidates;
+    }
+
+    /// Hand the text to the assistant and forget it.
+    ///
+    /// `dev.lisaos.Overlay1.UI.Summon` — the overlay extension's own
+    /// UI surface, which opens the layer and submits. The dock is a
+    /// thin frontend on the one headless backend (PLAN §5.7.1): it
+    /// runs no inference, holds no query id, renders no token, and
+    /// raises no confirmation dialog. That last one is ADR-0035 §4,
+    /// which says in as many words that a dock owning the prompt must
+    /// not also own consent.
+    ///
+    /// Asynchronous without exception. A synchronous D-Bus call here
+    /// would block the compositor — every window on the machine stops
+    /// redrawing — for as long as the assistant took to answer.
+    _ask(prompt) {
+        Gio.DBus.session.call(
+            ASSISTANT_BUS_NAME, ASSISTANT_OBJECT_PATH, ASSISTANT_BUS_NAME,
+            ASSISTANT_METHOD,
+            new GLib.Variant(ASSISTANT_SIGNATURE, [prompt, {}]),
+            null, Gio.DBusCallFlags.NONE, -1, null,
+            (connection, res) => {
+                try {
+                    connection.call_finish(res);
+                } catch (e) {
+                    // The overlay extension is not running, or its name
+                    // is not on the bus. Said out loud rather than
+                    // logged: a prompt that swallows what you typed and
+                    // shows nothing is the worst version of this.
+                    logError(e, 'lisa-desktop: could not reach the assistant');
+                    Main.notify('Lisa',
+                        'The assistant is not available — the overlay extension is not running.');
+                }
+            });
+    }
+
     /// State-dependent app icons (#190, lib/stateicon.js): an app that
     /// ships `<icon>-active` in hicolor gets it drawn while RUNNING —
     /// Surfer meditates on the beach until it opens, then it surfs.
@@ -482,8 +803,28 @@ export default class LisaDesktopExtension extends Extension {
         }
         this._variantCache = null;
         this._restorePanel();
+        // BEFORE the dock is destroyed and before its signals go: a
+        // modal grab outlives the actor that took it, and a grab nobody
+        // holds a reference to is a session with no keyboard.
+        this._releasePrompt();
+        // AFTER it, because releasing schedules the idle that drops the
+        // caret. Cancelled the other way round, this would remove a
+        // source that had not been created yet and leave the one that
+        // had to run in a disabled extension.
+        if (this._focusDropId) {
+            GLib.source_remove(this._focusDropId);
+            this._focusDropId = 0;
+        }
+        // A pending later holds a reference to a dock that is about to
+        // be destroyed, and runs after `disable()` returns.
+        if (this._repositionLater) {
+            global.compositor.get_laters().remove(this._repositionLater);
+            this._repositionLater = 0;
+        }
         this._signals?.forEach(([obj, id]) => obj.disconnect(id));
         this._signals = null;
+        this._badges?.clear();
+        this._badges = null;
 
         if (this._badgeSub) {
             Gio.DBus.session.signal_unsubscribe(this._badgeSub);
@@ -504,8 +845,33 @@ export default class LisaDesktopExtension extends Extension {
         this._signals.push([object, object.connect(signal, callback)]);
     }
 
+    /// Place the dock — on the next before-redraw, never inline.
+    ///
+    /// Every caller is a `notify::width` / `notify::height` /
+    /// `icon-size-changed` handler, and all three fire DURING the layout
+    /// pass. Moving an actor from inside its own allocation is what
+    /// produces
+    ///
+    ///     Can't update stage views actor … LisaDock … needs an
+    ///     allocation
+    ///
+    /// which the shell logged 33 times per dash rebuild — the cosmetic
+    /// warning #262 recorded and nobody attributed. Measured with the
+    /// dock before this change and after, same harness, same provoked
+    /// rebuilds: 33 → 0.
+    ///
+    /// Coalescing is the point as much as the deferral: a dash rebuild
+    /// emits several of those signals in one pass and they all want the
+    /// same single placement.
     _reposition() {
-        this._dock?.reposition(Main.layoutManager.primaryMonitor);
+        if (this._repositionLater)
+            return;
+        this._repositionLater = global.compositor.get_laters().add(
+            Meta.LaterType.BEFORE_REDRAW, () => {
+                this._repositionLater = 0;
+                this._dock?.reposition(Main.layoutManager.primaryMonitor);
+                return GLib.SOURCE_REMOVE;
+            });
     }
 
     // ---- the top bar ---------------------------------------------------

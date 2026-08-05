@@ -51,6 +51,10 @@ import {
 import {decodeSubject, messageView} from './lib/message.js';
 import {classify, grouped, unreadCount} from './lib/smart.js';
 import {actionsFor, flagChange, movePaths, moveTo} from './lib/actions.js';
+import {
+    LAUNCHER_IFACE, LAUNCHER_PATH, LAUNCHER_SIGNAL, LAUNCHER_SIGNATURE,
+    PROP_TYPES, inboxUnread, launcherUpdate,
+} from './lib/launcher.js';
 import {agentMayRead, parseMessageId, planFor} from './lib/agent-actions.js';
 import {buildMessage, forwardFields, messageIdFor, replyFields} from './lib/compose.js';
 import {msmtpArgv, sendOutcome, sentFilename} from './lib/send.js';
@@ -1395,6 +1399,18 @@ function runAction(msg, action) {
         logError(e, `mail: ${action.id} failed`);
         return;
     }
+    // THE BADGE CLEARS WHEN THE MAIL IS READ (#190's acceptance).
+    //
+    // It did not. `publishUnread` was called from `reloadFolders`, and
+    // marking a message read calls `loadFolder` — a different, cheaper
+    // path that redraws one folder's list. So the number went up on
+    // every sync and came down on nothing short of switching accounts.
+    //
+    // Here rather than inside a branch, and BEFORE the `stay` return
+    // below: a flag change and a move both change what INBOX holds, and
+    // the reading-pane preference is about where the cursor goes, which
+    // is no business of the dock's.
+    publishUnread();
     // What happens next is a preference now (#249), defaulting to what
     // this always did: reload, which re-opens whatever is at the top —
     // the message after the one just filed. Clearing the pane instead
@@ -1542,39 +1558,32 @@ function reloadFolders() {
 /// rather than of something we invented. Emitting it also means Mail
 /// badges on any desktop that reads it, not only ours.
 ///
-/// The number is INBOX unread across every account, because that is
-/// what a dock badge means to a person: "mail is waiting". Sent,
-/// Drafts and Archive are not waiting for anybody, and Spam/Trash are
-/// excluded for the reason lib/rail.js excludes them from its badge — a
-/// permanent 912 teaches people to ignore the badge.
+/// What to count and what to send are `lib/launcher.js`, where they are
+/// tested without a Maildir and without a bus. This function is the two
+/// things that need a live session: the store, and the emit.
 ///
 /// Best effort by construction: a failed emit is a missing badge, never
 /// a broken mail app, so it is logged and swallowed.
 function publishUnread() {
-    let count = 0;
+    let update;
     try {
-        for (const account of store?.accounts ?? [])
-            count += store.counts(account.root, 'INBOX').unread ?? 0;
+        update = launcherUpdate(APP_ID, {
+            count: inboxUnread(store?.accounts ?? [],
+                (root, folder) => store.counts(root, folder)),
+        });
     } catch (e) {
         logError(e, 'mail: could not count unread for the dock badge');
         return;
     }
+    if (!update)
+        return;
     try {
+        const props = {};
+        for (const [key, value] of Object.entries(update.props))
+            props[key] = new GLib.Variant(PROP_TYPES[key], value);
         Gio.DBus.session.emit_signal(
-            null,
-            '/com/canonical/Unity/LauncherEntry',
-            'com.canonical.Unity.LauncherEntry',
-            'Update',
-            new GLib.Variant('(sa{sv})', [
-                `application://${APP_ID}.desktop`,
-                {
-                    // `count-visible` false is how the convention says
-                    // "clear it"; sending count 0 with visible true
-                    // would draw a badge reading nothing.
-                    'count': new GLib.Variant('x', count),
-                    'count-visible': new GLib.Variant('b', count > 0),
-                },
-            ]));
+            null, LAUNCHER_PATH, LAUNCHER_IFACE, LAUNCHER_SIGNAL,
+            new GLib.Variant(LAUNCHER_SIGNATURE, [update.uri, props]));
     } catch (e) {
         logError(e, 'mail: could not publish the dock badge');
     }
@@ -3024,6 +3033,11 @@ function writeAction(tool, args = {}) {
     // and a row remembering the old one fails its next action.
     if (currentFolder === parsed.folder || plan.toFolder === currentFolder)
         loadFolder(currentFolder);
+    // And so is the dock (#190). An agent marking mail read is still
+    // mail being read; a badge that only the toolbar can clear would
+    // make "Lisa, archive that" leave a number on the icon for
+    // something that is no longer there.
+    publishUnread();
     // The id an agent can USE next, not the raw filename. Returning
     // `folder/1785529483.3297_1.lisa,U=8407:2,FPS` would hand back a
     // string that the very next lookup rejects — the same mismatch
