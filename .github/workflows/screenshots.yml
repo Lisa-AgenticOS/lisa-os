@@ -2,8 +2,10 @@
 # the Track I image the same way nightly's image job does, then boots it
 # GRAPHICALLY in QEMU (OVMF + systemd-boot — the REAL boot flow, splash
 # included) and captures QMP screendumps of the framebuffer: Plymouth
-# splash frames early, the GNOME desktop once the session is up, and —
-# best-effort — the Assistant app, driven over ssh. Output: the
+# splash frames early, the desktop (Lisa Desktop — the image installs
+# lisa-desktop-shell in place of stock gnome-shell, ADR-0039 step 4)
+# once the session is up, and — best-effort — the Assistant app, driven
+# over ssh. Output: the
 # `lisa-screenshots` artifact (PNGs + index) for the websites and a
 # SPLASH: PRESENT/ABSENT verdict (informational, not a gate yet).
 #
@@ -11,9 +13,9 @@
 # download across workflows needs a run id + token plumbing and goes
 # stale after 7 days; the rebuild is the same three commands nightly
 # runs and always screenshots HEAD. The Assistant is NOT in this image
-# (only the release build folds lisa-shell in), but the GNOME set ships
-# gjs/GTK4/libadwaita/libsoup3 — so the interpreted shell tree from the
-# checkout is pushed in over ssh and launched with gjs directly.
+# (only the release build folds lisa-shell in), but the platform set
+# ships gjs/GTK4/libadwaita/libsoup3 — so the interpreted shell tree
+# from the checkout is pushed in over ssh and launched with gjs directly.
 
 name: screenshots
 
@@ -55,7 +57,26 @@ jobs:
             -v "$PWD":/src -w /src docker.io/library/archlinux:latest bash -ec '
               # pacman >= 7 sandbox cannot apply inside the container
               sed -i "/^\[options\]/a DisableSandbox" /etc/pacman.conf
-              pacman -Syu --noconfirm mkosi
+              # Trust the [lisa] key in this container AND in the keyring
+              # mkosi builds for the image (#270) — the image installs
+              # lisa-desktop-shell from the hosted index (ADR-0039 step
+              # 4), so a build without the anchor dies on "key … is
+              # unknown". This block mirrors nightly.yml, where the full
+              # story is told; this lane went red the day step 4 landed
+              # because the fix was applied to nightly and release only.
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman-key --add /src/os/packages/lisa-keyring/lisa-packages.pub
+              pacman-key --lsign-key 737240D11D28E109A474A8E5827E27417AF5982B
+              KEYS=/src/os/mkosi/mkosi.pkgmngr/usr/share/pacman/keyrings
+              mkdir -p "$KEYS"
+              gpg --dearmor < /src/os/packages/lisa-keyring/lisa-packages.pub > "$KEYS/lisa.gpg"
+              printf "%s:4:\n" 737240D11D28E109A474A8E5827E27417AF5982B > "$KEYS/lisa-trusted"
+              : > "$KEYS/lisa-revoked"
+              pacman -Syu --noconfirm
+              # mkosi pinned from the permanent Arch archive (#271), the
+              # same 26-5 every other lane pins — bump together.
+              pacman -U --noconfirm https://archive.archlinux.org/packages/m/mkosi/mkosi-26-5-any.pkg.tar.zst
               mkosi --directory os/mkosi summary
               mkosi --directory os/mkosi build
             '
@@ -150,11 +171,20 @@ jobs:
               || echo "::warning::early frame $n failed"
             n=$((n+1)); sleep 10
           done
+          # A run where EVERY early dump failed cannot answer the splash
+          # question — its primary product. Without this floor such a run
+          # sails on and prints SPLASH: ABSENT, indistinguishable from
+          # "captured fine, and the frames were black".
+          if ! ls shots/shot-*.ppm >/dev/null 2>&1; then
+            echo "::error::every early-boot screendump failed — QMP or the display device is dead, the splash verdict would be vacuous"
+            python3 qmp.py quit || true
+            exit 1
+          fi
           echo "early-boot frames captured"
 
           # Phase 2 — wait for the desktop. First sshd (proves boot +
-          # network), then the GNOME Wayland socket of the autologin
-          # session (proves the shell is up). Generous budgets: TCG.
+          # network), then the Wayland socket of the autologin session
+          # (proves the shell — Lisa Desktop — is up). Generous budgets: TCG.
           ssh_guest() {
             sshpass -p lisa ssh -p 2222 -o StrictHostKeyChecking=no \
               -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
@@ -179,7 +209,7 @@ jobs:
             sleep 15
           done
           if [ -z "$session" ]; then
-            echo "::error::GNOME session socket (wayland-0) never appeared for the autologin user"
+            echo "::error::session Wayland socket (wayland-0) never appeared for the autologin user — Lisa Desktop did not come up"
             python3 qmp.py screendump "$PWD/shots/no-session.ppm" || true
             python3 qmp.py quit || true
             exit 1
@@ -277,8 +307,12 @@ jobs:
             echo
             echo "### Which DRM driver bound, and when"
             echo '```'
-            grep -iE "virtio_gpu|virtio-gpu|simpledrm|\[drm\]|plymouth" serial.log \
-              | head -40 || echo "(no drm/plymouth lines in serial.log)"
+            # The || must react to grep finding nothing, not to head (head
+            # exits 0 on empty input, so `grep | head || echo` can never
+            # print the fallback and an empty evidence block looks like a
+            # rendering glitch instead of the finding it is).
+            drm=$(grep -iE "virtio_gpu|virtio-gpu|simpledrm|\[drm\]|plymouth" serial.log | head -40)
+            if [ -n "$drm" ]; then echo "$drm"; else echo "(no drm/plymouth lines in serial.log)"; fi
             echo '```'
             echo
             echo "### Early frames"
