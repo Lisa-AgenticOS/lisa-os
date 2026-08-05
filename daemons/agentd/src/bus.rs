@@ -60,16 +60,17 @@ pub enum BusError {
     /// caller, so a sweep cannot use the error to map which ids exist.
     #[error("no pending call {0} (already answered, or expired and collected)")]
     NotYours(u64),
-    /// The requester tried to approve its OWN destructive call while a
-    /// desktop consent surface was running (#135). Unlike `NotYours`
-    /// this is safe to distinguish: the caller already knows the call
-    /// exists — it parked it — so the message is no oracle, and a
-    /// silent refusal here would look like a bug rather than a policy.
-    #[error(
-        "call {0} is destructive-tier: only the desktop consent surface \
-         may approve it — the peer that asked for it may only withdraw it"
-    )]
-    NeedsConsentSurface(u64),
+    /// The requester tried to approve its OWN parked call and may not
+    /// (#135, #216). Unlike `NotYours` this is safe to distinguish: the
+    /// caller already knows the call exists — it parked it — so the
+    /// message is no oracle, and a silent refusal here would look like
+    /// a bug rather than a policy.
+    ///
+    /// Carries the rule id `lisa_guard::judge_approval` emitted, so the
+    /// Ledger entry and the D-Bus error name the same thing a person
+    /// can look up in `lisa guard list`.
+    #[error("call {0} may not be approved by the peer that asked for it ({1}): {2}")]
+    NeedsConsentSurface(u64, &'static str, &'static str),
 }
 
 impl BusError {
@@ -77,7 +78,15 @@ impl BusError {
     /// this one"? The Ledger records those and nothing else, so a
     /// mistyped call id cannot be turned into an audit-trail flood.
     fn is_consent_refusal(&self) -> bool {
-        matches!(self, BusError::NeedsConsentSurface(_))
+        matches!(self, BusError::NeedsConsentSurface(..))
+    }
+
+    /// The guard rule behind this refusal, when there is one.
+    pub fn rule(&self) -> Option<&'static str> {
+        match self {
+            BusError::NeedsConsentSurface(_, rule, _) => Some(rule),
+            _ => None,
+        }
     }
 }
 
@@ -207,6 +216,17 @@ pub struct CallRequest {
     /// message claims (ADR-0033, issue #93). `actor` above is asserted
     /// and therefore only a label; this is identity.
     pub caller: PeerId,
+    /// Does the calling program host a model? Derived from
+    /// `/proc/<pid>/exe` in `dbus.rs`, never from anything in the
+    /// message — a process cannot change the executable it is running.
+    ///
+    /// It is recorded on the parked call and re-read when somebody
+    /// tries to answer it, because that is the moment it decides
+    /// something: a model host may never approve a call it made
+    /// (`lisa_guard::judge_approval`, `consent.self_approval`, #216).
+    /// Answering from what the ANSWERER is at confirm time would be the
+    /// wrong question — the property belongs to whoever asked.
+    pub requester_hosts_a_model: bool,
 }
 
 /// What happened to a request (or a confirmation).
@@ -707,9 +727,19 @@ impl AgentBus {
     ///   human's dialog whenever one is running. The requester cannot
     ///   approve its own.
     /// - **Approval** of a `Chip` (write) call may also come from the
-    ///   requester: the chip is the app's own inline affordance, and
-    ///   routing every write through a modal would train people to click
-    ///   through it, which is how a confirmation stops being one.
+    ///   requester *when the requester is not running a model*: the chip
+    ///   is the app's own inline affordance, and routing every write
+    ///   through a modal would train people to click through it, which
+    ///   is how a confirmation stops being one.
+    /// - **Approval by a model host, at any tier**, belongs to the
+    ///   dialog and only the dialog (#216). This is the rule that makes
+    ///   a write-tier tool safe to hand an agent loop at all.
+    ///
+    /// The decision itself lives in [`lisa_guard::judge_approval`] — a
+    /// pure function over facts the transport supplied — so it can be
+    /// tested exhaustively and carries a rule id a person can look up.
+    /// What stays here is the translation: pending state and peer
+    /// identity in, `BusError` out.
     ///
     /// Returns the error *constructor* so the id is applied at the call
     /// site, where the lock is held.
@@ -717,42 +747,42 @@ impl AgentBus {
         p: &Pending,
         approve: bool,
         answerer: &Answerer,
-    ) -> Result<(), fn(u64) -> BusError> {
-        let is_requester = p.owner.allows(&answerer.peer);
+    ) -> Result<(), Box<dyn Fn(u64) -> BusError>> {
         // Owning the consent name counts as oversight only when you are
         // NOT the peer that asked (#145). The overlay backend both hosts
-        // the model and owns `dev.lisaos.Overlay1`, so for a call it
-        // originates it arrived here as `Surface` — and `Surface` was
+        // the model and owned a surface name, so for a call it
+        // originated it arrived here as `Surface` — and `Surface` was
         // treated as proof that somebody else had looked. It was the same
         // process wearing two hats, and the effect was that the model
-        // approved its own destructive calls.
-        //
-        // Independence is a property of the PAIR (requester, answerer),
-        // not of either alone, so it is computed as one.
-        let is_independent_surface = answerer.consent == ConsentRole::Surface && !is_requester;
-        if !is_requester && !is_independent_surface {
-            return Err(BusError::NotYours);
+        // approved its own destructive calls. Independence is therefore
+        // a property of the PAIR, and `judge_approval` computes it.
+        let approval = lisa_guard::Approval {
+            approve,
+            is_requester: p.owner.allows(&answerer.peer),
+            owns_consent_name: answerer.consent == ConsentRole::Surface,
+            // From the requester's `/proc/<pid>/exe` at park time, not
+            // from the answerer and not from any message.
+            requester_hosts_a_model: p.req.requester_hosts_a_model,
+            class: match p.resolution.confirmation {
+                Confirmation::Modal => lisa_guard::ConfirmClass::Modal,
+                // Silent never parks, so it cannot be answered; folding
+                // it in with Chip is the conservative reading.
+                _ => lisa_guard::ConfirmClass::Chip,
+            },
+            // p2p is one connection: requester and answerer are the same
+            // peer by construction and there is no separation to
+            // enforce. `main.rs` never builds one; agentd's own tests
+            // do. Decided by the TRANSPORT, which a caller cannot
+            // influence (ADR-0033).
+            brokered: answerer.consent != ConsentRole::NoBroker,
+        };
+        match lisa_guard::judge_approval(&approval) {
+            lisa_guard::ApprovalVerdict::Allow => Ok(()),
+            lisa_guard::ApprovalVerdict::NotYours => Err(Box::new(BusError::NotYours)),
+            lisa_guard::ApprovalVerdict::Refused { rule, reason } => Err(Box::new(move |id| {
+                BusError::NeedsConsentSurface(id, rule, reason)
+            })),
         }
-        if approve
-            && p.resolution.confirmation == Confirmation::Modal
-            && !is_independent_surface
-            // The one exemption is a transport with no broker at all:
-            // p2p is one connection, so requester and answerer are the
-            // same peer by construction and there is no separation to
-            // enforce. `main.rs` never builds one; agentd's own tests do.
-            //
-            // It used to be `Absent` — "nobody owns the consent name" —
-            // and that is #244: on the reference iMac nothing ever
-            // started the surface, so a real session bus took the
-            // headless exemption and the requesting connection approved
-            // its own destructive call. "No dialog is running" is now a
-            // reason to REFUSE, which is the whole point of having one.
-            && answerer.consent != ConsentRole::NoBroker
-        {
-            return Err(BusError::NeedsConsentSurface);
-        }
-        // The Ledger records when no consent surface was involved.
-        Ok(())
     }
 
     pub fn confirm(
@@ -780,19 +810,25 @@ impl AgentBus {
                     // a Confirm loop into a Ledger flood; `NotYours` is
                     // deliberately not recorded, since it is the one
                     // refusal that must reveal nothing to its caller.
-                    let refusal = (e(call_id).is_consent_refusal()
+                    let err = e(call_id);
+                    let rule = err.rule();
+                    let refusal = (err.is_consent_refusal()
                         && !std::mem::replace(&mut p.refusal_ledgered, true))
                     .then(|| (p.req.clone(), p.start_ref));
                     drop(pending);
                     if let Some((req, start_ref)) = refusal {
+                        // The rule id first, because that is the token a
+                        // person can look up (`lisa guard list`) and the
+                        // one worth grepping the Ledger for.
                         let reason = format!(
-                            "{} may not approve its own destructive call: {}",
+                            "{}: {} may not approve its own call: {}",
+                            rule.unwrap_or("refused"),
                             answerer.peer,
                             answerer.consent.why_not_the_surface()
                         );
                         self.ledger_deny(&req, Some(start_ref), "refused", &reason)?;
                     }
-                    return Err(e(call_id));
+                    return Err(err);
                 }
                 Ok(()) => pending.remove(&call_id).expect("just checked"),
             }
@@ -1270,6 +1306,7 @@ mod tests {
             tool: tool.into(),
             args,
             chain,
+            requester_hosts_a_model: false,
             caller: lisa_peer::PeerId::Direct,
         }
     }
@@ -1687,6 +1724,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1725,6 +1763,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1742,7 +1781,7 @@ mod tests {
             .bus
             .confirm(call_id, true, &Answerer::ordinary(requester.clone()))
             .expect_err("the requester self-approved a destructive call");
-        assert!(matches!(err, BusError::NeedsConsentSurface(id) if id == call_id));
+        assert!(matches!(err, BusError::NeedsConsentSurface(id, ..) if id == call_id));
         assert_eq!(f.dispatcher.dispatched(), 0);
 
         // Refused, not consumed: the call is still there for the human.
@@ -1768,6 +1807,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1797,6 +1837,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1826,6 +1867,7 @@ mod tests {
             let Outcome::AwaitingConfirmation { call_id, .. } = f
                 .bus
                 .request(CallRequest {
+                    requester_hosts_a_model: false,
                     caller: lisa_peer::PeerId::Bus(":1.10".into()),
                     ..call(
                         "org.gnome.Calendar",
@@ -1868,6 +1910,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: overlay.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1884,7 +1927,7 @@ mod tests {
             .bus
             .confirm(call_id, true, &Answerer::surface(overlay))
             .expect_err("the model host approved its own destructive call");
-        assert!(matches!(err, BusError::NeedsConsentSurface(_)), "{err:?}");
+        assert!(matches!(err, BusError::NeedsConsentSurface(..)), "{err:?}");
         assert_eq!(f.dispatcher.dispatched(), 0, "it must not have run");
     }
 
@@ -1899,6 +1942,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: requester,
                 ..call(
                     "org.gnome.Calendar",
@@ -1947,6 +1991,7 @@ mod tests {
             let Outcome::AwaitingConfirmation { call_id, .. } = f
                 .bus
                 .request(CallRequest {
+                    requester_hosts_a_model: false,
                     caller: cli.clone(),
                     ..call(
                         "org.gnome.Calendar",
@@ -1991,6 +2036,7 @@ mod tests {
             let Outcome::AwaitingConfirmation { call_id, .. } = f
                 .bus
                 .request(CallRequest {
+                    requester_hosts_a_model: false,
                     caller: lisa_peer::PeerId::Bus(":1.10".into()),
                     ..call("org.gnome.Calendar", tool, args, user())
                 })
@@ -2034,6 +2080,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -2051,7 +2098,7 @@ mod tests {
             .bus
             .confirm(call_id, true, &Answerer::alone(requester.clone()))
             .expect_err("the requester approved its own call with no surface running");
-        assert!(matches!(err, BusError::NeedsConsentSurface(id) if id == call_id));
+        assert!(matches!(err, BusError::NeedsConsentSurface(id, ..) if id == call_id));
         assert_eq!(f.dispatcher.dispatched(), 0, "it ran anyway");
 
         let refusal = f
@@ -2134,6 +2181,7 @@ mod tests {
             let Outcome::AwaitingConfirmation { call_id, .. } = f
                 .bus
                 .request(CallRequest {
+                    requester_hosts_a_model: false,
                     caller: requester.clone(),
                     ..call(
                         "org.gnome.Calendar",
@@ -2148,7 +2196,7 @@ mod tests {
             };
             let err = f.bus.confirm(call_id, true, &answerer).expect_err(what);
             assert!(
-                matches!(err, BusError::NeedsConsentSurface(_)),
+                matches!(err, BusError::NeedsConsentSurface(..)),
                 "{what}: {err:?}"
             );
             assert_eq!(f.dispatcher.dispatched(), 0, "{what}: it ran anyway");
@@ -2168,6 +2216,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -2240,6 +2289,7 @@ mod tests {
         let flooder = lisa_peer::PeerId::Bus(":1.66".into());
         let park = |caller: &lisa_peer::PeerId| {
             f.bus.request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: caller.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -2584,6 +2634,7 @@ mod tests {
         let Outcome::AwaitingConfirmation { call_id, .. } = f
             .bus
             .request(CallRequest {
+                requester_hosts_a_model: false,
                 caller: author.clone(),
                 ..call(
                     "org.gnome.Calendar",

@@ -9,7 +9,15 @@ repository.workspace = true
 lisa-agentd = { version = "0.1.0", path = "../../daemons/agentd" }
 lisa-peer = { version = "0.1.0", path = "../../libs/lisa-peer" }
 lisa-ledger = { version = "0.1.0", path = "../../libs/lisa-ledger" }
+# The gate asserts WHICH rule refused a self-approval, not merely that
+# one did — see a_model_host_cannot_confirm_its_way_through_the_corpus.
+lisa-guard = { version = "0.1.0", path = "../../libs/lisa-guard" }
 serde_json = "1.0.151"
 
 [dev-dependencies]
+# The end-to-end write-tier test drives a REAL agent loop into a real
+# bus (#216). Dev-only: nothing in the shipped suite depends on the
+# harness, and the corpus stays runnable without it.
+bus-tools = { version = "0.1.0", path = "../../libs/bus-tools" }
+forge-harness = { version = "0.1.0", path = "../../libs/forge-harness" }
 tempfile = "3.27.0"

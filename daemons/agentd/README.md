@@ -118,26 +118,62 @@ sender:
 
 | answering peer | withdraw (`false`) | approve a chip | approve a modal |
 |---|---|---|---|
-| the requester | yes, always | yes — the app's own inline affordance | **no** |
+| the requester, **hosting a model** | yes, always | **no** | **no** |
+| the requester, any other program | yes, always | yes — the app's own inline affordance | **no** |
 | the consent surface (a different peer) | yes | yes | yes |
 | anyone else | no (`NotYours`) | no | no |
 
-The requester may never approve its own destructive call, whatever the
-consent name says and whether or not anything owns it. The single
-exemption is a point-to-point connection, where there is no broker to
-ask and requester and answerer are the same peer by construction; the
-daemon's own tests use that transport and `main.rs` never builds one.
+The decision is [`lisa_guard::judge_approval`] — a pure function over
+facts the transport supplied, so it is testable exhaustively and every
+refusal carries a rule id a person can look up (`lisa guard list`):
 
-Before a modal parks, agentd **starts** the consent surface if nothing
-owns the name (`StartServiceByName`, which — unlike `GetNameOwner` —
-activates, and returns only once the name is owned, so the signal cannot
-outrun its listener). Until #244 nothing ever made that call: the surface
-shipped activatable and never once ran, every confirmation resolved to
-"no surface exists", and that resolved in turn to "so the requester
-answers its own call".
+- **`consent.self_approval`** — *the process running the model may never
+  approve a call it made*, at any tier, broker or not. This is what makes
+  a write-tier tool safe to hand an agent loop at all (#216). Independence
+  is a property of the pair (requester, answerer), so owning the consent
+  name does not help a peer that also asked: that was #145, one process
+  wearing two hats.
+- **`consent.no_surface`** — a modal with no independent dialog to answer
+  it (#244).
+
+"Hosting a model" is not a claim. It is `/proc/<pid>/exe` compared against
+`MODEL_HOSTS` in `src/dbus.rs` — currently `/usr/bin/lisa-harnessd` — the
+same peer-credential authority `PeerId` rests on, symlink-resolved on both
+sides (#215). The list does two things at once and deliberately: a program
+on it may assert `user` provenance (it derives the class from *its own*
+caller's transport identity, ADR-0036 §1), and it loses the right to
+answer its own confirmation. Granting the first without taking the second
+is #145 with a different process name.
+
+The remaining exemption for `consent.no_surface` is a point-to-point
+connection, where there is no broker to ask and requester and answerer
+are the same peer by construction; the daemon's own tests use that
+transport and `main.rs` never builds one. `consent.self_approval` has no
+such exemption.
+
+Before a call parks that **only the surface may answer** — a modal, or
+anything a model host asked for — agentd **starts** the consent surface
+if nothing owns the name (`StartServiceByName`, which unlike
+`GetNameOwner` activates, and returns only once the name is owned, so the
+signal cannot outrun its listener). Until #244 nothing ever made that
+call: the surface shipped activatable and never once ran, every
+confirmation resolved to "no surface exists", and that resolved in turn
+to "so the requester answers its own call".
 
 A refused approval is recorded as `tool.deny`/`refused`, once per parked
-call, naming the peer and why it was not an independent surface.
+call, naming the rule, the peer, and why it was not an independent
+surface.
+
+**Known limit.** The chip row for "any other program" is still open, and
+`/usr/bin/lisa` sits in it: the CLI is both `lisa assist` (a loop) and
+`lisa do` (a person typing), and program identity cannot tell them apart.
+The resolution is that the CLI loop is never offered write-tier tools
+(`bus_tools::read_tier_tools`), so the open row is only ever reached by a
+human at a terminal. A `lisa-assistd` with its own executable would close
+it properly. Measured on the reference iMac on 2026-08-05: a single
+session peer parked a chip and released it itself
+(`SELF-APPROVAL SUCCEEDED: status=executed`), while the modal on the same
+connection was refused — so the chip row is live, not theoretical.
 
 ## App manifests
 

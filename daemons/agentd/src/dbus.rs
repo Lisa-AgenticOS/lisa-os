@@ -72,7 +72,7 @@ fn fdo_err(e: BusError) -> zbus::fdo::Error {
         }
         // Not an oracle: the caller parked this call, so it already
         // knows the id exists (#135).
-        BusError::NeedsConsentSurface(_) => zbus::fdo::Error::AccessDenied(e.to_string()),
+        BusError::NeedsConsentSurface(..) => zbus::fdo::Error::AccessDenied(e.to_string()),
         other => zbus::fdo::Error::Failed(other.to_string()),
     }
 }
@@ -183,14 +183,47 @@ async fn start_consent_surface(conn: &zbus::Connection, needed: bool) {
     }
 }
 
+/// Programs that run a model in-process, as absolute executable paths.
+///
+/// Two consequences follow from being on this list, and they pull in
+/// opposite directions on purpose:
+///
+/// 1. The program may assert `user` provenance (below), because it
+///    derives that class from *its own* caller's transport identity
+///    rather than believing a message — `lisa-harnessd` resolves the
+///    trigger class from `GetConnectionCredentials` + `GetNameOwner`
+///    (ADR-0036 §1, `harnessd/src/caller.rs`). Without this the
+///    Assistant's every read was downgraded to `app:` and escalated to
+///    a chip nobody could see: observed on the reference iMac on
+///    2026-08-05 as 3,000-odd `agent.provenance_downgrade` entries.
+/// 2. The program may **never approve a call it made**, at any tier
+///    (`lisa_guard::judge_approval`). It is the process the model is
+///    running inside, so its `Confirm` is the model's `Confirm`.
+///
+/// One list, because the two facts are the same fact: this is where the
+/// probabilistic system lives. Granting the trust without taking the
+/// approval right would be #145 again with a different process name.
+///
+/// # The honest limit
+///
+/// `lisa assist` runs the same loop inside `/usr/bin/lisa`, and the CLI
+/// is NOT here — because the same executable is also `lisa do`, which
+/// is a person typing at their own terminal and must keep answering its
+/// own chip (ADR-0030 §1). Program identity cannot tell those apart, so
+/// the CLI loop is not offered write-tier tools at all
+/// (`bus_tools::read_tier_tools`, and #216's option 1 for that surface).
+/// A `lisa-assistd` with its own executable is what would resolve it.
+pub const MODEL_HOSTS: [&str; 1] = ["/usr/bin/lisa-harnessd"];
+
 /// Is this caller one of Lisa's own programs?
 ///
 /// Program identity from `/proc/<pid>/exe` via the peer's credentials —
 /// never `comm`, which a process can rename, and never anything the
 /// message asserts (ADR-0033). Only these may claim `user` provenance:
-/// the CLI and the overlay backend are the two surfaces a human types
-/// into, and "a human typed this" is the one tag that buys trust rather
-/// than costing it.
+/// the CLI and Settings are the surfaces a human drives directly, and
+/// the harness is the one program that computes the class from its own
+/// caller's transport identity. "A human typed this" is the one tag
+/// that buys trust rather than costing it.
 ///
 /// Fails CLOSED: an unreadable peer is not a Lisa program. The cost of
 /// being wrong here is a downgrade to `app:` provenance, which asks for
@@ -202,10 +235,55 @@ async fn caller_is_lisa_program(
     let Ok(peer) = lisa_peer::resolve(conn, header).await else {
         return false;
     };
+    let same_user = peer.is_same_user_as_us();
+    let exe = lisa_peer::exe_of_peer(&peer).ok();
     exe_is_lisa_program(
+        same_user,
+        exe.as_deref(),
+        &lisa_peer::manager::default_managers(),
+    ) || exe_hosts_a_model(same_user, exe.as_deref())
+}
+
+/// Does this caller run a model in-process?
+///
+/// Same authority as everything else here: the kernel's answer for
+/// `/proc/<pid>/exe`, symlink-resolved on both sides (#215 — the
+/// allowlist compared as written never matched a payload behind a
+/// `current` symlink, and the failure looked like a security decision).
+///
+/// Fails CLOSED **towards being a model host is false**, which is the
+/// permissive direction for [`crate::bus::AgentBus::confirm`] — so it
+/// is deliberately paired with `caller_is_lisa_program` above, where
+/// the same unreadable peer fails closed towards *less* trust. A caller
+/// we cannot identify therefore gets neither the provenance nor a
+/// silent path: its `user` claim is downgraded, everything it asks for
+/// escalates, and the escalated tier is a modal only the dialog can
+/// answer.
+fn exe_hosts_a_model(same_user: bool, exe: Option<&std::path::Path>) -> bool {
+    if !same_user {
+        return false;
+    }
+    let Some(exe) = exe else {
+        return false;
+    };
+    let hosts: Vec<std::path::PathBuf> = MODEL_HOSTS.iter().map(std::path::PathBuf::from).collect();
+    lisa_peer::manager::may_manage(
+        same_user,
+        Some(exe),
+        &lisa_peer::manager::resolve_managers(&hosts),
+    )
+    .is_ok()
+}
+
+/// The transport's answer to "does this caller host a model", for the
+/// call about to be parked.
+async fn caller_hosts_a_model(conn: &zbus::Connection, header: &zbus::message::Header<'_>) -> bool {
+    let Ok(peer) = lisa_peer::resolve(conn, header).await else {
+        return false;
+    };
+    exe_hosts_a_model(
         peer.is_same_user_as_us(),
         lisa_peer::exe_of_peer(&peer).ok().as_deref(),
-        &lisa_peer::manager::default_managers(),
     )
 }
 
@@ -410,6 +488,10 @@ impl Agent1 {
                 .ledger_provenance_downgrade(&claimant, &app_id, &tool);
         }
         let chain = verified.chain;
+        // Recorded with the call because it decides something LATER: a
+        // model host may not answer its own parked confirmation, and by
+        // then the answerer may be a different peer entirely (#216).
+        let hosts_a_model = caller_hosts_a_model(conn, &header).await;
 
         let outcome = self
             .bus
@@ -424,6 +506,7 @@ impl Agent1 {
                 // trustworthy — on p2p it is not (#132).
                 caller: lisa_peer::PeerId::of(conn, &header)
                     .map_err(|e| zbus::fdo::Error::AccessDenied(e.to_string()))?,
+                requester_hosts_a_model: hosts_a_model,
             })
             .map_err(fdo_err)?;
         let reply = outcome_reply(&outcome);
@@ -437,7 +520,15 @@ impl Agent1 {
                 // Before the signal, never after: the surface subscribes
                 // to it as it starts, and a signal emitted into an empty
                 // session is a dialog that never appears (#244).
-                start_consent_surface(conn, *confirmation == Confirmation::Modal).await;
+                //
+                // A chip parked by a MODEL HOST needs the dialog just as
+                // much as a modal does, because nothing else may answer
+                // it (#216). Leaving it out was the difference between a
+                // guardrail and a hang: the loop's write would park with
+                // no surface to release it and no way for the person to
+                // know it had.
+                start_consent_surface(conn, *confirmation == Confirmation::Modal || hosts_a_model)
+                    .await;
                 let _ = Self::confirmation_requested(&emitter, *call_id, spec.to_string()).await;
             }
             // A refusal is REPORTED, never confirmed (#251). It goes out
@@ -692,13 +783,89 @@ mod tests {
     /// caller parked the call, so telling it "the human answers this
     /// one" reveals nothing it did not already know, and a silent
     /// refusal there reads as a bug (#135).
+    ///
+    /// The strings come from `judge_approval` rather than being typed
+    /// here, so a reason that stopped saying where to go would fail
+    /// this test instead of quietly passing it.
     #[test]
     fn the_consent_surface_refusal_is_its_own_error() {
-        let refusal = fdo_err(BusError::NeedsConsentSurface(7));
-        assert!(matches!(refusal, zbus::fdo::Error::AccessDenied(_)));
+        let both = [
+            lisa_guard::Approval {
+                approve: true,
+                is_requester: true,
+                owns_consent_name: false,
+                requester_hosts_a_model: true,
+                class: lisa_guard::ConfirmClass::Chip,
+                brokered: true,
+            },
+            lisa_guard::Approval {
+                approve: true,
+                is_requester: true,
+                owns_consent_name: false,
+                requester_hosts_a_model: false,
+                class: lisa_guard::ConfirmClass::Modal,
+                brokered: true,
+            },
+        ];
+        for approval in both {
+            let lisa_guard::ApprovalVerdict::Refused { rule, reason } =
+                lisa_guard::judge_approval(&approval)
+            else {
+                panic!("{approval:?} should have been refused");
+            };
+            let refusal = fdo_err(BusError::NeedsConsentSurface(7, rule, reason));
+            assert!(matches!(refusal, zbus::fdo::Error::AccessDenied(_)));
+            let text = refusal.to_string();
+            assert!(
+                text.contains("consent surface"),
+                "the refusal must say where to go: {text}"
+            );
+            // …and it must name the rule, or `lisa guard list` cannot be
+            // the place a person looks it up (ADR-0030 §5).
+            assert!(
+                text.contains(rule),
+                "the refusal must name `{rule}`: {text}"
+            );
+        }
+    }
+
+    /// The list that decides both halves of #216: who may claim a human
+    /// typed something, and who may never approve their own call.
+    #[test]
+    fn only_absolute_lisa_paths_are_model_hosts() {
+        for host in MODEL_HOSTS {
+            assert!(
+                std::path::Path::new(host).is_absolute(),
+                "`{host}` is not an absolute path, so `/proc/<pid>/exe` can never equal it"
+            );
+            assert!(
+                host.contains("lisa"),
+                "adding `{host}` grants user provenance — it is a decision, not a path fix"
+            );
+        }
+    }
+
+    /// Every branch of the model-host test, without a live peer. The
+    /// permissive answer needs BOTH facts: our uid and an allowlisted
+    /// executable.
+    #[test]
+    fn a_peer_we_cannot_place_is_not_a_model_host() {
+        assert!(!exe_hosts_a_model(true, None), "unidentified peer");
         assert!(
-            refusal.to_string().contains("consent surface"),
-            "the refusal must say where to go: {refusal}"
+            !exe_hosts_a_model(false, Some(std::path::Path::new(MODEL_HOSTS[0]))),
+            "another user's process running our harness binary"
         );
+        assert!(
+            !exe_hosts_a_model(true, Some(std::path::Path::new("/usr/bin/gjs"))),
+            "any GJS program in the session"
+        );
+        // The CLI is deliberately absent — see MODEL_HOSTS' limit note.
+        for manager in lisa_peer::manager::DEFAULT_MANAGERS {
+            assert!(
+                !exe_hosts_a_model(true, Some(std::path::Path::new(manager))),
+                "`{manager}` became a model host, which costs it the right to \
+                 answer its own `lisa do` chip"
+            );
+        }
     }
 }

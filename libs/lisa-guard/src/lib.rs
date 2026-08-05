@@ -29,6 +29,7 @@
 
 mod action;
 mod command;
+mod consent;
 mod overrides;
 mod path;
 mod protections;
@@ -39,6 +40,15 @@ pub use action::{
     Action, ActionVerdict, BUS_RULES, Class, Grant, HARD_NO_RULES, Trigger, judge as judge_action,
 };
 pub use command::{ALLOWED_COMMANDS, Allowlist, check_command, check_command_advisory};
+// The rule ids are re-exported alongside the judge: a caller that
+// asserts WHICH rule refused it should name the constant, not retype
+// the string. The injection gate does exactly that — asserting only
+// that a self-approval failed let `consent.no_surface` stand in for
+// `consent.self_approval`, and the test stayed green with the rule
+// deleted.
+pub use consent::{
+    Approval, ApprovalVerdict, ConfirmClass, NO_SURFACE, SELF_APPROVAL, judge_approval,
+};
 pub use overrides::{Overrides, active as active_overrides, overrides_path};
 pub use path::{ContainError, contain, write_contained};
 pub use protections::Protections;

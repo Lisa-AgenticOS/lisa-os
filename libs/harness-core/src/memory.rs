@@ -181,6 +181,62 @@ impl Memory {
         Ok(out)
     }
 
+    /// Every note in `scope`, newest first — what a person is shown when
+    /// they ask "what do you remember about me?".
+    ///
+    /// Unlike [`Memory::recall`] this does **not** reinforce: looking at
+    /// your own memory must not change which notes the model then finds
+    /// most relevant. A surface that ranked what it showed you by how
+    /// often you had looked at it would be teaching itself from your
+    /// audit, which is the opposite of an audit.
+    pub fn list(&self, scope: &str, limit: usize) -> Result<Vec<Note>, Error> {
+        let conn = self.conn.lock().expect("memory lock");
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, scope, text, tags, recalls FROM notes
+             WHERE scope = ?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![scope, limit as i64], map_note)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Forget one note. `false` when there was nothing with that id in
+    /// this scope.
+    ///
+    /// Scoped, and deliberately: an id alone would let a caller delete
+    /// out of a scope it never named. A real DELETE rather than a
+    /// tombstone — this is the person saying "do not remember that",
+    /// and a store that kept the row would be answering a different
+    /// question than the one they asked.
+    pub fn forget(&self, scope: &str, id: i64) -> Result<bool, Error> {
+        let mut conn = self.conn.lock().expect("memory lock");
+        let tx = conn.transaction()?;
+        let removed = tx.execute(
+            "DELETE FROM notes WHERE id = ?1 AND scope = ?2",
+            params![id, scope],
+        )?;
+        if self.fts {
+            tx.execute("DELETE FROM notes_fts WHERE note_id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(removed > 0)
+    }
+
+    /// Forget everything in `scope`, returning how many notes went.
+    pub fn forget_all(&self, scope: &str) -> Result<usize, Error> {
+        let mut conn = self.conn.lock().expect("memory lock");
+        let tx = conn.transaction()?;
+        if self.fts {
+            tx.execute(
+                "DELETE FROM notes_fts WHERE note_id IN
+                 (SELECT id FROM notes WHERE scope = ?1)",
+                params![scope],
+            )?;
+        }
+        let removed = tx.execute("DELETE FROM notes WHERE scope = ?1", params![scope])?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
     /// The scope's newest notes, newest first — the digest candidate pool.
     fn candidates(&self, scope: &str) -> Result<Vec<Note>, Error> {
         let conn = self.conn.lock().expect("memory lock");
@@ -312,6 +368,58 @@ mod tests {
 
         assert_eq!(mem.digest("user", 0).unwrap(), "");
         assert_eq!(mem.digest("nobody", 100).unwrap(), "");
+    }
+
+    /// Memory the person cannot see and cannot delete is not memory,
+    /// it is surveillance (#157). Both directions, and the deletion has
+    /// to be real: a note that stays findable by `recall` after being
+    /// forgotten is a store that answered a different question.
+    #[test]
+    fn a_person_can_see_and_delete_what_is_remembered_about_them() {
+        let (_dir, mem) = test_memory();
+        let a = mem
+            .remember("user", "prefers dark theme", &["prov:user"])
+            .unwrap();
+        mem.remember("user", "deploy target is the nuc", &["prov:user"])
+            .unwrap();
+        mem.remember("other", "not this scope", &[]).unwrap();
+
+        let listed = mem.list("user", 50).unwrap();
+        assert_eq!(listed.len(), 2, "listing must show the whole scope");
+        assert_eq!(listed[0].text, "deploy target is the nuc", "newest first");
+        assert_eq!(listed[0].tags, vec!["prov:user".to_string()]);
+        // Looking does not reinforce: `recalls` stays put, or reading
+        // your own memory would re-rank it.
+        assert!(listed.iter().all(|n| n.recalls == 0));
+
+        assert!(mem.forget("user", a).unwrap());
+        assert_eq!(mem.list("user", 50).unwrap().len(), 1);
+        // Gone from search too, not merely from the listing.
+        assert!(mem.recall("user", "dark theme", 10).unwrap().is_empty());
+        // Forgetting the same note twice is not an error, and it is not
+        // a lie either.
+        assert!(!mem.forget("user", a).unwrap());
+        // A note in another scope is not deletable by id alone.
+        let other_id = mem.list("other", 1).unwrap()[0].id;
+        assert!(!mem.forget("user", other_id).unwrap());
+        assert_eq!(mem.list("other", 50).unwrap().len(), 1);
+
+        assert_eq!(mem.forget_all("user").unwrap(), 1);
+        assert!(mem.list("user", 50).unwrap().is_empty());
+        assert_eq!(mem.digest("user", 500).unwrap(), "");
+        // …and the wipe was scoped, not a truncate.
+        assert_eq!(mem.list("other", 50).unwrap().len(), 1);
+    }
+
+    /// The same, on a store with no FTS5. The LIKE fallback has its own
+    /// delete path and would otherwise leave the index behind.
+    #[test]
+    fn forgetting_works_without_fts() {
+        let (_dir, mut mem) = test_memory();
+        let id = mem.remember("user", "remember me", &[]).unwrap();
+        mem.fts = false;
+        assert!(mem.forget("user", id).unwrap());
+        assert!(mem.recall("user", "remember", 10).unwrap().is_empty());
     }
 
     #[test]

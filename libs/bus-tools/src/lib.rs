@@ -25,7 +25,46 @@ pub struct BusTool {
     pub input_schema: Value,
 }
 
-/// Pure: `ListTools` JSON → the Read-tier tools, wire names assigned.
+/// Which tiers a loop is being offered.
+///
+/// Not a boolean, so the two call sites read as the decisions they are
+/// rather than as `true`/`false` at the end of an argument list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Offer {
+    /// Read tier only. What `lisa assist` gets, permanently — see
+    /// [`write_tier_allowed`] and agentd's `MODEL_HOSTS`.
+    ReadOnly,
+    /// Read and write. **Never destructive**: `delete`, `wipe`, `send`
+    /// and friends stay out of the model's catalog entirely, because
+    /// "the dialog will catch it" is a claim about a person's attention
+    /// and the one thing a tier ladder must not spend.
+    ReadAndWrite,
+}
+
+/// May a run of this class be offered write-tier tools? (#216)
+///
+/// Pure, and both conditions are facts nothing inside the loop can
+/// change:
+///
+/// - **`trigger`** is the run's RESOLVED class, clamped in
+///   `lisa-harnessd`'s `caller.rs` from `GetConnectionCredentials` +
+///   `GetNameOwner` (ADR-0036 §1). `"user"` means a person is at a
+///   prompt surface. A schedule or an event never gets write tier: that
+///   is ADR-0036 §6.4's "nobody is watching" case, and a write nobody
+///   watches is exactly what a parked confirmation cannot fix.
+/// - **`consent_available`** is the broker's answer to whether
+///   `dev.lisaos.Consent1` is running or activatable. This one is NOT
+///   the guardrail — agentd refuses a model host's self-approval
+///   whether or not a dialog exists — it is the difference between
+///   offering a tool that parks for a person and offering one that
+///   parks forever. A capability with no answerable path is a hang
+///   dressed as a feature.
+pub fn write_tier_allowed(trigger: &str, consent_available: bool) -> bool {
+    trigger == "user" && consent_available
+}
+
+/// Pure: `ListTools` JSON → the tools this loop may see, wire names
+/// assigned.
 ///
 /// Rows missing `app_id`/`name` are skipped rather than failing the whole
 /// catalog: one malformed manifest on the system must not cost the model
@@ -34,36 +73,48 @@ pub struct BusTool {
 /// A row with **no `tier` at all is dropped**, not defaulted to Read. A
 /// tool whose sensitivity we cannot read is not a tool we know is safe to
 /// call unattended, and defaulting the unknown to the permissive value is
-/// how a fail-open lands in a security boundary.
+/// how a fail-open lands in a security boundary. The same holds for a
+/// tier we do not recognise.
 ///
-/// # Why the Read filter is load-bearing, not a placeholder (#216)
+/// # What changed here, and what did NOT (#216)
 ///
-/// This is the ONLY thing keeping write-tier tools away from the model:
-/// `navigate`, `click`, `fill`, `create_note`, `archive_message` are all
-/// registered with agentd and all reachable by anything that can open
-/// the socket. Widening it looks like a one-word change and is not.
+/// This filter used to be the only thing keeping write-tier tools away
+/// from the model, and the reason was recorded on the device: a
+/// write-tier `RequestCall` parked correctly, but `dev.lisaos.Consent1`
+/// had no owner, and "nobody owns the consent name" was the headless
+/// fallback that let the REQUESTER answer its own call. The last line of
+/// defence would have been [`outcome_for`] declining to call `Confirm` —
+/// a decision inside the process the model drives, which CLAUDE.md rule
+/// 6a says is not a guardrail at all.
 ///
-/// Measured on the reference machine, 2026-08-04, against the live
-/// daemons: a write-tier `RequestCall` does park as `confirm-modal` with
-/// `escalated: true`, so the tier machinery is real — but
-/// `dev.lisaos.Consent1` has no owner (it is activatable, and agentd
-/// asks with `GetNameOwner`, which does not activate), so
-/// `consent_role()` answers `Absent`, and `Absent` is the headless
-/// fallback that lets the REQUESTER answer its own call. The probe's own
-/// connection called `Confirm(id, true)` and agentd dispatched.
+/// Both halves of that are now false, and neither of them is here:
 ///
-/// So if this filter were widened today, the last thing between the
-/// model and a privileged call would be [`outcome_for`] declining to
-/// call `Confirm` — a decision inside the process the model drives.
-/// CLAUDE.md rule 6a: reachable from inside is not a guardrail. The
-/// filter comes off when a consent surface is *running* and
-/// *independent*, proven on a seated session — not before.
-pub fn read_tier_tools(raw: &str) -> anyhow::Result<Vec<BusTool>> {
+/// - agentd starts the consent surface when it parks a call only the
+///   surface may answer (`start_consent_surface`), so "no dialog was
+///   ever running" is no longer a state a session sits in; and
+/// - `lisa_guard::judge_approval` refuses approval by a peer whose
+///   `/proc/<pid>/exe` is a model host — at every tier, broker or not.
+///   That runs in **agentd**, a different process, and nothing the model
+///   emits reaches it.
+///
+/// So this function is no longer a security boundary and should not be
+/// read as one. It decides what is USEFUL to offer; agentd decides what
+/// may happen. Destructive tier stays out regardless, which is a product
+/// decision rather than a safety one: see [`Offer`].
+pub fn offerable_tools(raw: &str, offer: Offer) -> anyhow::Result<Vec<BusTool>> {
+    let allowed: &[&str] = match offer {
+        Offer::ReadOnly => &["read"],
+        Offer::ReadAndWrite => &["read", "write"],
+    };
     let rows: Vec<Value> =
         serde_json::from_str(raw).map_err(|e| anyhow::anyhow!("parsing ListTools JSON: {e}"))?;
     Ok(rows
         .iter()
-        .filter(|r| r.get("tier").and_then(Value::as_str) == Some("read"))
+        .filter(|r| {
+            r.get("tier")
+                .and_then(Value::as_str)
+                .is_some_and(|t| allowed.contains(&t))
+        })
         .filter_map(|r| {
             let app_id = r.get("app_id")?.as_str()?.to_string();
             let tool = r.get("name")?.as_str()?.to_string();
@@ -83,6 +134,19 @@ pub fn read_tier_tools(raw: &str) -> anyhow::Result<Vec<BusTool>> {
             })
         })
         .collect())
+}
+
+/// The Read-tier slice, for surfaces that may never hold write tier.
+///
+/// `lisa assist` is the one that matters: it runs this same loop inside
+/// `/usr/bin/lisa`, and that executable is also `lisa do` — a person
+/// typing at their own terminal, who must keep the right to answer their
+/// own write-tier chip (ADR-0030 §1). agentd identifies callers by
+/// executable, so it cannot tell the two apart, and the resolution is
+/// that the CLI loop is not offered write tier at all. #216's option 1
+/// for that surface, stated as code rather than as a README paragraph.
+pub fn read_tier_tools(raw: &str) -> anyhow::Result<Vec<BusTool>> {
+    offerable_tools(raw, Offer::ReadOnly)
 }
 
 /// Pure: an agentd disposition → what the loop should put in the history.
@@ -146,7 +210,115 @@ pub fn result_is_web_tagged(detail: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The Read-tier Agent Bus tools, discovered once at construction.
+/// Untrusted provenance a run has picked up while running, shared
+/// across the tool families that can pick it up.
+///
+/// The bus family acquires `web` when a tool result arrives tagged at
+/// the source (#146 Phase 4). The harness family acquires whatever a
+/// remembered note was tagged with, when that note is served back into
+/// the conversation (#157) — a memory written from a hostile page is
+/// still a hostile page's words, and forgetting that is how "durable
+/// memory" becomes "durable injection".
+///
+/// One shared object rather than a flag per provider, because the taint
+/// is a property of the CONVERSATION: the model reads everything in one
+/// context, and a taint that only escalated the family that acquired it
+/// would let a page steer a memory-driven write.
+///
+/// **One-way, for the life of the run.** Nothing removes a tag. The
+/// model has read the content and nothing un-reads it.
+#[derive(Clone, Default)]
+pub struct Taint(std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>);
+
+impl Taint {
+    pub fn new() -> Taint {
+        Taint::default()
+    }
+
+    /// Record that untrusted content of class `tag` entered this run.
+    /// `user` is ignored: it is the one tag that grants trust rather
+    /// than costing it, and adding it here would be laundering.
+    pub fn add(&self, tag: &str) {
+        if tag.is_empty() || tag == "user" {
+            return;
+        }
+        self.0.lock().expect("taint lock").insert(tag.to_string());
+    }
+
+    /// The tags, sorted, ready to append to a provenance chain.
+    pub fn tags(&self) -> Vec<String> {
+        self.0.lock().expect("taint lock").iter().cloned().collect()
+    }
+
+    pub fn is_clean(&self) -> bool {
+        self.0.lock().expect("taint lock").is_empty()
+    }
+}
+
+/// One `RequestCall`, as this provider needs to make it.
+///
+/// A trait rather than a bare `Connection` so the agent loop can be
+/// driven against a real `lisa_agentd::bus::AgentBus` in a test with no
+/// D-Bus daemon, no desktop and no model (`tests/injection-suite`). That
+/// seam is the whole point: #216 was filed because write-tier tools had
+/// no agent-loop caller and the escalation story was therefore
+/// documented rather than run. A provider that can only be exercised
+/// through a live session bus is a provider nobody exercises.
+pub trait BusTransport {
+    /// `(call_id, disposition, detail_json)`, or a transport error.
+    fn request_call(
+        &self,
+        app_id: &str,
+        tool: &str,
+        args_json: &str,
+        actor: &str,
+        chain: &[&str],
+    ) -> Result<(u64, String, String), String>;
+}
+
+/// The production transport: `dev.lisaos.Agent1` over the session bus.
+pub struct DbusTransport {
+    conn: Connection,
+}
+
+impl BusTransport for DbusTransport {
+    fn request_call(
+        &self,
+        app_id: &str,
+        tool: &str,
+        args_json: &str,
+        actor: &str,
+        chain: &[&str],
+    ) -> Result<(u64, String, String), String> {
+        let options: HashMap<String, OwnedValue> = match (
+            OwnedValue::try_from(zbus::zvariant::Value::from(actor)),
+            OwnedValue::try_from(zbus::zvariant::Value::from(chain.to_vec())),
+        ) {
+            (Ok(actor), Ok(prov)) => HashMap::from([
+                ("actor".to_string(), actor),
+                ("provenance".to_string(), prov),
+            ]),
+            _ => return Err("could not build the call options".into()),
+        };
+        let reply = self
+            .conn
+            .call_method(
+                Some(DEST),
+                PATH,
+                Some(IFACE),
+                "RequestCall",
+                &(app_id, tool, args_json, options),
+            )
+            .map_err(|e| format!("RequestCall failed: {e}"))?;
+        reply
+            .body()
+            .deserialize::<(u64, String, String)>()
+            .map_err(|e| format!("unreadable reply: {e}"))
+    }
+}
+
+/// The Agent Bus tools this loop may see, discovered once at
+/// construction.
 ///
 /// The catalog is a snapshot: an app that registers a tool mid-run is not
 /// picked up. That is deliberate for now — the tool list is handed to the
@@ -154,20 +326,20 @@ pub fn result_is_web_tagged(detail: &str) -> bool {
 /// conversation means the model has a spec for a tool that no longer
 /// exists.
 pub struct AgentBusTools {
-    conn: Connection,
+    transport: Box<dyn BusTransport>,
     tools: Vec<BusTool>,
     /// What woke this run up, as a provenance tag (ADR-0036 §1). Every
     /// call carries it, so agentd's `resolve()` can tell "a person typed
     /// this" from "a schedule fired" without the loop remembering to say
     /// so at each call site.
     trigger: &'static str,
-    /// Set the moment any tool result arrives tagged `provenance: "web"`
-    /// (#146 Phase 4). From then on every call this provider makes
-    /// carries `web` in its chain, agentd's `resolve()` escalates
-    /// anything privileged, and a page cannot quietly steer a write. The
-    /// taint is one-way for the life of the loop: the model has read the
-    /// content, and nothing un-reads it.
-    web_tainted: std::cell::Cell<bool>,
+    /// Untrusted content this RUN has consumed — `web` the moment any
+    /// tool result arrives tagged `provenance: "web"` (#146 Phase 4),
+    /// plus whatever other families contribute (#157's memory notes).
+    /// From then on every call this provider makes carries those tags in
+    /// its chain, agentd's `resolve()` escalates anything privileged,
+    /// and a page cannot quietly steer a write.
+    taint: Taint,
 }
 
 impl AgentBusTools {
@@ -191,12 +363,41 @@ impl AgentBusTools {
             return Ok(None);
         };
         let raw: String = reply.body().deserialize()?;
+        let offer = if write_tier_allowed(trigger, consent_surface_available(&conn)) {
+            Offer::ReadAndWrite
+        } else {
+            Offer::ReadOnly
+        };
         Ok(Some(Self {
-            tools: read_tier_tools(&raw)?,
-            conn,
+            tools: offerable_tools(&raw, offer)?,
+            transport: Box::new(DbusTransport { conn }),
             trigger,
-            web_tainted: std::cell::Cell::new(false),
+            taint: Taint::new(),
         }))
+    }
+
+    /// Build a provider over any transport, with the catalog decided by
+    /// the caller. Exists so an agent loop can be run end to end against
+    /// a real bus in a test (#216).
+    pub fn with_transport(
+        transport: Box<dyn BusTransport>,
+        tools: Vec<BusTool>,
+        trigger: &'static str,
+    ) -> Self {
+        Self {
+            transport,
+            tools,
+            trigger,
+            taint: Taint::new(),
+        }
+    }
+
+    /// Share this run's taint with the other tool families, so a note
+    /// recalled from memory escalates a bus call just as a web page
+    /// does (#157).
+    pub fn with_taint(mut self, taint: Taint) -> Self {
+        self.taint = taint;
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -207,9 +408,39 @@ impl AgentBusTools {
         self.tools.len()
     }
 
+    /// Has any tool result arrived tagged `web` in this run?
+    pub fn is_web_tainted(&self) -> bool {
+        self.taint.tags().iter().any(|t| t == "web")
+    }
+
     fn find(&self, wire: &str) -> Option<&BusTool> {
         self.tools.iter().find(|t| t.wire == wire)
     }
+}
+
+/// Is there a consent dialog on this session, or one the broker can
+/// start? The broker's answer, not a caller's claim.
+///
+/// `ListActivatableNames` as well as `GetNameOwner`, because
+/// `lisa-consentd` ships as a D-Bus-activatable service and spends most
+/// of its life not running — that is the intended shape, and agentd
+/// activates it at the moment a call parks. Asking only "is it running"
+/// would answer "no dialog" on every healthy machine and quietly leave
+/// the model read-only forever, which is exactly the class of silent
+/// downgrade #241/#245 are about.
+fn consent_surface_available(conn: &Connection) -> bool {
+    const CONSENT: &str = "dev.lisaos.Consent1";
+    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(conn) else {
+        return false;
+    };
+    if let Ok(name) = zbus::names::BusName::try_from(CONSENT)
+        && dbus.get_name_owner(name).is_ok()
+    {
+        return true;
+    }
+    dbus.list_activatable_names()
+        .map(|names| names.iter().any(|n| n.as_str() == CONSENT))
+        .unwrap_or(false)
 }
 
 impl ToolProvider for AgentBusTools {
@@ -244,45 +475,24 @@ impl ToolProvider for AgentBusTools {
         // woke the run up, and what it has read since. Both matter — a
         // schedule that then read a web page is less trusted than either
         // fact alone, and agentd escalates on the worst of them.
+        let tags = self.taint.tags();
         let mut chain: Vec<&str> = vec![self.trigger];
-        if self.web_tainted.get() {
-            chain.push("web");
-        }
-        let options: HashMap<String, OwnedValue> = match (
-            OwnedValue::try_from(zbus::zvariant::Value::from("assistant")),
-            OwnedValue::try_from(zbus::zvariant::Value::from(chain)),
-        ) {
-            (Ok(actor), Ok(prov)) => HashMap::from([
-                ("actor".to_string(), actor),
-                ("provenance".to_string(), prov),
-            ]),
-            _ => return ToolOutcome::err("could not build the call options"),
-        };
+        chain.extend(tags.iter().map(String::as_str));
 
-        let reply = self.conn.call_method(
-            Some(DEST),
-            PATH,
-            Some(IFACE),
-            "RequestCall",
-            &(
-                tool.app_id.as_str(),
-                tool.tool.as_str(),
-                call.args.to_string(),
-                options,
-            ),
-        );
-        let reply = match reply {
-            Ok(r) => r,
-            Err(e) => return ToolOutcome::err(format!("{label}: RequestCall failed: {e}")),
-        };
-        match reply.body().deserialize::<(u64, String, String)>() {
+        match self.transport.request_call(
+            &tool.app_id,
+            &tool.tool,
+            &call.args.to_string(),
+            "assistant",
+            &chain,
+        ) {
             Ok((_id, disposition, detail)) => {
                 if disposition == "executed" && result_is_web_tagged(&detail) {
-                    self.web_tainted.set(true);
+                    self.taint.add("web");
                 }
                 outcome_for(&disposition, &detail, &label)
             }
-            Err(e) => ToolOutcome::err(format!("{label}: unreadable reply: {e}")),
+            Err(e) => ToolOutcome::err(format!("{label}: {e}")),
         }
     }
 }
@@ -336,31 +546,77 @@ mod tests {
         assert!(!names.contains(&"delete_file"));
     }
 
-    /// The browser's write tier by name, because #216 is a live
-    /// proposal to widen this filter and the reason it stays is not
-    /// visible from `tier == "read"` alone (see the fn docs).
-    ///
-    /// If this ever goes green with the names present, the consent
-    /// surface had better be running, independent, and device-proven.
+    const SURFER: &str = r#"[
+      {"app_id":"app.lisaos.Surfer","name":"read_page","tier":"read"},
+      {"app_id":"app.lisaos.Surfer","name":"navigate","tier":"write"},
+      {"app_id":"app.lisaos.Surfer","name":"click","tier":"write"},
+      {"app_id":"app.lisaos.Surfer","name":"fill","tier":"write"}
+    ]"#;
+
+    /// The CLI loop's slice never widens, whatever the session looks
+    /// like. `/usr/bin/lisa` is also `lisa do`, so agentd cannot tell a
+    /// loop from a person there and the person keeps the chip.
     #[test]
-    fn the_browsers_write_tools_are_not_handed_to_the_model() {
-        let surfer = r#"[
-          {"app_id":"app.lisaos.Surfer","name":"read_page","tier":"read"},
-          {"app_id":"app.lisaos.Surfer","name":"navigate","tier":"write"},
-          {"app_id":"app.lisaos.Surfer","name":"click","tier":"write"},
-          {"app_id":"app.lisaos.Surfer","name":"fill","tier":"write"}
-        ]"#;
-        let names: Vec<String> = read_tier_tools(surfer)
+    fn the_cli_loop_is_read_tier_forever() {
+        let names: Vec<String> = read_tier_tools(SURFER)
             .unwrap()
             .into_iter()
             .map(|t| t.tool)
             .collect();
         assert_eq!(names, vec!["read_page"]);
-        for privileged in ["navigate", "click", "fill"] {
+    }
+
+    /// #216's actual ask: the write tools reach a loop's catalog, so
+    /// the escalation story has something to escalate.
+    #[test]
+    fn write_tier_reaches_the_catalog_when_it_is_offered() {
+        let names: Vec<String> = offerable_tools(SURFER, Offer::ReadAndWrite)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.tool)
+            .collect();
+        assert_eq!(names, vec!["read_page", "navigate", "click", "fill"]);
+    }
+
+    /// Destructive stays out of both slices. This is not the tier
+    /// machinery being distrusted — it parks a modal correctly — it is
+    /// a refusal to spend a person's attention on a dialog the model
+    /// can raise at will (ADR-0030's confirmation-fatigue argument).
+    #[test]
+    fn destructive_tier_is_never_offered_to_a_loop() {
+        let raw = r#"[
+          {"app_id":"app.lisaos.files","name":"delete_file","tier":"destructive"},
+          {"app_id":"app.lisaos.Mail","name":"send_email","tier":"destructive"},
+          {"app_id":"app.lisaos.notes","name":"create_note","tier":"write"}
+        ]"#;
+        for offer in [Offer::ReadOnly, Offer::ReadAndWrite] {
+            let names: Vec<String> = offerable_tools(raw, offer)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.tool)
+                .collect();
             assert!(
-                !names.iter().any(|n| n == privileged),
-                "`{privileged}` reached the model's tool list with no \
-                 independent consent surface to gate it (#216)"
+                !names
+                    .iter()
+                    .any(|n| n == "delete_file" || n == "send_email"),
+                "{offer:?} offered a destructive tool: {names:?}"
+            );
+        }
+    }
+
+    /// The gate, in every combination. Both facts come from outside the
+    /// loop, and both are required.
+    #[test]
+    fn only_a_person_at_a_prompt_with_a_dialog_gets_write_tier() {
+        assert!(write_tier_allowed("user", true));
+        assert!(
+            !write_tier_allowed("user", false),
+            "a write that can only park forever is a hang, not a capability"
+        );
+        for unattended in ["schedule", "event", "wat", ""] {
+            assert!(
+                !write_tier_allowed(unattended, true),
+                "`{unattended}` reached write tier with nobody watching (ADR-0036 §6.4)"
             );
         }
     }

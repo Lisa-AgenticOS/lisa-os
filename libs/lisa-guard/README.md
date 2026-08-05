@@ -107,6 +107,46 @@ than two spellings of it.
 refuses a bus-only id rather than printing "relaxed" for something that
 is still enforced.
 
+## The approval verdict (#216)
+
+`judge_approval` answers a different question from `judge_action`: not
+*what is this call*, but **who may release it** once the bus has parked
+it. It became load-bearing the moment an agent loop was offered a
+write-tier tool, because the peer most eager to release such a call is
+the process hosting the model that asked for it.
+
+```rust
+match lisa_guard::judge_approval(&Approval {
+    approve: true,
+    is_requester: true,       // the peer that parked this call
+    owns_consent_name: false, // the broker's answer, not a claim
+    requester_hosts_a_model: true, // /proc/<pid>/exe, not a message
+    class: ConfirmClass::Chip,
+    brokered: true,
+}) {
+    ApprovalVerdict::Refused { rule, .. } => assert_eq!(rule, "consent.self_approval"),
+    v => panic!("{v:?}"),
+}
+```
+
+Two rule ids, both in `BUS_RULES`:
+
+| rule | when | relaxable |
+|---|---|---|
+| `consent.self_approval` | a model host approving a call it made — any tier, broker or not | never (`HARD_NO_RULES`) |
+| `consent.no_surface` | a modal with no independent dialog to answer it (#244) | never, but starting the dialog resolves it |
+
+Every field of `Approval` is transport-derived. Not one is read from a
+message, which is what makes this outside the boundary rather than
+inside it (ADR-0030 §2). What the requester keeps is the right to
+**withdraw** its own call, because withdrawal causes no action — a
+guardrail that stopped it would be aimed at the wrong side of the line.
+
+The corpus tables are `CONSENT_MUST_REFUSE` and `CONSENT_MUST_ALLOW` in
+`tests/corpus.rs`. The second exists because a corpus of refusals alone
+cannot tell a working boundary from a broken one: without it a
+`judge_approval` that refused *everything* would pass.
+
 ## Callers
 
 - `libs/forge-harness/src/jail.rs` — `contain` is the jail.

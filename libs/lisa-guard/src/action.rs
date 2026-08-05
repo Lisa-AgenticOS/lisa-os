@@ -339,6 +339,18 @@ pub const BUS_RULES: &[(&str, &str)] = &[
         "scope.unattended_reach",
         "the home content directories, reached by a run no person started",
     ),
+    // Emitted by `judge_approval` rather than by `judge` below — the
+    // catalogue is per BUS, not per function, because what a person
+    // looks up is the id they saw in the Ledger and they have no way to
+    // know which of our functions produced it.
+    (
+        "consent.self_approval",
+        "the process running the model approving a call it made itself (#216)",
+    ),
+    (
+        "consent.no_surface",
+        "a destructive call with no independent consent dialog to answer it (#244)",
+    ),
 ];
 
 /// The rule ids that are HARD NO — refused because of what the action
@@ -355,6 +367,12 @@ pub const HARD_NO_RULES: &[&str] = &[
     // person configured must be as visible and as explicable as one we
     // shipped — Settings lists both, and only this one is removable.
     "owner.protected_path",
+    // A model approving its own privileged call is refused by what it
+    // IS, not by the current grant: there is no session, no tier and no
+    // setting in which it becomes acceptable (ADR-0030 §2). Its
+    // companion `consent.no_surface` is deliberately NOT here — that
+    // one is conditional, and starting the dialog resolves it.
+    "consent.self_approval",
 ];
 
 /// The verdict for one tool call.

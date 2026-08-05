@@ -12,8 +12,8 @@
 //! damage is thought of or observed.
 
 use lisa_guard::{
-    Action, ActionVerdict, BUS_RULES, Class, Grant, HARD_NO_RULES, Trigger, Verdict, check_command,
-    check_shell_line, judge_action,
+    Action, ActionVerdict, Approval, BUS_RULES, Class, ConfirmClass, Grant, HARD_NO_RULES, Trigger,
+    Verdict, check_command, check_shell_line, judge_action, judge_approval,
 };
 use serde_json::json;
 
@@ -992,6 +992,148 @@ fn no_tool_call_reaches_a_dialog_that_could_approve_it() {
     );
 }
 
+/// Attempts to RELEASE a parked privileged call that must be refused
+/// (`judge_approval`, #216). The corpus above is about what a call is;
+/// this one is about who gets to say yes to it, which is the question
+/// the moment an agent loop holds a write-tier tool.
+///
+/// Each row is `(what the attempt is, the approval as the TRANSPORT
+/// describes it, the rule that must fire)`.
+const CONSENT_MUST_REFUSE: &[(&str, Approval, &str)] = &[
+    (
+        "the loop approving the write-tier chip it just parked",
+        Approval {
+            approve: true,
+            is_requester: true,
+            owns_consent_name: false,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Chip,
+            brokered: true,
+        },
+        "consent.self_approval",
+    ),
+    (
+        "…the same, escalated to a modal by web provenance",
+        Approval {
+            approve: true,
+            is_requester: true,
+            owns_consent_name: false,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Modal,
+            brokered: true,
+        },
+        "consent.self_approval",
+    ),
+    (
+        "the loop holding a consent name of its own (#145's two hats)",
+        Approval {
+            approve: true,
+            is_requester: true,
+            owns_consent_name: true,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Chip,
+            brokered: true,
+        },
+        "consent.self_approval",
+    ),
+    (
+        "a model host on a transport with no broker to ask",
+        Approval {
+            approve: true,
+            is_requester: true,
+            owns_consent_name: false,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Modal,
+            brokered: false,
+        },
+        "consent.self_approval",
+    ),
+    (
+        "an ordinary peer approving its own destructive call (#244)",
+        Approval {
+            approve: true,
+            is_requester: true,
+            owns_consent_name: false,
+            requester_hosts_a_model: false,
+            class: ConfirmClass::Modal,
+            brokered: true,
+        },
+        "consent.no_surface",
+    ),
+];
+
+/// The permitted paths, without which the rules above are an outage
+/// rather than a guardrail. A corpus of refusals alone cannot tell a
+/// working boundary from a broken one.
+const CONSENT_MUST_ALLOW: &[(&str, Approval)] = &[
+    (
+        "the desktop dialog releasing the loop's call",
+        Approval {
+            approve: true,
+            is_requester: false,
+            owns_consent_name: true,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Modal,
+            brokered: true,
+        },
+    ),
+    (
+        "the loop withdrawing its own parked call",
+        Approval {
+            approve: false,
+            is_requester: true,
+            owns_consent_name: false,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Modal,
+            brokered: true,
+        },
+    ),
+    (
+        "a person answering their own `lisa do` chip in a terminal",
+        Approval {
+            approve: true,
+            is_requester: true,
+            owns_consent_name: false,
+            requester_hosts_a_model: false,
+            class: ConfirmClass::Chip,
+            brokered: true,
+        },
+    ),
+];
+
+#[test]
+fn no_model_host_can_release_its_own_privileged_call() {
+    let mut leaked = Vec::new();
+    for (what, approval, rule) in CONSENT_MUST_REFUSE {
+        let v = judge_approval(approval);
+        if v.rule() != Some(rule) {
+            leaked.push(format!("  {what}\n    expected `{rule}`, got {v:?}"));
+        }
+    }
+    assert!(
+        leaked.is_empty(),
+        "{} of {} approval attempts were not refused as expected:\n{}",
+        leaked.len(),
+        CONSENT_MUST_REFUSE.len(),
+        leaked.join("\n")
+    );
+}
+
+/// The positive control. Every refusal above is only meaningful because
+/// these three are allowed — a `judge_approval` that refused everything
+/// would pass the table above and ship a system in which no privileged
+/// call can ever complete.
+#[test]
+fn the_paths_that_must_stay_open_are_open() {
+    for (what, approval) in CONSENT_MUST_ALLOW {
+        assert_eq!(
+            judge_approval(approval),
+            lisa_guard::ApprovalVerdict::Allow,
+            "`{what}` was refused"
+        );
+    }
+}
+
 /// Every hard-no rule the module can emit needs at least one entry above
 /// (CLAUDE.md 6a: a rule with no corpus entry is one nobody will notice
 /// regressing). This is the test that makes the corpus a gate rather
@@ -1001,10 +1143,19 @@ fn every_hard_no_rule_has_a_corpus_entry() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().canonicalize().unwrap();
     let grant = bus_grant(&home);
-    let fired: Vec<&str> = BUS_MUST_REFUSE
+    let mut fired: Vec<&str> = BUS_MUST_REFUSE
         .iter()
         .filter_map(|c| bus_verdict(c, &grant).rule())
         .collect();
+    // The approval rules are emitted by a different function on the
+    // same bus, and the catalogue is per bus (see BUS_RULES). Folding
+    // them in here rather than exempting them is the point: an id that
+    // reaches a person's Ledger must be reachable from this corpus.
+    fired.extend(
+        CONSENT_MUST_REFUSE
+            .iter()
+            .filter_map(|(_, a, _)| judge_approval(a).rule()),
+    );
     for rule in HARD_NO_RULES {
         assert!(
             fired.contains(rule),
