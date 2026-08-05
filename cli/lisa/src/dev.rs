@@ -472,3 +472,417 @@ mod tests {
         assert_eq!(f[0].rule, "manifest-name");
     }
 }
+
+// ---------------------------------------------------------------------
+// The disk guard (#130 phase 0, ADR-0034)
+//
+// repart weights are `var 3 : home 1` because models dominate /var. A
+// dev container plus its packages is easily several GB, and it lands in
+// $HOME — where it competes with the person's documents rather than
+// with model weights. So `lisa dev` refuses loudly when the filesystem
+// is tight instead of filling it.
+//
+// "Loudly" is the whole requirement. A tool that fills a disk and then
+// fails at some later, unrelated write has told the person nothing
+// about what happened, and the write that finally fails is usually
+// somebody else's.
+
+/// How much has to remain free AFTER an install, whatever the request.
+///
+/// Not a percentage: a percentage of a 2 TB disk reserves 40 GB nobody
+/// needs, and a percentage of a 64 GB one reserves too little to boot a
+/// desktop that logs. This is an absolute floor sized for "the session
+/// keeps working" — journald, temp files, the context store growing,
+/// and one A/B update's staging.
+pub const HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// What the guard decided, and why.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Room {
+    /// Enough space, with this much left over afterwards.
+    Enough { remaining: u64 },
+    /// Not enough. Carries the numbers the message needs — a refusal
+    /// that does not say how short it is leaves the person guessing at
+    /// how much to free.
+    Tight {
+        free: u64,
+        needed: u64,
+        short_by: u64,
+    },
+}
+
+/// Is there room for `needed` bytes, keeping [`HEADROOM_BYTES`] free?
+///
+/// Pure, so the arithmetic is testable without a filesystem — the part
+/// that has to be right is the boundary, and a test that needs a full
+/// disk to exercise it never gets written.
+pub fn room_for(free: u64, needed: u64) -> Room {
+    // `checked_add`, not `saturating_add`. Saturation clamps the
+    // REQUIREMENT down to `u64::MAX`, so a request near the ceiling
+    // compares as satisfiable and the guard says yes to infinity — the
+    // one direction a size check must never fail in. Overflow means the
+    // request is absurd, which is the tightest possible answer.
+    let Some(required) = needed.checked_add(HEADROOM_BYTES) else {
+        return Room::Tight {
+            free,
+            needed,
+            short_by: u64::MAX,
+        };
+    };
+    if free >= required {
+        Room::Enough {
+            remaining: free - needed,
+        }
+    } else {
+        Room::Tight {
+            free,
+            needed,
+            short_by: required - free,
+        }
+    }
+}
+
+/// Bytes available to an unprivileged user on the filesystem holding
+/// `path`.
+///
+/// **`f_bavail`, not `f_bfree`.** The difference is the reserved blocks
+/// only root may use — typically 5% of the filesystem. Reading `f_bfree`
+/// would promise space this path can never have, since `lisa dev` never
+/// escalates (CLAUDE.md 7b).
+///
+/// The path matters more than it looks: this must be the container
+/// store's ACTUAL location, not `$HOME` by name. A machine with a
+/// separate mount under the home directory gets a confident wrong
+/// answer otherwise, and the guard's whole job is to be right about
+/// which disk fills up.
+pub fn free_bytes_at(path: &Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    // SAFETY: `statvfs` writes into a zeroed struct we own, and the path
+    // is a NUL-terminated string that outlives the call.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // `as`, not `u64::from`: these fields are `u64` on 64-bit Linux and
+    // macOS and narrower elsewhere, so `From` does not exist on every
+    // target this crate builds for.
+    Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
+/// The nearest existing ancestor of `path`.
+///
+/// `statvfs` fails on a path that does not exist yet, and the container
+/// store legitimately does not on a machine where `lisa dev` has never
+/// run. Walking up finds the filesystem the directory WILL be created
+/// on, which is the one the answer is about.
+pub fn existing_ancestor(path: &Path) -> Option<&Path> {
+    let mut p = Some(path);
+    while let Some(candidate) = p {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        p = candidate.parent();
+    }
+    None
+}
+
+/// Human bytes: `2.0 GiB`, not `2147483648`.
+///
+/// A refusal is read by a person deciding what to delete, and nine
+/// digits is not a quantity anybody can act on.
+pub fn human(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod disk_guard_tests {
+    use super::*;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn the_boundary_is_exact_in_both_directions() {
+        // The one arithmetic that has to be right, and the one a test
+        // needing a full disk never gets written for.
+        assert_eq!(
+            room_for(5 * GIB + HEADROOM_BYTES, 5 * GIB),
+            Room::Enough {
+                remaining: HEADROOM_BYTES
+            },
+            "exactly enough is enough"
+        );
+        assert!(
+            matches!(
+                room_for(5 * GIB + HEADROOM_BYTES - 1, 5 * GIB),
+                Room::Tight { .. }
+            ),
+            "one byte short is short"
+        );
+    }
+
+    #[test]
+    fn a_refusal_says_how_short_it_is() {
+        // A refusal that does not carry the number leaves the person
+        // guessing at how much to free, and they guess low.
+        let Room::Tight {
+            free,
+            needed,
+            short_by,
+        } = room_for(GIB, 4 * GIB)
+        else {
+            panic!("1 GiB free must not accept a 4 GiB install");
+        };
+        assert_eq!(free, GIB);
+        assert_eq!(needed, 4 * GIB);
+        assert_eq!(short_by, 4 * GIB + HEADROOM_BYTES - GIB);
+    }
+
+    #[test]
+    fn headroom_is_reserved_even_when_the_request_is_nothing() {
+        // `lisa dev shell` on a machine with 100 MB free should refuse
+        // too: entering a container writes layers, and a disk that full
+        // is one write from breaking the session.
+        assert!(matches!(room_for(100 * 1024 * 1024, 0), Room::Tight { .. }));
+        assert!(matches!(room_for(HEADROOM_BYTES, 0), Room::Enough { .. }));
+    }
+
+    #[test]
+    fn an_absurd_request_does_not_wrap_around() {
+        // `needed + HEADROOM` overflowing u64 would make the largest
+        // possible request look like the smallest — a guard that says
+        // yes to infinity.
+        assert!(matches!(room_for(u64::MAX, u64::MAX), Room::Tight { .. }));
+        assert!(matches!(room_for(GIB, u64::MAX), Room::Tight { .. }));
+    }
+
+    #[test]
+    fn the_filesystem_measured_is_the_one_the_store_lands_on() {
+        // THE TRAP this guard exists to avoid: measuring `$HOME` by name
+        // when the container store is on a different mount. `/` and a
+        // temp dir are the two filesystems every machine has, and on a
+        // dev host they are usually the same one — so this asserts the
+        // call SUCCEEDS on a real path and returns a plausible number,
+        // rather than asserting two mounts differ on a machine where
+        // they do not.
+        let root = free_bytes_at(Path::new("/")).expect("statvfs on / must work");
+        assert!(root > 0, "a mounted filesystem reports some free space");
+        let tmp = free_bytes_at(&std::env::temp_dir()).expect("statvfs on temp must work");
+        assert!(tmp > 0);
+    }
+
+    #[test]
+    fn the_number_is_what_an_unprivileged_writer_can_have() {
+        // `f_bavail`, not `f_bfree`: the gap between them is the reserve
+        // only root may write into — typically 5% on ext4. Reading
+        // `f_bfree` would promise `lisa dev` space it can never have,
+        // since it never escalates (CLAUDE.md 7b), and the install would
+        // fail partway with ENOSPC after the guard said yes.
+        //
+        // Only assertable where the filesystem HAS a reserve. APFS and
+        // tmpfs usually report the two equal, and on such a host this
+        // asserts nothing — said out loud rather than left to look like
+        // coverage. Linux CI on ext4 is where it bites.
+        let path = std::env::temp_dir();
+        let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
+            .unwrap();
+        let mut raw: libc::statvfs = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::statvfs(c.as_ptr(), &mut raw) }, 0);
+
+        let bavail = raw.f_bavail as u64 * raw.f_frsize as u64;
+        let bfree = raw.f_bfree as u64 * raw.f_frsize as u64;
+        let ours = free_bytes_at(&path).unwrap();
+
+        assert_eq!(
+            ours, bavail,
+            "the guard must report the unprivileged figure"
+        );
+        if bfree != bavail {
+            assert!(
+                ours < bfree,
+                "this filesystem reserves {} for root and the guard counted it",
+                human(bfree - bavail)
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_that_does_not_exist_yet_measures_where_it_will_live() {
+        // The container store legitimately does not exist before the
+        // first `lisa dev install`, and `statvfs` fails on a missing
+        // path. Answering "cannot tell" there would refuse every first
+        // run on every machine.
+        let missing = std::env::temp_dir().join("lisa-dev-not-created-yet/containers/storage");
+        assert!(!missing.exists());
+        let ancestor = existing_ancestor(&missing).expect("temp dir exists");
+        assert!(ancestor.exists());
+        assert!(free_bytes_at(ancestor).unwrap() > 0);
+    }
+
+    #[test]
+    fn a_refusal_is_readable_by_a_person() {
+        // Nine digits is not a quantity anybody can act on.
+        assert_eq!(human(0), "0 B");
+        assert_eq!(human(512), "512 B");
+        assert_eq!(human(2 * GIB), "2.0 GiB");
+        assert_eq!(human(1536 * 1024 * 1024), "1.5 GiB");
+        // The table stops at TiB on purpose — a disk larger than that
+        // is not a case worth a unit — so the largest value renders as
+        // a very large number of TiB rather than as EiB. Asserted
+        // because "it does not crash" is not the same as "it reads".
+        assert_eq!(human(u64::MAX), "16777216.0 TiB");
+    }
+}
+
+// ---------------------------------------------------------------------
+// `lisa dev doctor` — phase 0's prerequisites, checked rather than assumed
+//
+// #130 calls each phase-0 item "a silent-failure risk", and that is the
+// whole reason this verb exists: rootless containers do not error when
+// `/etc/subuid` is missing, they quietly fall back to a single-uid
+// namespace and fail later at something unrelated. The nightly asserts
+// these on the built image; a person on a real machine had no way to ask.
+
+/// One prerequisite, and what to do when it is not met.
+pub struct Prereq {
+    pub name: &'static str,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Is a subuid/subgid range mapped for this user?
+///
+/// Read from the files rather than by trying a container: a missing
+/// range degrades QUIETLY, so "podman started" is not evidence that the
+/// mapping exists.
+fn subid_range(file: &str, user: &str) -> Option<String> {
+    let text = std::fs::read_to_string(file).ok()?;
+    text.lines()
+        .find(|l| l.starts_with(&format!("{user}:")))
+        .map(str::to_string)
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+}
+
+/// Where rootless podman keeps its store — the path the disk guard must
+/// measure, rather than `$HOME` by name.
+pub fn container_store() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/containers/storage"))
+}
+
+pub fn doctor_cmd(needed_gib: u64) -> anyhow::Result<()> {
+    let user = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+    let mut checks = Vec::new();
+
+    for file in ["/etc/subuid", "/etc/subgid"] {
+        let found = subid_range(file, &user);
+        checks.push(Prereq {
+            name: if file.ends_with("subuid") {
+                "subuid range"
+            } else {
+                "subgid range"
+            },
+            ok: found.is_some(),
+            detail: found.unwrap_or_else(|| {
+                format!("no line for `{user}` in {file} — rootless containers degrade silently")
+            }),
+        });
+    }
+
+    // One row per program, named for the program. Two rows both called
+    // "uidmap helpers" is a report you cannot act on: it says something
+    // is missing twice without saying which.
+    for (name, prog) in [
+        ("newuidmap", "newuidmap"),
+        ("newgidmap", "newgidmap"),
+        ("podman", "podman"),
+    ] {
+        let present = on_path(prog);
+        checks.push(Prereq {
+            name,
+            ok: present,
+            detail: if present {
+                "on PATH".to_string()
+            } else {
+                "not on PATH — a subid range with no helper cannot be applied".to_string()
+            },
+        });
+    }
+
+    // Disk, measured where the store actually lands.
+    let needed = needed_gib.saturating_mul(1024 * 1024 * 1024);
+    match container_store().as_deref().and_then(existing_ancestor) {
+        Some(dir) => match free_bytes_at(dir) {
+            Ok(free) => match room_for(free, needed) {
+                Room::Enough { remaining } => checks.push(Prereq {
+                    name: "disk",
+                    ok: true,
+                    detail: format!(
+                        "{} free on the filesystem holding {}; {} would remain after {}",
+                        human(free),
+                        dir.display(),
+                        human(remaining),
+                        human(needed)
+                    ),
+                }),
+                Room::Tight { free, short_by, .. } => checks.push(Prereq {
+                    name: "disk",
+                    ok: false,
+                    detail: format!(
+                        "{} free on the filesystem holding {} — {} short for {} plus \
+                         the {} that must stay free",
+                        human(free),
+                        dir.display(),
+                        human(short_by),
+                        human(needed),
+                        human(HEADROOM_BYTES)
+                    ),
+                }),
+            },
+            Err(e) => checks.push(Prereq {
+                name: "disk",
+                ok: false,
+                detail: format!("could not measure {}: {e}", dir.display()),
+            }),
+        },
+        None => checks.push(Prereq {
+            name: "disk",
+            ok: false,
+            detail: "no HOME, so there is nowhere to put a container store".into(),
+        }),
+    }
+
+    for c in &checks {
+        println!(
+            "{} {:<18} {}",
+            if c.ok { "ok  " } else { "FAIL" },
+            c.name,
+            c.detail
+        );
+    }
+    if checks.iter().all(|c| c.ok) {
+        println!("\nrootless containers look usable on this machine.");
+        return Ok(());
+    }
+    // Non-zero, so a script can tell "not ready" from "ready". The lines
+    // above already said which part.
+    bail!(
+        "{} prerequisite(s) unmet",
+        checks.iter().filter(|c| !c.ok).count()
+    )
+}

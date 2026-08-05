@@ -16,6 +16,11 @@ walkdir = "2.5.0"
 # RFC822/MIME parsing for the mail indexer (#170): headers + the best
 # text body out of a Maildir message. Boring, pure-Rust, widely used.
 mailparse = "0.16.1"
+# `statvfs` for the /home disk guard (#130 phase 0): `lisa dev` must
+# refuse loudly when the container store's filesystem is tight rather
+# than filling it. Same version lisa-guard pins, so the workspace
+# resolves one copy.
+libc = "0.2.180"
 clap = { version = "4.6.3", features = ["derive", "env"] }
 lisa-guard = { path = "../../libs/lisa-guard" }
 clap_complete = "4.6.7"

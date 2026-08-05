@@ -406,6 +406,15 @@ enum GuardCmd {
 
 #[derive(Subcommand)]
 enum DevCmd {
+    /// Are rootless containers usable here? Checks the prerequisites
+    /// that fail SILENTLY (#130): the subuid/subgid range, the uidmap
+    /// helpers, podman, and room on the filesystem the container store
+    /// actually lands on.
+    Doctor {
+        /// Space to plan for, in GiB (default: a modest first install).
+        #[arg(long, default_value_t = 4)]
+        needs: u64,
+    },
     /// Check an app tree: the single authority on what a valid Lisa app
     /// is (ADR-0050 §4). Exits non-zero with findings; `lisa forge`
     /// runs it as its verifier.
@@ -789,6 +798,7 @@ fn run() -> anyhow::Result<()> {
         }
         Command::Dev { cmd } => match cmd {
             DevCmd::Check { path } => dev::check_cmd(path),
+            DevCmd::Doctor { needs } => dev::doctor_cmd(needs),
         },
         Command::Skills { cmd } => match cmd {
             SkillsCmd::List => skills::list(),
