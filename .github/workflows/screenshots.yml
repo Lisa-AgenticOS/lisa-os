@@ -9,6 +9,30 @@
 # `lisa-screenshots` artifact (PNGs + index) for the websites and a
 # SPLASH: PRESENT/ABSENT verdict (informational, not a gate yet).
 #
+# WHAT THE SPLASH ACTUALLY LOOKS LIKE (#26). Two forensics rounds
+# concluded "the early framebuffer is black" while testing for a VIOLET
+# frame. The theme that would have painted violet — a hand-made
+# `lisa.plymouth` — was deleted on 2026-07-28 (1fec591) because it loaded
+# and failed. What ships now is Arch's stock `bgrt` theme with our
+# watermark swapped in, and read off the reference device its background
+# is literally `BackgroundStartColor=0x000000`:
+#
+#     /usr/share/plymouth/themes/bgrt/bgrt.plymouth  -> ModuleName=two-step
+#     ImageDir=/usr/share/plymouth/themes//spinner
+#     BackgroundStartColor=0x000000 / BackgroundEndColor=0x000000
+#
+# So a PERFECTLY captured Lisa splash is a black field carrying a small
+# white spinner and the 128x37 white Lisa watermark at
+# WatermarkVerticalAlignment=.96 — whole-frame mean well under 0.01 and
+# r≈g≈b. Both of the old gates (`mean > 0.02`, `b > g*1.15 && r > g`)
+# reject it by construction: the run could not have said PRESENT even
+# with the splash dead centre in the frame. The detector below therefore
+# looks for the WATERMARK — a dark frame whose bottom-centre band is
+# bright, confirmed by template-matching the very PNG this repo ships —
+# and keeps the violet test only so a future violet theme still trips it.
+# #26's acceptance line ("a genuinely r>g frame") describes the deleted
+# theme and wants rewording to match.
+#
 # Rebuilds fresh instead of downloading the nightly artifact: artifact
 # download across workflows needs a run id + token plumbing and goes
 # stale after 7 days; the rebuild is the same three commands nightly
@@ -87,31 +111,27 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -qq -y --no-install-recommends \
             qemu-system-x86 ovmf imagemagick sshpass >/dev/null
-      # UEFI boot from disk, exactly like the ab-rollback job — so
-      # systemd-boot runs and the baked cmdline (`quiet splash`,
-      # ADR-0017) engages Plymouth on the virtio-vga framebuffer.
-      # -display none still renders into the device; QMP `screendump`
-      # reads the framebuffer headlessly. Serial output goes to a file
-      # (the baked console=ttyS0 keeps the framebuffer clean for the
-      # splash AND gives us a boot log for the artifact). User-net
-      # hostfwd 2222->22 lets the runner ssh in (sshd enabled by the
-      # image preset; provisional lisa/lisa password auth per STATUS).
-      - name: Boot graphically + capture screendump timeline
+      # Two small helpers both boot passes share. Kept in their own step
+      # so the splash pass can run before the long desktop pass and so
+      # ONE definition of "is this frame the splash?" serves the capture
+      # loop, the index and the summary — the previous copy-in-two-places
+      # is how the verdict drifted away from the theme that ships.
+      - name: Write the QMP + frame-classification helpers
         run: |
           set -o pipefail
-          mkdir -p shots
           # One QMP command per connection: QMP allows a single client,
           # and reconnecting per call keeps every dump independent.
+          # QMP_SOCK selects which VM (the splash pass runs its own).
           cat > qmp.py <<'EOF'
           #!/usr/bin/env python3
           """qmp.py <command> [screendump-filename] — one QMP command per run."""
-          import json, socket, sys
+          import json, os, socket, sys
 
           cmd = sys.argv[1]
           args = {"filename": sys.argv[2]} if cmd == "screendump" else {}
           s = socket.socket(socket.AF_UNIX)
           s.settimeout(60)
-          s.connect("qmp.sock")
+          s.connect(os.environ.get("QMP_SOCK", "qmp.sock"))
           f = s.makefile("rw")
           json.loads(f.readline())  # server greeting
           for payload in ({"execute": "qmp_capabilities"},
@@ -131,6 +151,207 @@ jobs:
                   if "error" in resp:
                       sys.exit(f"QMP {cmd} failed: {resp['error']}")
           EOF
+          # The watermark the splash draws, flattened onto black exactly
+          # as Plymouth composites it (the shipped PNG is white on
+          # transparent). This is the template the detector matches, so
+          # the test is against the artifact we actually install rather
+          # than against a colour somebody remembered.
+          convert os/mkosi/mkosi.extra/usr/share/plymouth/themes/spinner/watermark.png \
+            -background black -alpha remove -alpha off wm-ref.png
+          identify wm-ref.png
+          cat > classify.sh <<'EOF'
+          #!/usr/bin/env bash
+          # classify.sh <frame.ppm|png> [splash-eligible]
+          # -> "mean r g b bandmean bandmax rmse note", one line, never fails.
+          #
+          # Geometry, not colour. The Lisa splash is stock `bgrt`/two-step on
+          # a 0x000000 background: a small white spinner at
+          # VerticalAlignment=.7 and the 128x37 white watermark at
+          # WatermarkVerticalAlignment=.96, HorizontalAlignment=.5. So the
+          # signature is "frame is dark AND the bottom-centre band is
+          # bright", expressed in PERCENTAGES so it holds at any scanout
+          # resolution the firmware happens to pick.
+          #
+          # The band test alone would also accept centred white boot text,
+          # so a candidate is confirmed by template-matching wm-ref.png
+          # inside that band (compare -subimage-search). The match runs
+          # only on candidates — it is the expensive half — and its
+          # normalised RMSE is printed either way, so a frame that looked
+          # right and matched badly is visible instead of silently dropped.
+          set -uo pipefail
+          f=$1; elig=${2:-}
+          stats=$(identify -format '%[fx:mean] %[fx:mean.r] %[fx:mean.g] %[fx:mean.b] %w %h' "$f" 2>/dev/null) \
+            || { echo "- - - - - - - unreadable"; exit 0; }
+          read -r M R G B W H <<<"$stats"
+          # Crop in PIXELS derived from the frame's own size. `-crop` takes
+          # percentages for width/height but its offsets are always pixels,
+          # so a "+30%+82%" geometry silently crops at +30+82 — the top-left
+          # corner, i.e. exactly not where the watermark is.
+          cw=$(( W * 40 / 100 )); ch=$(( H * 16 / 100 ))
+          cx=$(( W * 30 / 100 )); cy=$(( H * 82 / 100 ))
+          geom="${cw}x${ch}+${cx}+${cy}"
+          band=$(convert "$f" -crop "$geom" +repage \
+                   -format '%[fx:mean] %[fx:maxima]' info: 2>/dev/null) || band="- -"
+          read -r WM WX <<<"$band"
+          RMSE=-
+          note=black
+          awk -v m="$M" 'BEGIN{exit !(m>0.01)}' && note=content
+          if [ -n "$elig" ] && [ "$WM" != - ] \
+             && awk -v m="$M" -v w="$WM" -v x="$WX" \
+                  'BEGIN{exit !(m<0.15 && w>0.004 && x>0.5)}'; then
+            note=bright-bottom-band
+            convert "$f" -crop "$geom" +repage band.png 2>/dev/null
+            RMSE=$(compare -metric RMSE -subimage-search band.png wm-ref.png \
+                     /dev/null 2>&1 | sed -n 's/.*(\([0-9.e-]*\)).*/\1/p' | head -1)
+            [ -n "$RMSE" ] || RMSE=-
+            if [ "$RMSE" != - ] && awk -v d="$RMSE" 'BEGIN{exit !(d<0.20)}'; then
+              note=splash-watermark
+            fi
+          fi
+          # Kept for the day a violet theme comes back: #6D45C9 is r=109,
+          # g=69, b=201, so both blue AND red lead green. Nothing ships
+          # this today — it is a second, independent way to be right.
+          if [ -n "$elig" ] && [ "$note" != splash-watermark ] \
+             && awk -v m="$M" -v r="$R" -v g="$G" -v b="$B" \
+                  'BEGIN{exit !(m>0.02 && b>g*1.15 && r>g)}'; then
+            note=violet-splash
+          fi
+          printf '%s %s %s %s %s %s %s %s\n' "$M" "$R" "$G" "$B" "$WM" "$WX" "$RMSE" "$note"
+          EOF
+          chmod +x classify.sh
+      # ---------------------------------------------------------------
+      # THE SPLASH PASS (#26) — a short, throwaway boot whose only job is
+      # the Plymouth window, run BEFORE the long desktop pass so its
+      # evidence lands even if the desktop later times out.
+      #
+      # THE TIMING ASSUMPTION, stated plainly: we do NOT assume we know
+      # WHEN the splash appears. Sampling starts the moment QEMU accepts
+      # QMP — before the firmware has handed off — and continues at a
+      # fixed 1 s cadence until the guest reaches the graphical target or
+      # a hard 6-minute cap. What we DO assume is that the splash window
+      # is WIDER THAN 1 SECOND: it opens when plymouth-start binds a DRM
+      # device and closes when GDM takes the framebuffer, which on the
+      # reference device is seconds, and under TCG here is longer still
+      # (no KVM on GitHub runners). If that assumption is ever false the
+      # index shows a dense unbroken run of black frames with no gap, and
+      # the cadence — not the splash — is what to change.
+      #
+      # It is a SECOND boot, not extra dumps in the first, because the
+      # one open question in #26 is the display device: the desktop pass
+      # keeps `-device virtio-vga` (which produces the desktop and
+      # Assistant frames that already work) and this pass runs plain
+      # `-device VGA` (simpledrm binds its framebuffer). That is a
+      # controlled A/B rather than the blind swap the issue thread
+      # explicitly refused. `snapshot=on` on the disk means this boot
+      # writes to a throwaway overlay and the desktop pass still gets a
+      # clean image.
+      #
+      # NOTHING HERE FAILS THE JOB. Every exit path is a warning plus a
+      # recorded reason in shots/splash-index.txt: a splash that did not
+      # show up is a finding, and a run must not go red over the guest
+      # booting faster than a sampling loop.
+      - name: Splash pass — dedicated early-boot capture (-device VGA)
+        run: |
+          set -o pipefail
+          mkdir -p shots
+          : > shots/splash-index.txt
+          record() { printf '%s\n' "$*" >> shots/splash-index.txt; }
+          record "# splash pass: -device VGA, snapshot=on, 1s cadence, 360s cap"
+          record "frame            t(s)  mean    r       g       b       band    bandmax rmse    note"
+          cp /usr/share/OVMF/OVMF_VARS_4M.fd splash-vars.fd
+          export QMP_SOCK=splash-qmp.sock
+          qemu-system-x86_64 \
+            -machine q35 -accel kvm -accel tcg -m 4G \
+            -display none -device VGA \
+            -serial file:splash-serial.log \
+            -qmp unix:splash-qmp.sock,server=on,wait=off \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+            -drive if=pflash,format=raw,file=splash-vars.fd \
+            -drive file=os/mkosi/lisa.raw,format=raw,if=virtio,snapshot=on &
+          SPLASH_PID=$!
+          for _ in $(seq 1 30); do [ -S splash-qmp.sock ] && break; sleep 1; done
+          if [ ! -S splash-qmp.sock ]; then
+            echo "::warning::splash pass: QEMU never opened its QMP socket — no splash evidence from this pass"
+            record "(QEMU never opened splash-qmp.sock — pass produced no frames)"
+            kill "$SPLASH_PID" 2>/dev/null || true
+            exit 0
+          fi
+          t0=$(date +%s); deadline=$((t0 + 360))
+          n=0; kept=0; found=0; after=0; dm=0; fails=0; consec=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            frame=$(printf 'shots/splash-%03d.ppm' "$n")
+            if python3 qmp.py screendump "$PWD/$frame"; then
+              consec=0
+              t=$(( $(date +%s) - t0 ))
+              read -r M R G B WM WX RM NOTE <<<"$(./classify.sh "$frame" splash-eligible)"
+              # Retain anything that is not a black frame, plus every 15th
+              # black one — the sparse baseline is what proves the loop was
+              # sampling rather than stalled, and it is what makes an
+              # ABSENT verdict readable instead of an empty directory.
+              if [ "$NOTE" != black ] || [ $((n % 15)) -eq 0 ]; then
+                record "$(printf '%-16s %-5s %-7s %-7s %-7s %-7s %-7s %-7s %-7s %s' \
+                  "$(basename "$frame")" "$t" "$M" "$R" "$G" "$B" "$WM" "$WX" "$RM" "$NOTE")"
+                kept=$((kept+1))
+              else
+                rm -f "$frame"
+              fi
+              case "$NOTE" in splash-watermark|violet-splash) found=1 ;; esac
+            else
+              fails=$((fails+1)); consec=$((consec+1))
+              rm -f "$frame"
+              # A dead QMP socket spins this loop for the whole cap
+              # producing nothing. Twenty consecutive failures is not
+              # timing, it is a dead VM — stop and say which it was.
+              if [ "$consec" -ge 20 ]; then
+                record "(20 consecutive screendump failures — QEMU or QMP died; pass abandoned)"
+                break
+              fi
+            fi
+            # Stop conditions, in order of confidence: five more frames
+            # after the first hit (so the artifact carries context, not a
+            # single lucky sample); ten more after the display manager
+            # takes the framebuffer (the splash window is closed by then);
+            # otherwise the cap.
+            if [ "$found" = 1 ]; then
+              after=$((after+1)); [ "$after" -ge 5 ] && break
+            fi
+            if grep -qE 'Reached target Graphical Interface|Starting GNOME Display Manager' splash-serial.log 2>/dev/null; then
+              dm=$((dm+1)); [ "$dm" -ge 10 ] && break
+            fi
+            n=$((n+1)); sleep 1
+          done
+          # Always keep a last frame, so the artifact is never empty even
+          # when every sample was black.
+          python3 qmp.py screendump "$PWD/shots/splash-final.ppm" || true
+          if [ -f shots/splash-final.ppm ]; then
+            read -r M R G B WM WX RM NOTE <<<"$(./classify.sh shots/splash-final.ppm splash-eligible)"
+            record "$(printf '%-16s %-5s %-7s %-7s %-7s %-7s %-7s %-7s %-7s %s' \
+              splash-final.ppm "$(( $(date +%s) - t0 ))" "$M" "$R" "$G" "$B" "$WM" "$WX" "$RM" "$NOTE")"
+            case "$NOTE" in splash-watermark|violet-splash) found=1 ;; esac
+          fi
+          record "# sampled $((n+1)) frames in $(( $(date +%s) - t0 ))s; kept $kept; $fails screendump errors; splash found=$found"
+          python3 qmp.py quit || true
+          wait "$SPLASH_PID" || true
+          if [ "$found" = 1 ]; then
+            echo "splash pass: watermark found on -device VGA"
+          else
+            echo "splash pass: no splash frame on -device VGA (see shots/splash-index.txt)"
+          fi
+      # UEFI boot from disk, exactly like the ab-rollback job — so
+      # systemd-boot runs and the baked cmdline (`quiet splash`,
+      # ADR-0017) engages Plymouth on the virtio-vga framebuffer.
+      # -display none still renders into the device; QMP `screendump`
+      # reads the framebuffer headlessly. Serial output goes to a file
+      # (the baked console=ttyS0 keeps the framebuffer clean for the
+      # splash AND gives us a boot log for the artifact). User-net
+      # hostfwd 2222->22 lets the runner ssh in (sshd enabled by the
+      # image preset; provisional lisa/lisa password auth per STATUS).
+      - name: Boot graphically + capture screendump timeline
+        run: |
+          set -o pipefail
+          mkdir -p shots
+          # qmp.py comes from the helpers step; QMP_SOCK defaults to
+          # qmp.sock, which is this pass's socket.
           cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
           qemu-system-x86_64 \
             -machine q35 -accel kvm -accel tcg -m 4G \
@@ -149,16 +370,16 @@ jobs:
             exit 1
           fi
 
-          # Phase 1 — early boot, dense cadence (2s for 40s, then 10s to
-          # ~100s). Run-1 lesson: under KVM a 10s cadence boots straight
-          # past the early phase. Run-2 lesson: even at 2s the framebuffer
-          # is BLACK through the initrd — Plymouth's units run (serial log)
-          # but its painting never reaches the captured scanout in this VM.
-          # ADR-0025 landed the first half of the suspected fix: `virtio_gpu`
-          # now rides KernelInitrdModules=, so a real DRM driver — not just
-          # the builtin simpledrm on the EFI GOP — drives virtio-vga during
-          # the initrd. If these frames are still black, the remaining lever
-          # is the display device (`-device VGA`). Issue #26.
+          # Phase 1 — early boot on virtio-vga, dense cadence (2s for 40s,
+          # then 10s to ~100s). Run-1 lesson: under KVM a 10s cadence boots
+          # straight past the early phase. Run-2 lesson: even at 2s these
+          # frames read as black — though "black" was measured with a
+          # detector that could not have passed the shipped theme either
+          # (see the header). ADR-0025 put `virtio_gpu` on
+          # KernelInitrdModules=, so a real DRM driver drives virtio-vga
+          # during the initrd. These frames are now the CONTROL ARM of the
+          # display-device A/B: the splash pass above ran the same boot on
+          # plain `-device VGA`, and the summary reports both. Issue #26.
           sleep 3
           n=0
           for _ in $(seq 1 20); do
@@ -203,6 +424,25 @@ jobs:
             exit 1
           fi
           echo "sshd is up"
+
+          # Splash forensics from INSIDE the guest (#26). A black frame has
+          # two very different causes — nothing painted, or something
+          # painted that our detector cannot see — and only the guest can
+          # say which theme Plymouth actually resolved. Read-only, and it
+          # runs while we are waiting for the session anyway. `|| true`:
+          # this is evidence, not a gate.
+          ssh_guest 'echo "== plymouth-set-default-theme"; plymouth-set-default-theme 2>&1
+            echo "== default.plymouth symlink"; ls -l /usr/share/plymouth/themes/default.plymouth 2>&1
+            test -e /usr/share/plymouth/themes/default.plymouth \
+              && echo "   -> RESOLVES" || echo "   -> DANGLING"
+            echo "== watermark shipped?"; ls -l /usr/share/plymouth/themes/spinner/watermark.png \
+              /usr/share/plymouth/themes/spinner/.lisa-branded 2>&1
+            echo "== theme background"; grep -E "^(Background|ModuleName|ImageDir|Watermark)" \
+              /usr/share/plymouth/themes/bgrt/bgrt.plymouth 2>&1
+            echo "== plymouth units"; journalctl -b --no-pager -u plymouth-start -u plymouth-quit 2>&1 | tail -20' \
+            > splash-theme.txt 2>&1 || true
+          cat splash-theme.txt || true
+
           session=""
           for _ in $(seq 1 40); do  # <= ~10 min
             if ssh_guest 'test -S /run/user/1000/wayland-0' 2>/dev/null; then session=1; break; fi
@@ -240,13 +480,13 @@ jobs:
 
           python3 qmp.py quit || true
           wait "$QEMU_PID" || true
-      # PPM -> PNG, per-frame brightness index, and the splash verdict.
-      # Heuristic: the Plymouth theme is violet (#6D45C9 — blue channel
-      # well above green) on a dark background, while firmware/console
-      # frames are black or grey (r≈g≈b). An early frame with visible
-      # content (mean > 0.02) whose blue mean leads green by >15% reads
-      # as the splash. Informational only — printed, never a failure.
+      # PPM -> PNG, per-frame index, and the splash verdict for BOTH
+      # passes. `if: always()` because the splash evidence is the product
+      # this workflow owes #26, and losing it because phase 2 timed out
+      # waiting for a desktop is exactly how the last two rounds ended up
+      # re-deriving everything by hand.
       - name: Convert frames + splash verdict
+        if: always()
         run: |
           set -o pipefail
           shopt -s nullglob
@@ -261,49 +501,56 @@ jobs:
           # The verdict is decided inside a `{ ... } | tee` pipeline, i.e. a
           # SUBSHELL — a plain SPLASH=PRESENT there is discarded on exit and
           # the summary below always printed ABSENT, however violet the
-          # frames were. Carry it out through a file instead.
-          rm -f splash.verdict
+          # frames were. Carry it out through files instead.
+          rm -f splash-vga.verdict splash-virtio.verdict
           {
-            echo "frame                mean    r       g       b       note"
+            echo "frame                mean    r       g       b       band    bandmax rmse    note"
             for f in "${pngs[@]}"; do
-              stats=$(identify -format '%[fx:mean] %[fx:mean.r] %[fx:mean.g] %[fx:mean.b]' "$f") \
-                || { echo "$(basename "$f")  (identify failed — corrupt frame?)"; continue; }
-              read -r M R G B <<<"$stats"
-              note=black
-              awk -v m="$M" 'BEGIN{exit !(m>0.01)}' && note=content
-              case "$f" in shots/shot-*)
-                # Lisa's Plymouth theme is #6D45C9: r=109, g=69, b=201.
-                # BOTH blue and red exceed green, and #26's acceptance
-                # says so in as many words — "a genuinely r>g frame".
-                # The test used to check blue alone, which any plain-blue
-                # frame passes; a verdict looser than its own acceptance
-                # is a verdict that can report PRESENT for the wrong
-                # pixels.
-                if awk -v m="$M" -v r="$R" -v g="$G" -v b="$B" \
-                     'BEGIN{exit !(m>0.02 && b>g*1.15 && r>g)}'; then
-                  note=violet-splash; echo PRESENT > splash.verdict
-                fi ;;
+              # Only early-boot frames are splash-eligible: the desktop and
+              # Assistant frames are bright by design and must never be
+              # able to carry the verdict.
+              elig=""
+              case "$(basename "$f")" in shot-*|splash-*) elig=splash-eligible ;; esac
+              read -r M R G B WM WX RM note <<<"$(./classify.sh "$f" $elig)"
+              case "$note:$(basename "$f")" in
+                splash-watermark:splash-*|violet-splash:splash-*) echo PRESENT > splash-vga.verdict ;;
+                splash-watermark:shot-*|violet-splash:shot-*)     echo PRESENT > splash-virtio.verdict ;;
               esac
-              printf '%-20s %-7.4f %-7.4f %-7.4f %-7.4f %s\n' \
-                "$(basename "$f")" "$M" "$R" "$G" "$B" "$note"
+              printf '%-20s %-7s %-7s %-7s %-7s %-7s %-7s %-7s %s\n' \
+                "$(basename "$f")" "$M" "$R" "$G" "$B" "$WM" "$WX" "$RM" "$note"
             done
           } | tee shots/index.txt
+          VGA=ABSENT;    [ -f splash-vga.verdict ]    && VGA=PRESENT
+          VIRTIO=ABSENT; [ -f splash-virtio.verdict ] && VIRTIO=PRESENT
           SPLASH=ABSENT
-          [ -f splash.verdict ] && SPLASH=$(cat splash.verdict)
-          echo "SPLASH: $SPLASH"
+          { [ "$VGA" = PRESENT ] || [ "$VIRTIO" = PRESENT ]; } && SPLASH=PRESENT
+          echo "SPLASH: $SPLASH  (VGA pass: $VGA, virtio-vga pass: $VIRTIO)"
+          # A splash we did not capture is a finding to report, never a
+          # reason to go red: the cause is as often boot timing under TCG
+          # as it is a real regression, and a flaky gate teaches people to
+          # ignore the one signal this workflow exists to produce.
+          if [ "$SPLASH" = ABSENT ]; then
+            echo "::warning::SPLASH ABSENT on both display devices — see the job summary and shots/splash-index.txt for which of the three causes it is"
+          fi
 
           # WHY THIS IS IN THE SUMMARY AND NOT ONLY THE LOG. #26 has been
           # through two forensics rounds, each of which had to re-derive
-          # the same facts by hand from a 14-day artifact. The remaining
-          # decision — keep `-device virtio-vga` or fall back to plain
-          # `-device VGA` so simpledrm binds — turns on ONE question: did
-          # a real DRM driver bind during the initrd, now that
-          # `virtio_gpu` rides KernelInitrdModules=? The serial log
-          # answers it and nothing was reading the answer out.
+          # the same facts by hand from a 14-day artifact. Three separate
+          # questions decide it, so the summary answers all three:
+          #   1. did a DRM driver bind in the initrd? (serial log)
+          #   2. does the display device matter?      (the VGA/virtio A/B)
+          #   3. what did Plymouth actually resolve?  (guest forensics)
           {
             echo "## Boot splash (#26)"
             echo
-            echo "**SPLASH: $SPLASH** — display device: \`virtio-vga\`"
+            echo "**SPLASH: $SPLASH** — \`-device VGA\` pass: **$VGA**, \`-device virtio-vga\` pass: **$VIRTIO**"
+            echo
+            echo "The detector looks for the 128x37 Lisa **watermark** in the"
+            echo "bottom-centre of a dark frame (stock \`bgrt\`/two-step paints"
+            echo "on \`BackgroundStartColor=0x000000\`), confirmed by matching"
+            echo "the shipped \`watermark.png\`. It is NOT a violet test — the"
+            echo "violet \`lisa\` theme was deleted in 1fec591, so the old"
+            echo "gate could not have passed even a perfect capture."
             echo
             echo "### Which DRM driver bound, and when"
             echo '```'
@@ -311,21 +558,42 @@ jobs:
             # exits 0 on empty input, so `grep | head || echo` can never
             # print the fallback and an empty evidence block looks like a
             # rendering glitch instead of the finding it is).
-            drm=$(grep -iE "virtio_gpu|virtio-gpu|simpledrm|\[drm\]|plymouth" serial.log | head -40)
-            if [ -n "$drm" ]; then echo "$drm"; else echo "(no drm/plymouth lines in serial.log)"; fi
+            for log in serial.log splash-serial.log; do
+              [ -f "$log" ] || continue
+              echo "--- $log"
+              drm=$(grep -iE "virtio_gpu|virtio-gpu|simpledrm|\[drm\]|plymouth" "$log" | head -25)
+              if [ -n "$drm" ]; then echo "$drm"; else echo "(no drm/plymouth lines)"; fi
+            done
             echo '```'
             echo
-            echo "### Early frames"
+            echo "### Splash pass frames (\`-device VGA\`)"
             echo '```'
-            head -12 shots/index.txt
+            if [ -f shots/splash-index.txt ]; then head -25 shots/splash-index.txt
+            else echo "(the splash pass produced no index — it did not run)"; fi
             echo '```'
+            echo
+            echo "### Early frames (\`-device virtio-vga\`)"
+            echo '```'
+            grep -E '^(frame|shot-)' shots/index.txt | head -12
+            echo '```'
+            if [ -f splash-theme.txt ]; then
+              echo
+              echo "### What Plymouth resolved inside the guest"
+              echo '```'
+              cat splash-theme.txt
+              echo '```'
+            fi
             if [ "$SPLASH" = ABSENT ]; then
               echo
-              echo "> Every early frame is black. If the lines above show"
-              echo "> \`virtio_gpu\` binding, the module is not the problem and"
-              echo "> the next lever is \`-device VGA\` (simpledrm binds its"
-              echo "> framebuffer). If they show no DRM driver at all, the"
-              echo "> initrd module list is still the problem."
+              echo "> No frame carried the watermark. Read the three blocks above in order:"
+              echo "> **no DRM/plymouth lines at all** ⇒ the initrd module list is still"
+              echo "> the problem; **one device found it and the other did not** ⇒ the"
+              echo "> display device is the lever and the passing one should become the"
+              echo "> default; **\`default.plymouth -> DANGLING\` or a theme that is not"
+              echo "> \`bgrt\`** ⇒ the image is shipping a broken theme link and the VM is"
+              echo "> only the messenger; **all three clean and every frame black** ⇒ the"
+              echo "> splash window is narrower than the 1 s cadence, which is the one"
+              echo "> assumption this job makes."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload screenshots artifact
@@ -336,5 +604,7 @@ jobs:
           path: |
             shots/
             serial.log
+            splash-serial.log
+            splash-theme.txt
           if-no-files-found: warn
           retention-days: 14
