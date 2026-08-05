@@ -86,10 +86,45 @@ def js(tokens):
     )
 
 
+def theme(tokens):
+    """Tailwind v4 `@theme` block — the websites' entry point.
+
+    The two Nuxt sites used to invent their own neutrals: a cooler
+    paper and ink than tokens.json sanctions, with only the violet
+    matching by luck. That is the "fourth violet" defect (ADR-0038
+    step 1) living in the one tree the lint gate did not cover, so
+    the brand could drift on its own marketing site with nothing
+    going red. Emitting a `@theme` block makes Tailwind utilities
+    and the Nuxt UI theme read the same file GTK and GJS already do.
+
+    Names follow Tailwind's `--color-<name>` convention so every
+    utility (`bg-paper`, `text-ink-500`, `border-line-200`) and every
+    Nuxt UI token resolves against this palette with no mapping layer
+    in between — one vocabulary, four consumers.
+    """
+    lines = [
+        "/* GENERATED from branding/tokens.json — edit that, then run",
+        "   python3 branding/generate-tokens.py. Hand edits are overwritten. */",
+        "",
+        "@theme {",
+    ]
+    for _group, name, value, role in flat(tokens):
+        comment = f" /* {role} */" if role else ""
+        lines.append(f"  --color-{name}: {value};{comment}")
+    lines.append(f"  --font-ui: \"{tokens['font']['ui']['value']}\", system-ui, sans-serif;")
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main():
     tokens = json.loads((ROOT / "tokens.json").read_text())
     out = ROOT / "out"
-    want = {out / "tokens.css": css(tokens), out / "tokens.js": js(tokens)}
+    want = {
+        out / "tokens.css": css(tokens),
+        out / "tokens.js": js(tokens),
+        out / "tokens.theme.css": theme(tokens),
+    }
 
     if "--check" in sys.argv:
         stale = [

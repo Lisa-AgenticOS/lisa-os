@@ -1,0 +1,37 @@
+/* GENERATED from branding/tokens.json — edit that, then run
+   python3 branding/generate-tokens.py. Hand edits are overwritten. */
+
+@theme {
+  --color-violet-700: #4F378B; /* brand / wordmark / deep surfaces */
+  --color-violet-500: #6D45C9; /* PRIMARY UI: buttons, toggles, links, the L tile */
+  --color-violet-300: #9B7BE8; /* hovers, gradient top, soft accents */
+  --color-ink-900: #2B2320; /* primary text on light */
+  --color-ink-700: #4A423D;
+  --color-ink-500: #6E635C; /* secondary text */
+  --color-ink-300: #9A8F88; /* tertiary / captions */
+  --color-line-200: #E7DED8; /* borders, dividers */
+  --color-warm-white: #FFF1E9; /* on-dark text, warm surfaces */
+  --color-paper: #FAF7F5; /* light app background */
+  --color-surface: #FFFFFF; /* light cards */
+  --color-base: #1B1917; /* dark app background */
+  --color-elevated: #262220;
+  --color-card: #302B28;
+  --color-line: #3C3531;
+  --color-text-primary: #FFF1E9;
+  --color-text-secondary: #B7ABA3;
+  --color-success: #3E9B6B;
+  --color-warning: #E0A030;
+  --color-error: #D6453C;
+  --color-info: #4A7DB0;
+  --color-error-soft: #FFB3B3; /* error/warning text on dark surfaces, where error-500 loses contrast (consent warnings) */
+  --color-egress: #E66100; /* EXACTLY ONE MEANING: 'this leaves your hardware'. Remote/offload actions and their consent toggles. Never brand, never generic UI. */
+  --color-violet: #6D45C9; /* brand violet-500; the first account gets the house colour */
+  --color-teal: #2F8C8C; /* account identity */
+  --color-amber: #C97F2F; /* account identity */
+  --color-rose: #C04C7A; /* account identity */
+  --color-moss: #5C8A3C; /* account identity */
+  --color-slate: #556B8D; /* account identity */
+  --color-plum: #8B4A8B; /* account identity */
+  --color-clay: #A05A45; /* account identity */
+  --font-ui: "Rubik", system-ui, sans-serif;
+}

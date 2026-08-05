@@ -18,8 +18,7 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
            and the uploaded logo appeared nowhere for a reviewer to
            match it against. -->
       <a class="brandlink" href="/" aria-label="Lisa OS">
-        <img class="brandmark" src="/lisaos-logo.png" alt="Lisa OS logo" width="28" height="28">
-        <span class="brandname">Lisa OS</span>
+        <svg class="brand" viewBox="0 0 24 7" aria-label="Lisa OS" style="display:inline-block;vertical-align:middle"><g class="wm" v-html="wm" /></svg>
       </a>
       <div class="menu">
         <a href="#what">What it is</a>
@@ -305,8 +304,20 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       </div>
     </div>
 
+    <!-- The logo image and the full name "Lisa OS" stay on the page,
+         here rather than in the nav. Both are load-bearing for Google's
+         OAuth brand verification (approved 2026-08-02): the review
+         failed once because the consent screen says "Lisa OS" while the
+         page showed a wordmark reading "Lisa", and because the uploaded
+         logo appeared nowhere a reviewer could match it against. The
+         nav wordmark is the owner's call (2026-08-05); keeping the
+         evidence visible is the cheap insurance against re-review. -->
     <footer>
-      <span class="mono">LISA OS · GPL-2.0 · BUILT IN THE OPEN</span>
+      <span class="brandfoot">
+        <img src="/lisaos-logo.png" alt="Lisa OS logo" width="24" height="24">
+        <strong>Lisa OS</strong>
+      </span>
+      <span class="mono">GPL-2.0 · BUILT IN THE OPEN</span>
       <span>
         <a :href="repo">GitHub</a> · <a :href="docs">Docs</a> ·
         <NuxtLink to="/privacy/">Privacy</NuxtLink> ·
@@ -320,8 +331,9 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
 /* The name and the logo have to be visibly present and legible: an
    OAuth reviewer matches both against the consent screen. */
 .brandlink { display: inline-flex; align-items: center; gap: .5rem; text-decoration: none; color: inherit; }
-.brandmark { width: 28px; height: 28px; border-radius: 6px; display: block; }
-.brandname { font-weight: 650; letter-spacing: .01em; font-size: 1.02rem; }
+.brandfoot { display: inline-flex; align-items: center; gap: .5rem; }
+.brandfoot img { width: 24px; height: 24px; border-radius: 6px; display: block; }
+.brandfoot strong { font-weight: 650; color: var(--ink); }
 .scopes { padding-left: 1.05rem; margin: .5rem 0; }
 .scopes li { margin: .35rem 0; }
 .scopes code { font-size: .92em; }
