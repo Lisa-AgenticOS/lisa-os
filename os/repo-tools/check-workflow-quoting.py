@@ -101,6 +101,21 @@ def main():
     for path in sorted(list(WORKFLOWS.glob("*.yml")) + list(WORKFLOWS.glob("*.yaml"))):
         for line_no, script in run_blocks(path):
             checked += 1
+            # A run block containing any ${{ }} is templated as a WHOLE,
+            # and GitHub caps templated strings at 21000 characters — the
+            # dispatch then fails to parse ("Exceeded max expression
+            # length"), which is how every release dispatch silently
+            # broke between 2026-08-04 evening and 2026-08-05 (fixed in
+            # 564c9f0 by passing VER via env:). Gate at 20000 so the
+            # failure arrives with margin, at lint time, not at the next
+            # release. Blocks with no expression have no cap.
+            if "${{" in script and len(script) > 20000:
+                failures += 1
+                print(f"{path}: the `run:` block starting at line {line_no} "
+                      f"contains a ${{{{ }}}} expression and is {len(script)} "
+                      f"characters — GitHub templates such a block whole and "
+                      f"rejects it past 21000. Pass the value through `env:` "
+                      f"so the block carries no expression.", file=sys.stderr)
             proc = subprocess.run(
                 ["bash", "-n"],
                 input=EXPR.sub("GHEXPR", script),

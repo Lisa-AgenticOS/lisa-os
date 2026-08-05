@@ -34,7 +34,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SURFACES = ["apps/*/*.js", "apps/*/lib/*.js", "shell/*/*.js", "shell/*/lib/*.js"]
+# **/*.js, not two hardcoded levels: the first version globbed exactly
+# apps|shell/*/{,lib/}*.js, which silently excluded
+# shell/overlay-extension/backend/*.js and every deeper path — the gate
+# then reported "checked N" while never having looked at the files it
+# skipped. A gate that is quiet about its own blind spots reads as
+# coverage it does not have.
+SURFACES = ["apps/**/*.js", "shell/**/*.js"]
 
 SET_PARENT = re.compile(r"\.set_parent\s*\(")
 UNPARENT = re.compile(r"\.unparent\s*\(")
