@@ -131,6 +131,35 @@ Two of those are less obvious than they look:
   contribute.** A badge is a call to action; a permanent 912 from junk
   teaches people to ignore every badge on the rail. Archive is
   deliberately not exempt — mail you filed unread is still unread.
+- **The dock badge is the same argument, one level up (#190).** The rail
+  badges an account; the dock badges the app, so it publishes *unread
+  INBOX summed across every account* — one icon, one number. Sent,
+  Drafts and Archive are not waiting for anybody and Spam is the
+  permanent-912 problem again.
+
+  It goes out as `com.canonical.Unity.LauncherEntry.Update`, a
+  convention we did not invent: Lisa's dock is a consumer of a standard
+  rather than of something ours, and Mail badges on any desktop that
+  reads it. `lib/launcher.js` holds the whole contract — what to count,
+  the uri, the property names and their D-Bus types — with no Mail
+  imports and no GTK, so `tests/launcher.test.js` pins the wire spelling
+  and a future app can call the same three lines with its own id. (It
+  lives here rather than in a shared GJS library because there is no
+  shared GJS library yet — ADR-0047 §6 asks for one and it is unbuilt.
+  Nothing in the file knows what mail is, so that move is a `git mv`.)
+
+  **Count 0 is published, not withheld.** `count-visible: false` is how
+  the convention says *clear it*, and the usual way this is implemented
+  wrongly is to emit when the number goes up and go quiet when it goes
+  to zero, leaving yesterday's number on the icon forever.
+
+  It is emitted from `reloadFolders` (sync, account switch, startup),
+  from `runAction` (the toolbar: mark read, archive, trash) and from
+  `writeAction` (the same three, done by an agent). The first of those
+  was the only one at first, and marking a message read calls
+  `loadFolder`, not `reloadFolders` — so the number went up on every
+  sync and came down on nothing.
+
 - **The colour is chosen if you chose one, and hashed from the Maildir
   root otherwise.** A hash is stable but unchosen — it never matches what
   an account looks like in your head — so Settings offers a swatch

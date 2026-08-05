@@ -3,7 +3,7 @@
     {
       "file": "mail.md",
       "about": "The Mail app: reading, searching and writing email",
-      "sha256": "f4440023324c3cea18ba10b449359c9d62ced2728a8dfef581c9a8cbb8bc43e8"
+      "sha256": "b9fe7f8932684ae6ae272b0eee703770fd072cfcd891897c57c412680fa1f9f2"
     },
     {
       "file": "surfer.md",
@@ -23,7 +23,7 @@
     {
       "file": "assistant.md",
       "about": "The Lisa Assistant chat window",
-      "sha256": "c4d284b0f3cb264a277825bcc65b409d1ca744f79ebbe4793ad0392b1413c830"
+      "sha256": "a121c5f8aa8d99d2b612e780a5e465d337221e7220a3d5b2c3d55cbcfd67e3ae"
     },
     {
       "file": "ledger.md",

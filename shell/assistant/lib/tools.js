@@ -1,18 +1,29 @@
-// The Agent Bus, as the Assistant needs to see it.
+// The Agent Bus, as the Assistant would need to see it — and does not.
 //
-// Pure: what to ask for, and what to do with the answer. The D-Bus calls
-// live in the window; everything that can be got wrong is here, where a
-// test can reach it.
+// # This module is NOT the caller. Read this before trusting it.
 //
-// # Read-tier only, deliberately
+// The Assistant window drives `dev.lisaos.Harness1`, and the harness
+// holds the tool catalog: `daemons/harnessd/src/dbus.rs` builds the
+// families and `libs/bus-tools` makes every `RequestCall`. Nothing in
+// `lisa-assistant.js` imports this file. It is the shape of a client
+// that existed before the loop became a daemon (ADR-0025), kept because
+// its `interpret` vocabulary is the one the window still renders and
+// because deleting a description of the contract is not the same as the
+// contract changing.
 //
-// This window can ask what is in your mail and your notes. It cannot
-// send, delete, or file anything. That is not caution for its own sake —
-// a write-tier call parks for confirmation, and answering that
-// confirmation from inside the model host is the hole #145 was opened to
-// close. The consent surface is now a separate process, so write tier is
-// *defensible*; it is still a second thing to get right and it is not
-// this change.
+// It is left here **stating that plainly** rather than left here reading
+// as live. A file that describes a policy nobody applies is the defect
+// CLAUDE.md rule 10 names — and the policy below is out of date in
+// exactly the way that matters: the write tier IS now offered to the
+// loop (#216), gated in `bus_tools::write_tier_allowed` and enforced in
+// agentd by `lisa_guard::judge_approval`, not by any filter in a GJS
+// window.
+//
+// If a surface ever needs its own bus client again, this is a sound
+// starting point and `offerable()` below is a read-only slice, which is
+// the right default for one. It is not what the Assistant runs.
+//
+// Pure: what to ask for, and what to do with the answer.
 //
 // The filter is the daemon's OWN tier, not a list of names kept here.
 //

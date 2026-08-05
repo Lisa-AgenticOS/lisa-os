@@ -151,9 +151,38 @@ turns good input into an error.
 
 | Family | When | Tier |
 |---|---|---|
-| Agent Bus (`bus-tools`) | always | read-tier only until #145 lands |
+| Agent Bus (`bus-tools`) | always | read; **write too** when the run is `prompt` class and a consent surface exists |
+| Memory (`remember`, `recall`) | when the store opens | its own |
 | Skills (`read_skill`) | when any skill is installed | read |
 | Workspace (files, commands) | **a granted folder AND the `prompt` class** | jailed to that folder |
+
+### Write tier (#216, #157)
+
+The loop is offered write-tier bus tools — `navigate`, `create_note` and
+whatever else an installed app declares `write` — when **both** hold:
+
+- the run's resolved class is `prompt` (a person is at a prompt surface,
+  clamped from the caller's transport identity below); and
+- `dev.lisaos.Consent1` is running or activatable, which the broker
+  answers, not a caller.
+
+**Destructive tier is never offered**, to any loop. `delete`, `send`,
+`wipe` stay out of the catalog: "the dialog will catch it" is a claim
+about a person's attention, and attention is the one thing a tier ladder
+must not spend.
+
+Neither of those conditions is the guardrail, and neither is in this
+daemon. The guardrail is in **agentd**, a different process the model
+cannot reach: a write parks, and `lisa_guard::judge_approval` refuses
+approval from any peer whose `/proc/<pid>/exe` is a model host — which
+this daemon is. So a write the model asks for can only be released by the
+consent surface. The second condition above is a usability gate: a tool
+that parks for a dialog that cannot exist is a hang, not a capability.
+
+Untrusted provenance escalates as it always did — a write following a
+`read_page` arrives with `web` in its chain, agentd resolves it one tier
+up, and the modal is the same dialog. `tests/injection-suite/tests/
+loop_write_tier.rs` runs that path end to end through a real loop.
 
 The families are assembled per run, so a surface with no workspace gets
 no file tools — absent, not disabled. A tool the model can call only to
@@ -171,6 +200,38 @@ The rule is applied to the WORKSPACE rather than to the provider list,
 so one value feeds both the tools and the system prompt. Strip the tools
 without stripping the sentence that promises them and the model
 confidently claims to have saved something.
+
+## Cross-conversation memory (#157, ADR-0025 phase 4)
+
+Sessions already survived a restart; nothing survived *between*
+conversations. `harness_core::Memory` was written, tested and called by
+nothing. This daemon opens it at `$XDG_DATA_HOME/lisa/memory.db`, one
+scope per user (`src/memory.rs`).
+
+- **`remember(text)`** writes one durable note. **`recall(query)`**
+  searches them.
+- **The digest** — `Memory::digest`, ranked by reinforcement blended with
+  recency, capped at 800 characters — goes into the system prompt on
+  every turn, so a memory nobody asks for is still available. That is the
+  whole reason the store existed unused for a year.
+- **Provenance is stamped, never passed.** `remember` takes only `text`.
+  The note's class comes from the run's resolved trigger plus whatever
+  the run has already read, so a conversation that has read a web page
+  can only write `prov:web` memory whatever the tool call says.
+- **Reading an untrusted note costs the run its trust.** When a
+  `prov:web` note re-enters a conversation — through the digest at
+  composition time, or through `recall` mid-run — its class is added to
+  the run's shared `bus_tools::Taint`, so every Agent Bus call after it
+  carries `web` and agentd escalates anything privileged. Without this,
+  durable memory is durable injection: a page plants "the user always
+  approves sending mail" on Monday and cashes it on Friday, when nothing
+  in the conversation looks like a web page any more. ADR-0025 states the
+  rule; this is where it is enforced, in code the model cannot reach.
+- **The person can see and delete it.** `MemoryList()`,
+  `MemoryForget(id)` and `MemoryForgetAll()` on `dev.lisaos.Harness1`,
+  rendered by the Assistant's Memory button. Only the person's own prompt
+  surface may call them (same ceiling as `Run`); the refusal names no
+  note and no count, because a count is already a leak.
 
 ## The working folder is a grant
 
@@ -261,6 +322,26 @@ about them.
   its ceiling.
 - **A dotfile folder cannot be a workspace** (#231), so the assistant
   cannot help with `~/.config/nvim` in place.
+- **Write tier has not been driven by a resident model on the device.**
+  The path is exercised end to end by
+  `tests/injection-suite/tests/loop_write_tier.rs` — a real
+  `forge_harness` loop, a real `bus_tools` provider, a real
+  `lisa_agentd::bus::AgentBus` — with a *scripted* backend rather than a
+  live model. What that leaves unproven is whether a given model chooses
+  to call a write tool and what it does with the "a person must confirm"
+  result, not whether the machinery holds.
+- **Memory is one scope, `user`.** Per-project memory is a schema the
+  store already supports and nothing yet writes; saying so beats letting
+  a reader infer it from the constant.
+- **Nothing prunes memory.** Notes accumulate until a person deletes
+  them. The digest is bounded, so an oversized store costs disk and
+  `recall` quality rather than context — but there is no forgetting
+  curve, and a store that only grows will eventually need one.
+- **A memory note's provenance cannot be repaired.** If a note was
+  learned during a tainted run, it stays untrusted for ever, even if the
+  fact in it is true and the person agrees with it. Forgetting and
+  re-stating it in a clean conversation is the only path, which is
+  honest but is not a feature anybody would design on purpose.
 - **`ProtectHome=read-only` means the workspace file tools cannot
   actually write on the device.** The jail permits it and the unit does
   not, so `write_file` into a granted folder fails at the syscall. That

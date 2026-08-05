@@ -1446,7 +1446,10 @@ dependencies = [
 name = "lisa-injection-suite"
 version = "0.1.0"
 dependencies = [
+ "bus-tools",
+ "forge-harness",
  "lisa-agentd",
+ "lisa-guard",
  "lisa-ledger",
  "lisa-peer",
  "serde_json",

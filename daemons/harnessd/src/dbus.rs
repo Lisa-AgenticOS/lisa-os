@@ -228,6 +228,11 @@ pub struct Harness1 {
     ledger: Arc<lisa_ledger::Ledger>,
     next_id: AtomicU64,
     running: Arc<Mutex<HashMap<u64, Cancel>>>,
+    /// Cross-conversation memory (#157). `None` when the store could not
+    /// be opened — a daemon that answers questions without remembering
+    /// is a degraded assistant; one that refuses to start is a broken
+    /// desktop.
+    memory: Option<Arc<harness_core::Memory>>,
 }
 
 impl Harness1 {
@@ -236,6 +241,7 @@ impl Harness1 {
             ledger,
             next_id: AtomicU64::new(1),
             running: Arc::new(Mutex::new(HashMap::new())),
+            memory: crate::memory::open(),
         }
     }
 
@@ -270,6 +276,31 @@ impl Harness1 {
             ..Default::default()
         }) {
             eprintln!("harnessd: could not ledger a trigger downgrade: {e}");
+        }
+    }
+
+    /// Refuse anything but this person's own prompt surface.
+    ///
+    /// Reuses `Run`'s ceiling rather than inventing a second notion of
+    /// "the owner": the same two broker answers decide both, so there is
+    /// one place to be wrong and one place to fix. `Trigger::Prompt` is
+    /// the ceiling only a same-uid caller holding a prompt surface's
+    /// name reaches (`caller::ceiling`).
+    ///
+    /// The refusal says nothing about what is stored — not a count, not
+    /// an id, not whether a store exists at all.
+    async fn require_owner(
+        &self,
+        conn: &zbus::Connection,
+        header: &zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let facts = crate::caller::facts_of(conn, header).await;
+        if crate::caller::ceiling(facts) == Trigger::Prompt {
+            Ok(())
+        } else {
+            Err(zbus::fdo::Error::AccessDenied(
+                "memory belongs to the person at the keyboard".into(),
+            ))
         }
     }
 }
@@ -349,6 +380,22 @@ impl Harness1 {
         let workspace = workspace.filter(|_| trigger.may_use_file_tools());
         let skills = crate::skills::load();
 
+        // Memory, and the provenance it costs (#157, ADR-0025 phase 4).
+        //
+        // Composed HERE, before the bus family is built, because that
+        // ordering is the guarantee: rendering the digest is the moment
+        // untrusted remembered content enters this conversation, and the
+        // taint it adds has to be in the shared object by the time
+        // `AgentBusTools` starts putting chains on the wire. Compose it
+        // after and a page's memory would steer the first privileged
+        // call of every run for free.
+        let taint = bus_tools::Taint::new();
+        let memory = self.memory.clone();
+        let memory_digest = memory
+            .as_ref()
+            .map(|m| crate::memory::digest(m, &taint))
+            .unwrap_or_default();
+
         let req = Request {
             prompt,
             history,
@@ -356,6 +403,7 @@ impl Harness1 {
             workspace: workspace.clone(),
             skills_catalog: crate::skills::catalog_lines(&skills),
             skills: skills.clone(),
+            memory_digest,
             url: opt_str(&options, "url").unwrap_or_else(|| DEFAULT_URL.to_string()),
             model: opt_str(&options, "model"),
             max_turns: 12,
@@ -405,16 +453,25 @@ impl Harness1 {
             // cannot call something that will only refuse.
             let bus = bus_tools::AgentBusTools::discover_with_trigger(trigger.provenance())
                 .ok()
-                .flatten();
+                .flatten()
+                // The same taint object the digest wrote into, so a
+                // remembered web sentence escalates a bus call exactly
+                // as a freshly read page does.
+                .map(|b| b.with_taint(taint.clone()));
             let workspace_tools = req
                 .workspace
                 .as_ref()
                 .and_then(|dir| forge_harness::WorkspaceTools::new(dir).ok());
             let skill_tools = crate::skills::SkillTools::new(skills);
+            let memory_tools = memory
+                .map(|m| crate::memory::MemoryTools::new(m, trigger.provenance(), taint.clone()));
 
             let mut providers: Vec<&dyn forge_harness::ToolProvider> = Vec::new();
             if let Some(b) = bus.as_ref() {
                 providers.push(b);
+            }
+            if let Some(m) = memory_tools.as_ref() {
+                providers.push(m);
             }
             if let Some(w) = workspace_tools.as_ref() {
                 providers.push(w);
@@ -427,6 +484,70 @@ impl Harness1 {
         });
 
         Ok(id)
+    }
+
+    /// Everything the assistant remembers about this person, as JSON
+    /// (`[{id, ts, text, provenance, trusted, recalls}]`).
+    ///
+    /// Memory a person cannot see is not a feature, it is a dossier, so
+    /// this is not optional and it is not paginated away: the whole
+    /// scope, newest first, with the provenance of every note.
+    ///
+    /// **Only the person's own prompt surface may ask.** Same authority
+    /// as `Run`'s trigger ceiling — the caller must be this uid AND hold
+    /// a prompt surface's well-known name (`caller::ceiling`), which is
+    /// the strongest thing the transport can tell us in a daemon that
+    /// cannot read `/proc` (#161). Anything else is refused with a
+    /// refusal that names no note and no count: a listing is exactly the
+    /// thing that must not leak, and "there are 4 things I know about
+    /// you" is already a leak.
+    async fn memory_list(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<String> {
+        self.require_owner(conn, &header).await?;
+        Ok(self
+            .memory
+            .as_ref()
+            .map(|m| crate::memory::listing_json(m))
+            .unwrap_or_else(|| "[]".to_string()))
+    }
+
+    /// Forget one note. `false` when there was no such note — which is
+    /// also the answer a caller gets for somebody else's, because the
+    /// two must be indistinguishable (ADR-0033: a refusal must not
+    /// reveal what exists). In practice there is only one scope per
+    /// daemon and one daemon per user, so this is the same statement
+    /// twice; it is written down because the day a second scope arrives
+    /// is the day the distinction starts mattering.
+    async fn memory_forget(
+        &self,
+        note_id: i64,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<bool> {
+        self.require_owner(conn, &header).await?;
+        let Some(mem) = self.memory.as_ref() else {
+            return Ok(false);
+        };
+        mem.forget(crate::memory::USER_SCOPE, note_id)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
+
+    /// Forget everything, returning how many notes went.
+    async fn memory_forget_all(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<u32> {
+        self.require_owner(conn, &header).await?;
+        let Some(mem) = self.memory.as_ref() else {
+            return Ok(0);
+        };
+        mem.forget_all(crate::memory::USER_SCOPE)
+            .map(|n| n as u32)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
 
     /// Ask a run to stop. It finishes the turn already in flight — a

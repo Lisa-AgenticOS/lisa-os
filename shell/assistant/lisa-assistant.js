@@ -48,6 +48,10 @@ import {
     attachmentSizeRefusal, stagedForSession,
 } from './lib/attachments.js';
 import {chosenPath, remoteLocationNote} from './lib/chooser.js';
+import {
+    MEMORY_IFACE_XML, parseNotes, provenanceNote, emptyText, forgetAllBody,
+    sortNotes,
+} from './lib/memory.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
@@ -65,6 +69,12 @@ const EGRESS_COLOR = '#E66100';                 // the Ledger "leaves" colour
 
 const OverlayProxy = Gio.DBusProxy.makeProxyWrapper(OVERLAY_IFACE_XML);
 const HarnessProxy = Gio.DBusProxy.makeProxyWrapper(HARNESS_IFACE_XML);
+// A second, deliberately narrow proxy for what the assistant remembers
+// (#157). Separate from `HarnessProxy` because the shared interface node
+// lives with the overlay and describes what the OVERLAY needs; memory is
+// this window's business, and a pane that could also start runs is a
+// pane with more reach than its job.
+const MemoryProxy = Gio.DBusProxy.makeProxyWrapper(MEMORY_IFACE_XML);
 
 /// Breakpoint setters take a GValue; box it here rather than lean on
 /// GJS's implicit conversion, which is not the same across versions.
@@ -173,6 +183,17 @@ class AssistantWindow {
         exportBtn.tooltip_text = 'Export conversation as Markdown';
         exportBtn.connect('clicked', () => this._export());
         header.pack_end(exportBtn);
+
+        // What the assistant remembers about you, between conversations
+        // (#157). In the header rather than behind a menu because the
+        // whole justification for durable memory is that the person can
+        // see it: a list one click away is the feature, a list three
+        // clicks away is a compliance gesture.
+        const memoryBtn =
+            Gtk.Button.new_from_icon_name('view-list-bullet-symbolic');
+        memoryBtn.tooltip_text = 'What the assistant remembers about you';
+        memoryBtn.connect('clicked', () => this._showMemory());
+        header.pack_end(memoryBtn);
 
         // The working folder. A button, because the grant has to come
         // from a person: the model gets no file tools until one exists,
@@ -487,6 +508,153 @@ class AssistantWindow {
                 'stayed with the other conversation — attach again to send here.');
         }
         this._renderSessionList();
+    }
+
+    // ---- memory (#157) ---------------------------------------------------
+    //
+    // Cross-conversation memory carries facts about a person from one
+    // conversation into the next, indefinitely, without being asked
+    // again. That is a feature only while they can see the list and take
+    // things off it — so this pane is part of the feature, not a
+    // follow-up to it.
+    //
+    // The pane can only READ and DELETE. There is no "add" control and
+    // no editing: what is remembered is a record of what the assistant
+    // learned, and a record a person can rewrite is not one either of
+    // them can rely on. Taking a note off the list is always available;
+    // putting a different sentence in its place is not.
+
+    _memoryProxy() {
+        if (this._memoryIface)
+            return this._memoryIface;
+        try {
+            this._memoryIface = MemoryProxy(Gio.DBus.session,
+                HARNESS_BUS_NAME, HARNESS_OBJECT_PATH);
+        } catch (e) {
+            logError(e, 'assistant: memory proxy');
+            this._memoryIface = null;
+        }
+        return this._memoryIface;
+    }
+
+    _showMemory() {
+        const dialog = new Adw.Dialog({
+            title: 'What Lisa remembers',
+            content_width: 520, content_height: 560,
+        });
+        const list = new Gtk.ListBox({
+            selection_mode: Gtk.SelectionMode.NONE,
+            css_classes: ['boxed-list'],
+            margin_top: 12, margin_bottom: 12,
+            margin_start: 12, margin_end: 12,
+        });
+        const scroll = new Gtk.ScrolledWindow({vexpand: true, child: list});
+        const header = new Adw.HeaderBar({
+            title_widget: new Adw.WindowTitle({title: 'What Lisa remembers'}),
+        });
+        const forgetAll = new Gtk.Button({
+            label: 'Forget everything',
+            css_classes: ['destructive-action'],
+        });
+        header.pack_end(forgetAll);
+        const view = new Adw.ToolbarView({content: scroll});
+        view.add_top_bar(header);
+        dialog.set_child(view);
+
+        const refresh = () => {
+            let child = list.get_first_child();
+            while (child) {
+                const next = child.get_next_sibling();
+                list.remove(child);
+                child = next;
+            }
+            const {notes, ok} = this._readMemory();
+            forgetAll.sensitive = notes.length > 0;
+            if (notes.length === 0) {
+                const row = new Adw.ActionRow({title: emptyText(ok)});
+                row.set_title_lines(0);
+                list.append(row);
+                return;
+            }
+            for (const note of sortNotes(notes)) {
+                const row = new Adw.ActionRow({
+                    title: note.text,
+                    subtitle: provenanceNote(note),
+                });
+                row.set_title_lines(0);
+                row.set_subtitle_lines(0);
+                const del = Gtk.Button.new_from_icon_name('user-trash-symbolic');
+                del.valign = Gtk.Align.CENTER;
+                del.tooltip_text = 'Forget this';
+                del.add_css_class('flat');
+                // No confirmation for one note, deliberately. Forgetting
+                // is the safe direction here: the cost of a mistaken
+                // delete is that the assistant asks you something again,
+                // and a dialog in front of that would be friction aimed
+                // at the wrong outcome.
+                del.connect('clicked', () => {
+                    this._forgetMemory(note.id);
+                    refresh();
+                });
+                row.add_suffix(del);
+                list.append(row);
+            }
+        };
+
+        forgetAll.connect('clicked', () => {
+            const {notes} = this._readMemory();
+            const confirm = new Adw.AlertDialog({
+                heading: 'Forget everything?',
+                body: forgetAllBody(notes.length),
+            });
+            confirm.add_response('cancel', 'Cancel');
+            confirm.add_response('forget', 'Forget everything');
+            confirm.set_response_appearance('forget',
+                Adw.ResponseAppearance.DESTRUCTIVE);
+            confirm.set_default_response('cancel');
+            confirm.set_close_response('cancel');
+            confirm.connect('response', (_d, response) => {
+                if (response !== 'forget')
+                    return;
+                const proxy = this._memoryProxy();
+                try {
+                    proxy?.MemoryForgetAllSync();
+                } catch (e) {
+                    logError(e, 'assistant: forget all');
+                }
+                refresh();
+            });
+            confirm.present(dialog);
+        });
+
+        refresh();
+        dialog.present(this.window);
+    }
+
+    /// Read the listing, keeping "empty" and "could not read" apart.
+    ///
+    /// The same distinction #228 cost us on the session index: a failed
+    /// read that renders as an empty list is a person being told the
+    /// assistant knows nothing about them, which may be false.
+    _readMemory() {
+        const proxy = this._memoryProxy();
+        if (!proxy)
+            return {notes: [], ok: false};
+        try {
+            const [payload] = proxy.MemoryListSync();
+            return {notes: parseNotes(payload), ok: true};
+        } catch (e) {
+            logError(e, 'assistant: memory list');
+            return {notes: [], ok: false};
+        }
+    }
+
+    _forgetMemory(id) {
+        try {
+            this._memoryProxy()?.MemoryForgetSync(id);
+        } catch (e) {
+            logError(e, 'assistant: forget note');
+        }
     }
 
     _confirmDelete(info) {

@@ -203,18 +203,30 @@ Written down because the alternative is a reader inferring them from
 silence — and because rule 10 asks every component to say what it does
 *not* do.
 
-- **Read-tier tools only.** The Assistant runs on `dev.lisaos.Harness1`,
-  which reaches the Agent Bus through `bus-tools`, so it can search your
-  mail and notes and read a page — and each call is narrated as its own
+- **No destructive tools, ever.** The Assistant runs on
+  `dev.lisaos.Harness1`, which reaches the Agent Bus through `bus-tools`,
+  so it can search your mail and notes, read a page, and — since #216 —
+  *act*: write-tier tools are in its catalog when you are at the keyboard
+  and the consent surface is available. Each call is narrated as its own
   line (`_onTool`), because what the model DID and what it SAID should
-  not read the same. It cannot send, file or delete: write-tier parks
-  for confirmation, and the consent surface that answers those became a
-  separate process only recently (#145). Write tier is now defensible
-  and not yet wired.
-- **No memory across conversations.** Sessions persist (the same layout
-  harness-core's `SessionStore` uses), so a conversation survives a
-  restart — but nothing is recalled *between* them. harness-core's
-  `Memory` exists and this window does not use it.
+  not read the same. Anything the app declares `destructive` (delete,
+  send, wipe) stays out of the catalog entirely.
+  **Nothing it writes happens without you.** A write-tier call parks, and
+  agentd refuses to let the process running the model release its own
+  call (`consent.self_approval`) — so the dialog that appears is answered
+  by `lisa-consentd`, a different program, or the call does not happen.
+  The window has no path to approve anything, which is the point rather
+  than an omission.
+- **Memory across conversations is one scope, and it does not forget on
+  its own.** The assistant carries durable notes between conversations
+  (`harness-core::Memory`, via harnessd). The Memory button in the header
+  lists everything it knows about you, says where each note was learned,
+  and deletes any of it — a note learned from a web page is marked as
+  such, and reading one escalates every privileged call in that
+  conversation. What is missing: notes accumulate until you remove them,
+  there is no per-project scope, and a note's provenance cannot be
+  repaired — a true fact learned during a tainted run stays untrusted
+  until you forget it and say it again yourself.
 - **Markdown renders; the model's other output shapes do not.** Tables
   become their raw pipes, and images are not fetched — Pango markup has
   no block model, which `lib/markdown.js` says more about.
@@ -224,10 +236,13 @@ silence — and because rule 10 asks every component to say what it does
   partial: the persona is a caller-supplied string, with no profiles,
   tiers, or delegation.
 
-The honest summary: this is a chat window that can *look things up* and
-cannot yet *act*. The remaining gap is write tier, and it was gated on
-the consent surface becoming a separate process (#145, closed) — which
-is the thing that had to land first, and now has.
+The honest summary: this is a chat window that can look things up, can
+act at write tier with your confirmation, remembers you between
+conversations, and cannot destroy anything. What has **not** been done is
+watching a resident model drive a write on the device — the machinery is
+proven end to end in `tests/injection-suite/tests/loop_write_tier.rs`
+against a scripted model, which proves the boundary and not the model's
+taste.
 
 An earlier draft of this section said the window had no Agent Bus client
 at all. That was wrong: it was written from grepping this file for

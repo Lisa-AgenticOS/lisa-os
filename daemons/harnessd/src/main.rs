@@ -39,6 +39,7 @@
 mod caller;
 mod dbus;
 mod loop_runner;
+mod memory;
 mod skills;
 mod workspace;
 
