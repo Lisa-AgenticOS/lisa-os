@@ -35,7 +35,7 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**51 records** — 3 superseded in part, 21 accepted and partly executed, 2 accepted with no code yet, 21 accepted and done, 4 proposed.
+**52 records** — 3 superseded in part, 21 accepted and partly executed, 3 accepted with no code yet, 21 accepted and done, 4 proposed.
 
 | ADR | Decision | Status | Where it actually stands |
 |---|---|---|---|
@@ -90,6 +90,7 @@ grep.
 | [0049](0049-every-app-is-an-agent-surface.md) | Every app is an agent surface: install is the grant, the tier is the gate, the registry is the authority | accepted, not implemented | the decision stands and the mechanism is largely unbuilt. What exists is the table in §"What exists today" (manifests, tiers at the bus, `lisa tools`, the grant log). Not built: registration at install and deregistration at uninstall, the registry as a stateful authority rather than a startup scan, per-app skills, and stored grant state (#240). |
 | [0050](0050-app-tooling-is-cli-and-the-scaffold-carries-the-traps.md) | App tooling is CLI verbs, and the scaffold carries the traps | accepted, not implemented | no code exists: `cli/lisa/src` has no `dev` verb, there is no scaffold generator and no `lisa dev check`. The decision is what the tooling must be when it is written. |
 | [0051](0051-ports-are-built-on-change-not-per-release.md) | Third-party packages are built on change and consumed by pin, not rebuilt per release | accepted, partially executed | — |
+| [0052](0052-install-mode-is-an-image-lineage.md) | Install mode (server/desktop) is an image lineage chosen at install, not a package toggle | accepted, not implemented | no server image flavor exists; this records the owner's direction of 2026-08-05 and what makes it cheap now. |
 
 <!-- END GENERATED INDEX -->
 
