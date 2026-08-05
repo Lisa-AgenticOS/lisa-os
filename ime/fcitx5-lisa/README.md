@@ -73,6 +73,9 @@ everywhere.
 - `tests/http_test.cpp`, `tests/doubleshift_test.cpp` — unit tests
   for the fcitx5-free halves; pure standard C++, run on any dev host
   (`just ime-test`) and as CTests.
+- `notifications.conf` + `tests/notifications_test.cpp` — the shipped
+  fcitx5 notification suppression (#191) and the test that keeps its
+  marshalling form intact (#201). See "The IM panel" below.
 - `CMakeLists.txt` + `lisa-addon.conf.in` — build + addon
   registration (`cmake -B build && cmake --build build && cmake
   --install build`; needs fcitx5 headers, so Arch/CI).
@@ -123,6 +126,100 @@ frontend owns the name, nothing happens.
 Config: `DoubleShiftSummon` (bool, default **True**) in the addon's
 fcitx configuration (`conf/lisa.conf`, or fcitx5-configtool →
 Addons → Lisa Writing Tools) turns the gesture off.
+
+## The IM panel: whose job it is (#191)
+
+fcitx5 nags once per boot on GNOME Wayland — *"It is recommended to
+install Input Method Panel GNOME Shell Extensions to provide the input
+method popup… Otherwise you may not be able to see input method popup
+when typing in GNOME Shell's activities search box."* Two ways out:
+ship `kimpanel`, or let the Shell fork own the panel. **The fork owns
+it**, and here is why on evidence rather than taste.
+
+**A panel is a place for fcitx5 to draw candidates and preedit.** Under
+Wayland an input method cannot place its own popup; a Shell extension
+draws it over D-Bus (`org.kde.kimpanel.inputmethod`). Three facts
+decide which half of the problem that solves for Lisa, all measured on
+the reference iMac, `20260805.81`:
+
+1. **fcitx5 is not in the path for the surfaces the nag names.** Its
+   own self-diagnosis, every start:
+
+       waylandmodule.cpp:666] Using Wayland native input method protocol: 0
+
+   mutter grants no `zwp_input_method_v2`, so GTK4/Wayland apps *and
+   the shell itself* — including the activities search box the message
+   calls out — never reach fcitx5 at all. kimpanel would install a
+   surface with nothing to display for precisely the case that
+   motivates it.
+2. **The client half is already live and ownerless.** fcitx5 ships its
+   own `kimpanel` addon and it loads on every start; what is missing is
+   an owner of the name, not a client:
+
+       addonmanager.cpp:204] Loaded addon kimpanel
+       kimpanel.cpp:138] Kimpanel new owner:
+
+   (empty owner; `ListNames` on the session bus returns no kimpanel
+   name, and no `*kimpanel*` extension exists in either
+   `/usr/share/gnome-shell/extensions/` or the user's.) So the work is
+   to *own a bus name from the Shell*, which is what a forked Shell is
+   for — not to import a third-party extension to talk to a client we
+   already have.
+3. **There is nothing to draw yet.** `~/.config/fcitx5/profile` on the
+   device is `DefaultIM=keyboard-us` — one plain keyboard layout,
+   which produces no candidate list and no preedit. And the only Lisa
+   addon in the picture emits a commit and nothing else: `lisa.cpp`
+   calls `ic->commitString(result)` and never touches a candidate list
+   or preedit. That answers the question the issue asked to check
+   first: **the writing-tools popup needs no candidate window**, so
+   option 1 does not become mandatory.
+
+Against that, kimpanel costs an unpinned AUR port and the shell-version
+compat break at every GNOME bump — the same trap our own extensions
+have already been caught by — to render zero popups today.
+
+**Where the panel lands when it is written: the `lisa-desktop` repo**,
+not `shell/` here. That tree builds `lisa-desktop-shell`, which is the
+package the image installs from the hosted index (pinned by
+`os/mkosi/desktop.lock`), and it is the fork ADR-0038/0048 make ours.
+`shell/` in this monorepo is the duplicate ADR-0039 step 6 has not
+removed yet; a panel added here would not ship. The trigger to write it
+is Lisa shipping a real input method (CJK, or the §5.7.3 compose
+panel) — before that a panel has no content, and this note exists so
+the next person does not rediscover the three facts above.
+
+**Until then the nag is off, and the nag being off is the whole of what
+shipped.** `notifications.conf` in this directory installs to
+`/etc/xdg/fcitx5/conf/notifications.conf` (see the PKGBUILD's
+`package_lisa-ime`) and hides fcitx5's own tip id:
+
+    [HiddenNotifications]
+    0=wayland-diagnose-gnome
+
+The **section form is load-bearing** (#201). fcitx-config marshals this
+option as `Option<std::vector<std::string>>`, i.e. numbered subkeys
+under a section; `HiddenNotifications=wayland-diagnose-gnome` and
+`HiddenNotifications/0=…` both parse cleanly, unmarshal to an empty
+vector, and the nag comes back with no error, no warning and no log
+line. `tests/notifications_test.cpp` (`just ime-test`) rejects all
+three ways of getting that wrong — the flat key, the slash key, and a
+list numbered from 1.
+
+Verified by execution on the device 2026-08-03 with both controls: no
+suppression → the diagnose runs *and* notifies (4 notification calls on
+the bus); this form → the diagnose still runs, zero notifications. That
+proof was not reproducible on 2026-08-05, and the reason is worth
+recording rather than papering over: in the session then running,
+`org.freedesktop.Notifications` had **no owner at all** —
+
+    $ gdbus call --session --dest org.freedesktop.DBus \
+        --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.GetNameOwner org.freedesktop.Notifications
+    Error: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: The name does not have an owner
+
+so *no* fdo notification could be delivered by anything, and a "zero
+notifications" result would have proved nothing about the suppression.
+A re-verification needs a fresh boot into an autologin session.
 
 ## Packaging
 
