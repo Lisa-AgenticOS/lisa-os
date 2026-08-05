@@ -4,7 +4,7 @@
 # inline in nightly.yml and therefore only ever ran against the NIGHTLY
 # image; devices run the RELEASE image, which carries a materially
 # different package set (the lisa-* split packages, llama.cpp,
-# zen-browser, the forked gnome-control-center, lisa-audio-cs8409). A
+# the forked gnome-control-center, lisa-audio-cs8409). A
 # packaging difference that breaks staging — exactly issue #45's failure
 # class — passed every gate and reached the field. Both lanes now call
 # this action: nightly.yml against the plain image, release.yml against

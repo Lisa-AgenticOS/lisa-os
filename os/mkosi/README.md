@@ -44,7 +44,7 @@ runs the *same* code against the release image, after every published
 artifact has been extracted from it and before `gh release create`
 (issue #47). It has to, because the two images are not the same build:
 the release lane folds in the `lisa-*` split packages, llama.cpp,
-zen-browser, the forked gnome-control-center and lisa-audio-cs8409, and
+the forked gnome-control-center and lisa-audio-cs8409, and
 a packaging difference that broke staging (issue #45) previously reached
 devices with every gate green. The action takes the image's baked
 `IMAGE_VERSION` as v1 — `1` for the nightly, `YYYYMMDD.run` for a
@@ -490,9 +490,9 @@ package set is unchanged by the split.
 runner) builds inside the `menci/archlinuxarm` container and boot-checks
 with `qemu-system-aarch64 -machine virt` to `poweroff.target`. First
 target is QEMU/UTM guests; Asahi bare-metal is explicitly deferred, and
-the A/B jobs and the release lane (zen-browser is an x86_64 binary
-repackage; llama.cpp needs its PKGBUILD arch extended) are follow-ups —
-see the ADR for the verified-vs-first-CI-run ledger.
+the A/B jobs and the release lane (llama.cpp needs its PKGBUILD arch
+extended) are follow-ups — see the ADR for the verified-vs-first-CI-run
+ledger.
 
 Remaining for the full Track I story: dm-verity on the root slots,
 swtpm in the boot test, signed sysupdate sources (M1 repo).

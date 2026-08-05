@@ -47,8 +47,8 @@ OS regression (#272).
 
 **Three decisions:**
 
-- **ADR-0051 — the ports lane.** llama.cpp, whisper.cpp, piper, Zen
-  and the Settings fork are built when their PKGBUILD changes and
+- **ADR-0051 — the ports lane.** llama.cpp, whisper.cpp, piper and
+  the Settings fork are built when their PKGBUILD changes and
   consumed by sha256 pin from `os/packages/ports.lock`. A release
   *assembles*; it no longer compiles pinned third-party code that has
   not changed. (Four failed dispatches had each recompiled llama.cpp
@@ -73,6 +73,21 @@ winning on `pkgrel` — a race that silently loses the day Arch ships a
 higher version, which it did (50.4, 2026-08-04). `lisa-desktop`'s
 `main` was also fast-forwarded to the v0.2.0 vendor branch: the fork
 that devices boot had existed only on an unmerged branch.
+
+**Zen browser is removed entirely — the browser is Surfer.** The
+interim third-party browser is retired: `os/packages/zen-browser`
+(both split packages, `zen-browser` and `zen-browser-launcher`) and
+`os/repo-tools/build-zen-payload.sh` are deleted, the two `ports.lock`
+pins and the `zen-build-arm64` / `zen-payload` CI jobs are gone, and
+releases publish no `lisa-zen_*` asset. `lisa apps` drops the `zen`
+channel with them, so the payload channels are now `shell` and
+`runtime` only. Surfer (`apps/surfer`, ADR-0037) is the browser Lisa
+ships, installed by the `lisa` package as `app.lisaos.Surfer`.
+**A device that already has Zen keeps a working copy** — nothing
+uninstalls it — but its `/var/lib/lisa-apps/payloads/zen` tree stops
+being managed and stops being pruned; see the note in the removal
+commit. ADR-0021, ADR-0023 and ADR-0051 keep their Zen text: they
+record decisions that were true when made.
 
 **Found, not fixed:** the iMac runs `lisa-desktop-shell` 50.3 against
 `mutter` 50.4 — fine within a series, a failure to start at the next

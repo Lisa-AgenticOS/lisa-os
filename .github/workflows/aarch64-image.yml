@@ -6,7 +6,7 @@
 #
 # Since issue #28 this lane is not a bare-OS lane: it builds the SAME Lisa
 # package set release.yml builds on x86_64 (the lisa-* split packages,
-# llama.cpp, the forked gnome-control-center, zen-browser) natively in the
+# llama.cpp, the forked gnome-control-center) natively in the
 # ALARM container and folds them into the image — a real Lisa system in
 # its daemons, CLI and apps. ONE honest exception: the DESKTOP is stock
 # GNOME Shell here, not Lisa Desktop — no aarch64 build of
@@ -119,19 +119,10 @@ jobs:
               # architecture (os/packages/README.md, CLAUDE.md rule 8).
               # So aarch64 gets speech IN and no speech OUT until an ARM
               # onnxruntime exists. Restore this in one line when it does.
-              # Zen browser — repackage the upstream aarch64 release
-              # tarball. Upstream publishes zen.linux-aarch64.tar.xz next
-              # to the x86_64 one and the PKGBUILD pins its verified
-              # sha256, so this is a real arm64 browser, not a stub; if
-              # upstream ever drops the asset the digest check fails the
-              # build rather than shipping something unverified. -d: binary
-              # repackage, runtime deps are resolved at image-install time.
-              # Split since #51: zen-browser-launcher (.desktop + icons +
-              # the /usr/bin/zen-browser resolver, permanent) and
-              # zen-browser (the /opt/zen payload, leaving the image for the
-              # apps channel). The glob takes both.
-              sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg -d --nocheck --noconfirm"
-              cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
+              # The browser is Surfer (ADR-0037, ADR-0048) — a first-party
+              # GJS/WebKit app carried by the `lisa` package, so it needs
+              # no port build of its own on this lane. zen-browser was
+              # retired on 2026-08-05.
               # Our forked Settings app: stock 50.3 + the native
               # Intelligence panel (ADR-0012). Renamed from the
               # stock-name-taking gnome-control-center — provides/
@@ -167,18 +158,11 @@ jobs:
               # NB: globbing on "$p"-* not "$p"-[0-9]* — llama.cpp'\''s pkgver
               # is a build tag (b10093), not a digit. -debug- splits are
               # filtered so they cannot stand in for the real package.
-              # The prefix glob cannot tell zen-browser from
-              # zen-browser-launcher (#51 split them). Both are still BUILT
-              # here — the payload becomes lisa-zen_<ver>_aarch64.tar.zst on
-              # the apps channel — but since #89 only the launcher is
-              # installed INTO the image, so the image-content step below no
-              # longer looks for opt/zen/zen. This loop catches a wholesale
-              # build failure, nothing finer.
+              # This loop catches a wholesale build failure, nothing finer.
               for p in lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-agentd \
                        lisa-ime lisa-portal lisa-keyring cyrus-sasl-xoauth2 \
                        lisa-notes lisa-remoted lisa-contextd llama.cpp \
                        whisper.cpp \
-                       zen-browser zen-browser-launcher \
                        lisa-desktop-control-center; do
                 ls /build/pkgs/"$p"-*.pkg.tar.* 2>/dev/null | grep -qv -- "-debug-" \
                   || { echo "aarch64 package missing: $p" >&2; exit 1; }
@@ -237,14 +221,9 @@ jobs:
                    # Voice in, but not out: see the piper note in the
                    # package build step above.
                    whisper.cpp
-                   # Permanent: the .desktop, icons and the
-                   # /usr/bin/zen-browser resolver (ADR-0023 phase 1).
-                   zen-browser-launcher
-                   # The /opt/zen payload is GONE from the image (#89,
-                   # ADR-0023 phase 1 complete) — it arrives on the apps
-                   # channel and the resolver above finds it. Dropped
-                   # together with release.yml'\''s line; see the note there
-                   # for the condition that was met and how it was checked.
+                   # The browser is Surfer, carried by the `lisa` package
+                   # (ADR-0037, ADR-0048) — no separate browser package on
+                   # this lane since zen-browser was retired 2026-08-05.
           ExtraTrees=/build/extra
           Autologin=yes
           EOF
@@ -284,15 +263,8 @@ jobs:
           # presence proves OUR build won, not just that some g-c-c is in.
           # Its install path is fixed by cc-lisa-panel-meson.build, so this
           # check does not depend on an upstream meson variable.
-          # NOT opt/zen/zen: the payload left the image with #89. What must
-          # still be here is the LAUNCHER half — the resolver, the .desktop
-          # and the icons — which is what keeps the browser reachable now
-          # that the tree arrives on the apps channel.
           for f in usr/bin/lisa usr/bin/lisa-inferenced usr/bin/llama-server \
                    usr/share/lisa/shell/assistant \
-                   usr/bin/zen-browser \
-                   usr/share/applications/zen-browser.desktop \
-                   usr/share/icons/hicolor/128x128/apps/zen-browser.png \
                    usr/lib/systemd/system/lisa-apps-sync.timer \
                    usr/lib/lisa/bin/lisa \
                    usr/bin/gnome-control-center \
@@ -351,10 +323,6 @@ jobs:
           # NOTE: /usr/bin/lisa is the resolver *shell script* (issue #52),
           # so the real CLI to arch-check is the baked binary it falls back
           # to. Checking /usr/bin/lisa here kept this job red from 872d942.
-          # opt/zen/zen dropped from this arch check with #89 — there is no
-          # baked tree to inspect. The aarch64 Zen payload is still built
-          # and published (lisa-zen_<ver>_aarch64.tar.zst); its arch is the
-          # payload build step's business, not the image's.
           for b in usr/bin/llama-server usr/lib/lisa/bin/lisa; do
             sudo file "/mnt/lisaroot/$b" | grep -q "ARM aarch64" \
               || { echo "not an aarch64 binary: $b"; rc=1; }

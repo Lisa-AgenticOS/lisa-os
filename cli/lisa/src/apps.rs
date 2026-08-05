@@ -4,15 +4,18 @@
 //!
 //! Two kinds of payload ride the same release channel today:
 //!
-//! * **`shell`** — the interpreted GJS surfaces (ADR-0020). Arch-independent,
-//!   and the image still bakes a copy, so this channel is opt-in: it only
-//!   moves when the user runs `lisa apps update`.
-//! * **`zen`** — the Zen browser tree that used to be `/opt/zen` in the image
-//!   (ADR-0023 phase 1). Per-architecture, and after the migration release
-//!   the image carries NO copy — so this channel is auto-synced
-//!   (`lisa apps sync`, run by lisa-apps-sync.timer and by `lisa update`
-//!   before it stages a new slot). Losing the browser to an OS update is the
-//!   failure this exists to prevent.
+//! * **`shell`** — the interpreted GJS surfaces and apps (ADR-0020).
+//!   Arch-independent, and the image still bakes a copy, so this channel is
+//!   opt-in: it only moves when the user runs `lisa apps update`.
+//! * **`runtime`** — the compiled `lisa` CLI and its skills (issue #52).
+//!   Per-architecture, and the image bakes a copy at `/usr/lib/lisa`, so
+//!   this channel is opt-in too.
+//!
+//! Both channels are also baked into the image as a permanent floor, so
+//! neither auto-syncs today. `auto_sync` remains because a channel whose
+//! payload the image does NOT carry has to be fetched before the user
+//! reaches for it, which is the situation any future out-of-image payload
+//! will be in.
 //!
 //! Layout, per channel: `<base>/versions/<ver>/` holds one full tree and
 //! `<base>/current` is a symlink flipped atomically (symlink + rename).
@@ -49,12 +52,12 @@ use std::path::{Path, PathBuf};
 /// nobody) are closed to everyone. Payloads written there are unreadable
 /// by the user who has to execute them.
 ///
-/// That was not theoretical: on the reference iMac the zen payload
-/// installed correctly, `lisa apps status` reported it current as root,
-/// and `[ -x .../current/zen ]` failed as the desktop user — so
-/// `/usr/bin/zen-browser` fell through to the baked `/opt/zen` every
-/// time. The fallback hid it, and deleting `/opt/zen` (issue #89) would
-/// have shipped a browser that could not start.
+/// That was not theoretical: on the reference iMac a payload installed
+/// correctly, `lisa apps status` reported it current as root, and the
+/// executable check failed as the desktop user — so the launcher fell
+/// through to the baked copy every time. The fallback hid it, and
+/// removing the baked copy would have shipped a surface that could not
+/// start (issue #89).
 ///
 /// `/var/lib/lisa-models` already solved exactly this for models, with a
 /// tmpfiles rule making it 2775 root:lisa. Payloads use the same shape.
@@ -65,7 +68,7 @@ const APPS_DIR: &str = "/var/lib/lisa-apps";
 /// can install into a tree root that root created first.
 ///
 /// lisa-apps-sync.service runs as root and gets there first on most
-/// devices. Without this, `create_dir_all` left `payloads/zen` and its
+/// devices. Without this, `create_dir_all` left a channel directory and its
 /// `versions/` at 0755 root:lisa and `lisa apps update` failed for the
 /// user with `Permission denied (os error 13)` — ADR-0034 §7b says
 /// nothing user-facing needs sudo, and `escalate.privilege` is an
@@ -142,9 +145,8 @@ struct Channel {
     baked: Option<&'static str>,
     /// Whether that baked tree is a permanent floor (`shell`, `runtime`:
     /// every image carries one) or a pre-migration leftover the current
-    /// image no longer ships (`zen`). Only the wording differs, but the
-    /// difference is the whole reason `zen` auto-syncs and `shell` does
-    /// not.
+    /// image no longer ships. Only the wording of the status line differs,
+    /// but the difference is what decides whether a channel auto-syncs.
     baked_is_floor: bool,
 }
 
@@ -184,21 +186,6 @@ const CHANNELS: &[Channel] = &[
         stale: &["/var/lib/lisa/apps/payloads/runtime"],
         baked: Some("/usr/lib/lisa"),
         baked_is_floor: true,
-    },
-    Channel {
-        name: "zen",
-        what: "Zen browser — the tree that used to be baked as /opt/zen",
-        prefix: "lisa-zen_",
-        per_arch: true,
-        subdir: "payloads/zen",
-        probe: "zen",
-        keep: 2,
-        auto_sync: true,
-        stale: &["/var/lib/lisa/apps/payloads/zen"],
-        // Pre-migration images baked this; new ones do not, which is why
-        // this is the one channel that auto-syncs.
-        baked: Some("/opt/zen"),
-        baked_is_floor: false,
     },
 ];
 
@@ -409,7 +396,7 @@ fn install(ch: &Channel, rel: &mut Release, arch: &str) -> anyhow::Result<Outcom
     let expected = rel.expected_sha256(&asset)?;
     println!(">> {}: downloading {asset} ({})…", ch.name, rel.tag);
     place_tree(ch, &ver, &|dest: &Path| {
-        // Streamed, not buffered: the zen payload is ~100 MiB compressed and
+        // Streamed, not buffered: a payload can be ~100 MiB compressed and
         // reading it into a Vec before writing it out doubles the peak RSS
         // on a device that may only have a few GiB.
         let got = download_verified(&url, dest)?;
@@ -481,7 +468,7 @@ fn place_tree(
     // cannot be removed by this one, and failing an update over that
     // would leave the device unable to take the payload it has already
     // verified, unpacked and activated (#239 defect 4, on a device whose
-    // zen trees root installed first).
+    // payload trees root installed first).
     if let Err(e) = prune(ch) {
         eprintln!("-- {}: could not prune older versions: {e:#}", ch.name);
     }
@@ -618,10 +605,10 @@ pub fn update(only: Option<&str>) -> anyhow::Result<()> {
 /// `lisa apps sync`: install auto-sync channels that have NO tree on /var
 /// yet, and leave everything already installed alone.
 ///
-/// This is the "never lose the browser" path (ADR-0023 phase 1). It runs
-/// from lisa-apps-sync.timer once the machine is online, and from
-/// `lisa update` before a new root slot is staged — so a device that is
-/// about to boot an image without `/opt/zen` already has the browser on its
+/// This is the "never lose a payload the image does not carry" path
+/// (ADR-0023 phase 1). It runs from lisa-apps-sync.timer once the machine is
+/// online, and from `lisa update` before a new root slot is staged — so a
+/// device about to boot a slimmer image already has what it needs on its
 /// persistent /var. Deliberately NOT an upgrade: a payload the user already
 /// has never moves version behind their back.
 pub fn sync() -> anyhow::Result<()> {
@@ -885,48 +872,49 @@ mod tests {
             );
         }
         let shell = chan("shell");
-        let zen = chan("zen");
+        let runtime = chan("runtime");
         make_tree(shell, "20260101.1");
-        make_tree(zen, "20260102.2");
+        make_tree(runtime, "20260102.2");
         flip_current(shell, "20260101.1").unwrap();
-        flip_current(zen, "20260102.2").unwrap();
+        flip_current(runtime, "20260102.2").unwrap();
         assert_eq!(
             installed_versions(&shell.base()).unwrap(),
             vec!["20260101.1".to_string()]
         );
         assert_eq!(
-            installed_versions(&zen.base()).unwrap(),
+            installed_versions(&runtime.base()).unwrap(),
             vec!["20260102.2".to_string()]
         );
-        assert!(shell.is_tree(&shell.current_link()) && zen.is_tree(&zen.current_link()));
+        assert!(shell.is_tree(&shell.current_link()) && runtime.is_tree(&runtime.current_link()));
         unsafe { std::env::remove_var("LISA_APPS_STATE") };
     }
 
-    /// Asset naming is the contract between release.yml and the CLI: the zen
-    /// payload is per-arch and an x86_64 box must never take the arm64 tree.
+    /// Asset naming is the contract between release.yml and the CLI: the
+    /// runtime payload is a compiled binary, so it is per-arch and an x86_64
+    /// box must never take the arm64 tree.
     #[test]
     fn asset_names_select_channel_and_arch() {
-        let zen = chan("zen");
+        let runtime = chan("runtime");
         let shell = chan("shell");
         assert_eq!(
-            zen.version_of("lisa-zen_20260726.5_x86_64.tar.zst", "x86_64"),
+            runtime.version_of("lisa-runtime_20260726.5_x86_64.tar.zst", "x86_64"),
             Some("20260726.5".into())
         );
         assert_eq!(
-            zen.version_of("lisa-zen_20260726.5_aarch64.tar.zst", "x86_64"),
+            runtime.version_of("lisa-runtime_20260726.5_aarch64.tar.zst", "x86_64"),
             None
         );
         assert_eq!(
-            zen.version_of("lisa-zen_20260726.5_aarch64.tar.zst", "aarch64"),
+            runtime.version_of("lisa-runtime_20260726.5_aarch64.tar.zst", "aarch64"),
             Some("20260726.5".into())
         );
         // Channels never claim each other's assets.
         assert_eq!(
-            zen.version_of("lisa-apps_20260726.5.tar.zst", "x86_64"),
+            runtime.version_of("lisa-apps_20260726.5.tar.zst", "x86_64"),
             None
         );
         assert_eq!(
-            shell.version_of("lisa-zen_20260726.5_x86_64.tar.zst", "x86_64"),
+            shell.version_of("lisa-runtime_20260726.5_x86_64.tar.zst", "x86_64"),
             None
         );
         assert_eq!(
@@ -939,8 +927,8 @@ mod tests {
     #[test]
     fn asset_pick_is_newest_by_numeric_version() {
         let assets = [
-            "lisa-zen_20260726.9_x86_64.tar.zst",
-            "lisa-zen_20260726.30_x86_64.tar.zst",
+            "lisa-runtime_20260726.9_x86_64.tar.zst",
+            "lisa-runtime_20260726.30_x86_64.tar.zst",
         ];
         let rel = Release {
             tag: "v20260726.30".into(),
@@ -951,11 +939,11 @@ mod tests {
             sums_url: None,
             sums: None,
         };
-        let (name, ver, _) = rel.asset_for(chan("zen"), "x86_64").unwrap();
+        let (name, ver, _) = rel.asset_for(chan("runtime"), "x86_64").unwrap();
         assert_eq!(ver, "20260726.30");
-        assert_eq!(name, "lisa-zen_20260726.30_x86_64.tar.zst");
+        assert_eq!(name, "lisa-runtime_20260726.30_x86_64.tar.zst");
         // Nothing for an arch we do not publish.
-        assert!(rel.asset_for(chan("zen"), "riscv64").is_none());
+        assert!(rel.asset_for(chan("runtime"), "riscv64").is_none());
     }
 
     /// Prune keeps `keep` trees and never removes the running one.
@@ -965,7 +953,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path()) };
-        let ch = chan("zen"); // keep = 2
+        let ch = chan("runtime"); // keep = 2
         let base = ch.base();
         for v in ["20260101.1", "20260102.2", "20260103.3", "20260104.4"] {
             make_tree(ch, v);
@@ -979,7 +967,7 @@ mod tests {
 
         // Current is the OLDEST: it survives the prune even though it is
         // over the keep line, because deleting the running tree would take
-        // the browser out from under the user.
+        // the payload out from under the user.
         for v in ["20260105.5", "20260106.6"] {
             make_tree(ch, v);
         }
@@ -994,18 +982,19 @@ mod tests {
     }
 
     /// The end of the pipeline, on real files: a payload tarball shaped the
-    /// way os/repo-tools/build-zen-payload.sh shapes it must land as
-    /// `<base>/current/zen` — the exact path /usr/bin/zen-browser execs.
-    /// A layout change on either side takes the browser out, so the two
+    /// way release.yml shapes the runtime tree must land as
+    /// `<base>/current/bin/lisa` — the exact path os/packages/lisa/lisa-resolver
+    /// execs. A layout change on either side takes the CLI out, so the two
     /// sides are pinned against each other here.
     #[test]
-    fn zen_payload_unpacks_where_the_launcher_looks() {
+    fn payload_unpacks_where_the_launcher_looks() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src");
-        std::fs::create_dir_all(src.join("browser")).unwrap();
-        std::fs::write(src.join("zen"), "#!/bin/sh\n").unwrap();
-        std::fs::write(src.join("browser/omni.ja"), "x").unwrap();
+        std::fs::create_dir_all(src.join("bin")).unwrap();
+        std::fs::create_dir_all(src.join("skills")).unwrap();
+        std::fs::write(src.join("bin/lisa"), "#!/bin/sh\n").unwrap();
+        std::fs::write(src.join("skills/ask.md"), "x").unwrap();
         let tarball = dir.path().join("payload.tar.zst");
         // Same invocation as the release tool: contents of the tree at the
         // tarball root, no wrapping directory.
@@ -1028,7 +1017,7 @@ mod tests {
 
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path().join("state")) };
-        let ch = chan("zen");
+        let ch = chan("runtime");
         place_tree(ch, "20260726.1", &|dest| {
             std::fs::copy(&tarball, dest)?;
             Ok(())
@@ -1036,10 +1025,13 @@ mod tests {
         .unwrap();
 
         let base = ch.base();
-        assert_eq!(base, dir.path().join("state/payloads/zen"));
-        // What zen-browser.sh checks, verbatim.
-        assert!(base.join("current/zen").is_file(), "no current/zen");
-        assert!(base.join("current/browser/omni.ja").is_file());
+        assert_eq!(base, dir.path().join("state/payloads/runtime"));
+        // What lisa-resolver checks, verbatim.
+        assert!(
+            base.join("current/bin/lisa").is_file(),
+            "no current/bin/lisa"
+        );
+        assert!(base.join("current/skills/ask.md").is_file());
         assert_eq!(current_version(ch).as_deref(), Some("20260726.1"));
         // …and nothing is left behind in staging.
         let leftovers: Vec<_> = std::fs::read_dir(base.join("versions"))
@@ -1060,7 +1052,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path()) };
-        let ch = chan("zen");
+        let ch = chan("runtime");
         let base = ch.base();
         make_tree(ch, "20260726.1");
         flip_current(ch, "20260726.1").unwrap();
@@ -1078,7 +1070,7 @@ mod tests {
     #[test]
     fn unknown_channel_is_an_error_not_a_silent_no_op() {
         assert!(channels_for(Some("nope")).is_err());
-        assert_eq!(channels_for(Some("zen")).unwrap().len(), 1);
+        assert_eq!(channels_for(Some("runtime")).unwrap().len(), 1);
         assert_eq!(channels_for(None).unwrap().len(), CHANNELS.len());
     }
 
@@ -1159,7 +1151,7 @@ mod tests {
             std::env::set_var("LISA_APPS_STATE", dir.path());
             std::env::set_var("LISA_APPS_ROOT", dir.path().join("nothing"));
         }
-        let ch = chan("zen");
+        let ch = chan("runtime");
         std::fs::create_dir_all(ch.base().join("versions/20260731.57")).unwrap();
         flip_current(ch, "20260731.57").unwrap();
         assert_eq!(current_version(ch).as_deref(), Some("20260731.57"));
@@ -1187,7 +1179,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path().join("state")) };
-        let ch = chan("zen");
+        let ch = chan("runtime");
         let tarball = tiny_payload(dir.path(), ch);
         if tarball.is_none() {
             eprintln!("skipping: no tar with --zstd on this host");
@@ -1260,8 +1252,7 @@ mod tests {
     }
 
     /// The launchers that CANNOT ask (`/usr/bin/lisa` is how you get the
-    /// CLI in the first place; zen-browser ships in its own package) still
-    /// have to agree with the table. They are pinned here instead — the
+    /// CLI in the first place) still have to agree with the table. They are pinned here instead — the
     /// one thing #239 proves is that an unchecked second spelling drifts.
     #[test]
     fn the_scripts_that_cannot_ask_are_pinned_to_the_table() {
@@ -1271,10 +1262,7 @@ mod tests {
             std::env::remove_var("LISA_APPS_STATE");
             std::env::remove_var("LISA_APPS_ROOT");
         }
-        let cases = [
-            ("runtime", "os/packages/lisa/lisa-resolver"),
-            ("zen", "os/packages/zen-browser/zen-browser.sh"),
-        ];
+        let cases = [("runtime", "os/packages/lisa/lisa-resolver")];
         for (name, script) in cases {
             let ch = chan(name);
             let text = std::fs::read_to_string(repo(script)).unwrap();
@@ -1306,7 +1294,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: test-scoped env, serialized by ENV_LOCK.
         unsafe { std::env::set_var("LISA_APPS_STATE", dir.path().join("state")) };
-        let ch = chan("zen"); // keep = 2
+        let ch = chan("runtime"); // keep = 2
         let done = (|| {
             let Some(tarball) = tiny_payload(dir.path(), ch) else {
                 eprintln!("skipping: no tar with --zstd on this host");

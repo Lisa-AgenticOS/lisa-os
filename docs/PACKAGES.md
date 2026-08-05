@@ -90,8 +90,6 @@ repo (like the lisa packages).
 |---|---|---|---|
 | `llama.cpp` | local inference engine (llama-server) for inferenced | from source (b10093, MIT) — AUR-only | `os/packages/llama.cpp` → release repo |
 | `dart` | the PARKED Flutter lane's `dart analyze` (ADR-0047); the default forge lane uses `lisa dev check` and needs no toolchain — issue #48 tracks re-scoping this | Arch `extra` | `mkosi.conf` Packages |
-| `zen-browser-launcher` | keeps the browser launchable wherever the payload lives | same PKGBUILD (the `.desktop`, hicolor icons, `/usr/bin/zen-browser` resolver) | `os/packages/zen-browser` → image, permanently |
-| `zen-browser` | a real browser out of the box | repackaged release tarball (1.21.8b) | `os/packages/zen-browser` → **leaving the image** for the apps channel (ADR-0023 phase 1) |
 | **Flutter** | the parked lane only (ADR-0047) | **not bundled, not needed** | `lisa forge --setup`, into your own home |
 
 **Flutter is not in the image, and no longer on the app road** (ADR-0047
@@ -103,15 +101,16 @@ the parked lane, into `$XDG_DATA_HOME/lisa/flutter` rather than `/var`,
 so it never asks for `sudo` (#243). The lisa-cli package installs no
 `lisa_ui` payload and declares no Flutter optdepends (#246).
 
-**Zen is following it out** (ADR-0023 phase 1, issue #51). The browser is
-363 MiB of root payload — 726 MiB across the A/B pair — so it now also
-ships as a per-arch apps-channel artifact
-(`lisa-zen_<ver>_<arch>.tar.zst`, built by
-`os/repo-tools/build-zen-payload.sh` from the same pinned digest the
-PKGBUILD uses) and installs under `/var/lib/lisa/apps/payloads/zen` via
-`lisa apps sync`. A "bundled" app is now three things that can move
-independently: the launcher entry (image), the payload (channel), and the
-pin (one PKGBUILD, shared by both).
+**The browser is no longer bundled third-party software.** Zen — a
+repackaged upstream tarball, 363 MiB of root payload and 726 MiB across
+the A/B pair — was the interim browser. It was first moved out of the
+image onto the apps channel (ADR-0023 phase 1, issue #51) and then
+retired entirely on 2026-08-05, because the browser we ship is now
+**Surfer** (ADR-0037): a first-party GJS/WebKit app in `apps/surfer`,
+installed by the `lisa` package as `app.lisaos.Surfer` and listed in the
+first-party table above. Nothing repackages an upstream browser tarball
+any more, so there is no `zen-browser` port, no `lisa-zen_*` channel
+artifact, and no `zen` payload channel.
 
 ## SDK / libraries (pointers)
 

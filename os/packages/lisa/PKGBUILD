@@ -231,7 +231,7 @@ package_lisa-cli() {
     # /var over the baked /usr/share/lisa/shell.
     install -Dm755 os/packages/lisa/lisa-app "$pkgdir/usr/bin/lisa-app"
     # Payload sync (ADR-0023 phase 1): pulls what the image stopped
-    # carrying — the Zen browser — onto /var once the machine is online.
+    # carrying onto /var once the machine is online.
     # Enabled in the image by mkosi.postinst.chroot; on Track L the admin
     # enables the timer (`systemctl enable --now lisa-apps-sync.timer`).
     # …and the directories those payloads land in. The SAME file the

@@ -11,7 +11,7 @@
 # — the same one the nightly runs, shared via
 # .github/actions/ab-sysupdate (issue #47). The A/B gate exists here
 # because this image is NOT the nightly one: the lisa-* split packages,
-# llama.cpp, zen-browser, the forked gnome-control-center and
+# llama.cpp, the forked gnome-control-center and
 # lisa-audio-cs8409 only ever land in this lane, and a packaging
 # difference that breaks staging (issue #45) used to be invisible to CI.
 
@@ -49,24 +49,6 @@ jobs:
       - name: Compute version
         id: ver
         run: echo "ver=$(date -u +%Y%m%d).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-      # The apps-channel Zen payloads (ADR-0023 phase 1, issue #51), BOTH
-      # architectures, built here on the x86_64 runner because this is a
-      # repackage of an upstream binary tarball, not a compile — so one
-      # release carries a complete channel and an arm64 device is never told
-      # "no payload for your arch".
-      #
-      # First step on purpose: it re-downloads the two pinned upstream
-      # tarballs and fails on a digest mismatch, so a re-cut upstream asset
-      # costs one minute here instead of surfacing after the ~40-minute
-      # image build.
-      - name: Build the per-arch Zen payloads (apps channel)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -qq -y --no-install-recommends zstd >/dev/null
-          for a in x86_64 aarch64; do
-            bash os/repo-tools/build-zen-payload.sh "$a" "${{ steps.ver.outputs.ver }}" .
-          done
-          ls -lh lisa-zen_*.tar.zst
       # Downloads only — never built artifacts. A cached .pkg.tar.* would
       # be a silent-regression machine: lisa-audio-cs8409 is welded to one
       # kernel release and its guards exist because a mismatched module
@@ -252,8 +234,8 @@ jobs:
               chown -R builder /build
               sudo -u builder bash -c "cd /build && bash os/repo-tools/build-packages.sh /build/repo-out"
               # ADR-0051 phase 2: the ports — llama.cpp, whisper.cpp,
-              # piper, zen-browser (+launcher), the g-c-c fork — arrive
-              # PREBUILT from the rolling ports release, pinned by
+              # piper, the g-c-c fork — arrive PREBUILT from the rolling
+              # ports release, pinned by
               # sha256 in os/packages/ports.lock. They are built by
               # ports.yml when their PKGBUILDs change, not here and not
               # per release: four failed dispatches on 2026-08-05 each
@@ -417,48 +399,12 @@ jobs:
                    # onnxruntime from Arch as a normal dependency.
                    whisper.cpp
                    piper
-                   # The .desktop entry, icons and /usr/bin/zen-browser
-                   # resolver. ~10 KiB, and it stays here forever: it is
-                   # what keeps the browser launchable no matter which side
-                   # of the ADR-0023 migration a root slot is on.
-                   zen-browser-launcher
-                   # ---------------------------------------------------
-                   # MIGRATION COMPLETE (ADR-0023 phase 1, issues #51/#89).
-                   # `zen-browser` used to be baked here — ~363 MiB of root
-                   # payload, paid twice by the A/B layout — for exactly
-                   # one overlap cycle, because a device on an older image
-                   # had a `lisa update` predating the payload pre-fetch
-                   # and would have booted a slot with no browser at all.
-                   #
-                   # The condition for deleting it was "the next release
-                   # after the overlap one has shipped AND devices have
-                   # taken it". v31 (20260726.34) was the overlap release;
-                   # .57, .60, .61 and .62 have since shipped, and the
-                   # reference iMac is running 20260801.62. Verified on it
-                   # 2026-08-02 rather than assumed:
-                   #
-                   #   $ zen-browser --version     # the shipped resolver
-                   #   Mozilla Zen 1.21.8b
-                   #
-                   # answered by /var/lib/lisa-apps/payloads/zen/current,
-                   # not by the baked /opt/zen. `lisa apps status` reports
-                   # zen current 20260731.57.
-                   #
-                   # zen-browser-launcher stays FOREVER (above): the
-                   # .desktop, icons and /usr/bin/zen-browser resolver are
-                   # what keep the browser launchable whichever side of the
-                   # migration a slot is on.
-                   #
-                   # RESIDUAL RISK, stated because it is not zero. A device
-                   # that skips releases — offline across two of them —
-                   # lands here from a pre-pre-fetch image: no /opt/zen in
-                   # the new slot and possibly no /var payload yet. It
-                   # self-heals when lisa-apps-sync.timer next fires (the
-                   # nightly asserts that timer is enabled), but there is a
-                   # window with no browser. Bounded and recoverable, and
-                   # the alternative is baking 726 MiB across both slots
-                   # forever.
-                   # ---------------------------------------------------
+                   # The browser is Surfer (ADR-0037, ADR-0048): a
+                   # first-party GJS/WebKit app shipped by the `lisa`
+                   # package as app.lisaos.Surfer, not a third-party
+                   # tarball. zen-browser and zen-browser-launcher were
+                   # dropped on 2026-08-05 — the interim browser is
+                   # retired now that Surfer is the one we ship.
                    # Apple CS8409/CS42L83 speaker override (issue #44,
                    # ADR-0024). depends=(linux=<exact version>), so if the
                    # image resolves a different kernel than the one this
@@ -711,25 +657,16 @@ jobs:
           sudo mkdir -p /mnt/lisaroot
           sudo mount -o ro "${LOOP}p2" /mnt/lisaroot
           total=$(sudo du -sxm /mnt/lisaroot | cut -f1)
-          # `if`, not `[ … ] && …`: GitHub runs `run:` under `bash -e`, and
-          # after the migration completes /opt/zen is GONE — a bare test
-          # would then fail the whole release step on a zero it expected.
-          zen=0
-          if [ -d /mnt/lisaroot/opt/zen ]; then
-            zen=$(sudo du -sxm /mnt/lisaroot/opt/zen | cut -f1)
-          fi
           {
             echo "### Populated root (ADR-0023)"
             echo ""
             echo "| what | MiB |"
             echo "|---|---|"
             echo "| populated root total | $total |"
-            echo "| of which /opt/zen (leaving the image) | $zen |"
-            echo "| root without /opt/zen | $((total - zen)) |"
             echo ""
             echo "Slot size is 10240 MiB (os/mkosi/mkosi.repart/10-root.conf), paid twice."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "populated root: ${total} MiB (/opt/zen: ${zen} MiB)"
+          echo "populated root: ${total} MiB"
           sudo umount /mnt/lisaroot
           sudo losetup -d "$LOOP"
       - name: Version the UKI + extract sysupdate artifacts
@@ -782,19 +719,18 @@ jobs:
             echo "runtime payload is not an x86_64 binary"; exit 1; }
           cp -r skills/. "$rt/skills/"
           tar --zstd -cf "lisa-runtime_${VER}_x86_64.tar.zst" -C "$rt" .
-          # The per-arch Zen payloads were built in the first step; they go
-          # into the SAME manifest, because `lisa apps` verifies every
-          # payload against it before unpacking anything (ADR-0023: pins are
-          # load-bearing for everything on /var).
+          # Every apps-channel payload goes into the SAME manifest, because
+          # `lisa apps` verifies each one against it before unpacking
+          # anything (ADR-0023: pins are load-bearing for everything on
+          # /var).
           sha256sum "lisa_${VER}.root.xz" "lisa_${VER}.efi" "lisa-usb-${VER}.raw.zst" \
             "lisa-apps_${VER}.tar.zst" \
-            "lisa-runtime_${VER}_x86_64.tar.zst" \
-            "lisa-zen_${VER}_x86_64.tar.zst" "lisa-zen_${VER}_aarch64.tar.zst" > SHA256SUMS
-          cat SHA256SUMS; ls -lh lisa_* lisa-usb-* lisa-zen_*
+            "lisa-runtime_${VER}_x86_64.tar.zst" > SHA256SUMS
+          cat SHA256SUMS; ls -lh lisa_* lisa-usb-*
       # The A/B gate, on the artifact devices actually receive (issue #47).
       # Until now the ab-* jobs only ever ran against the NIGHTLY image,
       # while release.yml builds a materially different one (the lisa-*
-      # split packages, llama.cpp, zen-browser, the forked
+      # split packages, llama.cpp, the forked
       # gnome-control-center, lisa-audio-cs8409) and checked only "no boot,
       # no release". A packaging difference that breaks staging — issue
       # #45's failure class, which reached a real device — passed every
@@ -848,13 +784,11 @@ jobs:
           fails. \`lisa_${VER}.root.xz\`, \`lisa_${VER}.efi\`, and \`SHA256SUMS\`
           are that machinery — humans want the \`.raw.zst\`.
 
-          **Apps channel:** \`lisa-apps_${VER}.tar.zst\` (shell surfaces) and
-          \`lisa-zen_${VER}_x86_64.tar.zst\` / \`lisa-zen_${VER}_aarch64.tar.zst\`
-          (Zen browser) update independently of the image — \`lisa apps update\`,
-          no reboot (ADR-0020, ADR-0023). The browser lives on this channel:
-          the image ships only \`zen-browser-launcher\` (the .desktop, icons and
-          resolver); the \`/opt/zen\` payload installs under \`/var\` via
-          \`lisa apps\`, and \`lisa-apps-sync.timer\` pulls it once online.
+          **Apps channel:** \`lisa-apps_${VER}.tar.zst\` (the GJS shell
+          surfaces and apps — assistant, Ledger, Mail, Surfer, Preview) and
+          \`lisa-runtime_${VER}_x86_64.tar.zst\` (the \`lisa\` CLI and its
+          skills) update independently of the image — \`lisa apps update\`,
+          no reboot (ADR-0020, ADR-0023).
           EOF
           gh release create "v${VER}" \
             --title "Lisa OS ${VER}" \
@@ -864,8 +798,6 @@ jobs:
             "lisa_${VER}.efi" \
             "lisa-apps_${VER}.tar.zst" \
             "lisa-runtime_${VER}_x86_64.tar.zst" \
-            "lisa-zen_${VER}_x86_64.tar.zst" \
-            "lisa-zen_${VER}_aarch64.tar.zst" \
             SHA256SUMS
           # The packages the image was built FROM, for the [lisa] index
           # (ADR-0039, lisa-os#171): lisa-packages' publish workflow is

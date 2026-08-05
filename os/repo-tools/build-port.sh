@@ -34,12 +34,6 @@ case "$port" in
     # its own source=() (piper needs an API no espeak-ng release has).
     (cd "$dir" && makepkg -s --skippgpcheck --noconfirm)
     ;;
-  zen-browser)
-    # -d: binary repackage of the upstream tarball (sha256-pinned in
-    # the PKGBUILD); runtime deps resolve at image-install time.
-    # Produces BOTH split packages (zen-browser + zen-browser-launcher).
-    (cd "$dir" && makepkg -d --nocheck --noconfirm)
-    ;;
   lisa-desktop-control-center)
     # -s: arch-meson et al. provides/conflicts=gnome-control-center —
     # stock can never co-install, whatever version Arch ships. Also
@@ -56,7 +50,7 @@ case "$port" in
     ;;
   *)
     echo "unknown port: $port" >&2
-    echo "known: llama.cpp whisper.cpp piper zen-browser lisa-desktop-control-center lisa-desktop-online-accounts" >&2
+    echo "known: llama.cpp whisper.cpp piper lisa-desktop-control-center lisa-desktop-online-accounts" >&2
     exit 1
     ;;
 esac

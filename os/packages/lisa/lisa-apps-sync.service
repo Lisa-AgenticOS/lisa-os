@@ -1,9 +1,8 @@
 # Fetch the out-of-image app payloads this system does not have yet
-# (ADR-0023 phase 1, issue #51). Today that means the Zen browser, which
-# moved from a baked /opt/zen to the ADR-0020 apps channel.
+# (ADR-0023 phase 1, issue #51) from the ADR-0020 apps channel.
 #
 # This is the safety net for exactly one failure: an image that no longer
-# carries the browser boots on a device whose /var never received it — an
+# bakes a payload boots on a device whose /var never received it — an
 # offline install, or an update staged by a `lisa update` too old to
 # pre-fetch. It ACQUIRES missing payloads only; a payload already installed
 # is never moved to another version behind the user's back (that is what

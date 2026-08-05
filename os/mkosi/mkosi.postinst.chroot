@@ -8,11 +8,11 @@ if [ -f /usr/lib/systemd/system/lisa-inferenced.service ]; then
     systemctl enable lisa-inferenced.service
 fi
 
-# Out-of-image app payloads (ADR-0023 phase 1, issue #51): the Zen browser
-# left the image for the apps channel, so a booted system has to be able to
-# go get it. The timer is the safety net for the device that was offline
-# when its slot was updated — without it, "no network at first boot" would
-# mean "no browser, and no way to know why".
+# Out-of-image app payloads (ADR-0023 phase 1, issue #51): payloads the
+# image does not bake arrive on the apps channel, so a booted system has to
+# be able to go get them. The timer is the safety net for the device that
+# was offline when its slot was updated — without it, "no network at first
+# boot" would mean "a missing surface, and no way to know why".
 if [ -f /usr/lib/systemd/system/lisa-apps-sync.timer ]; then
     systemctl enable lisa-apps-sync.timer
 fi

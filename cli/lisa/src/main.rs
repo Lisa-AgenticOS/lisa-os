@@ -259,7 +259,7 @@ enum Command {
     },
     /// Update out-of-image payloads independently of the OS image
     /// (ADR-0020, ADR-0023): fetch, verify, and activate the newest shell
-    /// tree and app payloads (Zen browser) — no reboot.
+    /// tree and CLI runtime payloads — no reboot.
     Apps {
         #[command(subcommand)]
         cmd: AppsCmd,
@@ -506,7 +506,7 @@ enum AmbientCmd {
 #[derive(Subcommand)]
 enum AppsCmd {
     /// Fetch, verify (SHA256SUMS), install, and activate the newest payload
-    /// for every channel, or just the named one (`shell`, `zen`).
+    /// for every channel, or just the named one (`shell`, `runtime`).
     Update {
         /// Only this channel.
         channel: Option<String>,
@@ -519,7 +519,7 @@ enum AppsCmd {
         channel: Option<String>,
     },
     /// Install payloads the image no longer carries and this system does not
-    /// have yet (Zen browser), leaving installed versions untouched. Run by
+    /// have yet, leaving installed versions untouched. Run by
     /// lisa-apps-sync.timer and by `lisa update` before it stages a slot.
     Sync,
     /// Install a payload tarball you already have, instead of fetching one.
@@ -529,7 +529,7 @@ enum AppsCmd {
     /// the release SHA256SUMS; this one cannot — the file came from you,
     /// not from a manifest — and says so.
     Install {
-        /// Channel to install into (`shell`, `runtime`, `zen`).
+        /// Channel to install into (`shell`, `runtime`).
         channel: String,
         /// The `.tar.zst` payload.
         tarball: PathBuf,
@@ -541,7 +541,7 @@ enum AppsCmd {
     /// — the one authority for where `update` installs a payload and
     /// where /usr/bin/lisa-app then reads it (issue #239).
     Path {
-        /// Channel to resolve (`shell`, `runtime`, `zen`).
+        /// Channel to resolve (`shell`, `runtime`).
         channel: String,
         /// Print the install root instead: the directory `update` writes
         /// `versions/<ver>` and `current` into.
@@ -2932,14 +2932,13 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
     }
     assert_transfers_protect_booted()?;
     // ADR-0023 phase 1: the slot we are about to stage may not carry
-    // payloads this one does — the Zen browser left the image and now
-    // arrives through the apps channel. Pull what is missing onto the
-    // PERSISTENT /var first, while the current slot's baked copy is still
-    // there to fall back on, so the reboot never lands on a system whose
-    // browser is gone. Best-effort on purpose: an unreachable app channel
-    // must not block an OS security update, but it must be loud, because
-    // the silent version of this failure is a user who reboots into a
-    // desktop with no browser.
+    // payloads this one does. Pull what is missing onto the PERSISTENT
+    // /var first, while the current slot's baked copy is still there to
+    // fall back on, so the reboot never lands on a system missing a
+    // surface. Best-effort on purpose: an unreachable app channel must
+    // not block an OS security update, but it must be loud, because the
+    // silent version of this failure is a user who reboots into a
+    // desktop with something missing.
     if let Err(e) = apps::sync() {
         // Two different failures wearing one message (#140).
         //
@@ -4096,7 +4095,7 @@ mod prefetch_tests {
         // …including when it is wrapped, which is how it actually
         // arrives: apps::sync adds context about which payload and
         // which directory before it reaches the caller.
-        let wrapped = denied.context("creating /var/lib/lisa/apps/payloads/zen/versions");
+        let wrapped = denied.context("creating /var/lib/lisa/apps/payloads/shell/versions");
         assert!(is_permission_denied(&wrapped));
     }
 

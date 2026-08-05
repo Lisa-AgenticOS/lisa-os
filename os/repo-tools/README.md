@@ -34,8 +34,7 @@ Limits: it stages files only. `.desktop` entries, D-Bus service files and
 GSettings schemas are installed to `/usr` by the package, so a payload
 can update an app's *code* but cannot add a new app to the launcher, and
 GNOME Shell extensions still load from the baked tree at session start
-(ADR-0020). `build-zen-payload.sh <arch> <version> [outdir]` builds the
-per-arch Zen payload for the same channel.
+(ADR-0020).
 
 ## The lint gates
 

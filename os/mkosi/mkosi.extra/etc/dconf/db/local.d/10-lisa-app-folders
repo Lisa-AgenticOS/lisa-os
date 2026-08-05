@@ -7,7 +7,7 @@
 # folder and dconf keeps their arrangement.
 #
 # Top level after this: Files, Mail, Surfer, Preview, Lisa Assistant,
-# Ledger, Settings, Zen Browser.
+# Ledger, Settings.
 [org/gnome/desktop/app-folders]
 folder-children=['Utilities']
 
