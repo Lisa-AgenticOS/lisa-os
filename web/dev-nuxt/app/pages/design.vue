@@ -5,25 +5,33 @@
 const repo = `https://github.com/${useRuntimeConfig().public.repo}`
 useHead({ title: 'Design — Lisa OS developers' })
 
-const ramp: [string, string][] = [
-  ['50', '#f4f0fb'], ['100', '#e7def7'], ['200', '#d0bdf0'], ['300', '#b396e6'],
-  ['400', '#9169da'], ['500', '#6d45c9'], ['600', '#5b36ad'], ['700', '#4a2c8c'],
-  ['800', '#3d2672'], ['900', '#33215e'], ['950', '#211239']
-]
-// token, light, dark, meaning
+// The palette is READ from the generated tokens, never retyped. This
+// page used to hardcode swatch hexes — and by 2026-08-05 they were the
+// site's old hand-picked values, so the page documenting the design
+// system had drifted off the design system. Caught by check-tokens.py
+// the day `web` joined its SURFACES list. Derived, it cannot drift.
+import { TOKENS } from '~/assets/tokens.js'
+
+// The brand ramp, in tokens.json order.
+const ramp: [string, string][] = (
+  ['violet-700', 'violet-500', 'violet-300'] as const
+).map(k => [k.replace('violet-', ''), TOKENS[k]] as [string, string])
+
+// Role, light value, dark value, meaning. Light and dark both come from
+// tokens.json — the site's semantic aliases map onto these names (see
+// app/assets/css/main.css).
 const tokens: [string, string, string, string][] = [
-  ['--paper', '#FBFAF8', '#0E0C12', 'The page. Warm near-white, near-black in dark.'],
-  ['--ground', '#FFFFFF', '#151220', 'Raised surfaces: boards, cards, tables.'],
-  ['--ink', '#17151C', '#F3F0F8', 'Primary text.'],
-  ['--ink-soft', '#6C6675', '#A9A2BB', 'Secondary text — ledes, descriptions.'],
-  ['--ink-faint', '#9C97A6', '#736C85', 'Tertiary: dates, labels, footnotes.'],
-  ['--line', '#ECE8F1', '#241E31', 'Hairline rules and borders.'],
-  ['--violet', '#6D45C9', '#A183EC', 'The brand accent — actions, emphasis.'],
-  ['--violet-ink', '#5B36AD', '#B9A0F4', 'Violet tuned for text and links.'],
-  ['--amber', '#D75600', '#FF8A3D', 'Egress — anything that leaves your hardware.'],
-  ['--green', '#1F9D57', '#3FCB7F', 'Verified / healthy state.']
-]
-</script>
+  ['--paper', TOKENS['paper'], TOKENS['base'], 'The page.'],
+  ['--ground', TOKENS['surface'], TOKENS['elevated'], 'Raised surfaces: boards, cards, tables.'],
+  ['--ink', TOKENS['ink-900'], TOKENS['text-primary'], 'Primary text.'],
+  ['--ink-soft', TOKENS['ink-500'], TOKENS['text-secondary'], 'Secondary text — ledes, descriptions.'],
+  ['--ink-faint', TOKENS['ink-300'], TOKENS['text-secondary'], 'Tertiary: dates, labels, footnotes.'],
+  ['--line', TOKENS['line-200'], TOKENS['line'], 'Hairline rules and borders.'],
+  ['--violet', TOKENS['violet-500'], TOKENS['violet-300'], 'The brand accent — actions, emphasis.'],
+  ['--violet-ink', TOKENS['violet-700'], TOKENS['violet-300'], 'Violet tuned for text and links.'],
+  ['--amber', TOKENS['egress'], TOKENS['warning'], 'Egress — anything that leaves your hardware.'],
+  ['--green', TOKENS['success'], TOKENS['success'], 'Verified / healthy state.']
+]</script>
 
 <template>
   <div>
@@ -35,10 +43,10 @@ const tokens: [string, string, string, string][] = [
 
     <section class="sec anchor">
       <h2>The violet ramp</h2>
-      <p>Everything brand-colored derives from the Lisa violet, <code>#6D45C9</code> — the same seed the GDM greeter, the wordmark accents, and every generated token sheet use. The ramp as this site ships it (<code>--color-lisa-*</code>):</p>
+      <p>Everything brand-colored derives from the Lisa violet, <code>#6D45C9</code> — the same seed the GDM greeter, the wordmark accents, and every generated token sheet use. The three brand steps <code>branding/tokens.json</code> sanctions — every surface, this site included, resolves to these:</p>
       <div class="ramp">
         <div v-for="[step, hex] in ramp" :key="step" class="chip" :style="{ background: hex }">
-          <span :style="{ color: Number(step) >= 400 ? '#fff' : '#211239' }">{{ step }}</span>
+          <span :style="{ color: step === '300' ? 'var(--ink)' : 'var(--color-warm-white)' }">{{ step }}</span>
         </div>
       </div>
       <div class="tbl" style="margin-top:14px"><table>

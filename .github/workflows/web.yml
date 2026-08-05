@@ -1,0 +1,114 @@
+# The websites' gate (ADR-0054 phase 0). Until this existed, lisaos.app
+# and lisaos.dev were the only part of this project that shipped with no
+# CI at all: nothing built them on a PR, nothing checked their links, and
+# every deploy was a person running `bp deploy` by hand. That is the same
+# undocumented-manual-step shape that made the [lisa] publish chain
+# fragile (#171) — and it is a poor look on a project whose entire
+# argument is that the system shows its work.
+#
+# What this does NOT do: deploy. Deployment stays a deliberate act
+# (`bp deploy web/<site>`) because the basepod token is a machine
+# credential the owner holds, and because publishing to a real domain
+# should be a decision rather than a side effect of merging — the same
+# reasoning lisa-packages' publish workflow uses. This job's job is to
+# make sure what you deploy has already been built and checked.
+
+name: web
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'branding/**', '.github/workflows/web.yml']
+  pull_request:
+    paths: ['web/**', 'branding/**', '.github/workflows/web.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        site: [app-nuxt, dev-nuxt]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/${{ matrix.site }}/package-lock.json
+
+      # The brand tokens are GENERATED into each site (ADR-0054 phase 0).
+      # A site whose committed copy has drifted from branding/tokens.json
+      # would build and look fine while being off-brand, so check before
+      # building rather than after.
+      - name: Brand tokens are in sync with branding/tokens.json
+        run: python3 branding/generate-tokens.py --check
+
+      - name: Install
+        working-directory: web/${{ matrix.site }}
+        run: npm ci
+
+      - name: Build
+        working-directory: web/${{ matrix.site }}
+        run: npm run build
+
+      # A doc that moves, a page that is renamed, a repo link that dies:
+      # all of them are silent until somebody clicks. Internal links are
+      # checked strictly (they are ours and we can fix them); external
+      # ones are reported and never fatal, because a third-party outage
+      # must not redden a build that has nothing wrong with it.
+      - name: Links resolve
+        working-directory: web/${{ matrix.site }}
+        run: |
+          set -o pipefail
+          npx --yes serve -s .output/public -l 4173 >/dev/null 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:4173/ && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://127.0.0.1:4173/ \
+            || { echo "FAIL: the built site does not serve its own index"; exit 1; }
+
+          # Every internal href in the generated HTML must resolve.
+          python3 - <<'PY'
+          import re, pathlib, urllib.request, sys
+          root = pathlib.Path(".output/public")
+          hrefs = set()
+          for f in root.rglob("*.html"):
+              for m in re.finditer(r'href="(/[^"#?]*)"', f.read_text()):
+                  hrefs.add(m.group(1))
+          bad = []
+          for h in sorted(hrefs):
+              url = "http://127.0.0.1:4173" + h
+              try:
+                  code = urllib.request.urlopen(url, timeout=10).status
+              except Exception as e:
+                  code = getattr(e, "code", 0)
+              if code >= 400:
+                  bad.append(f"{code}  {h}")
+          print(f"checked {len(hrefs)} internal links")
+          if bad:
+              print("BROKEN internal links:", *bad, sep="\n  ")
+              sys.exit(1)
+          PY
+
+      # Anything that ships to a browser has a weight, and a page that
+      # grows 3x without anyone noticing is how a marketing site ends up
+      # slower than the OS it advertises. Reported, not enforced: a
+      # budget nobody agreed to is a gate that gets disabled.
+      - name: Report shipped weight
+        working-directory: web/${{ matrix.site }}
+        run: |
+          {
+            echo "### ${{ matrix.site }} — shipped bytes"
+            echo '```'
+            du -sh .output/public
+            find .output/public -name '*.css' -o -name '*.js' \
+              | xargs -r du -ch 2>/dev/null | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

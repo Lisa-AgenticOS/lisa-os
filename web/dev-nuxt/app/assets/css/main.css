@@ -1,35 +1,35 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+/* The brand palette, GENERATED from branding/tokens.json (ADR-0038
+   step 1, ADR-0054 phase 0). Regenerate with
+   `python3 branding/generate-tokens.py`; the lint gate fails a stale
+   copy. Every colour below is an ALIAS onto that file. */
+@import "./tokens.theme.css";
 
-@theme static {
-  --color-lisa-50: #f4f0fb;
-  --color-lisa-100: #e7def7;
-  --color-lisa-200: #d0bdf0;
-  --color-lisa-300: #b396e6;
-  --color-lisa-400: #9169da;
-  --color-lisa-500: #6d45c9;
-  --color-lisa-600: #5b36ad;
-  --color-lisa-700: #4a2c8c;
-  --color-lisa-800: #3d2672;
-  --color-lisa-900: #33215e;
-  --color-lisa-950: #211239;
-}
-
+/* Semantic aliases — the site speaks in roles, the roles resolve to
+   brand tokens, so a palette change happens in tokens.json only. */
 :root{
-  --paper:#FBFAF8; --ground:#FFFFFF; --ink:#17151C; --ink-soft:#6C6675;
-  --ink-faint:#9C97A6; --line:#ECE8F1; --line-2:#E2DCEC;
-  --violet:#6D45C9; --violet-ink:#5B36AD; --amber:#D75600;
-  --mono-bg:#F5F2FA; --mono-ink:#413A52; --green:#1F9D57;
+  --paper:var(--color-paper); --ground:var(--color-surface);
+  --ink:var(--color-ink-900); --ink-soft:var(--color-ink-500);
+  --ink-faint:var(--color-ink-300);
+  --line:var(--color-line-200);
+  --line-2:color-mix(in srgb,var(--color-ink-300) 34%,var(--color-line-200));
+  --violet:var(--color-violet-500); --violet-ink:var(--color-violet-700);
+  --amber:var(--color-egress); --green:var(--color-success);
+  --mono-bg:color-mix(in srgb,var(--color-violet-500) 6%,var(--color-paper));
+  --mono-ink:var(--color-ink-700);
 }
 .dark{
-  --paper:#0E0C12; --ground:#151220; --ink:#F3F0F8; --ink-soft:#A9A2BB;
-  --ink-faint:#736C85; --line:#241E31; --line-2:#2E273D;
-  --violet:#A183EC; --violet-ink:#B9A0F4; --amber:#FF8A3D;
-  --mono-bg:#171320; --mono-ink:#C7BEDC; --green:#3FCB7F;
+  --paper:var(--color-base); --ground:var(--color-elevated);
+  --ink:var(--color-text-primary); --ink-soft:var(--color-text-secondary);
+  --ink-faint:color-mix(in srgb,var(--color-text-secondary) 62%,var(--color-base));
+  --line:var(--color-line); --line-2:color-mix(in srgb,var(--color-line) 70%,var(--color-text-secondary));
+  --violet:var(--color-violet-300); --violet-ink:var(--color-violet-300);
+  --amber:var(--color-warning); --green:var(--color-success);
+  --mono-bg:var(--color-card); --mono-ink:var(--color-text-secondary);
 }
 
-/* One spacing scale, shared with lisaos.app so the two sites are the
-   same design system rather than two dialects of it. */
+/* One spacing scale, shared with lisaos.app. */
 :root{ --s-1:8px; --s-2:16px; --s-3:24px; --s-4:40px; --s-5:64px; --s-6:96px; --s-7:128px; }
 
 html,body{background:var(--paper);color:var(--ink)}

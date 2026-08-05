@@ -23,8 +23,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 HEX = re.compile(r"#[0-9a-fA-F]{6}\b")
-SURFACES = ["shell", "apps"]
-SUFFIXES = {".js", ".css"}
+# `web` joined on 2026-08-05 (ADR-0054 phase 0). The websites were the
+# one surface this gate did not cover, and they had drifted exactly the
+# way an ungated surface does: a cooler paper and ink than tokens.json
+# sanctions, with only the violet matching by luck. That is the "fourth
+# violet" defect the gate exists to prevent, living where the gate could
+# not see — on the project's own marketing site.
+SURFACES = ["shell", "apps", "web"]
+SUFFIXES = {".js", ".css", ".vue"}
+# Build output and dependencies are not authored surfaces; a hex in a
+# minified vendor bundle is not a design decision anyone made.
+SKIP_PARTS = {"tests", "node_modules", ".output", ".nuxt", "dist", "build"}
 
 
 def main():
@@ -39,7 +48,7 @@ def main():
     bad = []
     for surface in SURFACES:
         for path in sorted((ROOT / surface).rglob("*")):
-            if path.suffix not in SUFFIXES or "tests" in path.parts:
+            if path.suffix not in SUFFIXES or SKIP_PARTS & set(path.parts):
                 continue
             for i, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
                 for match in HEX.findall(line):

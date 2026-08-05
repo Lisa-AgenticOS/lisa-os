@@ -120,11 +120,25 @@ def theme(tokens):
 def main():
     tokens = json.loads((ROOT / "tokens.json").read_text())
     out = ROOT / "out"
+    theme_css = theme(tokens)
     want = {
         out / "tokens.css": css(tokens),
         out / "tokens.js": js(tokens),
-        out / "tokens.theme.css": theme(tokens),
+        out / "tokens.theme.css": theme_css,
     }
+    # The websites get their own COPY, not an import across the tree.
+    # Each site is built in a Docker context rooted at its own
+    # directory (web/*/Dockerfile, `context: .`), so `branding/` does
+    # not exist during the image build and a relative @import that
+    # works locally would fail in CI. Generated-and-committed is
+    # already this repo's pattern for exactly this reason, and
+    # --check keeps every copy honest: edit tokens.json, regenerate,
+    # or the lint gate fails.
+    repo = ROOT.parent
+    for site in ("app-nuxt", "dev-nuxt"):
+        p = repo / "web" / site / "app" / "assets" / "css" / "tokens.theme.css"
+        if p.parent.is_dir():
+            want[p] = theme_css
 
     if "--check" in sys.argv:
         stale = [

@@ -1,37 +1,48 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+/* The brand palette, GENERATED from branding/tokens.json (ADR-0038
+   step 1, ADR-0054 phase 0). Regenerate with
+   `python3 branding/generate-tokens.py`; the lint gate fails a stale
+   copy. Every colour below is an ALIAS onto that file — the sites
+   used to hand-pick their own neutrals, which is the "fourth violet"
+   defect living in the one tree the gate did not cover. */
+@import "./tokens.theme.css";
 
-/* Lisa violet ramp → Nuxt UI primary ("lisa"). 500 is the brand #6D45C9. */
-@theme static {
-  --color-lisa-50: #f4f0fb;
-  --color-lisa-100: #e7def7;
-  --color-lisa-200: #d0bdf0;
-  --color-lisa-300: #b396e6;
-  --color-lisa-400: #9169da;
-  --color-lisa-500: #6d45c9;
-  --color-lisa-600: #5b36ad;
-  --color-lisa-700: #4a2c8c;
-  --color-lisa-800: #3d2672;
-  --color-lisa-900: #33215e;
-  --color-lisa-950: #211239;
-}
+/* Semantic aliases. The site speaks in roles (paper, ink, line) and
+   the roles resolve to brand tokens, so a palette change happens in
+   tokens.json and nowhere else.
 
-/* Lisa editorial tokens (Ramp/Stripe treatment). color-mode toggles .dark. */
+   --amber is the one with teeth: the sites use it to mark "this
+   leaves your hardware", and tokens.json defines --color-egress with
+   EXACTLY that meaning and no other. They are now literally the same
+   colour as the OS uses for egress, instead of two ambers that
+   happened to agree. */
 :root{
-  --paper:#FBFAF8; --ground:#FFFFFF; --ink:#17151C; --ink-soft:#6C6675;
-  --ink-faint:#9C97A6; --line:#ECE8F1; --line-2:#E2DCEC;
-  --violet:#6D45C9; --violet-ink:#5B36AD; --amber:#D75600;
-  --mono-bg:#F5F2FA; --mono-ink:#413A52;
+  --paper:var(--color-paper); --ground:var(--color-surface);
+  --ink:var(--color-ink-900); --ink-soft:var(--color-ink-500);
+  --ink-faint:var(--color-ink-300);
+  --line:var(--color-line-200);
+  --line-2:color-mix(in srgb,var(--color-ink-300) 34%,var(--color-line-200));
+  --violet:var(--color-violet-500); --violet-ink:var(--color-violet-700);
+  --amber:var(--color-egress);
+  --mono-bg:color-mix(in srgb,var(--color-violet-500) 6%,var(--color-paper));
+  --mono-ink:var(--color-ink-700);
 }
 .dark{
-  --paper:#0E0C12; --ground:#151220; --ink:#F3F0F8; --ink-soft:#A9A2BB;
-  --ink-faint:#736C85; --line:#241E31; --line-2:#2E273D;
-  --violet:#A183EC; --violet-ink:#B9A0F4; --amber:#FF8A3D;
-  --mono-bg:#171320; --mono-ink:#C7BEDC;
+  --paper:var(--color-base); --ground:var(--color-elevated);
+  --ink:var(--color-text-primary); --ink-soft:var(--color-text-secondary);
+  --ink-faint:color-mix(in srgb,var(--color-text-secondary) 62%,var(--color-base));
+  --line:var(--color-line); --line-2:color-mix(in srgb,var(--color-line) 70%,var(--color-text-secondary));
+  --violet:var(--color-violet-300); --violet-ink:var(--color-violet-300);
+  --amber:var(--color-warning);
+  --mono-bg:var(--color-card); --mono-ink:var(--color-text-secondary);
 }
 
 /* One spacing scale, so section rhythm is a decision rather than a
-   pile of one-off numbers. */
+   pile of one-off numbers. (Nearly lost in the token rewrite: the
+   block was inside the replaced range while ten rules still read it.
+   `grep -c` for the definition against `grep -c` for the uses is a
+   two-second check that would have shipped a collapsed page.) */
 :root{ --s-1:8px; --s-2:16px; --s-3:24px; --s-4:40px; --s-5:64px; --s-6:96px; --s-7:128px; }
 
 html,body{background:var(--paper);color:var(--ink)}
