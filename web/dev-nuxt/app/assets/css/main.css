@@ -28,7 +28,16 @@
   --mono-bg:#171320; --mono-ink:#C7BEDC; --green:#3FCB7F;
 }
 
+/* One spacing scale, shared with lisaos.app so the two sites are the
+   same design system rather than two dialects of it. */
+:root{ --s-1:8px; --s-2:16px; --s-3:24px; --s-4:40px; --s-5:64px; --s-6:96px; --s-7:128px; }
+
 html,body{background:var(--paper);color:var(--ink)}
+/* scroll-padding: this portal is full of in-page anchors, and a sticky
+   bar that lands on top of the heading you jumped to is worse than no
+   anchor at all. */
+html{scroll-behavior:smooth;scroll-padding-top:88px}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 body{font:16px/1.62 system-ui,-apple-system,"Segoe UI",Rubik,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 ::selection{background:color-mix(in srgb,var(--violet) 24%,transparent)}
 a{color:var(--violet-ink);text-decoration:none}a:hover{text-decoration:underline}
@@ -37,7 +46,14 @@ a{color:var(--violet-ink);text-decoration:none}a:hover{text-decoration:underline
 h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balance;margin:0}
 .eyebrow{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
 
-.nav{display:flex;align-items:center;gap:26px;height:70px;border-bottom:1px solid var(--line)}
+/* Sticky, blurred — this is a docs portal, so the section nav has to
+   stay reachable through a long page. Solid fallback where
+   backdrop-filter is unsupported. */
+.navbar{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--paper) 82%,transparent);
+        backdrop-filter:saturate(180%) blur(14px);-webkit-backdrop-filter:saturate(180%) blur(14px);
+        border-bottom:1px solid var(--line)}
+@supports not (backdrop-filter:blur(1px)){.navbar{background:var(--paper)}}
+.nav{display:flex;align-items:center;gap:26px;height:70px}
 .nav .brand{height:16px}.nav .brand .wm{fill:var(--ink)}
 .nav .badge{font-family:ui-monospace,Menlo,monospace;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--violet-ink);border:1px solid var(--line-2);padding:2px 6px;border-radius:5px;margin-left:8px;vertical-align:2px}
 .nav .menu{display:flex;gap:24px;margin-left:12px}
@@ -58,16 +74,21 @@ h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balan
 .who img{width:26px;height:26px;border-radius:50%;border:1px solid var(--line-2)}
 .who button{background:none;border:0;color:var(--ink-faint);cursor:pointer;font-size:13px}.who button:hover{color:var(--ink)}
 
-.hero{padding:64px 0 10px}
-.hero h1{font-size:clamp(34px,5.6vw,52px);margin:18px 0 0;max-width:17ch}
-.hero p{font-size:clamp(17px,2vw,20px);color:var(--ink-soft);margin-top:18px;max-width:60ch;line-height:1.55}
-.hero .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px;align-items:center}
+.hero{padding:var(--s-5) 0 var(--s-2);position:relative}
+.hero::before{content:"";position:absolute;inset:-20% -40% 20% -40%;pointer-events:none;z-index:-1;
+  background:radial-gradient(55% 55% at 40% 40%,color-mix(in srgb,var(--violet) 11%,transparent),transparent 70%)}
+.hero h1{font-size:clamp(34px,5.8vw,54px);margin:var(--s-3) 0 0;max-width:17ch;letter-spacing:-.032em}
+.hero p{font-size:clamp(17px,2vw,20px);color:var(--ink-soft);margin-top:var(--s-3);max-width:60ch;line-height:1.55}
+.hero .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:var(--s-4);align-items:center}
 .btn{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:15px;padding:12px 20px;border-radius:10px;cursor:pointer}
 .btn.solid{background:var(--violet);color:#fff}.btn.solid:hover{background:var(--violet-ink);text-decoration:none}
 .btn.line{border:1px solid var(--line-2);color:var(--ink)}.btn.line:hover{background:var(--ground);text-decoration:none}
 
-.sec{padding:46px 0;border-top:1px solid var(--line);margin-top:46px}
-.sec:first-of-type{border-top:0;margin-top:34px}
+/* More air than the old 46px: the portal's sections are dense lists,
+   and dense content needs MORE separation, not less, or the page reads
+   as one wall. */
+.sec{padding:var(--s-5) 0 0;border-top:1px solid var(--line);margin-top:var(--s-5)}
+.sec:first-of-type{border-top:0;margin-top:var(--s-4)}
 .sec h2{font-size:clamp(22px,3vw,30px)}
 .sec > p{color:var(--ink-soft);margin-top:12px;max-width:64ch;line-height:1.55}
 .anchor{scroll-margin-top:20px}
@@ -84,14 +105,23 @@ pre code{font:inherit;background:transparent;color:inherit;border-radius:0;paddi
 .ship li:last-child{border-bottom:0}
 .ship .d{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
 
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:22px;border-top:1px solid var(--line)}
-@media(max-width:640px){.grid{grid-template-columns:1fr}}
-a.card{display:block;padding:22px 20px 22px 0;border-bottom:1px solid var(--line)}
-a.card:nth-child(even){padding-left:28px;border-left:1px solid var(--line)}
-@media(max-width:640px){a.card:nth-child(even){padding-left:0;border-left:0}}
-a.card:hover{text-decoration:none;background:color-mix(in srgb,var(--violet) 4%,transparent)}
+/* Real cards on a 3-up grid. These are navigation targets, so they
+   should look pressable rather than being hairline table rows — the
+   old 2-col hairline grid made six destinations read as a list of
+   text. The arrow now travels on hover, which is the affordance. */
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:var(--s-3)}
+@media(max-width:900px){.grid{grid-template-columns:1fr 1fr}}
+@media(max-width:620px){.grid{grid-template-columns:1fr}}
+a.card{display:block;padding:20px 20px 22px;background:var(--ground);border:1px solid var(--line);
+       border-radius:14px;transition:border-color .16s,transform .16s,box-shadow .16s}
+a.card:hover{text-decoration:none;border-color:color-mix(in srgb,var(--violet) 34%,var(--line));
+             transform:translateY(-2px);box-shadow:0 16px 36px -26px rgba(30,20,60,.45)}
+@media(prefers-reduced-motion:reduce){a.card,a.card:hover{transform:none;transition:none}}
 a.card h3{font-size:16.5px;font-weight:700;color:var(--ink);display:flex;align-items:center;gap:8px}
-a.card h3::after{content:"→";color:var(--violet);margin-left:auto;font-weight:400}
+a.card h3::after{content:"→";color:var(--violet);margin-left:auto;font-weight:400;
+                 transition:transform .16s}
+a.card:hover h3::after{transform:translateX(3px)}
+@media(prefers-reduced-motion:reduce){a.card h3::after,a.card:hover h3::after{transform:none;transition:none}}
 a.card p{color:var(--ink-soft);font-size:14.5px;margin-top:6px;line-height:1.5}
 
 /* contributor board */

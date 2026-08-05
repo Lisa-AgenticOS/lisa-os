@@ -8,7 +8,8 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
 </script>
 
 <template>
-  <div class="wrap">
+  <div class="navbar">
+    <div class="wrap">
     <nav class="nav">
       <NuxtLink to="/" aria-label="Lisa developer portal home" style="display:inline-flex;align-items:center">
         <svg class="brand" viewBox="0 0 24 7" aria-label="Lisa" style="display:inline-block;vertical-align:middle"><g class="wm" v-html="wm" /></svg><span class="badge">DEV</span>
@@ -35,7 +36,10 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
         <GhSignIn v-else />
       </div>
     </nav>
+    </div>
+  </div>
 
+  <div class="wrap">
     <NuxtPage />
 
     <footer>
