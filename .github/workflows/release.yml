@@ -149,6 +149,25 @@ jobs:
               pacman-key --init
               pacman-key --populate archlinux
               pacman-key --add /src/os/packages/lisa-keyring/lisa-packages.pub
+              # …AND into the keyring mkosi builds for the IMAGE, which is
+              # a different one. The first attempt at #270 put the key in
+              # this containers keyring only; mkosi then logged
+              # "Populating pacman keyring / Generating pacman keyring
+              # master key" and failed with the same unknown-key error,
+              # because it creates a fresh keyring in its own sandbox and
+              # inherits nothing.
+              #
+              # pacman-key --populate reads /usr/share/pacman/keyrings,
+              # and mkosi copies mkosi.pkgmngr/ into that sandbox. So the
+              # binary keyring form goes there, DERIVED from the one .pub
+              # in os/packages/lisa-keyring rather than committed beside
+              # it: two copies of a trust anchor is two things that can
+              # disagree about who we trust.
+              KEYS=/src/os/mkosi/mkosi.pkgmngr/usr/share/pacman/keyrings
+              mkdir -p "$KEYS"
+              gpg --dearmor < /src/os/packages/lisa-keyring/lisa-packages.pub > "$KEYS/lisa.gpg"
+              printf "%s:4:\n" 737240D11D28E109A474A8E5827E27417AF5982B > "$KEYS/lisa-trusted"
+              : > "$KEYS/lisa-revoked"
               pacman-key --lsign-key 737240D11D28E109A474A8E5827E27417AF5982B
               echo "SRCDEST=/srcdest" >> /etc/makepkg.conf
               chmod 777 /srcdest

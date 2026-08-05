@@ -38,3 +38,7 @@ repo-out/
 # build-keymap.py imports check-shell-keys.py rather than reimplementing
 # its parsing, so Python now leaves bytecode next to the repo tools.
 __pycache__/
+
+# Generated in CI from os/packages/lisa-keyring/lisa-packages.pub so the
+# trust anchor exists in exactly one place (#270).
+os/mkosi/mkosi.pkgmngr/usr/share/pacman/keyrings/
