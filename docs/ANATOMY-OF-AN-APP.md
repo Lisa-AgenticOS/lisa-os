@@ -1188,9 +1188,10 @@ does not exist, the image ships the stock GNOME app **unpatched** — that
 is the honest interim, not a gap to close with a patch set (CLAUDE.md
 rule 11).
 
-**`libs/lisa_flutter` is parked, not the lane.** ADR-0047 §2: four
-`.dart` files, no runtime on the reference hardware, #37 closed
-won't-do.
+**`libs/lisa_flutter` was the Flutter lane and is deleted.** ADR-0047
+§2 parked it: four `.dart` files, no runtime on the reference hardware,
+#37 closed won't-do. Removed 2026-08-06 along with the Dart `lisa_ui`;
+the ADRs keep their text.
 
 ---
 

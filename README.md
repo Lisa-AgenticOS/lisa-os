@@ -59,8 +59,8 @@ What's live today:
   Rust substrate.
 - **Agent Bus** — `lisa-agentd`: apps are MCP servers; tools carry
   confirmation tiers, an undo journal, and provenance escalation, with a
-  merge-gating injection suite (600 attempts, 0 unconfirmed privileged
-  calls).
+  merge-gating injection suite (1320 seeded attempts, every one of them
+  driven to a real tier decision, 0 unconfirmed privileged calls).
 - **Bring-your-own cloud models** — 14 built-in providers (OpenAI,
   Anthropic, Moonshot, Gemini, DeepSeek, Groq, Mistral, xAI, OpenRouter,
   Perplexity, Together, Fireworks, HuggingFace, Tinker) behind the
@@ -94,7 +94,7 @@ $ just image   # mkosi OS image — Linux only, normally CI's job
 
 Monorepo per PLAN §9: `daemons/` (inferenced, modeld, contextd, agentd,
 remoted), `portals/` (the trust boundary), `libs/` (liblisa SDK,
-harness-core, forge-harness, lisa_ui, lisa-ledger), `shell/` (overlay,
+harness-core, forge-harness, lisa-ledger), `shell/` (overlay,
 launcher, Ledger app, settings), `apps/` (notes …), `cli/lisa`, `ime/`
 (writing tools everywhere), `os/` (mkosi image + Track L layer),
 `models/` (catalog), `tests/` (e2e, injection, perf, ACL fuzz).

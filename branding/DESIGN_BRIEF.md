@@ -124,7 +124,8 @@ the violet mark only for the OS/brand.
 
 - Desktop surfaces target **GTK4 + libadwaita** visuals (GNOME 50); match
   its layout grammar (header bars, preference groups, rows, toolbars).
-- `lisa_ui` is the **shared GJS/GTK4 library** for first-party apps
+- `lisa_ui` is the reserved name for the **shared GJS/GTK4 library** for
+  first-party apps — not yet written (ADR-0047 §6)
   (ADR-0047 §6), reading the same tokens. The Flutter package that held
   the name is parked, unshipped, and not the default.
 - Everything ships **light and dark**; the theme is one token source read

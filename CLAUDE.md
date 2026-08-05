@@ -33,8 +33,7 @@ Run `just lint && just test` before every commit; CI enforces both.
 | `shell/*` — **also extracted to the `lisa-desktop` repo (ADR-0039); duplicated here pending step 6** | PLAN §5.7, ADR-0038, ADR-0048 | M4 |
 | `apps/*` — **also extracted to `lisa-apps` (ADR-0039)**; incl. `apps/files`, `apps/photos` — not started | PLAN §5.8, ADR-0048 | M6 |
 | `libs/forge-harness`, `forge/` | PLAN §5.12, ADR-0047 | M6 |
-| `libs/lisa_ui` — **still the parked Dart kit; the GJS shared library ADR-0047 §6 asks for is UNBUILT. Do not import this to build an app** | ADR-0047 §6 | — |
-| `libs/lisa_flutter` | parked (ADR-0047) | — |
+| `libs/lisa_ui` — **the name is reserved and the directory does not exist yet.** The Dart kit that held it was deleted 2026-08-06; the GJS/GTK4 shared library ADR-0047 §6 asks for is UNBUILT | ADR-0047 §6 | M6 |
 | `ime/fcitx5-lisa` | PLAN §5.7.3 | M4 |
 | `cli/lisa` | PLAN §5.4 (scriptability) | M1+ |
 | `os/*` | PLAN §3, §6 | M0+ |

@@ -255,7 +255,7 @@ Each spec: purpose → design → interfaces → repo path → acceptance.
 
 ### 5.6 `liblisa` — the SDK (our Foundation Models framework)
 
-**Purpose:** make the right thing the easy thing for app developers, in every language people actually use on Linux. (liblisa serves the GTK/Qt lane, which since ADR-0047 is *the* lane; `lisa_flutter` mirrors the API for the parked Flutter lane — see §5.12.)
+**Purpose:** make the right thing the easy thing for app developers, in every language people actually use on Linux. (liblisa serves the GTK/Qt lane, which since ADR-0047 is *the* lane. `lisa_flutter` mirrored this API for the Flutter lane and was deleted on 2026-08-06 — see §5.12.)
 
 **Reality check, 2026-08-04.** This whole section is a *specification*.
 What exists is a small internal Rust crate — the JSON-Schema→GBNF
@@ -355,7 +355,7 @@ Unified-memory APUs (Strix Halo-class, 64–128 GB) are the flagship experience 
 
 ### 5.10 Security, privacy & agent safety (design, not vibes)
 - **Egress control:** `inferenced`, `contextd`, `agentd` reach no network. *(Built — via `IPAddressDeny=any` + `RestrictAddressFamilies=`, not `PrivateNetwork=`/nftables; see dataflow rule 2 for the per-unit detail, and note the egress daemon is `remoted`, not `modeld` as this line originally said.)* **Planned:** a visible "local-only" status in Settings reflecting *measured* firewall state — Settings shows a "what may leave this machine" scope page, but nothing measures.
-- **Prompt-injection defense in depth:** provenance tags on every context chunk (§4); policy: content tagged `screen`/`web`/`file`/`mail` is *data*, never instructions — the agent loop strips/quotes it structurally (delimited, role-separated), and any privileged tool call whose trigger chain includes untrusted provenance escalates one confirmation tier. *(Built at the bus, fail-closed: an untrusted or empty chain escalates.)* Red-team suite in CI, gating on 0 unconfirmed privileged dispatches — **built and green on 150 of the 500+ seeded corpus; the remainder is planned**, as is the model-in-the-loop layer above the bus layer.
+- **Prompt-injection defense in depth:** provenance tags on every context chunk (§4); policy: content tagged `screen`/`web`/`file`/`mail` is *data*, never instructions — the agent loop strips/quotes it structurally (delimited, role-separated), and any privileged tool call whose trigger chain includes untrusted provenance escalates one confirmation tier. *(Built at the bus, fail-closed: an untrusted or empty chain escalates.)* Red-team suite in CI, gating on 0 unconfirmed privileged dispatches — **built and green on 1320 seeded attempts, all 1320 driven to a real tier decision** (a floor the gate asserts: until #303 only 16 of them were, the rest denied by the pending-map capacity cap before the tier machinery ran, and the escalation rule itself could be deleted with the gate still green — #304). The model-in-the-loop layer above the bus layer is still planned.
 - **Deterministic guardrails outside the model (ADR-0029/0030):** policy lives in `libs/lisa-guard`, a pure crate with a rule catalogue and a corpus, reachable by no prompt. Verdicts are `Allow` / warn / ask / **refuse**. The owner can relax a rule out-of-band with `lisa guard allow`, because guardrails sit between the model and the machine, never between a person and their own machine; bus-only rules cannot be relaxed at all. *(Built. **Planned:** Landlock confinement of forge subprocesses (#53) — nothing today confines a toolchain the harness invokes — and structured argv from `lisa suggest` in place of a shell string (#88).)*
 - **Secrets hygiene (planned):** a redaction pass (regex + entropy + a small classifier) before any chunk enters the index or a prompt, with detected keys masked and a Ledger note. **No such pass exists**; the only redaction in the tree is `remoted` scrubbing provider tokens out of its own logs.
 - **Model integrity:** weights are hash-pinned (blake3, verified on ingest) and the catalog carries a `revoked` flag that `modeld` honors. *(Built.)* **Planned:** signing the catalog TUF-style, and the daily refresh that would make revocation act on its own.
@@ -392,7 +392,7 @@ liblisa's C ABI has Rust, Python, JS and Vala bindings plus an
 OpenAI-compatible endpoint.
 
 - **The one lane:** GJS + GTK4/libadwaita via `liblisa` (§5.6) for the shell, portals, Settings, apps and Forge output. Qt bindings remain for third parties who want them.
-- **Flutter (parked):** `libs/lisa_flutter` keeps its four `.dart` files and its history; the lane is unshipped, unproven on hardware, and not the default. `libs/lisa_ui` keeps its name and becomes the **GJS/GTK4 shared library** — first job, the Agent Bus edge (`mcp-protocol.js` / `mcp.js`), which exists in triplicate today and is why #218 had to be fixed three times.
+- **Flutter (deleted 2026-08-06):** `libs/lisa_flutter` and the Dart `libs/lisa_ui` were removed. They were the first idea — build the apps in Flutter — and ADR-0047 chose GJS instead; keeping two kits one underscore apart was a trap, not an option (CLAUDE.md warned against importing the wrong one). ADR-0014 and ADR-0047 keep their text: they record what was true when written. **`lisa_ui` is now a reserved name for the GJS/GTK4 shared library, and the directory does not exist yet** — first job, the Agent Bus edge (`mcp-protocol.js` / `mcp.js`), which exists in triplicate today and is why #218 had to be fixed three times.
 
 **What the Forge may produce is a security boundary, not a feature list (ADR-0031 §5).** Sequenced by blast radius, because the capability that makes Lisa able to build anything is the same fact that makes it dangerous:
 1. **GUI apps** — user session, bounded by the tool jail and the command allowlist. Shipping.
@@ -419,9 +419,13 @@ found and fixed more than once), then the generated design-token sheet
 then common widgets **only once a second app needs one**. Migration is
 per-module, when someone is already touching the file.
 
-**`lisa_flutter` — parked.** Four `.dart` files mirroring `liblisa`'s API
-over D-Bus, retained with their history under ADR-0047 §2. Unshipped,
-unproven on hardware, not the default; nothing plans against it.
+**`lisa_flutter` — deleted 2026-08-06.** Four `.dart` files mirroring
+`liblisa`'s API over D-Bus. ADR-0047 §2 parked the lane; it was never
+shipped, never proven on hardware, and nothing planned against it, so
+the directory has been removed along with the Dart `lisa_ui` beside it.
+The decision records stay (ADR-0014, ADR-0047) — a parked lane that no
+longer exists is still a lane somebody chose not to take, and deleting
+that reasoning would leave the next reader unable to see why.
 
 #### 5.12.1 The Forge — apps built where they run
 
@@ -488,8 +492,9 @@ lisa-os/
 ├── daemons/{inferenced, modeld, contextd, agentd, harnessd, remoted}/
 ├── portals/xdg-desktop-portal-lisa/
 ├── libs/{liblisa, liblisa-gtk†, liblisa-qt†, mcp-bus, harness-core,
-│         forge-harness, bus-tools, lisa-guard, lisa-ledger, lisa-peer,
-│         lisa_ui, lisa_flutter}/     # the last two: parked (ADR-0047)
+│         forge-harness, bus-tools, lisa-guard, lisa-ledger, lisa-peer}/
+│         # lisa_ui/ and lisa_flutter/ were the Dart lane, deleted 2026-08-06;
+│         # `lisa_ui` is reserved for the GJS library and is not written yet
 ├── forge/{app†}/              # the harness is libs/forge-harness + `lisa forge`
 ├── shell/{overlay-extension, launcher, ledger-app, assistant, consent,
 │          settings, desktop, testing}/

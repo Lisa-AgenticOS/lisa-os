@@ -40,7 +40,7 @@ with automatic rollback.
 | **M5** Agent Bus | 🟠 landed | lisa-agentd on main: MCP manifests, registry, tier enforcement at the bus, undo journal, injection gate ✅; MCP wire transport + `lisa tools/call/undo` verbs left |
 | **§5.11** Remote providers | 🟠 landed | lisa-remoted broker ✅ (openai/anthropic/hf/tinker/together/fireworks + custom), routing ✅, `lisa remote` CLI ✅, hardware-aware fit ✅; image packaging + socket bridge left (Linux-verify) |
 | **§5.7.5** Voice / Ambient | 🟠 loop works | STT (whisper) + wake-word ("Hey Lisa") + answer + TTS verified end-to-end (`lisa ambient once`); live-mic capture + on-image packaging left (ADR-0011) |
-| **M6** Apps + Forge | 🟠 loop works | **LisaCode** (`lisa forge`) drives the model→jailed-edit→`lisa dev check` loop end to end (§5.12.1), targeting **GJS/GTK4** (ADR-0047); Mail, Surfer, Preview and the shell surfaces ship; GUI Forge + `lisa_ui` as the shared GJS library + hot-reload left |
+| **M6** Apps + Forge | 🟠 loop works | **LisaCode** (`lisa forge`) drives the model→jailed-edit→`lisa dev check` loop end to end (§5.12.1), targeting **GJS/GTK4** (ADR-0047); Mail, Surfer, Preview and the shell surfaces ship; GUI Forge + `lisa_ui` as the shared GJS library (not written; the Dart kit that held the name was deleted 2026-08-06) + hot-reload left |
 | **M7** Personal node + installer | 🟡 groundwork | remote broker = PCN groundwork; `lisa install` proto-installer; OOBE + WireGuard pairing left |
 | **M8** Public alpha ISO | 🟡 channel exists | releases publish; docs site + eval dashboard + security review left |
 
@@ -153,9 +153,13 @@ egress ledgered in the "leaves your hardware" marking.
 **Near term (M2–M3 completion):**
 - Agent Bus follow-ups (agentd landed): MCP wire transport, `libs/mcp-bus`,
   `lisa tools/call/undo` verbs, first first-party app that exposes tools.
-  (Injection corpus now 600 attempts — 40-technique payload bank × 5
-  vectors × 3 targets — clearing the §5.10 500+ bar with 0 unconfirmed
-  privileged calls; model-in-the-loop layer still deferred, ADR-0009.)
+  (Injection corpus now 1320 attempts — 44-payload bank × 5 vectors × 6
+  targets, five privileged and one read-tier — clearing the §5.10 500+
+  bar with 0 unconfirmed privileged calls. All 1320 reach a real tier
+  decision and the gate asserts that floor: until #303 only 16 did, the
+  other 1084 being denied by the pending-map capacity cap before the
+  tier machinery was consulted. Model-in-the-loop layer still deferred,
+  ADR-0009.)
 - Context fabric: sqlite-vec at scale, file/mail/calendar *live* sources,
   watchers, Settings › Intelligence panel. (Embedding pipeline + hybrid
   ranking done; scoped-ACL retrieval + ACL fuzz — 0 cross-scope leaks —

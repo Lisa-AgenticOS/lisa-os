@@ -116,9 +116,10 @@ artifact, and no `zen` payload channel.
 
 `libs/`: `liblisa` (+ gtk/qt), `forge-harness` (the LisaCode loop),
 `harness-core`, `lisa-guard`, `lisa-ledger`, `mcp-bus`. `lisa_ui` and
-`lisa_flutter` are the **parked** Flutter lane (ADR-0047) — their
-READMEs say so; the name `lisa_ui` is reserved for the shared GJS/GTK4
-library ADR-0047 §6 asks for, which is not written yet. Details in the
+`lisa_flutter` were the Flutter lane and were **deleted** on 2026-08-06
+(ADR-0047 chose GJS; two kits one underscore apart was a trap). The
+name `lisa_ui` is reserved for the shared GJS/GTK4 library ADR-0047 §6
+asks for, **which is not written yet — the directory does not exist**. Details in the
 PLAN §5 component map.
 
 ## How elementary OS does it (why we differ, for now)
