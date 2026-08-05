@@ -8,6 +8,9 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
 </script>
 
 <template>
+  <!-- The twelve-column guides everything is placed on. -->
+  <div class="guides" aria-hidden="true"><i /></div>
+
   <div class="navbar">
     <div class="wrap">
     <nav class="nav">

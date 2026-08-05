@@ -39,42 +39,42 @@ useHead({ title: 'Lisa OS — developer portal' })
     <section class="sec anchor">
       <h2>The system, in parts.</h2>
       <p>Each part is a way in. The numbering is the sheet's, not a ranking.</p>
-      <div class="parts">
-        <div class="part s5">
+      <div class="tilewrap"><div class="parts">
+        <div class="part s5 r3">
           <span class="no">01 · Substrate</span>
           <p class="big">Local models as a system service</p>
           <p><code>lisa-inferenced</code> supervises a llama.cpp child and speaks an OpenAI-compatible API on the machine. Guided generation, a QoS scheduler that preempts background work, and embeddings — all behind one socket, and none of it reachable from the network.</p>
         </div>
-        <div class="part s4">
+        <div class="part s4 r3">
           <span class="no">02 · Record</span>
           <p class="big">An append-only Ledger</p>
           <p>Every model call is written before it runs: no entry, no action. UPDATE and DELETE are refused by trigger, not by convention.</p>
         </div>
-        <div class="part s3">
+        <div class="part s3 r3">
           <span class="no">03 · Egress</span>
           <p class="big">One audited door</p>
           <p><code>lisa-remoted</code> is the only daemon with network access. The rest cannot reach it — enforced by the unit sandbox, verified in CI.</p>
         </div>
-        <div class="part s4">
+        <div class="part s4 r3">
           <span class="no">04 · Context</span>
           <p class="big">Per-app durable memory</p>
           <p><code>lisa-contextd</code> holds namespace-isolated context with provenance on every chunk, hybrid search over it, and a wipe that leaves no residue.</p>
         </div>
-        <div class="part s4">
+        <div class="part s4 r3">
           <span class="no">05 · Tools</span>
           <p class="big">Apps as agent surfaces</p>
           <p>Apps declare MCP tools; the Agent Bus tiers every call by blast radius and escalates on untrusted provenance — deterministic code, not prompt text.</p>
         </div>
-        <div class="part s4">
+        <div class="part s4 r3">
           <span class="no">06 · Delivery</span>
           <p class="big">A/B image, signed index</p>
           <p>Atomic updates with boot-counted rollback, plus <code>[lisa]</code> — a signed pacman repo you can point any Arch machine at.</p>
         </div>
-        <NuxtLink class="part s3" to="/docs"><span class="no">Sheet A</span><h3>Docs</h3><p>Install, architecture, building apps, the <code>lisa</code> CLI.</p></NuxtLink>
-        <NuxtLink class="part s3" to="/api"><span class="no">Sheet B</span><h3>API reference</h3><p>The HTTP endpoint, D-Bus interfaces and tool manifests — generated from source.</p></NuxtLink>
-        <NuxtLink class="part s3" to="/downloads"><span class="no">Sheet C</span><h3>Downloads</h3><p>Every release and its assets, with checksums.</p></NuxtLink>
-        <NuxtLink class="part s3" to="/design"><span class="no">Sheet D</span><h3>Design</h3><p>The token source every surface reads, enforced by a lint gate.</p></NuxtLink>
-      </div>
+        <NuxtLink class="part s3 r2" to="/docs"><span class="no">Sheet A</span><h3>Docs</h3><p>Install, architecture, building apps, the <code>lisa</code> CLI.</p></NuxtLink>
+        <NuxtLink class="part s3 r2" to="/api"><span class="no">Sheet B</span><h3>API reference</h3><p>The HTTP endpoint, D-Bus interfaces and tool manifests — generated from source.</p></NuxtLink>
+        <NuxtLink class="part s3 r2" to="/downloads"><span class="no">Sheet C</span><h3>Downloads</h3><p>Every release and its assets, with checksums.</p></NuxtLink>
+        <NuxtLink class="part s3 r2" to="/design"><span class="no">Sheet D</span><h3>Design</h3><p>The token source every surface reads, enforced by a lint gate.</p></NuxtLink>
+      </div></div>
     </section>
 
     <section class="sec anchor">

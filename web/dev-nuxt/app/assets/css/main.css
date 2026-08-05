@@ -54,22 +54,25 @@ a{color:var(--violet-ink);text-decoration:none}a:hover{text-decoration:underline
 :root{ --measure:72ch; --grid:22px; }
 .wrap{max-width:none;margin:0;padding:0 clamp(20px,3.4vw,56px)}
 
-/* Graph ground: engineering paper, two hairline gradients. Sits under
-   everything at very low contrast — present when you look for it,
-   invisible when you are reading. */
-body{
-  background-image:
-    linear-gradient(to right, color-mix(in srgb,var(--violet) 7%,transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb,var(--violet) 7%,transparent) 1px, transparent 1px);
-  background-size:var(--grid) var(--grid);
-  background-position:-1px -1px;
-}
-.dark body{
-  background-image:
-    linear-gradient(to right, color-mix(in srgb,var(--violet) 13%,transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb,var(--violet) 13%,transparent) 1px, transparent 1px);
-}
-@media(max-width:560px){:root{--grid:16px}}
+/* COLUMN GUIDES. The twelve columns are visible as alternating bands
+   the whole height of the page — the structure everything is placed
+   on, showing rather than implied. Fixed, so the guides stay put
+   while the content moves over them: the sheet is the constant.
+   Very low contrast; it should read as a tint, never as stripes. */
+.guides{position:fixed;inset:0;z-index:-1;pointer-events:none;
+        padding:0 clamp(20px,3.4vw,56px)}
+.guides i{display:block;height:100%;
+  background-image:repeating-linear-gradient(to right,
+    color-mix(in srgb,var(--violet) 4%,transparent) 0,
+    color-mix(in srgb,var(--violet) 4%,transparent) calc(100% / 12),
+    transparent calc(100% / 12),
+    transparent calc(100% / 6));}
+.dark .guides i{background-image:repeating-linear-gradient(to right,
+    color-mix(in srgb,var(--violet) 9%,transparent) 0,
+    color-mix(in srgb,var(--violet) 9%,transparent) calc(100% / 12),
+    transparent calc(100% / 12),
+    transparent calc(100% / 6));}
+@media(max-width:599px){.guides{display:none}}
 h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balance;margin:0}
 .eyebrow{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
 
@@ -199,11 +202,25 @@ a.card p{color:var(--ink-soft);font-size:14.5px;margin-top:6px;line-height:1.5}
    declare their span with .s2…s12. On narrow screens every part
    becomes full width — a spec sheet that needs sideways scrolling is
    a spec sheet nobody reads on a phone. */
+/* SQUARE MODULES. The unit is the column width, and rows are exactly
+   that tall — so a 1×1 is a square and every tile is a whole multiple
+   of it. `cqw` makes this exact: with container-type on the wrapper,
+   100cqw is the grid's own width, so the row height cannot drift from
+   the column width the way a vw-based guess would. */
+.tilewrap{container-type:inline-size;margin-top:var(--s-3)}
 .parts{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));
+       grid-auto-rows:calc(100cqw / 12);
        border-top:1px solid var(--line);border-left:1px solid var(--line);
-       margin-top:var(--s-3);background:var(--ground)}
-.part{grid-column:span 12;border-right:1px solid var(--line);border-bottom:1px solid var(--line);
-      padding:20px 22px 22px;display:flex;flex-direction:column;gap:8px;min-width:0}
+       background:var(--ground)}
+/* Square corners throughout: a drawing sheet has none, and a ruled
+   grid with rounded cells reads as cards pretending to be a grid. */
+.parts *,.parts{border-radius:0}
+.part{grid-column:span 12;grid-row:span 4;
+      border-right:1px solid var(--line);border-bottom:1px solid var(--line);
+      padding:clamp(16px,1.5cqw,26px);display:flex;flex-direction:column;gap:10px;
+      min-width:0;overflow:hidden}
+/* Row spans: r1 is a square band, r2/r3 taller fields. */
+.r1{grid-row:span 1}.r2{grid-row:span 2}.r3{grid-row:span 3}.r4{grid-row:span 4}
 .part > .no{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:600;
             letter-spacing:.14em;text-transform:uppercase;color:var(--violet);}
 .part h3{font-size:16.5px;font-weight:700;letter-spacing:-.015em}
@@ -215,6 +232,21 @@ a.card p{color:var(--ink-soft);font-size:14.5px;margin-top:6px;line-height:1.5}
    warms. No lift — a drawing sheet does not float. */
 a.part{color:inherit;transition:background .14s,border-color .14s}
 a.part:hover{text-decoration:none;background:color-mix(in srgb,var(--violet) 5%,var(--ground))}
+
+/* ── ENTRANCE ─────────────────────────────────────────────────────
+   Tiles settle onto the grid as they come into view: a short rise and
+   fade, staggered a little across a row so it reads as placement
+   rather than a wave. Scroll-driven CSS — no observer, no JS.
+   The page does not dance: one movement per tile, 500ms, once. */
+@media(prefers-reduced-motion:no-preference){
+  @supports (animation-timeline:view()){
+    .parts .part{opacity:0;animation:place .5s cubic-bezier(.22,.7,.3,1) both;
+                 animation-timeline:view();animation-range:entry 0% cover 18%}
+    .parts .part:nth-child(3n+2){animation-delay:.05s}
+    .parts .part:nth-child(3n+3){animation-delay:.1s}
+  }
+}
+@keyframes place{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
 a.part h3{display:flex;align-items:center;gap:8px}
 a.part h3::after{content:"→";color:var(--violet);margin-left:auto;font-weight:400;transition:transform .14s}
 a.part:hover h3::after{transform:translateX(3px)}
@@ -228,9 +260,18 @@ a.part:hover h3::after{transform:translateX(3px)}
   .s5{grid-column:span 5}.s6{grid-column:span 6}.s7{grid-column:span 7}
   .s8{grid-column:span 8}.s9{grid-column:span 9}.s12{grid-column:span 12}
 }
+/* Tablet: six columns, and the row unit doubles with them so squares
+   stay square. Phone: two columns, tiles a comfortable 2 units tall —
+   a literal square is too short to hold a paragraph at that width. */
 @media(min-width:600px) and (max-width:999px){
-  .s2,.s3,.s4,.s5,.s6,.s7,.s8{grid-column:span 6}
-  .s9,.s12{grid-column:span 12}
+  .parts{grid-template-columns:repeat(6,minmax(0,1fr));grid-auto-rows:calc(100cqw / 6)}
+  .s2,.s3,.s4,.s5,.s6,.s7,.s8{grid-column:span 3}
+  .s9,.s12{grid-column:span 6}
+  .r1{grid-row:span 1}.r2,.r3,.r4{grid-row:span 2}
+}
+@media(max-width:599px){
+  .parts{grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:auto}
+  .part{grid-column:span 2;grid-row:auto;min-height:calc(100cqw / 2)}
 }
 
 /* ── TITLE BLOCK ──────────────────────────────────────────────────
