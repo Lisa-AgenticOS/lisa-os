@@ -154,6 +154,53 @@ line now routes all console output to `console=ttyS0` (serial) so the
 framebuffer is free for the boot splash; a hang is diagnosed from the
 ESP journal dump rather than the on-screen unit status it used to show.
 
+## Running it from a stick (ADR-0055)
+
+There is no separate live image and there will not be one until a live
+medium needs to differ from an installed one (ADR-0055, which applies
+ADR-0053's "don't mint a lineage yet" reasoning to this axis). **A Lisa
+stick is a Lisa system**: `lisa-usb-<ver>.raw.zst` is this build, and
+`lisa install` copies the same bytes onto an internal disk. What you try
+is what you get — which is the property the immutable A/B design exists
+to protect, and the one a squashfs live lane would give away.
+
+What that means concretely for this directory:
+
+- **The medium is the whole layout, not a subset.** 1 GiB ESP + 10 + 10
+  GiB root slots + ≥2 GiB var = 23 GiB floor
+  (`mkosi.repart/`), 19 GiB written, hence the 32 GB stick the release
+  notes ask for. A smaller stick is not a packaging problem to solve
+  here; it is a different root format, which is a different lineage.
+- **The session is persistent — on the stick.** `repart.d/50-var.conf`
+  grows `var` into the stick at first boot and `60-home.conf` creates a
+  `home` partition there (ADR-0019). That is deliberate: you can try
+  Lisa across a reboot. "Persistence off" was never the goal.
+- **What must not happen is a write to a disk that is not the stick**,
+  and the exposure is entirely in the GPT-label mounts.
+  `mkosi.extra/etc/fstab` mounts `var`, `home` and `esp` by
+  `PARTLABEL=`, and `20-var.conf` states the assumption those labels rely
+  on: *"Cross-disk label ambiguity is out of scope: one Lisa disk per
+  machine."* **A live stick on a machine that already runs Lisa breaks
+  that assumption by construction.** Three mitigations stand there
+  (issue #16): `lisa-boot-disk-generator` pins the three mounts to the
+  booted disk, `59-lisa-boot-disk.rules` + `lisa-loader-disk` raise udev
+  `link_priority` on the booted disk's partitions so contended
+  `by-partlabel` symlinks resolve there (including in the initrd, for
+  `root=PARTLABEL=root_1`), and `lisa install` runs `btrfstune -m` on the
+  copy so two disks never carry the same btrfs fsid.
+
+**Known-unfixed, and the reason this section is not a user guide:** the
+generator **fails open** — it exits silently when the topology does not
+resolve and the ambiguous fstab default then applies; the initrd-side
+`root=` is scoped only by that udev priority, which depends on an EFI
+variable absent on direct-kernel and non-EFI boots (`docs/STATUS.md`
+still lists "Open remainder: initrd-side `root=` scoping"); and **no CI
+gate has ever booted two Lisa disks at once**, so the one configuration
+where any of this matters has never been executed. Choosing the install
+target *is* now enforced and tested — `cli/lisa/src/install_plan.rs`,
+`lisa install --list`, `os/installer/README.md` — but that is the verb,
+not the mount path.
+
 ## The desktop is pinned (#273), and its ABI is checked (#277)
 
 **What.** `os/mkosi/desktop.lock` names exactly one file — filename,
