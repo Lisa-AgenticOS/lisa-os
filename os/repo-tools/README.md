@@ -46,7 +46,18 @@ nowhere: `check-workflow-quoting.py` (an apostrophe in a workflow comment),
 mismatch that only bites on the first update), `check-embedding-model.py`
 (#163), `check-tokens.py` (ADR-0038), and `check-app-manifests.py` (#241 —
 a manifest installed outside `SYSTEM_MANIFEST_DIR`, which costs an app its
-entire agent surface with no error, warning or log line).
+entire agent surface with no error, warning or log line), and
+`check-egress-units.py` (#275 — `lisa-inferenced-dbus.service`, the unit
+every Assistant prompt goes through, shipped with **no** egress sandbox
+while two of its own comments described one).
+
+`check-egress-units.py` is the one that discovers its own population:
+it reads the PKGBUILD install lines to find every shipped unit, takes each
+unit's `ExecStart` binary, and demands a posture for it — so a second unit
+for a known daemon is covered with no edit, and a daemon nobody classified
+fails the gate rather than passing it. `tests/e2e/egress-test.sh` takes its
+unit list from `--list no-egress` so the tested sandbox and the shipped
+sandbox cannot become two lists (which is exactly what they had become).
 
 They share a shape: read the truth from the consumer rather than restating
 it (`check-app-manifests.py` reads `SYSTEM_MANIFEST_DIR` out of

@@ -51,15 +51,23 @@ jobs:
               - 'cli/**'
               - 'models/**'
               - 'tests/e2e/**'
-              # The unit files. The `egress` job asserts that every
-              # no-egress daemon's SHIPPED unit carries IPAddressDeny —
-              # and that job hangs off this filter, which did not list
-              # os/**. So editing a unit could never trigger the check
-              # that guards it, and lisa-inferenced-dbus.service sat
-              # with NO sandbox at all while a gate "covering" it stayed
-              # green by never running. A gate you cannot reach is not a
-              # gate (2026-08-05).
-              - 'os/packages/lisa/*.service'
+              # Everything the `egress` job READS, because that job hangs
+              # off this filter. It once did not list os/** at all, so
+              # editing a unit could never trigger the check that guards
+              # it — and lisa-inferenced-dbus.service sat with NO
+              # sandbox while a gate "covering" it stayed green by never
+              # running. A gate you cannot reach is not a gate
+              # (2026-08-05).
+              #
+              # The list is now the check's whole input surface, not
+              # just the units: os/repo-tools/check-egress-units.py
+              # DISCOVERS the units by reading the PKGBUILD install
+              # lines, so a PKGBUILD edit can change which daemons are
+              # covered without touching a single .service file (#275).
+              - 'os/packages/**/*.service'
+              - 'os/packages/**/PKGBUILD'
+              - 'os/repo-tools/check-egress-units.py'
+              - 'os/mkosi/**/systemd/**/*.service'
               - '.github/workflows/ci.yml'
             layer:
               - 'os/**'
@@ -482,8 +490,18 @@ jobs:
       - run: pip install openai
       - run: python tests/e2e/openai_client_test.py
 
-  # PLAN §5.10: egress control is verified, not promised — the daemon
-  # serves loopback under its unit sandbox while outbound is blocked.
+  # PLAN §5.10: egress control is verified, not promised. Two layers,
+  # and the split is deliberate (#275):
+  #   - check-egress-units.py discovers every shipped unit from the
+  #     installers, classifies it by the daemon it runs, and fails on a
+  #     daemon nobody classified. Static, but it is the only layer that
+  #     notices a defence-in-depth directive going missing from a unit
+  #     that is still blocked by another one.
+  #   - egress-test.sh takes ITS unit list from that same script, lifts
+  #     each unit's sandbox out of the shipped file, and actually tries
+  #     to reach the internet from inside it — for all six no-egress
+  #     units now, not just lisa-inferenced, and with lisa-remoted's
+  #     sandbox as the positive control.
   egress:
     runs-on: ubuntu-latest
     # A hung job otherwise burns the 6-hour default. Sized from
@@ -496,28 +514,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked -p lisa-inferenced
-      - run: bash tests/e2e/egress-test.sh target/debug/lisa-inferenced
-      # The harness re-states the sandbox directives by hand, so the
-      # tested sandbox and the SHIPPED units are two lists that can
-      # silently disagree. Until every no-egress daemon runs under the
-      # harness, at least pin the invariant to the files that ship:
-      # rule 5 names three daemons that never get network — each of
-      # their unit files must carry IPAddressDeny=any, and modeld (the
-      # one daemon that MAY have egress) must not.
-      - name: Shipped units carry the egress sandbox they were tested with
+      # Static first: it needs no network and its failure message names
+      # the unit, so a red run reads as "this unit lost its sandbox"
+      # rather than "curl returned 7".
+      - name: Every shipped unit declares an egress posture
         run: |
-          fail=0
-          for u in os/packages/lisa/lisa-inferenced.service \
-                   os/packages/lisa/lisa-inferenced-dbus.service \
-                   os/packages/lisa/lisa-agentd.service \
-                   os/packages/lisa/lisa-contextd-user.service \
-                   os/packages/lisa/lisa-notes.service \
-                   os/packages/lisa/lisa-harnessd.service; do
-            [ -f "$u" ] || { echo "FAIL: $u does not exist"; fail=1; continue; }
-            grep -q '^IPAddressDeny=any' "$u" \
-              || { echo "FAIL: $u lacks IPAddressDeny=any — the no-egress rule is a comment, not a sandbox"; fail=1; }
-          done
-          [ "$fail" -eq 0 ]
+          python3 os/repo-tools/check-egress-units.py --explain
+          python3 os/repo-tools/check-egress-units.py
+      - name: Egress is blocked at runtime, from inside every shipped sandbox
+        run: bash tests/e2e/egress-test.sh target/debug/lisa-inferenced
 
   # PLAN §10 M0 acceptance: the Track L layer installs and uninstalls
   # cleanly on vanilla Arch (systemd container; Omarchy VM lands later).

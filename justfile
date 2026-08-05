@@ -18,6 +18,10 @@ lint:
     # identity for the whole session (#161). Cheap to check, brutal to
     # debug from the refusals it causes.
     python3 os/repo-tools/check-user-units.py
+    # A no-egress daemon whose unit says so in a comment and enforces
+    # nothing is how lisa-inferenced-dbus shipped (#275). The units are
+    # discovered, so a new daemon cannot arrive unclassified.
+    python3 os/repo-tools/check-egress-units.py
     # A/B root slots that differ in size build and boot fine, then
     # corrupt the first update — sysupdate writes A's byte image into B.
     # A comment saying "MUST match" is not a mechanism.
