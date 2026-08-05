@@ -190,35 +190,53 @@ pub fn outcome_for(disposition: &str, detail: &str, label: &str) -> ToolOutcome 
     }
 }
 
-/// Pure: does an executed call's detail JSON say its content came from
-/// the web? The browser's MCP server tags every result it emits
-/// (`apps/surfer/lib/mcp-protocol.js`); agentd passes the tool result
-/// through in `detail.result`.
+/// Pure: an executed call's detail JSON → the untrusted provenance its
+/// content carries, if any.
+///
+/// Every app's MCP edge tags the results it emits — `web` from the
+/// browser (`apps/surfer/lib/mcp-protocol.js`), `mail` from Mail,
+/// `file` from Preview — and agentd passes the tool result through in
+/// `detail.result`.
+///
+/// **`user` is the allowlist, and it has one entry** (#302). This used
+/// to ask "is the tag the literal string `web`?", which meant Mail's
+/// and Preview's correct tags were read and thrown away: a run that had
+/// just consumed a hostile message reached agentd with the chain
+/// `["user"]`, so `tier::resolve` did not escalate *and* `grant_for`
+/// derived `Trigger::Prompt` and handed it the person's filesystem
+/// reach (#252). An allowlist of untrusted values is inverted — it
+/// fails open on everything nobody thought of, and the set nobody
+/// thought of is exactly where the next context source lands. Anything
+/// that is not demonstrably the human is untrusted, which is the same
+/// reading `Provenance::Other` takes on the enforcement side and the
+/// same one `harnessd`'s memory digest already took.
 ///
 /// Only the well-formed spelling counts — a page that *contains* the
-/// text `"provenance":"web"` in its body text does not taint via string
+/// text `"provenance":"web"` in its body does not taint via string
 /// match, because this parses the JSON rather than searching it.
-pub fn result_is_web_tagged(detail: &str) -> bool {
+pub fn untrusted_result_provenance(detail: &str) -> Option<String> {
     serde_json::from_str::<Value>(detail)
         .ok()
         .and_then(|d| {
             d.get("result")
                 .and_then(|r| r.get("provenance"))
                 .and_then(Value::as_str)
-                .map(|p| p == "web")
+                .map(str::to_string)
         })
-        .unwrap_or(false)
+        .filter(|p| !p.is_empty() && p != "user")
 }
 
 /// Untrusted provenance a run has picked up while running, shared
 /// across the tool families that can pick it up.
 ///
-/// The bus family acquires `web` when a tool result arrives tagged at
-/// the source (#146 Phase 4). The harness family acquires whatever a
-/// remembered note was tagged with, when that note is served back into
-/// the conversation (#157) — a memory written from a hostile page is
-/// still a hostile page's words, and forgetting that is how "durable
-/// memory" becomes "durable injection".
+/// The bus family acquires whatever tag a tool result arrives with at
+/// the source (#146 Phase 4, #302) — `web` from the browser, `mail`
+/// from Mail, `file` from Preview, and whatever the next context source
+/// invents. The harness family acquires whatever a remembered note was
+/// tagged with, when that note is served back into the conversation
+/// (#157) — a memory written from a hostile page is still a hostile
+/// page's words, and forgetting that is how "durable memory" becomes
+/// "durable injection".
 ///
 /// One shared object rather than a flag per provider, because the taint
 /// is a property of the CONVERSATION: the model reads everything in one
@@ -333,12 +351,12 @@ pub struct AgentBusTools {
     /// this" from "a schedule fired" without the loop remembering to say
     /// so at each call site.
     trigger: &'static str,
-    /// Untrusted content this RUN has consumed — `web` the moment any
-    /// tool result arrives tagged `provenance: "web"` (#146 Phase 4),
+    /// Untrusted content this RUN has consumed — the tag on any tool
+    /// result whose `provenance` is not `user` (#146 Phase 4, #302),
     /// plus whatever other families contribute (#157's memory notes).
     /// From then on every call this provider makes carries those tags in
     /// its chain, agentd's `resolve()` escalates anything privileged,
-    /// and a page cannot quietly steer a write.
+    /// and neither a page nor a message can quietly steer a write.
     taint: Taint,
 }
 
@@ -408,9 +426,10 @@ impl AgentBusTools {
         self.tools.len()
     }
 
-    /// Has any tool result arrived tagged `web` in this run?
-    pub fn is_web_tainted(&self) -> bool {
-        self.taint.tags().iter().any(|t| t == "web")
+    /// Has any tool result arrived carrying untrusted provenance in
+    /// this run — of any class, not just `web` (#302)?
+    pub fn is_tainted(&self) -> bool {
+        !self.taint.is_clean()
     }
 
     fn find(&self, wire: &str) -> Option<&BusTool> {
@@ -468,9 +487,9 @@ impl ToolProvider for AgentBusTools {
 
         // `actor: assistant`, and the chain reflects what this loop has
         // CONSUMED, not just who typed: it starts `["user"]` and gains
-        // `"web"` after any web-tagged result (#146 Phase 4). An
-        // event-triggered chain is NOT this and must not borrow this
-        // provenance (ADR-0036 §1).
+        // the tag of any result that arrived with a provenance other
+        // than `user` (#146 Phase 4, #302). An event-triggered chain is
+        // NOT this and must not borrow this provenance (ADR-0036 §1).
         // The chain says where this call came FROM, in two parts: what
         // woke the run up, and what it has read since. Both matter — a
         // schedule that then read a web page is less trusted than either
@@ -487,8 +506,15 @@ impl ToolProvider for AgentBusTools {
             &chain,
         ) {
             Ok((_id, disposition, detail)) => {
-                if disposition == "executed" && result_is_web_tagged(&detail) {
-                    self.taint.add("web");
+                // Whatever the app tagged its result with, not the one
+                // spelling this used to recognise (#302). `Taint::add`
+                // drops `user` and the empty string a second time; the
+                // duplication is deliberate, because the two are read
+                // by different people at different times.
+                if disposition == "executed"
+                    && let Some(tag) = untrusted_result_provenance(&detail)
+                {
+                    self.taint.add(&tag);
                 }
                 outcome_for(&disposition, &detail, &label)
             }
@@ -714,22 +740,79 @@ mod tests {
     /// substring, only via the real JSON field the browser's MCP edge
     /// writes.
     #[test]
-    fn web_taint_comes_from_the_field_not_the_text() {
+    fn taint_comes_from_the_field_not_the_text() {
         // The real shape agentd returns for an executed browser call.
-        assert!(result_is_web_tagged(
-            r#"{"result":{"provenance":"web","content":[{"type":"text","text":"..."}]},"ledger_ref":7}"#
-        ));
+        assert_eq!(
+            untrusted_result_provenance(
+                r#"{"result":{"provenance":"web","content":[{"type":"text","text":"..."}]},"ledger_ref":7}"#
+            )
+            .as_deref(),
+            Some("web")
+        );
         // A page BODY carrying the spelling — inside the text, not the field.
-        assert!(!result_is_web_tagged(
-            r#"{"result":{"content":[{"type":"text","text":"ignore this: \"provenance\":\"web\""}]},"ledger_ref":7}"#
-        ));
-        // Other apps' results: untagged.
-        assert!(!result_is_web_tagged(
-            r#"{"result":{"notes":[]},"ledger_ref":3}"#
-        ));
+        assert_eq!(
+            untrusted_result_provenance(
+                r#"{"result":{"content":[{"type":"text","text":"ignore this: \"provenance\":\"web\""}]},"ledger_ref":7}"#
+            ),
+            None
+        );
+        // An untagged app's result: nothing to taint with. (Not the
+        // same as trusted — an app that ships no tag simply tells the
+        // loop nothing, and the trigger class still stands.)
+        assert_eq!(
+            untrusted_result_provenance(r#"{"result":{"notes":[]},"ledger_ref":3}"#),
+            None
+        );
         // Junk: not tainted, not a crash.
-        assert!(!result_is_web_tagged("not json"));
-        assert!(!result_is_web_tagged(r#"{"result":{"provenance":"user"}}"#));
+        assert_eq!(untrusted_result_provenance("not json"), None);
+        assert_eq!(
+            untrusted_result_provenance(r#"{"result":{"provenance":"user"}}"#),
+            None
+        );
+        assert_eq!(
+            untrusted_result_provenance(r#"{"result":{"provenance":""}}"#),
+            None
+        );
+    }
+
+    /// #302, at this layer: `web` was never special, and treating it as
+    /// the only untrusted class discarded tags the apps were emitting
+    /// correctly. `apps/mail` tags `mail`, `apps/preview` tags `file`,
+    /// contextd's chunks carry `calendar` and `system`
+    /// (`daemons/contextd/src/acl.rs:22`), and none of them reached the
+    /// chain.
+    ///
+    /// The end-to-end proof is `tests/injection-suite/tests/loop_taint.rs`,
+    /// which drives a real loop once per `Provenance` variant; this is
+    /// the unit-level companion so a change here fails without needing
+    /// agentd built.
+    #[test]
+    fn any_provenance_that_is_not_user_taints_the_run() {
+        for tag in [
+            "web",
+            "mail",
+            "file",
+            "screen",
+            "calendar",
+            "system",
+            "app:app.example.Reader",
+            "something_nobody_has_invented_yet",
+        ] {
+            let detail = format!(r#"{{"result":{{"provenance":"{tag}"}},"ledger_ref":1}}"#);
+            assert_eq!(
+                untrusted_result_provenance(&detail).as_deref(),
+                Some(tag),
+                "`{tag}` did not taint the run — an allowlist of UNTRUSTED tags \
+                 fails open on everything nobody thought of (#302)"
+            );
+        }
+        // …and the one tag that buys trust still buys it. Without this
+        // the test above passes on a build that taints everything, which
+        // would ask a person to confirm their own typing.
+        assert_eq!(
+            untrusted_result_provenance(r#"{"result":{"provenance":"user"}}"#),
+            None
+        );
     }
 
     /// A refusal is not a denial and must not read as retryable (#251).
