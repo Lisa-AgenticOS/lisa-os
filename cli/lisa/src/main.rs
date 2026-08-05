@@ -382,8 +382,14 @@ enum MailCmd {
     /// Index the Maildir into the context store under `mail`
     /// provenance (#170), so retrieval can answer "the email about
     /// the parking permit". Runs automatically after `sync`; this
-    /// verb exists for the first backfill and for re-runs.
-    Index,
+    /// verb exists for the first backfill, for re-runs, and for the
+    /// reap that clears documents no message answers to (#224).
+    Index {
+        /// Walk and print what would be indexed and what the reap
+        /// would remove, then write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// What is present, what is missing, and which layer is blocking.
     Status,
     /// Print a fresh access token. This is what mbsync's PassCmd runs;
@@ -740,7 +746,7 @@ fn run() -> anyhow::Result<()> {
                 force,
             } => mail::setup(app_password, maildir, force),
             MailCmd::Sync => mail::sync(),
-            MailCmd::Index => mail::index(),
+            MailCmd::Index { dry_run } => mail::index(dry_run),
             MailCmd::Status => mail::status(),
             MailCmd::Token { account } => mail::token(account),
         },

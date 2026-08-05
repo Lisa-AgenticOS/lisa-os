@@ -657,6 +657,40 @@ pub fn status() -> Result<()> {
         }
     );
     println!("maildir:     {}", paths.maildir.display());
+
+    // #224 asked for this by name: an unreferenced tree should be
+    // *reported*, not silently indexed. The indexer skips it — this is
+    // where a person finds out it exists at all, because on the
+    // reference device 8,407 messages sat in one for weeks with nothing
+    // anywhere saying so.
+    let roots = declared_roots(&paths);
+    for root in &roots {
+        println!(
+            "synced:      {}{}",
+            root.display(),
+            if root.is_dir() {
+                ""
+            } else {
+                "  (not on disk yet)"
+            }
+        );
+    }
+    if paths.maildir.is_dir() {
+        let orphans = orphaned_trees(&paths.maildir, &roots);
+        for (tree, count) in &orphans {
+            println!(
+                "orphaned:    {}  ({count} message(s)) — no channel syncs it, so it is \
+                 not indexed",
+                tree.display()
+            );
+        }
+        if !orphans.is_empty() {
+            println!(
+                "             `lisa mail index --dry-run` shows what leaving retrieval \
+                 would cost; the files themselves are yours to keep or delete."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -822,12 +856,12 @@ pub fn sync() -> Result<()> {
     // the issue's own incrementality requirement, and doing it here —
     // in-process, same as sync-knowledge — means no writable D-Bus
     // ingestion surface exists for something else to poison.
-    index_maildir(&paths.maildir, &declared_roots(&paths))?;
+    index_and_embed(&paths.maildir, &declared_roots(&paths), Mode::Apply)?;
     Ok(())
 }
 
-/// `lisa mail index`: the first backfill, and re-runs.
-pub fn index() -> Result<()> {
+/// `lisa mail index`: the first backfill, re-runs, and the reap.
+pub fn index(dry_run: bool) -> Result<()> {
     let home = home()?;
     let paths = Paths::new(&home, None);
     if !paths.maildir.exists() {
@@ -836,7 +870,8 @@ pub fn index() -> Result<()> {
             paths.maildir.display()
         );
     }
-    index_maildir(&paths.maildir, &declared_roots(&paths))
+    let mode = if dry_run { Mode::DryRun } else { Mode::Apply };
+    index_and_embed(&paths.maildir, &declared_roots(&paths), mode)
 }
 
 /// The stable identity of a Maildir message, from its path.
@@ -1037,14 +1072,104 @@ fn verdict(maildir: &Path, roots: &[PathBuf], path: &Path) -> Verdict {
     Verdict::Index
 }
 
-fn index_maildir(maildir: &Path, roots: &[PathBuf]) -> Result<()> {
+/// Trees under the Maildir root holding messages that no `MaildirStore`
+/// declares, and how many messages each holds (#224).
+///
+/// Grouped by the first path component under the root, which is what a
+/// person recognises: `~/Mail/INBOX` for the flat tree a second account
+/// orphaned, `~/Mail/old_at_example.com` for an account that was
+/// removed. Spam and Trash count here even though retrieval would
+/// decline them anyway — the question this answers is "what is on this
+/// disk that nothing syncs", not "what would be indexed".
+pub fn orphaned_trees(maildir: &Path, roots: &[PathBuf]) -> Vec<(PathBuf, usize)> {
+    let mut counts: std::collections::BTreeMap<PathBuf, usize> = Default::default();
+    for entry in walkdir::WalkDir::new(maildir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        if verdict(maildir, roots, path) != Verdict::Orphaned {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(maildir) else {
+            continue;
+        };
+        let Some(first) = rel.components().next() else {
+            continue;
+        };
+        *counts.entry(maildir.join(first.as_os_str())).or_default() += 1;
+    }
+    counts.into_iter().collect()
+}
+
+/// Whether this run writes to the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Apply,
+    /// Walk, decide, and print the reap plan — touch nothing (#224).
+    DryRun,
+}
+
+/// What one walk did, or would do.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct IndexReport {
+    pub added: usize,
+    pub unchanged: usize,
+    pub foreign: usize,
+    pub unparsed: usize,
+    /// Messages in a tree no `MaildirStore` declares — skipped, and the
+    /// reason the reap below has anything to do.
+    pub orphaned: usize,
+    /// Documents the reap removed (`Apply`) or would remove (`DryRun`).
+    pub reaped: usize,
+    /// Embedding vectors those documents owned. The expensive half.
+    pub reaped_vectors: usize,
+    /// The reap was refused because the config's trees are all absent
+    /// from disk — see [`trees_are_present`].
+    pub reap_refused: bool,
+}
+
+/// Is at least one declared tree actually on disk?
+///
+/// The guard on the reap, and the reason it is a separate function: the
+/// reap's rule is "a document whose message the walk did not see goes",
+/// which is right when the walk could see the trees and catastrophic
+/// when it could not. A config naming `/home/lisa/Mail/<account>` while
+/// that directory is missing — a Maildir on a disk that has not mounted,
+/// a home restored without its mail, a `setup` run that has not synced
+/// yet — makes every indexed message look expunged, and the mirror
+/// faithfully empties itself.
+///
+/// *All* trees missing, not any: with two accounts, one set up and never
+/// synced, the missing one is normal and must not block reaping the
+/// other. And no declared trees at all is the walk-everything branch,
+/// where the Maildir root itself is the mirror (`index` already refuses
+/// to run when that is missing).
+fn trees_are_present(roots: &[PathBuf]) -> bool {
+    roots.is_empty() || roots.iter().any(|r| r.is_dir())
+}
+
+/// The walk, the ingest and the reap, over a store the caller owns.
+///
+/// Takes the store rather than opening `default_path()` itself so a test
+/// can drive the whole path — walk, verdicts, ingest, reap — against a
+/// temporary one. The previous shape could only be tested by its parts,
+/// which is how "the logic is tested, the connection is not" keeps
+/// happening (#210, #241, #244, #245, #255, #263).
+pub fn index_maildir(
+    store: &lisa_contextd::ContextStore,
+    maildir: &Path,
+    roots: &[PathBuf],
+    mode: Mode,
+) -> Result<IndexReport> {
     use lisa_contextd::acl::AddOutcome;
-    let store = lisa_contextd::ContextStore::open(lisa_contextd::ContextStore::default_path())?;
-    let (mut added, mut unchanged, mut foreign, mut unparsed) = (0usize, 0, 0, 0);
-    let mut orphaned = 0usize;
+    let mut report = IndexReport::default();
     // Every id seen this walk — the mirror set. What is indexed but no
     // longer on disk (expunged, or previously-indexed Spam/Trash from
-    // before #185) leaves retrieval at the end of the walk.
+    // before #185, or the orphaned tree of #224) leaves retrieval at the
+    // end of the walk.
     let mut live = std::collections::HashSet::new();
     for entry in walkdir::WalkDir::new(maildir)
         .follow_links(false)
@@ -1056,7 +1181,7 @@ fn index_maildir(maildir: &Path, roots: &[PathBuf]) -> Result<()> {
         match verdict(maildir, roots, path) {
             Verdict::NotAMessage | Verdict::NotForRetrieval => continue,
             Verdict::Orphaned => {
-                orphaned += 1;
+                report.orphaned += 1;
                 continue;
             }
             Verdict::Index => {}
@@ -1064,37 +1189,106 @@ fn index_maildir(maildir: &Path, roots: &[PathBuf]) -> Result<()> {
         let Some(source) = message_source_id(maildir, path) else {
             continue;
         };
+        // Before the read, so a message we cannot parse today is still
+        // "seen" and does not get reaped as if it had been expunged.
         live.insert(source.clone());
+        if mode == Mode::DryRun {
+            continue;
+        }
         let Ok(raw) = std::fs::read(path) else {
             continue;
         };
         let Some(text) = message_text(&raw) else {
-            unparsed += 1;
+            report.unparsed += 1;
             continue;
         };
         match store.add_document_if_changed(&source, "mail", &text)? {
-            AddOutcome::Added => added += 1,
-            AddOutcome::Unchanged => unchanged += 1,
-            AddOutcome::ForeignSkipped => foreign += 1,
+            AddOutcome::Added => report.added += 1,
+            AddOutcome::Unchanged => report.unchanged += 1,
+            AddOutcome::ForeignSkipped => report.foreign += 1,
         }
     }
-    let pruned = store.prune_not_in("mail", &live)?;
-    println!(
-        "mail index: {added} added, {unchanged} unchanged, {foreign} foreign-skipped, \
-         {unparsed} unparsable, {pruned} pruned"
-    );
+
+    // Say what goes before it goes. `plan_prune_not_in` and
+    // `prune_not_in` are the same query, so this is the removal, not an
+    // estimate of it.
+    let plan = store.plan_prune_not_in("mail", &live)?;
+    report.reaped = plan.sources.len();
+    report.reaped_vectors = plan.vectors;
+    if !plan.is_empty() {
+        println!(
+            "reap: {} document(s) and {} embedding vector(s) are indexed under \
+             {}, but no message on disk answers to them.",
+            plan.sources.len(),
+            plan.vectors,
+            if roots.is_empty() {
+                "this Maildir".to_string()
+            } else {
+                format!("the {} synced tree(s)", roots.len())
+            },
+        );
+        for source in plan.sources.iter().take(3) {
+            println!("      {source}");
+        }
+        if plan.sources.len() > 3 {
+            println!("      … and {} more", plan.sources.len() - 3);
+        }
+    }
+    if !trees_are_present(roots) {
+        report.reap_refused = true;
+        report.reaped = 0;
+        report.reaped_vectors = 0;
+        println!(
+            "reap: REFUSED — every tree the sync config declares is missing from disk. \
+             That is a Maildir that has not arrived, not a mailbox that emptied, and \
+             reaping here would delete the whole mail index. Nothing was removed."
+        );
+    } else if mode == Mode::Apply {
+        let pruned = store.prune_not_in("mail", &live)?;
+        debug_assert_eq!(pruned, report.reaped, "the reap differed from its own plan");
+        report.reaped = pruned;
+    }
+
+    if mode == Mode::DryRun {
+        println!(
+            "mail index (dry run): {} message(s) would be indexed, {} orphaned, \
+             {} document(s) would be reaped. Nothing was written.",
+            live.len(),
+            report.orphaned,
+            report.reaped
+        );
+    } else {
+        println!(
+            "mail index: {} added, {} unchanged, {} foreign-skipped, {} unparsable, \
+             {} reaped",
+            report.added, report.unchanged, report.foreign, report.unparsed, report.reaped
+        );
+    }
     if roots.is_empty() {
         println!(
             "  no synced trees declared in the config — indexed everything under {}",
             maildir.display()
         );
-    } else if orphaned > 0 {
+    } else if report.orphaned > 0 {
         println!(
-            "  {orphaned} message(s) skipped: they sit outside the {} tree(s) the sync \
-             config declares, so nothing keeps them up to date. Remove them, or add the \
-             account back with `lisa mail setup`.",
+            "  {} message(s) skipped: they sit outside the {} tree(s) the sync config \
+             declares, so nothing keeps them up to date. `lisa mail status` names the \
+             trees; remove them, or add the account back with `lisa mail setup`.",
+            report.orphaned,
             roots.len()
         );
+    }
+    Ok(report)
+}
+
+/// Index, then embed. The embedding half is here rather than inside
+/// `index_maildir` so the indexing path is testable without a model
+/// daemon on the other end of a socket.
+fn index_and_embed(maildir: &Path, roots: &[PathBuf], mode: Mode) -> Result<()> {
+    let store = lisa_contextd::ContextStore::open(lisa_contextd::ContextStore::default_path())?;
+    index_maildir(&store, maildir, roots, mode)?;
+    if mode == Mode::DryRun {
+        return Ok(());
     }
 
     // Same embedding rule as sync-knowledge (#177's lesson included:
@@ -1414,6 +1608,245 @@ mod tests {
         assert_eq!(verdict(maildir, &roots, spam), Verdict::NotForRetrieval);
         let scratch = Path::new("/home/lisa/Mail/someone_at_example.test/INBOX/tmp/1.lisa");
         assert_eq!(verdict(maildir, &roots, scratch), Verdict::NotAMessage);
+    }
+
+    // -----------------------------------------------------------------
+    // #224's cure, end to end: a real store, a real Maildir on disk,
+    // real vectors.
+    // -----------------------------------------------------------------
+
+    /// A message on disk, in the Maildir layout, with a Message-ID the
+    /// duplicate under the other tree shares — the shape #224 verified
+    /// on the device (195 of 195 sampled ids identical).
+    fn write_message(dir: &Path, name: &str, message_id: &str, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(name),
+            format!(
+                "From: sender@example.test\r\nTo: lisa@example.test\r\n\
+                 Subject: parking permit renewal\r\nMessage-ID: <{message_id}>\r\n\
+                 Date: Mon, 4 Aug 2026 10:00:00 +0200\r\n\r\n{body}\r\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Straight at the tables, on a second connection. Going through
+    /// the store API would only ever see what the API chooses to show —
+    /// and the row this test most needs to look at is a `chunk_vectors`
+    /// row whose document is already deleted, which no API returns.
+    fn count(db: &Path, sql: &str) -> i64 {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// The whole of #224 in one test: two trees hold the same mail, the
+    /// config declares one, and the documents AND embedding vectors of
+    /// the other leave the store while the live ones stay.
+    ///
+    /// It asserts on `chunk_vectors` rather than on the document count
+    /// alone because the vectors are the cost the issue is actually
+    /// about — 26,117 of them, 27.7% of the store, ~80 MB. A reap that
+    /// deleted the documents and orphaned their vectors would look like
+    /// a fix and free nothing.
+    #[test]
+    fn the_reap_removes_an_orphaned_tree_and_leaves_the_live_one() {
+        let home = tempfile::tempdir().unwrap();
+        let maildir = home.path().join("Mail");
+        let db = home.path().join("ctx.db");
+        let store = lisa_contextd::ContextStore::open(&db).unwrap();
+
+        // The layout `lisa mail setup` produces when a single account
+        // gains a second one: a flat tree nothing syncs anymore, and a
+        // per-account tree holding the same messages under different
+        // Maildir unique names.
+        let orphan = maildir.join("INBOX/cur");
+        let livetree = maildir.join("someone_at_example.test/INBOX/cur");
+        for i in 0..5 {
+            let id = format!("dup-{i}@example.test");
+            write_message(
+                &orphan,
+                &format!("1785447404.{i}_1.lisa"),
+                &id,
+                "renew by Friday",
+            );
+            write_message(
+                &livetree,
+                &format!("1785762014.{i}_1.lisa"),
+                &id,
+                "renew by Friday",
+            );
+        }
+
+        // Round one: the config is not written yet, so nothing is
+        // declared and everything indexes — which is exactly the state
+        // that produced the duplicates in the first place.
+        let report = index_maildir(&store, &maildir, &[], Mode::Apply).unwrap();
+        assert_eq!(report.added, 10, "both trees indexed: {report:?}");
+        assert_eq!(report.orphaned, 0);
+        store
+            .embed_pending(&lisa_contextd::embed::HashEmbedder::default())
+            .unwrap();
+
+        let vectors_before = count(&db, "SELECT count(*) FROM chunk_vectors");
+        assert!(vectors_before >= 10, "{vectors_before} vectors embedded");
+        let orphan_vectors = count(
+            &db,
+            "SELECT count(*) FROM chunk_vectors v JOIN documents d ON d.id = v.doc_id
+             WHERE d.source LIKE 'mail:INBOX/%'",
+        );
+        assert!(
+            orphan_vectors > 0,
+            "the orphan tree must own vectors to reap"
+        );
+
+        // Round two: the config now declares only the account tree —
+        // `lisa mail setup` with two accounts, one of which is this one.
+        let roots = vec![maildir.join("someone_at_example.test")];
+
+        // The preview first, and it must write nothing.
+        let dry = index_maildir(&store, &maildir, &roots, Mode::DryRun).unwrap();
+        assert_eq!(dry.orphaned, 5, "{dry:?}");
+        assert_eq!(dry.reaped, 5, "the preview must name the five orphans");
+        assert_eq!(dry.reaped_vectors, orphan_vectors as usize, "{dry:?}");
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM documents"),
+            10,
+            "a dry run wrote to the store"
+        );
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM chunk_vectors"),
+            vectors_before,
+            "a dry run removed vectors"
+        );
+
+        // Then the reap.
+        let report = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(report.orphaned, 5, "{report:?}");
+        assert_eq!(report.reaped, 5, "{report:?}");
+        assert!(!report.reap_refused);
+
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM documents WHERE source LIKE 'mail:INBOX/%'"
+            ),
+            0,
+            "the orphaned documents survived the reap"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM chunk_vectors v JOIN documents d ON d.id = v.doc_id
+                 WHERE d.source LIKE 'mail:INBOX/%'"
+            ),
+            0,
+            "orphaned documents left their vectors behind"
+        );
+        // Not merely unreachable by the join — actually gone. A DELETE
+        // that dropped the document row and left the vectors would pass
+        // the assertion above and free none of the 80 MB.
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM chunk_vectors"),
+            vectors_before - orphan_vectors,
+            "the vector table did not shrink by the orphans' share"
+        );
+
+        // …and the live tree is untouched, still retrievable.
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM documents WHERE source LIKE 'mail:someone_at_example.test/%'"
+            ),
+            5,
+            "the reap took the live tree with it"
+        );
+        let hits = store
+            .search_scoped("parking permit", &["mail"], 20)
+            .unwrap();
+        assert!(!hits.is_empty(), "the live mail stopped being retrievable");
+        assert!(
+            hits.iter()
+                .all(|h| h.source.contains("someone_at_example.test")),
+            "a reaped document is still being returned: {hits:?}"
+        );
+        // The point of the whole issue: the message competed with itself
+        // for result slots, and now it does not.
+        let unique: std::collections::HashSet<&str> =
+            hits.iter().map(|h| h.source.as_str()).collect();
+        assert_eq!(unique.len(), hits.len(), "duplicate hits remain: {hits:?}");
+
+        // Re-running is a no-op — a reap that keeps finding work is a
+        // reap that is deleting something it should not.
+        let again = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(again.reaped, 0, "{again:?}");
+        assert_eq!(again.unchanged, 5, "{again:?}");
+    }
+
+    /// The guard: a config whose trees are all absent from disk must not
+    /// empty the mail index. This is the accident that turns a fix into
+    /// an outage — a Maildir on an unmounted disk, a home restored
+    /// without its mail, a `setup` that has not synced yet — and the
+    /// mirror rule ("nothing on disk answers to it, so it goes") is
+    /// exactly what makes it total.
+    #[test]
+    fn a_maildir_that_has_not_arrived_does_not_empty_the_index() {
+        let home = tempfile::tempdir().unwrap();
+        let maildir = home.path().join("Mail");
+        let db = home.path().join("ctx.db");
+        let store = lisa_contextd::ContextStore::open(&db).unwrap();
+
+        write_message(
+            &maildir.join("acct/INBOX/cur"),
+            "1.lisa",
+            "a@example.test",
+            "renew by Friday",
+        );
+        let roots = vec![maildir.join("acct")];
+        assert_eq!(
+            index_maildir(&store, &maildir, &roots, Mode::Apply)
+                .unwrap()
+                .added,
+            1
+        );
+
+        // Now the tree is gone from the walk's point of view, but the
+        // config still names it.
+        let absent = vec![maildir.join("not_mounted_yet")];
+        let report = index_maildir(&store, &maildir, &absent, Mode::Apply).unwrap();
+        assert!(report.reap_refused, "{report:?}");
+        assert_eq!(report.reaped, 0, "{report:?}");
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM documents"),
+            1,
+            "the index was emptied by a Maildir that had not arrived"
+        );
+        assert!(
+            trees_are_present(&[]),
+            "no declared roots is the walk-everything branch"
+        );
+        assert!(trees_are_present(&roots));
+        assert!(!trees_are_present(&absent));
+    }
+
+    /// `lisa mail status` names the tree nothing syncs — #224's own
+    /// stated fix shape ("reported rather than silently indexed").
+    #[test]
+    fn status_can_name_the_tree_nothing_syncs() {
+        let home = tempfile::tempdir().unwrap();
+        let maildir = home.path().join("Mail");
+        write_message(&maildir.join("INBOX/cur"), "1.lisa", "a@x.test", "hi");
+        write_message(&maildir.join("INBOX/cur"), "2.lisa", "b@x.test", "hi");
+        write_message(&maildir.join("Sent/cur"), "3.lisa", "c@x.test", "hi");
+        write_message(&maildir.join("acct/INBOX/cur"), "4.lisa", "a@x.test", "hi");
+
+        let roots = vec![maildir.join("acct")];
+        assert_eq!(
+            orphaned_trees(&maildir, &roots),
+            vec![(maildir.join("INBOX"), 2), (maildir.join("Sent"), 1)]
+        );
+        // Nothing is orphaned when the config declares nothing.
+        assert!(orphaned_trees(&maildir, &[]).is_empty());
     }
 
     #[test]

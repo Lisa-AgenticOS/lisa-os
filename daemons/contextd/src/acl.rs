@@ -85,6 +85,69 @@ pub fn allowed_provenance(scopes: &[&str]) -> Vec<&'static str> {
     allowed
 }
 
+/// What a prune would remove, counted before anything is removed
+/// (#224).
+///
+/// `vectors` is the number that matters: a chunk is cheap text, an
+/// embedding is 3 KiB of float32 and the CPU that produced it. The
+/// orphaned Maildir tree on the reference device was 26,117 of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrunePlan {
+    /// The sources that would go, in store order.
+    pub sources: Vec<String>,
+    pub chunks: usize,
+    pub vectors: usize,
+}
+
+impl PrunePlan {
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+}
+
+/// The documents of `provenance` that `keep` does not name, with what
+/// they own. One query serving both the preview and the deletion, so
+/// the two cannot drift apart.
+///
+/// Counted with two grouped scans rather than a count per document: the
+/// store this was written for holds 94,000 vectors and 43,000 mail
+/// documents, and `chunks` is an FTS5 table whose `doc_id` is
+/// `UNINDEXED` — a per-document `count(*)` there is a full scan each
+/// time.
+fn doomed(
+    conn: &rusqlite::Connection,
+    provenance: &str,
+    keep: &std::collections::HashSet<String>,
+) -> Result<(Vec<i64>, PrunePlan), StoreError> {
+    let tally = |sql: &str| -> Result<std::collections::HashMap<i64, usize>, StoreError> {
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    };
+    let chunks = tally("SELECT doc_id, count(*) FROM chunks GROUP BY doc_id")?;
+    let vectors = tally("SELECT doc_id, count(*) FROM chunk_vectors GROUP BY doc_id")?;
+
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, source FROM documents WHERE provenance = ?1 ORDER BY id")?
+        .query_map([provenance], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+
+    let mut ids = Vec::new();
+    let mut plan = PrunePlan::default();
+    for (doc_id, source) in rows {
+        if keep.contains(&source) {
+            continue;
+        }
+        ids.push(doc_id);
+        plan.sources.push(source);
+        plan.chunks += chunks.get(&doc_id).copied().unwrap_or(0);
+        plan.vectors += vectors.get(&doc_id).copied().unwrap_or(0);
+    }
+    Ok((ids, plan))
+}
+
 /// The one place a document's rows are written — inside the caller's
 /// transaction, all three tables or none (#186).
 fn write_document(
@@ -191,6 +254,10 @@ impl ContextStore {
     /// primitive for corpora whose source ids are not filesystem paths
     /// (mail's `mail:` namespace — `prune_missing` cannot see those,
     /// which is how deleted messages stayed retrievable forever, #185).
+    ///
+    /// Removes exactly what [`Self::plan_prune_not_in`] named, because
+    /// both are the same query (`doomed`). A preview that is computed
+    /// differently from the deletion is not a preview.
     pub fn prune_not_in(
         &self,
         provenance: &str,
@@ -201,22 +268,35 @@ impl ContextStore {
         }
         let conn = self.conn.lock().expect("context lock");
         let tx = conn.unchecked_transaction()?;
-        let rows: Vec<(i64, String)> = tx
-            .prepare("SELECT id, source FROM documents WHERE provenance = ?1")?
-            .query_map([provenance], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<_, _>>()?;
-        let mut pruned = 0;
-        for (doc_id, source) in rows {
-            if keep.contains(&source) {
-                continue;
-            }
+        let (ids, plan) = doomed(&tx, provenance, keep)?;
+        for doc_id in ids {
             tx.execute("DELETE FROM chunks WHERE doc_id = ?1", [doc_id])?;
             tx.execute("DELETE FROM chunk_vectors WHERE doc_id = ?1", [doc_id])?;
             tx.execute("DELETE FROM documents WHERE id = ?1", [doc_id])?;
-            pruned += 1;
         }
         tx.commit()?;
-        Ok(pruned)
+        Ok(plan.sources.len())
+    }
+
+    /// What [`Self::prune_not_in`] would remove, without removing it
+    /// (#224).
+    ///
+    /// The reap this exists for is not hypothetical: on the reference
+    /// device 9,094 mail documents and 26,117 embedding vectors — 27.7%
+    /// of the whole store — belonged to a Maildir tree nothing syncs
+    /// anymore. Deleting five figures of rows because a config file
+    /// parsed one way rather than another is exactly the operation that
+    /// should be printable before it happens.
+    pub fn plan_prune_not_in(
+        &self,
+        provenance: &str,
+        keep: &std::collections::HashSet<String>,
+    ) -> Result<PrunePlan, StoreError> {
+        if !is_known_provenance(provenance) {
+            return Err(StoreError::UnknownProvenance(provenance.to_string()));
+        }
+        let conn = self.conn.lock().expect("context lock");
+        Ok(doomed(&conn, provenance, keep)?.1)
     }
 
     /// Search restricted to the provenance the granted `scopes` permit.
@@ -325,6 +405,66 @@ mod tests {
                 .iter()
                 .all(|h| h.provenance != "mail"),
             "documents scope must not surface mail chunks"
+        );
+    }
+
+    /// #224's cure primitive: the preview must name exactly what the
+    /// deletion removes, vectors included — a plan computed by a
+    /// different query from the delete is a plan that will one day be
+    /// wrong about five figures of rows.
+    #[test]
+    fn the_prune_preview_is_the_prune() {
+        use crate::embed::HashEmbedder;
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        for i in 0..4 {
+            store
+                .add_document(&format!("mail:INBOX/{i}"), "mail", "the parking permit")
+                .unwrap();
+        }
+        store
+            .add_document("/docs/a.md", "file", "unrelated")
+            .unwrap();
+        store.embed_pending(&HashEmbedder::default()).unwrap();
+
+        let keep: std::collections::HashSet<String> =
+            ["mail:INBOX/0".to_string(), "mail:INBOX/1".to_string()]
+                .into_iter()
+                .collect();
+        let plan = store.plan_prune_not_in("mail", &keep).unwrap();
+        assert_eq!(plan.sources, vec!["mail:INBOX/2", "mail:INBOX/3"]);
+        assert!(plan.chunks >= 2, "{plan:?}");
+        assert_eq!(plan.vectors, plan.chunks, "every chunk was embedded");
+
+        // Previewing removes nothing.
+        assert_eq!(
+            store.plan_prune_not_in("mail", &keep).unwrap(),
+            plan,
+            "the preview mutated the store"
+        );
+        let vectors = |store: &ContextStore| -> i64 {
+            // The raw table, not a join: a delete that drops the
+            // document and leaves its vectors satisfies every query
+            // that goes through `documents`, and frees nothing.
+            let conn = store.conn.lock().unwrap();
+            conn.query_row("SELECT count(*) FROM chunk_vectors", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = vectors(&store);
+        assert_eq!(store.prune_not_in("mail", &keep).unwrap(), 2);
+        assert_eq!(
+            vectors(&store),
+            before - plan.vectors as i64,
+            "the reaped documents left their vectors in the table"
+        );
+        // …and afterwards there is nothing left to plan.
+        assert!(store.plan_prune_not_in("mail", &keep).unwrap().is_empty());
+        // The other provenance was never in scope.
+        assert!(
+            !store
+                .search_scoped("unrelated", &["documents"], 3)
+                .unwrap()
+                .is_empty()
         );
     }
 

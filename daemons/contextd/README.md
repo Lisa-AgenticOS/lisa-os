@@ -67,6 +67,19 @@ Implemented and unit-tested (macOS + Linux, no daemon required):
   ranks best. Deny-by-default on empty/unknown scopes. `search_scoped`;
   ACL-leak + fuzz tests assert **0 cross-scope leaks** (§5.3 acceptance).
   `add_document` ingests non-file (mail/screen/web) provenance.
+- **Mirror pruning, previewable** (`acl.rs`) — `prune_not_in(provenance,
+  keep)` removes every document of one provenance that `keep` does not
+  name, with its chunks *and its vectors*; `plan_prune_not_in` returns
+  the same set as a `PrunePlan { sources, chunks, vectors }` without
+  removing anything. Both run the same query, so the preview is the
+  deletion rather than an estimate of it. The caller that needs this is
+  the mail indexer (#224): 9,094 documents and 26,117 vectors on the
+  reference device belonged to a Maildir tree nothing syncs, and a
+  five-figure delete decided by how a config parsed is exactly the
+  operation that should be printable first. A prune that dropped the
+  document rows and left the `chunk_vectors` rows would satisfy every
+  query that goes through `documents` and free none of the ~80 MB, so
+  the tests count that table directly.
 
 CLI: `lisa context index [--embed]`, `lisa context search [--hybrid]
 [--scope <scope>]` (scoped searches ledger as `context.search.scoped`).

@@ -50,3 +50,9 @@ zstd = "0.13.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# The mail reap's test (#224) asserts on `chunk_vectors` directly, not
+# through the store API: "the documents are gone" is satisfied by a
+# delete that orphans every vector it should have taken, which frees
+# none of the 80 MB the issue is about. Same version contextd pins, so
+# the workspace resolves one copy.
+rusqlite = { version = "0.40.1", features = ["bundled"] }

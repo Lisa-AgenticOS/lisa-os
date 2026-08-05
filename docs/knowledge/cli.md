@@ -90,6 +90,8 @@ lisa mail status                              # which layer is blocking
 lisa mail setup                               # use the Online Accounts token
 lisa mail setup --app-password ~/.mail-pass   # or a provider app password
 lisa mail sync                                # one pass
+lisa mail index --dry-run                     # what would be indexed and reaped
+lisa mail index                               # backfill, re-index, and reap
 ```
 
 Lisa does not speak IMAP and will not — `mbsync` does, and what was
@@ -113,6 +115,35 @@ Nothing generated here can destroy mail on the server: every channel
 carries `Expunge None` and `Remove None`, so the worst a bug in this
 code can cost is flags. `[Gmail]/All Mail` is never synced — it holds a
 copy of every message in every other folder.
+
+**`lisa mail index` — the Maildir into retrieval, and the reap (#224).**
+
+The index mirrors *the trees `~/.config/lisa/mbsyncrc` declares*, not
+everything under `~/Mail`. The difference is not academic: `setup`
+writes a flat tree for one account and per-account trees for several, so
+adding a second account orphans the first tree — still on disk, synced
+by no channel. Indexing it anyway put the same 8,407 messages in the
+store twice under two ids, embedded twice (26,117 vectors, 27.7% of the
+reference device's whole context store), and returned twice by search,
+where a message competed with itself for result slots.
+
+So a message outside every declared tree is skipped and counted, and any
+document no walked message answers to is **reaped** — the document, its
+chunks, and its embedding vectors. Two safeguards, because a reap is a
+five-figure delete driven by how a config file parsed:
+
+- it says what it will remove **before** removing it (`--dry-run` stops
+  after that report and writes nothing);
+- it **refuses** when every declared tree is missing from disk. A
+  Maildir that has not mounted, a home restored without its mail, or a
+  `setup` that has not synced yet makes every indexed message look
+  expunged; the mirror rule would then faithfully empty the index. All
+  trees missing, not any — one account set up and never synced must not
+  block reaping another's.
+
+`lisa mail status` names any orphaned tree it finds, with a message
+count. The files are yours: nothing here ever deletes mail from disk,
+only the index rows that point at mail nothing syncs.
 
 **`lisa doctor` — the state of this machine, in one command.**
 
