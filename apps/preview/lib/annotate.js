@@ -75,12 +75,19 @@ export function savePathFor(path, existing) {
 }
 
 /// The title's unsaved marker. One annotation is "1 note"; the count is
-/// whatever has not reached disk yet, across annotation types and page
-/// reordering.
-export function unsavedLabel(annotCount, orderChanged) {
+/// whatever has not reached disk yet, across annotation types, page
+/// reordering and page rotation.
+///
+/// Rotation is named SEPARATELY from reordering rather than folded into
+/// one "pages edited": they are undone by different gestures and land
+/// through different qpdf flags, and a subtitle that says "reordered"
+/// when only a rotation is pending sends the user looking for a move
+/// they never made.
+export function unsavedLabel(annotCount, orderChanged, rotated = false) {
     const parts = [];
     if (annotCount > 0)
         parts.push(`${annotCount} annotation${annotCount === 1 ? '' : 's'}`);
     if (orderChanged) parts.push('pages reordered');
+    if (rotated) parts.push('pages rotated');
     return parts.length ? `${parts.join(', ')} — unsaved` : '';
 }

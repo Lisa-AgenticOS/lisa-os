@@ -44,6 +44,15 @@ ok(unsavedLabel(1, false) === '1 annotation — unsaved', 'singular');
 ok(unsavedLabel(3, false) === '3 annotations — unsaved', 'plural');
 ok(unsavedLabel(2, true) === '2 annotations, pages reordered — unsaved', 'both kinds combine');
 ok(unsavedLabel(0, true) === 'pages reordered — unsaved', 'reorder alone');
+ok(unsavedLabel(0, false, true) === 'pages rotated — unsaved', 'rotation alone');
+ok(unsavedLabel(0, true, true) === 'pages reordered, pages rotated — unsaved',
+    'a rotation is named separately from a reorder — they are undone by different gestures',
+    unsavedLabel(0, true, true));
+ok(unsavedLabel(2, true, true) === '2 annotations, pages reordered, pages rotated — unsaved',
+    'all three combine', unsavedLabel(2, true, true));
+// The default keeps every existing caller honest: omitting the third
+// argument must not start claiming a rotation nobody made.
+ok(unsavedLabel(1, false) === '1 annotation — unsaved', 'rotation defaults to none');
 
 // --- colors --------------------------------------------------------
 ok(COLORS.highlight.red === 0xffff && COLORS.note.blue === 0xc9c9,

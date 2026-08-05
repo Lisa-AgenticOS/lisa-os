@@ -13,7 +13,7 @@
     {
       "file": "preview.md",
       "about": "Preview: images, PDF, and Space-to-preview in Files",
-      "sha256": "453a67ea9fbd0afce8c8adfe7d36393593f90914c5c6f00da472123a1420c206"
+      "sha256": "59db360fd755dea18bdf97757504dcc4b2b60dce393afcab830c0314d99f5876"
     },
     {
       "file": "terminal.md",
@@ -33,7 +33,7 @@
     {
       "file": "overlay.md",
       "about": "The assistant overlay and how to summon it",
-      "sha256": "3af59d994ae442eb653b70cae39637872967a8ec83cf9da638329092b42b86cd"
+      "sha256": "847b90559aa7f20548dbb1f36127c99249c74eeb4c1640854ebaab7cf9d04605"
     },
     {
       "file": "cli.md",

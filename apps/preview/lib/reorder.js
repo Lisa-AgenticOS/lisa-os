@@ -41,6 +41,70 @@ export function orderChanged(order, pageCount) {
     return order.length !== pageCount || !isIdentity(order);
 }
 
+/// Rotate the ORIGINAL page `orig` by `delta` degrees, returning a new
+/// rotation map.
+///
+/// Keyed by ORIGINAL page index, not by display position, so a rotation
+/// travels with its page when the page is moved. Keying by position
+/// would silently rotate whatever page later landed there — the same
+/// class of bug as #195, where a display index was used to fetch an
+/// original page.
+///
+/// A rotation that comes back to 0 is DELETED rather than stored as 0,
+/// so `rotationsChanged` is a plain emptiness test and four taps on
+/// Rotate leave a document that is genuinely unmodified — not one that
+/// still asks to be saved.
+export function rotatePageBy(rotations, orig, delta) {
+    const next = {...rotations};
+    const deg = (((next[orig] ?? 0) + delta) % 360 + 360) % 360;
+    if (deg === 0) delete next[orig];
+    else next[orig] = deg;
+    return next;
+}
+
+/// The rotation of an original page, always 0/90/180/270.
+export function rotationOf(rotations, orig) {
+    return ((rotations?.[orig] ?? 0) % 360 + 360) % 360;
+}
+
+/// Does any page carry a pending rotation? Rotations that survive a
+/// REMOVE are not a change: a rotated page that is no longer in the
+/// order cannot rotate anything, and treating its leftover entry as
+/// dirty would keep offering to save a document nobody edited.
+export function rotationsChanged(rotations, order) {
+    return order.some(orig => rotationOf(rotations, orig) !== 0);
+}
+
+/// qpdf's `--rotate` arguments for a saved copy, one per distinct angle.
+///
+/// **The page numbers are OUTPUT positions, not input pages** — verified
+/// on the reference device 2026-08-05 rather than assumed, because the
+/// two readings differ exactly when both flags are used at once, which
+/// is our only case:
+///
+///     qpdf in.pdf --pages . 3,1-2 -- --rotate=+90:1 out.pdf
+///     -> out page 1 is input page 3, AND it is the rotated one
+///        (600x400 where the input was 400x600)
+///
+/// Had it meant input pages, every rotation would land on the wrong
+/// page the moment a page was also moved, and nothing would say so.
+///
+/// Ranges are compressed by the same `qpdfPageSpec` the page selection
+/// uses, for the same reason: a 400-page document must not become 400
+/// comma terms on a command line.
+export function qpdfRotateArgs(order, rotations) {
+    const byAngle = new Map();
+    order.forEach((orig, position) => {
+        const deg = rotationOf(rotations, orig);
+        if (deg === 0) return;
+        if (!byAngle.has(deg)) byAngle.set(deg, []);
+        byAngle.get(deg).push(position);
+    });
+    return [...byAngle.keys()]
+        .sort((a, b) => a - b)
+        .map(deg => `--rotate=+${deg}:${qpdfPageSpec(byAngle.get(deg))}`);
+}
+
 /// qpdf's --pages selection, 1-based, consecutive runs compressed to
 /// ranges: [2,0,1] -> "3,1-2". Compression is not cosmetic — a
 /// 400-page document with one page moved is two ranges, not 400 comma

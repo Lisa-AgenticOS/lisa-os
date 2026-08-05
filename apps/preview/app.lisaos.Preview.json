@@ -37,6 +37,58 @@
         },
         "required": ["x1", "y1", "x2", "y2"]
       }
+    },
+    {
+      "name": "move_page",
+      "tier": "write",
+      "description": "Move a page of the open PDF to another position. Display order only — the file on disk is unchanged until the user saves a copy. Reversible by moving it back.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "from": { "type": "integer", "description": "1-based display page to move" },
+          "to": { "type": "integer", "description": "1-based display position to move it to" }
+        },
+        "required": ["from", "to"]
+      }
+    },
+    {
+      "name": "rotate_page",
+      "tier": "write",
+      "description": "Rotate one page of the open PDF by a quarter turn. Applied to the copy the user saves; the file on disk is unchanged until then. Reversible.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "description": "1-based display page" },
+          "degrees": { "type": "integer", "description": "a multiple of 90; defaults to 90 (clockwise)" }
+        },
+        "required": ["page"]
+      }
+    },
+    {
+      "name": "remove_page",
+      "tier": "destructive",
+      "description": "Drop a page from the open PDF. There is no undo for this inside Preview — reopening the file is the only way back — so it is destructive even though the original on disk is never touched. A one-page document refuses.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "description": "1-based display page" }
+        },
+        "required": ["page"]
+      }
+    },
+    {
+      "name": "export_page",
+      "tier": "write",
+      "description": "Write the open image, or one page of the open PDF, to a new image file. Never overwrites: an existing path is refused. Format must be one this machine's image writers support; pages rasterize at 150 dpi.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "absolute path to write, ending in the format's extension" },
+          "format": { "type": "string", "description": "png, jpeg, webp, avif or tiff — whichever this machine can write" },
+          "page": { "type": "integer", "description": "1-based display page, for documents" }
+        },
+        "required": ["path", "format"]
+      }
     }
   ]
 }

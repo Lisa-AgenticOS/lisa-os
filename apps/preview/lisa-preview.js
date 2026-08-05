@@ -28,7 +28,9 @@ import {kindOf, siblings} from './lib/formats.js';
 import {zoomStep, fitScale, fitWidthScale, step, rotate} from './lib/view.js';
 import {COLORS, normalizeRect, isClick, viewToPage, annotRect, savePathFor, unsavedLabel}
     from './lib/annotate.js';
-import {movePage, removePage, orderChanged, qpdfPageSpec} from './lib/reorder.js';
+import {movePage, removePage, orderChanged, qpdfPageSpec, rotatePageBy, rotationOf,
+    rotationsChanged, qpdfRotateArgs} from './lib/reorder.js';
+import {pageArg, rotationArg, moveArg, exportTarget, formatArg} from './lib/agent.js';
 import {looksBinary, truncateText, cardSubtitle, folderSubtitle, mediaClock} from './lib/peek.js';
 import {exportFormats, saveOptions, exportName, rasterScale, pageExportNames} from './lib/export.js';
 import {normalizeStrokes, stampSize, serializeSignature, deserializeSignature} from './lib/signature.js';
@@ -125,6 +127,14 @@ const state = {
     // `pageOrder` is display order over ORIGINAL page indices; `drag`
     // is the live marquee in widget coordinates while one is in flight.
     annots: [], tool: null, pageOrder: [], drag: null,
+    // Pending per-page rotation, keyed by ORIGINAL page index so it
+    // travels with the page across a move. Applied to the SAVED copy by
+    // qpdf (poppler-glib cannot rewrite /Rotate any more than it can
+    // reorder); until then it is a view transform, which is why the
+    // rotation has to be composed into drawPage rather than left for
+    // save time — a rotate button that shows nothing until you save is
+    // a button people press twice.
+    pageRotations: {},
 };
 
 let picture = null, drawing = null, stack = null, pageLabel = null, zoomLabel = null, titleLabel = null;
@@ -173,12 +183,26 @@ function viewportSize() {
     return {width: Math.max(1, w - 24), height: Math.max(1, h - 96)};
 }
 
+/// The angle the thing on screen is drawn at.
+///
+/// For a document this is the view's own rotation (the R key, transient)
+/// composed with the CURRENT PAGE's pending document rotation (an edit,
+/// saved by qpdf). They compose because they are the same transform seen
+/// twice; keeping them separate in `state` and joining them here is what
+/// lets Ctrl+Z-style thinking apply to one and not the other.
+function pageAngle() {
+    if (state.kind !== 'document' || !state.pageOrder.length)
+        return state.rotation;
+    return (state.rotation +
+        rotationOf(state.pageRotations, state.pageOrder[state.pageIndex])) % 360;
+}
+
 function effectiveScale() {
-    if (state.fitMode === 'fit') return fitScale(contentSize(), viewportSize(), state.rotation);
+    if (state.fitMode === 'fit') return fitScale(contentSize(), viewportSize(), pageAngle());
     // 'fill' is the EXPLICIT fit — the button, the 0 key — and may
     // enlarge; 'fit' is the on-open default and never does.
-    if (state.fitMode === 'fill') return fitScale(contentSize(), viewportSize(), state.rotation, true);
-    if (state.fitMode === 'width') return fitWidthScale(contentSize(), viewportSize(), state.rotation);
+    if (state.fitMode === 'fill') return fitScale(contentSize(), viewportSize(), pageAngle(), true);
+    if (state.fitMode === 'width') return fitWidthScale(contentSize(), viewportSize(), pageAngle());
     return state.zoom;
 }
 
@@ -198,7 +222,8 @@ function render() {
     if (titleLabel && state.path) {
         titleLabel.set_title(state.path.split('/').pop());
         titleLabel.set_subtitle(unsavedLabel(state.annots.length,
-            state.kind === 'document' && orderChanged(state.pageOrder, state.pageCount)));
+            state.kind === 'document' && orderChanged(state.pageOrder, state.pageCount),
+            state.kind === 'document' && rotationsChanged(state.pageRotations, state.pageOrder)));
     }
 
     if (state.kind === 'image' && state.pixbuf) {
@@ -243,7 +268,8 @@ function drawPage(area, cr, _w, _h) {
     const page = docPage();
     const [pw, ph] = page.get_size();
     const scale = effectiveScale();
-    const quarter = state.rotation % 180 !== 0;
+    const angle = pageAngle();
+    const quarter = angle % 180 !== 0;
     const outW = Math.round((quarter ? ph : pw) * scale);
     const outH = Math.round((quarter ? pw : ph) * scale);
     area.set_size_request(outW, outH);
@@ -253,9 +279,9 @@ function drawPage(area, cr, _w, _h) {
     cr.rectangle(0, 0, outW, outH);
     cr.fill();
     cr.save();
-    if (state.rotation) {
+    if (angle) {
         cr.translate(outW / 2, outH / 2);
-        cr.rotate(state.rotation * Math.PI / 180);
+        cr.rotate(angle * Math.PI / 180);
         cr.translate(-(pw * scale) / 2, -(ph * scale) / 2);
     }
     cr.scale(scale, scale);
@@ -416,6 +442,11 @@ function loadFile(path) {
     state.quickLook = false;
     state.pageOrder = kind === 'document'
         ? Array.from({length: state.pageCount}, (_, i) => i) : [];
+    // Pending rotations belong to the document that was open, not to the
+    // window. Carrying them across a load would rotate pages of a file
+    // nobody asked to edit — and the save-then-reopen in `afterSave`
+    // makes that a load the user never sees happen.
+    state.pageRotations = {};
     refreshEditUi?.();
     // Rebuild (or clear) the pages sidebar: stale rows pin the OLD
     // document's PopplerPage refs in their draw funcs, and a click on
@@ -480,7 +511,29 @@ function setZoom(z) { state.fitMode = 'free'; state.zoom = z; render(); }
 
 function isDirty() {
     return state.annots.length > 0 ||
-        (state.kind === 'document' && orderChanged(state.pageOrder, state.pageCount));
+        (state.kind === 'document' &&
+            (orderChanged(state.pageOrder, state.pageCount) ||
+             rotationsChanged(state.pageRotations, state.pageOrder)));
+}
+
+/// Both edits qpdf has to apply — a changed order and any rotation.
+/// One predicate, because both take the same save path and forgetting
+/// either one is a silent data loss at Ctrl+S.
+function needsQpdf() {
+    return state.kind === 'document' &&
+        (orderChanged(state.pageOrder, state.pageCount) ||
+         rotationsChanged(state.pageRotations, state.pageOrder));
+}
+
+/// Rotate the page at DISPLAY position `i` by `delta`. The shared core
+/// under the thumbnail button and the `rotate_page` tool.
+function rotatePageAt(i, delta) {
+    if (state.kind !== 'document' || i < 0 || i >= state.pageOrder.length) return false;
+    state.pageRotations = rotatePageBy(state.pageRotations, state.pageOrder[i], delta);
+    rebuildThumbs?.();
+    refreshEditUi?.();
+    render();
+    return true;
 }
 
 function popplerRect(r) {
@@ -551,12 +604,35 @@ function rectOnPage(page, td, tool) {
     return true;
 }
 
+/// Does a PENDING page rotation make annotation coordinates a lie?
+///
+/// `annotRect` flips y against the page's own height, so every mark is
+/// computed in the page's unrotated box. The view's R-key rotation is
+/// snapped back to 0 when a tool is picked (the existing limit); a PAGE
+/// rotation is an edit and cannot be snapped away, so a mark placed on
+/// a page drawn at 90° would land where the user did not click — off by
+/// a quarter turn, silently, which is the exact failure `annotRect`'s
+/// comment was written to prevent.
+///
+/// Refusing beats guessing. Once the copy is saved and reopened the
+/// rotation is baked into the page and annotating works normally.
+const ROTATED_ANNOT_MSG =
+    'Save the rotated copy first — marks cannot be placed on a page ' +
+    'that is waiting to be rotated';
+
+function annotBlockedByRotation(i) {
+    return state.kind === 'document' && i >= 0 && i < state.pageOrder.length &&
+        rotationOf(state.pageRotations, state.pageOrder[i]) !== 0;
+}
+
 function addNoteAt(vx, vy, text) {
+    if (annotBlockedByRotation(state.pageIndex)) { toast(ROTATED_ANNOT_MSG); return false; }
     const p = viewToPage({x: vx, y: vy}, effectiveScale());
     return noteOnPage(docPage(), p.x, p.y, text);
 }
 
 function addRectAnnot(viewRect, tool) {
+    if (annotBlockedByRotation(state.pageIndex)) { toast(ROTATED_ANNOT_MSG); return false; }
     const scale = effectiveScale();
     return rectOnPage(docPage(), {
         x1: viewRect.x1 / scale, y1: viewRect.y1 / scale,
@@ -572,6 +648,43 @@ function undoAnnot() {
     }
     refreshEditUi?.();
     render();
+}
+
+/// Removing a page asks first — the one page-order operation that is
+/// not reversible in this window.
+///
+/// Ctrl+Z undoes ANNOTATIONS and nothing else, so a mis-clicked trash
+/// button on a thumbnail row (which sits one icon away from "move down")
+/// costs a page with no way back but reopening the file and starting
+/// over. Moves and rotations need no dialog for exactly the inverse
+/// reason: pressing the other button puts them back.
+///
+/// The dialog is also where the honest sentence lives — the ORIGINAL
+/// file is never touched; a removal only shortens the copy that Save
+/// will write. People decline destructive dialogs they do not
+/// understand, and this one deserves to be accepted.
+function confirmRemovePage(i) {
+    if (state.kind !== 'document' || i < 0 || i >= state.pageOrder.length) return;
+    if (state.pageOrder.length <= 1) {
+        toast('A document needs at least one page');
+        return;
+    }
+    const dialog = new Adw.AlertDialog({
+        heading: `Remove page ${i + 1}?`,
+        body: `Page ${i + 1} of ${state.pageOrder.length} is dropped from ` +
+            'this document. Undo does not bring pages back — reopen the ' +
+            `file to start over. ${state.path.split('/').pop()} on disk is ` +
+            'not changed; only the copy Save writes is shorter.',
+    });
+    dialog.add_response('cancel', 'Cancel');
+    dialog.add_response('remove', 'Remove page');
+    dialog.set_response_appearance('remove', Adw.ResponseAppearance.DESTRUCTIVE);
+    dialog.set_default_response('cancel');
+    dialog.set_close_response('cancel');
+    dialog.connect('response', (_d, response) => {
+        if (response === 'remove') applyOrder(removePage(state.pageOrder, i));
+    });
+    dialog.present(win);
 }
 
 function applyOrder(next) {
@@ -600,9 +713,9 @@ function saveEdited() {
         while ((info = en.next_file(null)) !== null) names.push(info.get_name());
     } catch (e) { /* best effort — savePathFor handles [] */ }
     const target = savePathFor(state.path, names);
-    const reordered = orderChanged(state.pageOrder, state.pageCount);
+    const reordered = needsQpdf();
     if (reordered && !GLib.find_program_in_path('qpdf')) {
-        toast('Page reordering needs qpdf, which is not installed');
+        toast('Reordering and rotating pages needs qpdf, which is not installed');
         return;
     }
     const annotsAtSave = state.annots.length;
@@ -619,8 +732,13 @@ function saveEdited() {
         GLib.close(fd);
         state.doc.save(Gio.File.new_for_path(tmp).get_uri());
         saveInFlight = true;
+        // `--rotate` comes AFTER the `--pages … --` group and counts
+        // OUTPUT pages — device-verified, see qpdfRotateArgs. Putting it
+        // before the group would make it count input pages instead, and
+        // the two agree only while nothing has moved.
         const proc = Gio.Subprocess.new(
-            ['qpdf', tmp, '--pages', '.', qpdfPageSpec(state.pageOrder), '--', target],
+            ['qpdf', tmp, '--pages', '.', qpdfPageSpec(state.pageOrder), '--',
+                ...qpdfRotateArgs(state.pageOrder, state.pageRotations), target],
             Gio.SubprocessFlags.STDERR_PIPE);
         proc.communicate_utf8_async(null, null, (p, res) => {
             saveInFlight = false;
@@ -666,6 +784,22 @@ function pageToPixbuf(page, dpi) {
 function savePixbuf(pb, path, formatKey) {
     const [keys, values] = saveOptions(formatKey);
     return pb.savev(path, formatKey, keys, values);
+}
+
+/// What THIS machine can write, asked once of GdkPixbuf itself (#146 —
+/// never a package name, never the catalogue's opinion).
+///
+/// Module scope rather than a local in `buildWindow`, because the export
+/// menu and the `export_page` tool must give the same answer: an agent
+/// told AVIF is available while the menu hides it, or the reverse, is
+/// two sources of truth for one fact about the hardware.
+let writableFormats = null;
+function availableFormats() {
+    if (writableFormats === null) {
+        writableFormats = exportFormats(GdkPixbuf.Pixbuf.get_formats()
+            .filter(f => f.is_writable()).map(f => f.get_name()));
+    }
+    return writableFormats;
 }
 
 /// Export the current view. Images convert from the PRISTINE pixbuf
@@ -816,6 +950,7 @@ function placeSignature(vx, vy) {
     const sig = loadSignature();
     const page = docPage();
     if (!sig || !page) return false;
+    if (annotBlockedByRotation(state.pageIndex)) { toast(ROTATED_ANNOT_MSG); return false; }
     const [pww, phh] = page.get_size();
     const p = viewToPage({x: vx, y: vy}, effectiveScale());
     const size = stampSize(sig);
@@ -914,8 +1049,7 @@ function buildWindow() {
         win.close();
     });
     // --- export (slice 5): formats the MACHINE can write ------------
-    const available = exportFormats(
-        GdkPixbuf.Pixbuf.get_formats().filter(f => f.is_writable()).map(f => f.get_name()));
+    const available = availableFormats();
     const exportBtn = new Gtk.MenuButton({
         icon_name: 'document-save-as-symbolic', tooltip_text: 'Export (Ctrl+E)',
     });
@@ -960,11 +1094,25 @@ function buildWindow() {
     drawBtn.connect('clicked', () => { signPop.popdown(); openSignatureDialog(); });
     signBox.append(placeBtn);
     signBox.append(drawBtn);
+    // The honest sentence, in the place where the claim would otherwise
+    // be made. Preview stamps a PICTURE of a signature: it is not a
+    // digital signature, it certifies nothing, it can be lifted out of
+    // the PDF with any editor, and a reader that verifies signatures
+    // will report this document as unsigned. Saying so in the popover
+    // costs three lines; leaving it to the README lets the button imply
+    // otherwise to everyone who never opens one.
+    signBox.append(new Gtk.Label({
+        label: 'A picture of your signature, placed on the page.\n' +
+            'Not a digital signature — it certifies nothing\n' +
+            'and proves nothing about who placed it.',
+        css_classes: ['dim-label', 'caption'],
+        justify: Gtk.Justification.LEFT, xalign: 0, margin_top: 4,
+    }));
     signPop.set_child(signBox);
     signBtn.set_popover(signPop);
 
     function openSignatureDialog() {
-        const dlg = new Adw.Dialog({title: 'Draw your signature', content_width: 540});
+        const dlg = new Adw.Dialog({title: 'Draw your signature (an image, not a digital signature)', content_width: 540});
         const tb = new Adw.ToolbarView();
         tb.add_top_bar(new Adw.HeaderBar());
         const strokes = [];
@@ -1194,29 +1342,43 @@ function buildWindow() {
         state.pageOrder.forEach((orig, i) => {
             const page = state.doc.get_page(orig);
             const [pw, ph] = page.get_size();
-            const tScale = 110 / pw;
+            const deg = rotationOf(state.pageRotations, orig);
+            const tScale = 110 / (deg % 180 !== 0 ? ph : pw);
+            // The thumbnail shows the PENDING rotation, not the page as
+            // it sits on disk. A pages sidebar that ignores the rotation
+            // the user just asked for is the sidebar telling them it did
+            // not happen.
+            const tw = Math.round((deg % 180 !== 0 ? ph : pw) * tScale);
+            const th = Math.round((deg % 180 !== 0 ? pw : ph) * tScale);
             const thumb = new Gtk.DrawingArea({
-                content_width: 110, content_height: Math.round(ph * tScale),
+                content_width: tw, content_height: th,
                 halign: Gtk.Align.CENTER,
             });
             thumb.set_draw_func((_a, cr, w, h) => {
                 cr.setSourceRGB(1, 1, 1);
                 cr.rectangle(0, 0, w, h);
                 cr.fill();
+                if (deg) {
+                    cr.translate(w / 2, h / 2);
+                    cr.rotate(deg * Math.PI / 180);
+                    cr.translate(-(pw * tScale) / 2, -(ph * tScale) / 2);
+                }
                 cr.scale(tScale, tScale);
                 page.render(cr);
                 cr.$dispose?.();
             });
             const up = new Gtk.Button({icon_name: 'go-up-symbolic', css_classes: ['flat'], tooltip_text: 'Move up'});
             const down = new Gtk.Button({icon_name: 'go-down-symbolic', css_classes: ['flat'], tooltip_text: 'Move down'});
+            const turn = new Gtk.Button({icon_name: 'object-rotate-right-symbolic', css_classes: ['flat'], tooltip_text: 'Rotate this page'});
             const del = new Gtk.Button({icon_name: 'user-trash-symbolic', css_classes: ['flat'], tooltip_text: 'Remove page'});
             up.connect('clicked', () => applyOrder(movePage(state.pageOrder, i, i - 1)));
             down.connect('clicked', () => applyOrder(movePage(state.pageOrder, i, i + 1)));
-            del.connect('clicked', () => applyOrder(removePage(state.pageOrder, i)));
+            turn.connect('clicked', () => rotatePageAt(i, 90));
+            del.connect('clicked', () => confirmRemovePage(i));
             up.sensitive = i > 0;
             down.sensitive = i < state.pageOrder.length - 1;
             const btnRow = new Gtk.Box({halign: Gtk.Align.CENTER});
-            [up, down, del].forEach(b => btnRow.append(b));
+            [up, down, turn, del].forEach(b => btnRow.append(b));
             const cell = new Gtk.Box({
                 orientation: Gtk.Orientation.VERTICAL, spacing: 2,
                 margin_top: 6, margin_bottom: 6, margin_start: 6, margin_end: 6,
@@ -1371,6 +1533,8 @@ const handlers = {
     async addNote({page, x, y, text}) {
         const idx = displayPageIndex(page);
         if (idx.error) return idx;
+        if (annotBlockedByRotation(idx.value))
+            return {error: ROTATED_ANNOT_MSG};
         if (typeof text !== 'string' || !text.trim())
             return {error: 'text is required'};
         const done = noteOnPage(state.doc.get_page(state.pageOrder[idx.value]),
@@ -1382,24 +1546,134 @@ const handlers = {
     async highlight({page, x1, y1, x2, y2}) {
         const idx = displayPageIndex(page);
         if (idx.error) return idx;
+        if (annotBlockedByRotation(idx.value))
+            return {error: ROTATED_ANNOT_MSG};
         const rect = normalizeRect({x: finiteOr(x1, 0), y: finiteOr(y1, 0)},
             {x: finiteOr(x2, 0), y: finiteOr(y2, 0)});
         const done = rectOnPage(state.doc.get_page(state.pageOrder[idx.value]), rect, 'highlight');
         return done ? {ok: true, page: idx.value + 1, unsaved: state.annots.length}
             : {error: 'annotation was not added'};
     },
+
+    /// Write-tier: move a page. Reversible by calling it back the other
+    /// way, which is why it needs no confirmation beyond the write chip.
+    async movePage({from, to}) {
+        if (state.kind !== 'document' || !state.doc)
+            return {error: 'no document open'};
+        const arg = moveArg(from, to, state.pageOrder.length);
+        if (arg.error) return arg;
+        const next = movePage(state.pageOrder, arg.from, arg.to);
+        applyOrder(next);
+        return {ok: true, from: arg.from + 1, to: arg.to + 1,
+            pages: state.pageOrder.length, unsaved: true};
+    },
+
+    /// Write-tier: rotate one page a quarter turn. Also reversible —
+    /// three more calls come back to where it started.
+    async rotatePage({page, degrees}) {
+        const idx = displayPageIndex(page);
+        if (idx.error) return idx;
+        const deg = rotationArg(degrees);
+        if (deg.error) return deg;
+        rotatePageAt(idx.value, deg.value);
+        return {ok: true, page: idx.value + 1,
+            rotation: rotationOf(state.pageRotations, state.pageOrder[idx.value]),
+            unsaved: true};
+    },
+
+    /// DESTRUCTIVE tier: drop a page.
+    ///
+    /// Destructive is not an opinion about the filesystem — the original
+    /// on disk is untouched either way. It is about what the caller can
+    /// undo: `move_page` has an inverse and this has none, so the person
+    /// gets the modal with the typed diff before a page leaves the
+    /// document they are looking at.
+    ///
+    /// The name would carry it anyway. agentd's `Tier::implied_floor`
+    /// reads `remove` and raises any lower tier to destructive (#56), so
+    /// declaring it honestly in the manifest agrees with the floor
+    /// instead of being corrected by it.
+    async removePage({page}) {
+        const idx = displayPageIndex(page);
+        if (idx.error) return idx;
+        const next = removePage(state.pageOrder, idx.value);
+        if (!next) return {error: 'a document needs at least one page'};
+        applyOrder(next);
+        return {ok: true, removed: idx.value + 1,
+            pages: state.pageOrder.length, unsaved: true};
+    },
+
+    /// Write-tier: convert the open file, or one page of it, to an
+    /// image on disk.
+    ///
+    /// This is the one Preview tool that writes a file, so it is also
+    /// the one whose path the guard gets to judge — scope, ownership and
+    /// the owner's protected folders are decided in Rust before this
+    /// runs (rule 6a). What is decided HERE is the part only Preview
+    /// knows: **it never overwrites**. A write-tier tool that can
+    /// clobber a file is a tier that lies, and the fix is to make the
+    /// tool unable to do it rather than to raise the tier — a
+    /// confirmation prompt for "may I destroy something" is worth less
+    /// than not offering to.
+    async exportPage({path, format, page}) {
+        if (!state.path) return {error: 'nothing open'};
+        const fmt = formatArg(format, availableFormats());
+        if (fmt.error) return fmt;
+        const target = exportTarget(path, fmt.value.ext,
+            typeof path === 'string' && path.startsWith('/') &&
+                GLib.file_test(path, GLib.FileTest.EXISTS));
+        if (target.error) return target;
+
+        let pb = null, exported = null;
+        if (state.kind === 'image') {
+            // The PRISTINE pixbuf, never the checkerboarded view copy:
+            // the transparency checks are a view aid and must not reach
+            // a file (the same rule the menu path follows).
+            if (!state.origPixbuf) return {error: 'no image loaded'};
+            pb = state.origPixbuf;
+        } else if (state.kind === 'document' && state.doc) {
+            const idx = displayPageIndex(page);
+            if (idx.error) return idx;
+            pb = pageToPixbuf(state.doc.get_page(state.pageOrder[idx.value]), 150);
+            exported = idx.value + 1;
+        } else {
+            return {error: `Preview cannot export a ${state.kind ?? 'file'}`};
+        }
+        if (!savePixbuf(pb, target.value, fmt.value.key))
+            return {error: `the ${fmt.value.key} writer refused ${target.value}`};
+        toast(`Exported ${target.value.split('/').pop()}`);
+        return {ok: true, path: target.value, format: fmt.value.key,
+            page: exported, dpi: exported === null ? null : 150};
+    },
 };
+
+// NO `place_signature` TOOL, deliberately — and this comment is the
+// decision, not an oversight to be closed later.
+//
+// A signature is the one mark on a document whose entire meaning is "a
+// person did this". An agent placing it is a category error at any tier:
+// the confirmation dialog would be asking the owner to vouch for a mark
+// whose only content is their vouching. Nothing is gained by making it
+// reachable and refusable when it can simply be unreachable — rule 6a's
+// first test is "is it reachable from inside?", and the cheapest way to
+// answer no is not to build the door.
+//
+// (Preview's stamp is a PICTURE of a signature either way. See the
+// README: it carries no cryptography and proves nothing about who
+// placed it, which is the second reason not to let a model place one.)
 
 /// `page` from the wire -> a validated 0-based display index, or the
 /// error to return. `1.5` and `"abc"` must land HERE, not inside
 /// poppler as get_page(undefined) surfacing a marshalling error (#198).
+///
+/// The arithmetic moved to `lib/agent.js` so it can be tested without a
+/// document; this keeps the "is anything open" question, which needs
+/// `state`. `pageArg` also refuses `"2"` — a string that JSON.parse did
+/// not make a number is a caller sending something else's page number.
 function displayPageIndex(page) {
     if (state.kind !== 'document' || !state.doc)
         return {error: 'no document open'};
-    const p = page === undefined ? 1 : page;
-    if (!Number.isInteger(p) || p < 1 || p > state.pageOrder.length)
-        return {error: `page must be an integer 1..${state.pageOrder.length}`};
-    return {value: p - 1};
+    return pageArg(page, state.pageOrder.length);
 }
 
 function finiteOr(n, fallback) {

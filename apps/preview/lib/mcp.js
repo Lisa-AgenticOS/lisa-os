@@ -23,6 +23,10 @@ export class McpServer {
             read_document: async () => await handlers.readDocument(),
             add_note: async (args) => await handlers.addNote(args),
             highlight: async (args) => await handlers.highlight(args),
+            move_page: async (args) => await handlers.movePage(args),
+            rotate_page: async (args) => await handlers.rotatePage(args),
+            remove_page: async (args) => await handlers.removePage(args),
+            export_page: async (args) => await handlers.exportPage(args),
         };
         this._service = null;
         this._path = null;

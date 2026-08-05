@@ -90,25 +90,81 @@ Space starts it again.
 
 For documents the header grows three tools — **Note** (click places a
 sticky note, typed into a popover), **Highlight** and **Box** (drag a
-marquee) — plus a pages sidebar (thumbnails with move-up/down/remove)
-and undo/save. `lib/annotate.js` owns the two coordinate spaces
-(poppler renders top-down, annotation rects are bottom-up PDF native;
-`annotRect` is the only crossing and it is tested), `lib/reorder.js`
-owns the order arithmetic and the qpdf page spec.
+marquee) — plus a pages sidebar (thumbnails with
+move-up/down/**rotate**/remove) and undo/save. `lib/annotate.js` owns
+the two coordinate spaces (poppler renders top-down, annotation rects
+are bottom-up PDF native; `annotRect` is the only crossing and it is
+tested), `lib/reorder.js` owns the order arithmetic, the per-page
+rotation map and the qpdf arguments.
 
 Highlights are real PDF text-markup annotations — quadrilaterals built
 across the GJS boxed-struct boundary, verified working on the device —
 with a square-outline fallback if that marshalling ever breaks. Saving
 writes an "(edited)" copy next to the original, never over it; a
-changed page order is applied by **qpdf** at save (poppler-glib cannot
-reorder or delete pages), staged through a temp file. The saved copy is
-then opened, so the window's state is clean and the result is on
-screen.
+changed page order **and any page rotation** are applied by **qpdf** at
+save (poppler-glib cannot reorder, delete or re-rotate pages), staged
+through a temp file. The saved copy is then opened, so the window's
+state is clean and the result is on screen.
 
-The agent can annotate too: `add_note` and `highlight` are write-tier
-tools (top-down page points, 1-based display page). There is
-deliberately no save tool — annotations land in the window and the
-human decides with Ctrl+S whether they reach disk.
+**Removing a page asks first.** It is the one page operation with no
+inverse in the window — Ctrl+Z undoes annotations and nothing else — and
+the trash button sits one icon from "move down". The dialog also says
+the thing people need to hear to accept it: the original on disk is
+never touched; only the copy Save writes is shorter.
+
+**Rotation is per page and keyed by the ORIGINAL page index**, so a
+rotation travels with its page when the page is moved. It is a view
+transform until Save, which is why `pageAngle()` composes it with the
+transient R-key rotation rather than leaving it for qpdf — a rotate
+button that shows nothing until you save is a button people press twice.
+
+The qpdf argument order is the trap, and it was measured rather than
+assumed (device, 2026-08-05):
+
+```
+$ qpdf in.pdf --pages . 3,1-2 -- --rotate=+90:1 out.pdf
+   out page 1 is INPUT page 3 — and it is the rotated one (600x400)
+```
+
+`--rotate` counts **output** positions, after `--pages` has reordered.
+Read the other way, every rotation lands on the wrong page the moment a
+page also moves, and nothing says so. `qpdfRotateArgs` emits output
+positions and the test that pins this names it.
+
+### The agent surface (ADR-0049)
+
+Every editing capability above is a tool, not just a button:
+
+| Tool | Tier | Notes |
+|---|---|---|
+| `read_document` | read | text of the visible page, or image metadata |
+| `add_note` | write | sticky note at top-down page points |
+| `highlight` | write | rectangle markup |
+| `move_page` | write | reversible — move it back |
+| `rotate_page` | write | reversible — three more turns |
+| `remove_page` | **destructive** | no inverse in the window |
+| `export_page` | write | writes a file; **never overwrites** |
+
+Tiers are claims the bus checks, not app goodwill. `remove_page` is
+declared destructive because of what the CALLER can undo, not because of
+what happens to the filesystem — the original is untouched either way.
+Declaring it honestly also agrees with agentd's `Tier::implied_floor`,
+which reads the verb `remove` and raises any lower tier by itself (#56);
+a manifest that has to be corrected by the floor is one that tried.
+
+`export_page` is the only Preview tool that writes a file, so it is the
+only one whose path the guard gets to judge — scope, ownership and the
+owner's protected folders are decided in `libs/lisa-guard` before the
+call arrives (rule 6a). What Preview decides is the part only Preview
+knows: **it never overwrites.** A write-tier tool that can clobber a
+file is a tier that lies, and the fix is to make the tool unable to do
+it rather than to raise the tier — declining to offer beats asking
+permission to destroy. `lib/agent.js` holds those refusals, pure and
+tested.
+
+There is deliberately **no save tool** — annotations land in the window
+and the human decides with Ctrl+S whether they reach disk — and
+deliberately **no `place_signature` tool**; see below.
 
 ### Text, HTML, and the card (the peek slice)
 
@@ -167,13 +223,41 @@ signature in place. `lib/signature.js` owns the stroke arithmetic
 (empty-canvas saves are no-ops; a degenerate scrawl cannot become a
 page-sized stamp).
 
+> **This is a picture of a signature, and nothing more.** It is **not**
+> a digital signature. There is no certificate, no key, no hash over the
+> document and no cryptography of any kind. It certifies nothing, it
+> proves nothing about who placed it, anyone with a PDF editor can lift
+> it out or paste it onto another document, and a reader that verifies
+> signatures will correctly report the file as **unsigned**. Preview
+> will not gain real signing by adding a checkbox — that needs a key, a
+> trust store and a policy about where the key lives, none of which
+> exist here.
+>
+> The Sign popover says all of this on its face rather than leaving it
+> to this file, because the person who needs to read it is the one about
+> to click the button, and they will never open a README.
+
+**There is no `place_signature` tool, deliberately.** A signature is the
+one mark on a document whose entire meaning is "a person did this", so
+an agent placing it is a category error at any tier: the confirmation
+would be asking the owner to vouch for a mark whose only content is
+their vouching. Rule 6a's first test is *is it reachable from inside?*
+— and the cheapest way to answer no is not to build the door. The
+absence is a decision with a comment on it in `lisa-preview.js`, not an
+omission waiting to be closed.
+
 ### Keys
 
 `+` `-` zoom · `0` fit (fills, even for small content) · `1` actual
-size · `R` rotate · `←` `→` page (or file, for images) · `[` `]`
-previous/next file · `N` note · `H` highlight · `B` box · `P` pages ·
+size · `R` rotate the VIEW (transient, not saved) · `←` `→` page (or
+file, for images) · `[` `]` previous/next file · `N` note ·
+`H` highlight · `B` box · `P` pages · `Ctrl+E` export ·
 `Ctrl+S` save edited copy · `Ctrl+Z` undo annotation ·
 `Ctrl+O` open · `Ctrl+W` close
+
+Per-page **rotate** and **remove** live in the pages sidebar (`P`), not
+on the keyboard: they are document edits, and `R` is a view control that
+saves nothing. Remove asks first.
 
 `Space` depends on how the window opened — Quick Look manners: a
 window Space opened is CLOSED by Space (and Escape), the full toggle;
@@ -196,6 +280,36 @@ in `lib/mcp.js`, declare it in `app.lisaos.Preview.json` with its tier.
 The manifest is the catalog — agentd's `ListTools` reads it; there is no
 `tools/list` over the wire (checked: nothing in the repo serves one).
 
+Put the *argument validation* in `lib/agent.js`, not in the handler.
+Everything there is pure and tested without a document, which is the
+only way the refusals get a mutation test — and the refusals are the
+part that matters. Ask two questions before choosing a tier: **can the
+caller undo it?** (no ⇒ destructive, whatever it does to the
+filesystem), and **could it destroy something that already exists?**
+(if yes, prefer making the tool unable to rather than raising the tier;
+see `exportTarget`).
+
+Add an image format: extend `IMAGE_EXTENSIONS` in `lib/formats.js` (see
+below). Add an *export* format: extend `EXPORT_FORMATS` in
+`lib/export.js` — the menu and the `export_page` tool both intersect it
+with `availableFormats()`, so a format the machine cannot write is
+never offered to a person or to a model.
+
+The smallest real example, end to end — reorder a page, rotate it, and
+watch what qpdf is handed (this is the vector `saveEdited` builds):
+
+```js
+import {movePage, qpdfPageSpec, rotatePageBy, qpdfRotateArgs}
+    from './lib/reorder.js';
+
+let order = movePage([0, 1, 2, 3], 3, 0);        // [3, 0, 1, 2]
+let rots  = rotatePageBy({}, 3, 90);             // rotate ORIGINAL page 3
+
+['qpdf', 'in.pdf', '--pages', '.', qpdfPageSpec(order), '--',
+    ...qpdfRotateArgs(order, rots), 'out.pdf'];
+// -> qpdf in.pdf --pages . 4,1-3 -- --rotate=+90:1 out.pdf
+```
+
 Add a format: extend `IMAGE_EXTENSIONS` in `lib/formats.js`. The MIME
 list and the `.desktop` regenerate from it. Verify the loader is
 actually present by asking `GdkPixbuf.Pixbuf.get_formats()`, never by
@@ -205,18 +319,40 @@ payloader while no opus *decoder* existed (#146).
 
 ## Limits
 
-- **Editing is annotation + page order, not more.** No export or format
-  conversion, no signatures, no image annotation (PDFs only), no
-  free-text or ink tools — that is slice 3. Highlight marks the dragged
-  RECTANGLE; it does not snap to text runs the way selecting text and
-  highlighting would.
-- **Page reordering needs qpdf at runtime** (in the image package set
-  from the slice-2 release onward). Without it, reorder saves refuse
-  with the tool named; annotation saves work regardless.
+- **Editing is annotation, page order and export — not a PDF editor.**
+  No image annotation (PDFs only), no free-text or ink tools, no page
+  INSERTION or merging two documents, no editing existing text.
+  Highlight marks the dragged RECTANGLE; it does not snap to text runs
+  the way selecting text and highlighting would.
+- **The signature is an image, not a signature.** No certificate, no
+  key, no cryptography; a verifying reader reports the file as unsigned.
+  See the Export and signatures section — this is stated on the Sign
+  popover too, and Preview will not gain real signing without a key and
+  a trust store, neither of which exists here.
+- **Export is to raster images only.** PNG/JPEG/WebP/AVIF/TIFF, and only
+  those the machine's own pixbuf writers claim. There is no PDF→text,
+  PDF→Office, or image→PDF direction: nothing in the image ships a
+  backend for those that we checked and verified, and inventing a
+  dependency to close the gap is exactly what rule 7a and #45 refuse.
+  A page rasterizes at 150 dpi and stops being text — if you need the
+  text, `read_document` returns it.
+- **Page reordering and rotation need qpdf at runtime** (in the image
+  package set from the slice-2 release onward; qpdf 12.3.2 on the
+  reference device). Without it those saves refuse with the tool named;
+  annotation-only saves work regardless.
 - **Reorder UI is buttons, not drag.** Thumbnail drag-and-drop is a
-  follow-up; move-up/move-down/remove do the same job today.
-- **Annotating resets rotation.** A rotated view would need a third
-  coordinate mapping; picking a tool while rotated snaps back to 0°.
+  follow-up; move-up/move-down/rotate/remove do the same job today.
+- **Annotating resets the VIEW rotation, and refuses on a page with a
+  PENDING rotation.** `annotRect` computes every mark in the page's own
+  unrotated box, so a mark placed on a page drawn at 90° would land a
+  quarter turn away from the click — silently. The R-key rotation is
+  transient and snaps back to 0° when a tool is picked; a page rotation
+  is an edit and cannot be snapped away, so annotation on that page is
+  refused (UI toast and tool error alike) until the copy is saved and
+  reopened, at which point the rotation is baked into the page.
+- **A removed page cannot be undone in the window.** Ctrl+Z is
+  annotations only. That is why removal — button and tool — is the one
+  operation behind a confirmation.
 - **No OCR and no vision model.** `read_document` returns PDF text and
   image *metadata*; for an image its `text` is `null` with a note
   saying why, rather than an empty string that reads as "this image
