@@ -172,18 +172,26 @@ code.
 
 Stated because a workflow that pretends otherwise wastes a turn:
 
-- **`lisa forge` cannot forge a Lisa app today (#243).** It writes a
-  `pubspec.yaml` and selects `Verifier::Dart`, which reports "the project
-  contains no Dart source files yet" and can never converge on
-  JavaScript. `lisa dev check` is the arm that will close that loop and
-  it does not exist. Do not reach for `lisa forge` here.
-- **The loop cannot run a GJS test suite.** `run_tests` only knows
-  `pubspec.yaml` and `Cargo.toml` (`libs/forge-harness/src/tools.rs:351`)
-  and answers "no recognized test setup" for an app directory.
-  `run_command` is limited to `ALLOWED_COMMANDS`
-  (`libs/lisa-guard/src/command.rs:32`), which has no `node`, `gjs` or
-  `just`. The only in-loop route is `run_shell`, and it asks a human
-  every time by design. Say what you want run and why.
+- **Verify with `run_command lisa dev check <dir>`.** It is the single
+  authority on what a valid Lisa app is (ADR-0050 §4): sources present,
+  no top-level `await` in an entry module, and the manifest parsed by
+  **agentd's own** parser rather than a second grammar. `lisa forge`
+  runs the same verb as its verifier, so passing it means the same thing
+  in both places. It does not run the app and makes no JS syntax claim —
+  a checker that executed model-authored code would hand the loop the
+  escape the jail exists to prevent.
+- **`run_tests` runs a GJS suite.** A `tests/*.test.js` tree is spawned
+  with `gjs -m` (or `node --test`), the same shape `just shell-test`
+  uses. Write the suite first and let it fail — a suite that has never
+  been red proves nothing.
+- **What `run_command` will refuse, so you do not spend a turn on it.**
+  `gjs`/`node` may run a FILE and never an argument: every eval and
+  preload flag (`-c`, `--eval`, `-p`, `-r`, `-I`) is refused, and so is
+  executing a file that belongs to the system. On `lisa`, only the
+  read-only verbs are allowed — `dev check`, `tools`, `skills
+  list|show`. Anything that stages, installs, syncs or updates is
+  refused by name. `run_shell` asks a human every time, by design; say
+  what you want run and why.
 - **The file tools exist only when a working folder was granted.** With
   no workspace there is no `write_file` at all.
 - **Nothing here reaches a device.** The socket, the manifest and the

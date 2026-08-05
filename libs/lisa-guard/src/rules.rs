@@ -52,6 +52,7 @@ pub(crate) fn scan(inv: &Invocation) -> Verdict {
         network_egress,
         version_control,
         runtime_evaluates_a_string,
+        lisa_verb_that_changes_the_machine,
     ] {
         verdict = verdict.worst(rule(inv));
         // Deny is terminal; nothing later can make the answer worse and
@@ -73,6 +74,60 @@ fn privilege_escalation(inv: &Invocation) -> Verdict {
         );
     }
     Verdict::Allow
+}
+
+/// `lisa` is the machine's command centre; the loop gets the read-only
+/// half.
+///
+/// CLAUDE.md rule 7 puts every user-facing verb under `lisa <verb>`, so
+/// allowing the program wholesale would hand an unattended loop
+/// `lisa update`, `lisa apps update`, `lisa install <disk>` and
+/// `lisa guard allow` in one go. The last of those is the sharpest: a
+/// loop that can relax its own guard is not guarded, which is ADR-0029's
+/// first test.
+///
+/// So the allowance is an ALLOWLIST of verbs, not a denylist of
+/// dangerous ones. A denylist would silently admit every verb added
+/// after it was written — and `lisa` grows a verb most weeks.
+fn lisa_verb_that_changes_the_machine(inv: &Invocation) -> Verdict {
+    if inv.program != "lisa" {
+        return Verdict::Allow;
+    }
+    // Read-only, and each earns its place: `dev check` is the single
+    // authority on what a valid Lisa app is (ADR-0050 §4) — the loop
+    // cannot check its own work without it; `tools` and `skills list`
+    // are how it discovers what a manifest has to line up with.
+    const READ_ONLY: &[&[&str]] = &[
+        &["dev", "check"],
+        &["tools"],
+        &["skills", "list"],
+        &["skills", "show"],
+    ];
+    let verbs: Vec<&str> = inv
+        .args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    let permitted = READ_ONLY
+        .iter()
+        .any(|allowed| verbs.len() >= allowed.len() && &verbs[..allowed.len()] == *allowed);
+    if permitted {
+        return Verdict::Allow;
+    }
+    let attempted = if verbs.is_empty() {
+        "lisa".to_string()
+    } else {
+        format!("lisa {}", verbs.join(" "))
+    };
+    Verdict::deny(
+        "lisa.write_verb",
+        format!(
+            "`{attempted}` is not one of the read-only verbs a loop may run \
+             (dev check, tools, skills list|show). Everything else on `lisa` \
+             changes the machine."
+        ),
+    )
 }
 
 /// A language runtime handed a STRING is a shell with a different name.

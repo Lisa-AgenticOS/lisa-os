@@ -21,6 +21,43 @@ use serde_json::json;
 /// system or a whole home, writing raw devices, escalating privilege,
 /// erasing the record, or handing the model a shell.
 const MUST_DENY: &[(&str, &str)] = &[
+    // --- `lisa` is the machine's own command centre (CLAUDE.md rule 7),
+    // so the loop gets exactly the read-only verbs it needs to check its
+    // own work and nothing else. Every subcommand that stages, installs,
+    // syncs, sends or updates is refused HERE rather than trusted to
+    // behave, because "the agent can run lisa" is one word away from
+    // "the agent can run lisa update".
+    ("lisa update", "stages a system update"),
+    ("lisa update --reboot", "…and reboots into it"),
+    (
+        "lisa apps update",
+        "rewrites what every app on the machine is",
+    ),
+    ("lisa apps rollback", "same, backwards"),
+    ("lisa mail sync", "reaches the network as the owner"),
+    ("lisa mail setup", "rewrites the sync config"),
+    ("lisa install /dev/sda", "writes an OS onto a disk"),
+    ("lisa models pull qwen3", "downloads and installs a model"),
+    (
+        "lisa guard allow exec.shell",
+        "the loop relaxing its own guard is the whole thing #253 refuses",
+    ),
+    ("lisa forge --setup", "fetches and installs a toolchain"),
+    // The reason the match is on the VERB PAIR and not the first word.
+    // Neither of these exists today — `dev` has only `check`, `skills`
+    // has only `list`/`show` — and that is the point: an allowlist has
+    // to refuse the verb somebody adds next week without anyone
+    // remembering to come back here. ADR-0050 names `lisa dev new` as
+    // deliberately unbuilt; the day it lands it must not be admitted by
+    // a rule that only ever looked at `dev`.
+    (
+        "lisa dev new my-app",
+        "a scaffold verb under an allowed first word",
+    ),
+    (
+        "lisa skills install ./evil",
+        "a write verb under an allowed first word",
+    ),
     // --- A language runtime is a shell if you let it evaluate a string
     // (#269). The Forge writes GJS apps and must be able to RUN one; it
     // must never be able to run an argument. `gjs -c '<anything>'` is
@@ -417,6 +454,15 @@ const MUST_ASK: &[(&str, &str)] = &[
 const MUST_ALLOW: &[&str] = &[
     // The whole point of #269: the Forge can run the app it just wrote,
     // and its test suite, from inside the jail.
+    //
+    // …and the verbs that let it CHECK its own work. `dev check` is the
+    // single authority on what a valid Lisa app is (ADR-0050 §4), and
+    // the read-only halves of `tools`/`skills` are how it discovers what
+    // a manifest must line up with.
+    "lisa dev check",
+    "lisa dev check apps/notes",
+    "lisa tools",
+    "lisa skills list",
     "gjs -m app.js",
     "gjs app.js",
     "node tests/run.js",

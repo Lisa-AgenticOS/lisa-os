@@ -35,8 +35,12 @@ pub const ALLOWED_COMMANDS: &[&str] = &[
     // allowed to run a FILE and never an argument — `rules.rs`'s
     // `runtime_evaluates_a_string` refuses every eval and preload flag,
     // at both doors.
-    "gjs", "node", "dart", "flutter", "cargo", "ls", "cat", "grep", "find", "echo", "pwd", "mkdir",
-    "touch",
+    // `lisa`: the read-only verbs only. `rules.rs`'s
+    // `lisa_verb_that_changes_the_machine` is an ALLOWLIST of verbs, so
+    // a verb added next week is refused until somebody decides it is
+    // safe — the opposite of a denylist, which admits every new one.
+    "lisa", "gjs", "node", "dart", "flutter", "cargo", "ls", "cat", "grep", "find", "echo", "pwd",
+    "mkdir", "touch",
 ];
 
 /// What one allowlisted program is allowed to do with its own arguments.
@@ -145,6 +149,14 @@ fn policy_for(program: &str) -> ProgramPolicy {
         // make it evaluate a string, or preload a module before the
         // entry point, is refused here AND by `runtime_evaluates_a_string`
         // — two doors, one answer (#269).
+        "lisa" => ProgramPolicy {
+            // The verb allowlist proper lives in `rules.rs` (two doors,
+            // one answer). This stops `lisa <anything>` resolving to a
+            // `lisa-<anything>` helper on PATH, the same trap the cargo
+            // policy exists for.
+            subcommands: &["dev", "tools", "skills"],
+            ..DEFAULT_POLICY
+        },
         "gjs" => ProgramPolicy {
             denied_flags: &["-c", "--command", "-I", "--include-path"],
             ..DEFAULT_POLICY
