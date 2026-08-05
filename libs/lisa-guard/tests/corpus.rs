@@ -810,6 +810,59 @@ const BUS_MUST_REFUSE: &[BusCase] = &[
         || json!({"into": "#totp", "value": "123456"}),
         "a one-time code is a credential too",
     ),
+    // 8 — reading a stored credential (#260). The other half of 7:
+    // `fill.password_field` stops an agent PUTTING a password into a
+    // page, and this stops one TAKING a password out of the store. It
+    // is the half that scales, because Surfer's autofill is backed by
+    // the system keyring — and a keyring the bus can query is a keyring
+    // every app on the bus can query.
+    //
+    // Class::Read on most of these on purpose: a read IS the damage.
+    // Exfiltration needs no write, so a rule that only fired on
+    // mutating calls would refuse `delete_password` and hand over
+    // `get_password`.
+    (
+        "read_password",
+        Class::Read,
+        || json!({"origin": "https://bank.example"}),
+        "the tool Surfer deliberately does not have — from any other app",
+    ),
+    (
+        "list_passwords",
+        Class::Read,
+        || json!({}),
+        "an enumeration is a credential search with no arguments to inspect",
+    ),
+    (
+        "search_credentials",
+        Class::Read,
+        || json!({"query": "bank"}),
+        "the same, wearing a search box",
+    ),
+    (
+        "lookup",
+        Class::Read,
+        || json!({"keyring": "login", "attribute": "origin"}),
+        "an innocuous name over a keyring argument",
+    ),
+    (
+        "fetch_item",
+        Class::Read,
+        || json!({"secret_id": "42"}),
+        "the key is the tell, not the tool name",
+    ),
+    (
+        "note_add",
+        Class::Write,
+        || json!({"title": "backup", "passphrase": "hunter2"}),
+        "a passphrase arriving as an argument key, whatever the tool claims to be",
+    ),
+    (
+        "sync_totp",
+        Class::Write,
+        || json!({"account": "ada"}),
+        "one-time codes are stored credentials too",
+    ),
 ];
 
 /// Out of bounds for the current grant — refused, but not forever: a

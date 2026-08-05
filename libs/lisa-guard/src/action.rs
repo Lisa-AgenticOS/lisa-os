@@ -308,6 +308,10 @@ pub const BUS_RULES: &[(&str, &str)] = &[
         "typing into a credential field; no agent workflow needs this (#260)",
     ),
     (
+        "secret.read",
+        "a call that would read a stored credential out of the keyring (#260)",
+    ),
+    (
         "disk.raw_write",
         "a call whose target is a raw block device",
     ),
@@ -359,6 +363,13 @@ pub const HARD_NO_RULES: &[&str] = &[
     "exec.shell",
     "escalate.privilege",
     "fill.password_field",
+    // The other half of #260. `fill.password_field` stops an agent
+    // PUTTING a credential into a page; this stops one TAKING a
+    // credential out of the store. Surfer holds the same line by having
+    // no such tool, but an absence is not a guardrail (CLAUDE.md 6a) —
+    // and the store is the system keyring, so the tool that reads it
+    // could arrive from any app on the bus, not only from the browser.
+    "secret.read",
     "disk.raw_write",
     "rm.system_path",
     "audit.erase",
@@ -387,7 +398,12 @@ pub fn judge(action: &Action, grant: &Grant) -> ActionVerdict {
     let mut worst = ActionVerdict::Allow;
 
     // --- HARD NO by what the call IS. No target needed. ---
-    for rule in [hands_over_a_shell, escalates_privilege, fills_a_credential] {
+    for rule in [
+        hands_over_a_shell,
+        escalates_privilege,
+        fills_a_credential,
+        reads_a_credential,
+    ] {
         if let Some(v) = rule(action) {
             return v;
         }
@@ -670,6 +686,63 @@ fn fills_a_credential(action: &Action) -> Option<ActionVerdict> {
         reason: format!(
             "`{}` is aimed at a credential field. Nothing an agent legitimately \
              does involves typing a password — sign in yourself",
+            action.tool
+        ),
+    })
+}
+
+/// **Category 8: reading a stored credential (#260).**
+///
+/// `fills_a_credential` above stops an agent PUTTING a password into a
+/// page. This stops one TAKING a password out of the store, which is the
+/// half that scales: a browser autofill backed by the system keyring
+/// only stays safe while nothing on the bus can ask the keyring
+/// anything.
+///
+/// Surfer holds the same line locally by having no such tool
+/// (`assertNoCredentialTools` in `apps/surfer/lib/passwords.js` refuses
+/// to start a socket that serves one). That is a check inside one app.
+/// This is the same refusal at the boundary every app crosses, so the
+/// tool cannot arrive from somewhere nobody was watching — a notes app
+/// with a `get_secret` helper is the same damage with a friendlier
+/// label, which is exactly the argument `hands_over_a_shell` makes about
+/// `tidy_up`.
+///
+/// Decided from the tool's own NAME and from the argument KEYS, for
+/// every class including Read — a read IS the damage here; exfiltration
+/// needs no write. Deliberately not from string VALUES: a note whose
+/// body mentions a password is prose, and refusing it would be the
+/// over-refusal the shell corpus learned about in round 3.
+fn reads_a_credential(action: &Action) -> Option<ActionVerdict> {
+    /// Words that mean "stored credential". `login` is deliberately
+    /// absent — `login_url` and `last_login` are ordinary fields, and a
+    /// tool called `login` performs a sign-in rather than reading one.
+    /// `key` is absent for the same reason: `api_key`, `sort_key`,
+    /// `key_binding`. What is left is unambiguous.
+    const SECRET_WORDS: &[&str] = &[
+        "password",
+        "passwords",
+        "passwd",
+        "passphrase",
+        "keyring",
+        "keychain",
+        "credential",
+        "credentials",
+        "secret",
+        "secrets",
+        "totp",
+    ];
+    let named = words(action.tool)
+        .iter()
+        .any(|w| SECRET_WORDS.contains(&w.as_str()));
+    let keyed = keys_of(action.args)
+        .iter()
+        .any(|k| words(k).iter().any(|w| SECRET_WORDS.contains(&w.as_str())));
+    (named || keyed).then(|| ActionVerdict::HardNo {
+        rule: "secret.read",
+        reason: format!(
+            "`{}` would read a stored credential. The keyring is not the agent's \
+             to open — no tier, no grant and no dialog makes it so",
             action.tool
         ),
     })

@@ -4,6 +4,7 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {APP_ID, handleRequest} from './mcp-protocol.js';
+import {assertNoCredentialTools} from './passwords.js';
 
 function socketDir() {
     const rt = GLib.getenv('XDG_RUNTIME_DIR');
@@ -39,6 +40,13 @@ export class McpServer {
                 return {path, url: shot.url};
             },
         };
+        // #260 rule 3: the keyring is not readable through any agent
+        // tool. Held by a check rather than by the fact that nobody
+        // added one — an absence is not a guardrail (CLAUDE.md 6a). The
+        // allowlist and the rule live in lib/passwords.js and are
+        // tested there; this is where a violation becomes a browser
+        // that will not start instead of a tool that quietly ships.
+        assertNoCredentialTools(Object.keys(this._tools));
         this._service = null;
         this._path = null;
     }

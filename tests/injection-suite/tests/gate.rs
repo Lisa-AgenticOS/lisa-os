@@ -313,8 +313,9 @@ fn the_consent_surface_can_still_release_a_corpus_call() {
 #[test]
 fn corpus_covers_every_payload_vector_and_target() {
     let attempts = corpus();
-    // 40 payloads × 5 vectors × 4 targets = 800.
-    assert_eq!(attempts.len(), 800);
+    // 44 payloads × 5 vectors × 5 targets = 1100 (#260 added the
+    // credential payloads and Surfer's `fill`).
+    assert_eq!(attempts.len(), 1100);
     // The §5.10 acceptance bar: a hostile string yields 0 unconfirmed
     // privileged calls across 500+ seeded attempts. Guard the floor so
     // the payload bank can't silently shrink back under it.

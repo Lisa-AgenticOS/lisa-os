@@ -20,10 +20,12 @@ loop today (see Limits).
 It is also an ordinary browser, which it has to be to be the only one
 on the image: tabs in a sidebar, **downloads** with a progress list and
 a conflict dialog, **find in page** (Ctrl+F), **history** (Ctrl+H) that
-is searchable and deletable, **bookmarks** (Ctrl+D), **session restore**
+is searchable and deletable, **bookmarks** (Ctrl+D), **saved passwords**
+(Ctrl+Shift+P) backed by the system keyring, **session restore**
 that can be switched off, **zoom** (Ctrl +/-/0) and **print** (Ctrl+P).
 All of it is per profile: `lib/store.js` is the only place a profile
-name becomes a path.
+name becomes a path — and the keyring rows carry the profile as a key
+attribute, so the agent profile has no credentials at all.
 
 ### Keys
 
@@ -34,6 +36,7 @@ name becomes a path.
 | Ctrl+F, Ctrl+G, Ctrl+Shift+G | find in page, next match, previous |
 | Ctrl+D | bookmark this page (and un-bookmark it) |
 | Ctrl+H, Ctrl+Shift+O, Ctrl+J | history, bookmarks, downloads |
+| Ctrl+Shift+P | saved passwords — view, search, forget |
 | Ctrl+plus / Ctrl+minus / Ctrl+0 | zoom, per tab |
 | Ctrl+P | print |
 
@@ -107,6 +110,37 @@ name becomes a path.
   default and only an exact `false` turns it off, so a half-written
   settings file cannot silently disable it; turning it off **deletes the
   snapshot** rather than merely declining to read it.
+- `lib/causation.js` — **did an agent cause this?** One question, asked
+  by more than one feature, so `agentDriven` lives once. Downloads asked
+  it first (a view is stamped whenever an agent-driven action touches
+  it, and the stamp is inherited by popups); passwords ask exactly the
+  same thing about a form submission and an autofill. `downloads.js`
+  re-exports it under the name it already had.
+- `lib/credentials.js` — **is this a credential field?** (#260, and the
+  shape #212 left behind.) The `fill` tool is refused outright — rule id
+  `fill.password_field`, the same id `lisa_guard::BUS_RULES` emits for
+  the lexical case, because a person reading the Ledger should see one
+  rule and not two spellings of it. Three properties, and losing any one
+  loses the guarantee: the check runs **in the agent world** (in the
+  page's own world a page redefines `getComputedStyle` and the answer is
+  the page's); it runs **in the same synchronous turn as the fill**,
+  spliced into the script rather than in front of it, so there is no gap
+  in which the page can swap the element (the ADR-0033 shape
+  `lib/target.js` exists for); and the detector the page runs is
+  `isCredentialField.toString()`, the exact function the tests exercise,
+  asserted by `tests/credentials.test.js` so a re-implementation inside
+  a template string goes red. What it catches and what it does not is
+  under Limits, in detail, because that list is the feature.
+- `lib/passwords.js` — the keyring surface: origins, entries, the save
+  decision, the autofill verdict, and the check that no Agent Bus tool
+  can reach a credential. **The store is `org.freedesktop.secrets`** —
+  the system keyring, locked with the login keyring — and Surfer keeps
+  no credential file of its own (#259). An entry is keyed by ORIGIN
+  (scheme, host, non-default port), never by path, never by hostname
+  suffix, and never including userinfo: `https://bank.example@evil.test/`
+  is the oldest trick in the file and `originOf` answers
+  `https://evil.test`. Only `lisa-surfer.js` holds the `gi://Secret`
+  calls.
 - `lib/zoom.js` — the step list, because `level * 1.1` compounds until
   Ctrl+0 no longer lands exactly on 100%.
 
@@ -159,7 +193,16 @@ A new browser feature is a new `lib/*.js` with a matching
   and `tests/store.test.js` asserts no two profiles can ever collide.
 - **Something an agent could reach** needs the question asked out loud:
   can a page cause it, and can `navigate`/`click` cause it? The download
-  path is the worked example — see the agent boundary below.
+  path is the worked example — see the agent boundary below. The answer
+  to "can an agent cause it" is `agentDriven` in `lib/causation.js`, and
+  there is one of those on purpose: two timers with two skew rules is
+  two things to keep correct.
+- **Something that touches a credential** goes through
+  `lib/passwords.js`. Do not add a bus tool for it — `AGENT_TOOLS` is an
+  allowlist and `assertNoCredentialTools` stops the socket starting if
+  you do — and do not add a second way to ask "is this a credential
+  field": `lib/credentials.js` exports one function and the page runs
+  its `toString()`.
 - **A WebKit enum you copy into a pure module** needs a test naming the
   GIR it was copied from (`tests/find.test.js` does this), because a
   copy with no test is a copy that drifts.
@@ -218,6 +261,22 @@ A new browser feature is a new `lib/*.js` with a matching
   - `lib/actions.js` embeds selectors and values as JSON-escaped data,
     never as script. This was always right and was never the whole
     story: #212 was a layer beneath it.
+  - **`fill` is refused outright on a credential field** (`rule:
+    "fill.password_field"`, `lib/credentials.js`, #260). Not
+    confirm-tier — there is no legitimate agent workflow that involves
+    typing a password, and the check is in the fill script itself so
+    there is no unguarded path and no window to race. The Agent Bus
+    already refused the LEXICAL spelling (`selector: "#password"`);
+    this is the DOM one, which is the half #212 showed matters.
+  - **Autofill cannot be started by an agent** (`autofillVerdict`).
+    It needs a gesture on a Gtk widget in Surfer's own chrome — a
+    page's synthetic `click()` reaches a DOM node, and a DOM node is
+    not a Gtk.Button — AND no agent stamp in flight on the tab, AND a
+    profile that keeps credentials.
+  - **The keyring is not on the bus.** `assertNoCredentialTools` runs
+    while `lib/mcp.js` wires its tool table, so `read_password` is a
+    browser that fails to start; `secret.read` in the guard refuses the
+    category for every app.
 - **Sidebar tabs (#182 v1)**: vertical tab list in a collapsible left
   sidebar (Ctrl+S), Zen/Arc-shaped; active row carries violet-500.
   Structure and function are device-verified (app runs, journal clean,
@@ -253,11 +312,63 @@ A new browser feature is a new `lib/*.js` with a matching
   `running` download is written to disk as `interrupted`, so a transfer
   killed with the process does not come back as a progress bar for
   something that is not happening.
-- **Still not built**: passwords and form autofill (ADR-0037 leaves the
-  credential story explicitly undecided, and a rushed one is worse than
-  none), per-site zoom, reader mode, per-download destination choice, and
-  a profile switcher — `lib/profiles.js` and `lib/store.js` both key off
-  a profile name, but the window only ever uses `personal`.
+- **Saved passwords: what the credential-field check does NOT catch.**
+  Six rules fire, in order, and every one of them was watched refuse a
+  real field on the reference device (below). Renaming defeats only the
+  fourth. What defeats **all** of them:
+  - **A field that is a credential only in the page's JavaScript.** An
+    ordinary `type=text` box called `q`, unmasked, undeclared, not in a
+    form with a password field — whose `input` handler copies the value
+    into a hidden field and posts it as a password. Nothing in the DOM
+    marks it and nothing can. The bound on the damage is #260 rule 3:
+    the agent has no way to obtain the person's password, so the value
+    it types is one it chose, and a page learning a string the model
+    made up is not a credential leak.
+  - **A CLOSED shadow root.** `el.shadowRoot` is `null` for
+    `attachShadow({mode: 'closed'})`, so a custom element whose value
+    setter forwards to a password input inside is invisible to rule 6.
+    The open case is caught, and was measured.
+  - **A JS-implemented password box** — a `contenteditable`, or a canvas
+    that draws its own dots — with no `type`, no `autocomplete`, no
+    text-security and an innocent name.
+  - **A field whose `type` becomes `password` after the fill.** The
+    value is already there. Same bound as the first case.
+  And in the other direction, it deliberately **over-refuses**: any
+  field in a form that also holds a password is refused, so an agent
+  cannot fill the email box of a sign-up form, and a field genuinely
+  called `secret_santa` reads as a credential. Refusing a form fill
+  costs a retry; allowing a credential fill costs an account.
+- **Saved passwords: the rest of the limits.**
+  - **Only https, and loopback http, are offered a save.** A password
+    typed into an http page has already crossed the wire in the clear.
+  - **No import or export yet.** #260's Credential Exchange half is a
+    follow-up and is deliberately not half-built; "use Google Password
+    Manager if logged in" is not available at all — there is no public
+    desktop API to read it, and Credential Manager is Android 14+/iOS.
+  - **A locked keyring is reported, not worked around.** A lookup on a
+    locked login keyring returns null and the row says so.
+  - **A hostile page can make the save banner appear** by submitting a
+    form with a password field in it. It cannot make it say another
+    site's name (the origin comes from the view, not from the page's
+    message) and it cannot answer it. It is a nuisance, not a leak.
+  - **A page that submits a login form in a background tab** is
+    attributed by ORIGIN, not by "the tab in front of you": the
+    `script-message-received` signal carries no view, so
+    `agentStampForOrigin` takes the WORST agent stamp among the tabs at
+    that origin and fails closed — no tab there, no prompt.
+  - **The manage window can reveal a password**, on a press, one row at
+    a time. That is ADR-0029's second test answered: it sits between a
+    person and their own machine, not between the model and the machine.
+    The closed direction is the one that matters, and it is closed —
+    `assertNoCredentialTools` in `lib/passwords.js` runs while the
+    socket wires its handlers, so a tool called `read_password` is a
+    browser that will not start, and `secret.read` in
+    `libs/lisa-guard/src/action.rs` refuses the whole category at the
+    bus for every app, not only this one.
+- **Still not built**: Credential Exchange import/export, per-site zoom,
+  reader mode, per-download destination choice, and a profile switcher —
+  `lib/profiles.js` and `lib/store.js` both key off a profile name, but
+  the window only ever uses `personal`.
 - **History records `file:` URLs.** A person browsing their own machine
   is their business (ADR-0029), and the row can be deleted like any
   other — but it does mean local paths appear in `history.json`.
@@ -269,6 +380,29 @@ A new browser feature is a new `lib/*.js` with a matching
   not) and `set_zoom_level` with the app's own step list. That the
   *bar* appears when Ctrl+F is pressed is structure, not function, and
   the first seated session judges it.
+- **Passwords are device-verified as function and structure, not as
+  appearance.** GNOME 50 refuses remote screenshots, so the key button,
+  the popover and the save banner are judged by the first seated
+  session. What WAS measured on the reference machine (2026-08-06), with
+  `XDG_DATA_HOME=/tmp/surfer260/data` and
+  `LISA_SURFER_KEYRING_SCHEMA=app.lisaos.Surfer.LoginProbe` so nothing
+  touched the owner's own rows, and everything cleared afterwards:
+  - the keyring round trip through the app's own attribute shape —
+    `stored -> true`, `lookup -> s3cr3t`, one search row whose secret is
+    `null (not loaded)`, a near-miss origin `-> null`, the agent
+    profile's attributes `-> null`, `cleared -> true`,
+    `after clear -> null`, `rows left -> 0`;
+  - the credential check in a real WebView against a page that
+    redefines `JSON.stringify` and `document.querySelector` and hides a
+    password field six ways. All six refused with
+    `rule: "fill.password_field"`; the ordinary search box still
+    filled; every refused field's value stayed empty;
+  - the same four calls over the **real MCP socket**: `fill` at `#q` —
+    a selector naming nothing — refused because the element it resolved
+    to is `type=password`, `fill` at the form's username box refused,
+    `fill` at the search box filled;
+  - `register_script_message_handler(name, world)` and
+    `UserScript.new_for_world(...)` called, not read out of a GIR.
 - `tests/` cover the pure modules; the window itself is verified by
   eyes on hardware. **A unit test cannot prove world isolation** —
   `tests/world.test.js` pins the `world_name` argument, and the

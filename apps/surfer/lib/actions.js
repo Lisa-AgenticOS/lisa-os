@@ -13,6 +13,7 @@
 // script where an argument belongs.
 
 import {resolveInput} from './url.js';
+import {credentialGuardPreamble} from './credentials.js';
 
 /// The only schemes an AGENT may open. An allowlist, not a blocklist.
 ///
@@ -99,12 +100,27 @@ export function clickScript(selector) {
 /// (React et al.) read state from the events, not the attribute, and a
 /// fill that skips them "works" on plain HTML while silently doing
 /// nothing on half the real web.
+///
+/// **The credential check is INSIDE this script, not in front of it**
+/// (#260). Classifying the element in one `evaluate_javascript` call
+/// and filling it in a second leaves a gap in which the page can swap
+/// the element — the ADR-0033 shape, and the reason `lib/target.js`
+/// exists. Here the resolve, the classification and the write happen in
+/// one synchronous turn with no `await` between them, so no page script
+/// runs in the middle. The detector's source comes from
+/// `lib/credentials.js` (one copy, `tests/credentials.test.js` proves
+/// it is the same one), and there is deliberately no unguarded fill
+/// script for anything to call by mistake.
 export function fillScript(selector, value) {
     return `(() => {
+        ${credentialGuardPreamble()}
         try {
             const el = document.querySelector(${asLiteral(selector)});
             if (!el)
                 return JSON.stringify({filled: false, reason: 'no element matches'});
+            const why = isCredentialField(describeField(el));
+            if (why !== null)
+                return JSON.stringify(credentialRefusal(why));
             const v = ${asLiteral(value)};
             if (el.isContentEditable) {
                 el.textContent = v;

@@ -191,11 +191,6 @@ export function resolveConflict(choice, decision) {
 // The agent boundary
 // ---------------------------------------------------------------------
 
-/// How long after an agent touched a view a download is still that
-/// agent's fault. Generous on purpose: a redirect chain to an attachment
-/// takes longer than a click does.
-export const AGENT_DOWNLOAD_WINDOW_MS = 5000;
-
 /// Did an agent cause this download?
 ///
 /// Surfer exposes no `download` tool (see below), but `navigate` and
@@ -205,16 +200,14 @@ export const AGENT_DOWNLOAD_WINDOW_MS = 5000;
 /// whenever an agent-driven action touches it, and a download that
 /// starts inside the stamp's lifetime is cancelled.
 ///
-/// Fails CLOSED on a clock that went backwards: `now` before the stamp
-/// is not a reason to allow a write to disk.
-export function agentDriven({agentTouchedAt, now, windowMs = AGENT_DOWNLOAD_WINDOW_MS} = {}) {
-    if (typeof agentTouchedAt !== 'number' || !Number.isFinite(agentTouchedAt))
-        return false;
-    if (agentTouchedAt <= 0) return false;
-    if (typeof now !== 'number' || !Number.isFinite(now)) return true;
-    if (now < agentTouchedAt) return true;   // clock skew: fail closed
-    return now - agentTouchedAt < windowMs;
-}
+/// **The rule itself moved to `lib/causation.js` (#260)** and is
+/// re-exported here rather than copied: passwords need the identical
+/// question — was this submit, was this autofill, an agent's doing — and
+/// two timers with two skew rules is two things to keep correct. The
+/// download name stays because that is what the download code, its
+/// tests and the README all call it.
+export {agentDriven} from './causation.js';
+export {AGENT_ACTION_WINDOW_MS as AGENT_DOWNLOAD_WINDOW_MS} from './causation.js';
 
 // ---------------------------------------------------------------------
 // The list

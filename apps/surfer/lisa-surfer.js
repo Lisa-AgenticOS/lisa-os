@@ -30,7 +30,7 @@ import {
 import {EXTRACT_JS, pageResult} from './lib/extract.js';
 import {McpServer} from './lib/mcp.js';
 import {navigationTarget, clickScript, fillScript} from './lib/actions.js';
-import {evaluateInAgentWorld} from './lib/world.js';
+import {AGENT_WORLD, evaluateInAgentWorld} from './lib/world.js';
 import {pinTarget} from './lib/target.js';
 import {rowLabel} from './lib/tablist.js';
 import {suggestionsFor} from './lib/omnibox.js';
@@ -56,6 +56,27 @@ import {
 } from './lib/session.js';
 import {MAX_MATCH_COUNT, findOptions, matchLabel, searchable} from './lib/find.js';
 import {zoomIn, zoomLabel, zoomOut, zoomReset} from './lib/zoom.js';
+import {
+    KEYRING_SCHEMA, SUBMIT_HANDLER, autofillScript, autofillVerdict,
+    credentialsAllowed, entryLabel, keyringAttributes, matchesFor, originOf,
+    parseSubmission, saveDecision, searchEntries, sortEntries, submitObserverJs,
+} from './lib/passwords.js';
+
+/// libsecret, if this machine has it.
+///
+/// A hard `import` would make a browser that cannot start on a host
+/// with no Secret typelib — which is every non-GNOME host and the CI
+/// container. Passwords are a feature, not a precondition, so the
+/// import is asked for and the feature switches itself off when the
+/// answer is no. Verified present on the reference device:
+/// `/usr/lib/girepository-1.0/Secret-1.typelib`, with
+/// `org.freedesktop.secrets` owned by `gnome-keyring-d`.
+let Secret = null;
+try {
+    Secret = imports.gi.Secret;
+} catch {
+    Secret = null;
+}
 
 /// The Unix-signal half of GLib, which moved.
 ///
@@ -443,6 +464,208 @@ function launchUri(uri, what) {
 }
 
 // ---------------------------------------------------------------------
+// Saved passwords — the keyring half (#260)
+// ---------------------------------------------------------------------
+//
+// Every DECISION is in lib/passwords.js and lib/credentials.js and is
+// tested there; what is left here is libsecret, a popover and a banner.
+// The store is `org.freedesktop.secrets` — the system keyring, locked
+// with the login keyring — and Surfer keeps no credential file of its
+// own, which is #259's answer and #260's.
+
+/// The libsecret schema Surfer's entries carry. Built once: a schema is
+/// an identity, and two `Secret.Schema` objects with the same name and
+/// different attribute types are a lookup that silently matches nothing.
+let secretSchema = null;
+
+function keyringSchema() {
+    if (!Secret) return null;
+    if (secretSchema) return secretSchema;
+    const S = Secret.SchemaAttributeType.STRING;
+    secretSchema = new Secret.Schema(
+        // `LISA_SURFER_KEYRING_SCHEMA` exists for the same reason
+        // `LISA_SURFER_DOWNLOAD_DIR` does: the keyring path has to be
+        // exercisable on a real machine without touching the owner's
+        // actual credentials.
+        GLib.getenv('LISA_SURFER_KEYRING_SCHEMA') || KEYRING_SCHEMA,
+        Secret.SchemaFlags.NONE,
+        {origin: S, username: S, profile: S});
+    return secretSchema;
+}
+
+/// Whether this build can do passwords at all, said once.
+function keyringAvailable() {
+    return Secret !== null && credentialsAllowed(activeProfile);
+}
+
+/// Every entry for this profile, attributes only.
+///
+/// The SECRET is never in this list. `Secret.password_search_sync` with
+/// `LOAD_SECRETS` unset returns items whose attributes we can read and
+/// whose secret we cannot — which is what a list wants, because a list
+/// that carried secrets would put every saved password in a JS array
+/// for as long as the window is open.
+function keyringEntries() {
+    if (!keyringAvailable()) return [];
+    try {
+        const items = Secret.password_search_sync(
+            keyringSchema(), {profile: activeProfile},
+            Secret.SearchFlags.ALL, null);
+        return sortEntries((items ?? []).map(item => {
+            const attrs = item.get_attributes();
+            return {
+                origin: attrs.origin ?? '',
+                username: attrs.username ?? '',
+                profile: attrs.profile ?? '',
+            };
+        }).filter(e => e.origin !== ''));
+    } catch (e) {
+        logError(e, 'lisa-surfer: reading the keyring');
+        return [];
+    }
+}
+
+function keyringStore(entry, password) {
+    const attrs = keyringAttributes(entry);
+    if (!attrs || !keyringAvailable()) return false;
+    try {
+        return Secret.password_store_sync(
+            keyringSchema(), attrs, Secret.COLLECTION_DEFAULT,
+            `Surfer — ${entryLabel(attrs)}`, password, null);
+    } catch (e) {
+        logError(e, 'lisa-surfer: storing a password');
+        return false;
+    }
+}
+
+function keyringLookup(entry) {
+    const attrs = keyringAttributes(entry);
+    if (!attrs || !keyringAvailable()) return null;
+    try {
+        return Secret.password_lookup_sync(keyringSchema(), attrs, null);
+    } catch (e) {
+        logError(e, 'lisa-surfer: reading a password');
+        return null;
+    }
+}
+
+function keyringClear(entry) {
+    const attrs = keyringAttributes(entry);
+    if (!attrs || !keyringAvailable()) return false;
+    try {
+        return Secret.password_clear_sync(keyringSchema(), attrs, null);
+    } catch (e) {
+        logError(e, 'lisa-surfer: forgetting a password');
+        return false;
+    }
+}
+
+/// The shared content manager: the sign-in observer, and the world its
+/// report arrives in.
+///
+/// ONE per process, like the network sessions, because a per-view
+/// manager would mean a popup's sign-in went unnoticed — and a browser
+/// that offers to remember your password on the main window but not on
+/// the OAuth popup is one people stop believing.
+///
+/// The observer and the handler both live in the AGENT world
+/// (lib/world.js): `window.webkit.messageHandlers` does not exist in
+/// the page's own world, so a page cannot post a submission that never
+/// happened and make the save banner say another site's name.
+let contentManagerSingleton = null;
+
+function contentManager() {
+    if (contentManagerSingleton) return contentManagerSingleton;
+    const ucm = new WebKit.UserContentManager();
+    contentManagerSingleton = ucm;
+    if (!keyringAvailable()) return ucm;
+    try {
+        ucm.register_script_message_handler(SUBMIT_HANDLER, AGENT_WORLD);
+        ucm.connect(`script-message-received::${SUBMIT_HANDLER}`, (_m, value) => {
+            try {
+                handleCredentialSubmission(value?.to_string?.() ?? null);
+            } catch (e) {
+                logError(e, 'lisa-surfer: handling a sign-in');
+            }
+        });
+        ucm.add_script(WebKit.UserScript.new_for_world(
+            submitObserverJs(),
+            WebKit.UserContentInjectedFrames.ALL_FRAMES,
+            WebKit.UserScriptInjectionTime.START,
+            AGENT_WORLD, null, null));
+    } catch (e) {
+        logError(e, 'lisa-surfer: wiring the sign-in observer');
+    }
+    return ucm;
+}
+
+/// UI hooks, set by buildWindow — the same shape `onDownloadsChanged`
+/// uses, so this half of the file still has no idea what a ListBox is.
+let onPasswordsChanged = () => {};
+let showSaveBanner = () => {};
+
+/// The agent stamp that applies to a page at this origin.
+///
+/// `script-message-received` carries the value and NOT the view (the
+/// 6.0 signal is `(manager, JSCValue)`), so the causation has to be
+/// looked up rather than handed over — and looking it up is where a
+/// guess would creep in. It does not guess: it takes the WORST stamp
+/// among the tabs actually at that origin, and if no open tab is there
+/// it fails closed by answering "now", which `agentDriven` reads as
+/// agent-driven. A submission from a page we cannot locate is not a
+/// person signing in that we can vouch for.
+function agentStampForOrigin(origin) {
+    let stamp = 0;
+    let found = false;
+    for (const tab of openTabs()) {
+        if (originOf(tab.url) !== origin) continue;
+        found = true;
+        const at = tab.page.get_child()?._agentTouchedAt;
+        if (typeof at === 'number' && at > stamp) stamp = at;
+    }
+    return found ? stamp : Date.now();
+}
+
+/// The save banner's decision, from lib/passwords.js and nowhere else.
+function decideSave(raw) {
+    const submission = parseSubmission(raw);
+    if (!submission) return {action: 'none', reason: 'not a submission'};
+    const entries = keyringEntries();
+    const origin = originOf(submission.url);
+    const user = submission.username.trim();
+    const prior = entries.find(e => e.origin === origin && e.username === user);
+    return saveDecision({
+        url: submission.url,
+        username: submission.username,
+        password: submission.password,
+        existing: entries,
+        // Looked up only when a row already exists, so the ordinary case
+        // reads no secret at all.
+        existingPassword: prior ? keyringLookup(prior) : undefined,
+        profile: activeProfile,
+        // #260 rule 2's other half: a form an agent submitted is not a
+        // person signing in. Same stamp, same rule, same module as the
+        // download refusal (lib/causation.js).
+        agentTouchedAt: agentStampForOrigin(origin),
+        now: Date.now(),
+    });
+}
+
+/// A sign-in the observer noticed. Never saves anything by itself: the
+/// only thing that writes to the keyring is the person pressing Save on
+/// the banner `showSaveBanner` puts up.
+function handleCredentialSubmission(raw) {
+    const decision = decideSave(raw);
+    if (decision.action === 'none') {
+        if (decision.reason && decision.reason !== 'not a submission' &&
+            decision.reason !== 'this password is already saved')
+            log(`lisa-surfer: no save prompt — ${decision.reason}`);
+        return;
+    }
+    showSaveBanner(decision);
+}
+
+// ---------------------------------------------------------------------
 // History
 // ---------------------------------------------------------------------
 
@@ -612,7 +835,10 @@ function attachTab(view, focus = true) {
     view.connect('load-changed', (v, event) => {
         if (event !== WebKit.LoadEvent.FINISHED) return;
         recordVisit(v.get_uri() ?? '', v.title ?? '');
-        if (tabView.get_selected_page() === page) onBookmarksChanged();
+        if (tabView.get_selected_page() === page) {
+            onBookmarksChanged();
+            onPasswordsChanged();
+        }
     });
     view.connect('notify::title', () => {
         const uri = view.get_uri() ?? '';
@@ -635,6 +861,11 @@ function attachTab(view, focus = true) {
         const popup = new WebKit.WebView({
             related_view: opener,
             settings: viewSettings(),
+            // The SAME content manager as every other view: a sign-in
+            // in an OAuth popup is a sign-in, and a browser that offers
+            // to remember your password on the main window but not on
+            // the popup is one people stop believing (#260).
+            user_content_manager: contentManager(),
         });
         // The agent stamp is INHERITED. An agent `click` that opens a
         // popup which then answers with an attachment would otherwise be
@@ -659,6 +890,7 @@ function newTab(url = HOME, focus = true) {
     const view = attachTab(new WebKit.WebView({
         network_session: networkSession(),
         settings: viewSettings(),
+        user_content_manager: contentManager(),
     }), focus);
     if (url === START_URI) view.load_html(START_PAGE_HTML, START_URI);
     else if (url) view.load_uri(url);
@@ -956,6 +1188,107 @@ function showBookmarksWindow() {
     });
 }
 
+/// The manage surface: view, search, delete (#260).
+///
+/// Its own window rather than a row in `openLibraryWindow`, because a
+/// password row is not a history row: there is nothing to "open", and
+/// the reveal button is a thing only this list has.
+///
+/// Reveal is deliberate and is not a hole. ADR-0029's second test — is
+/// this aimed at the model or at the owner? — puts a person reading
+/// their own saved password on the owner's side of the line. What is
+/// closed is the OTHER direction: no tool on the bus can reach any of
+/// this (lib/passwords.js `assertNoCredentialTools`), and the secret is
+/// fetched per row, on a press, rather than being loaded into the list.
+function showPasswordsWindow() {
+    const listBox = new Gtk.ListBox({
+        selection_mode: Gtk.SelectionMode.NONE,
+        css_classes: ['boxed-list'],
+        margin_start: 12, margin_end: 12, margin_top: 12, margin_bottom: 12,
+    });
+    const search = new Gtk.SearchEntry({
+        hexpand: true, placeholder_text: 'Search saved passwords',
+        margin_start: 12, margin_end: 12, margin_top: 12,
+    });
+    const empty = new Gtk.Label({
+        label: Secret === null
+            ? 'This machine has no keyring (libsecret is not installed)'
+            : 'No saved passwords yet',
+        css_classes: ['dim-label'],
+        margin_top: 24, margin_bottom: 24,
+    });
+
+    const refresh = () => {
+        let child = listBox.get_first_child();
+        while (child) {
+            const next = child.get_next_sibling();
+            listBox.remove(child);
+            child = next;
+        }
+        const rows = searchEntries(keyringEntries(), search.get_text());
+        empty.set_visible(rows.length === 0);
+        for (const entry of rows) {
+            const label = new Gtk.Label({
+                label: entryLabel(entry), xalign: 0, hexpand: true, ellipsize: 3,
+            });
+            // Starts as dots and stays dots until asked. A list that
+            // renders secrets is a list nobody can open with somebody
+            // behind them.
+            const secret = new Gtk.Label({
+                label: '••••••••', xalign: 0, css_classes: ['dim-label'],
+                selectable: true, ellipsize: 3,
+            });
+            const text = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, hexpand: true});
+            text.append(label);
+            text.append(secret);
+            const reveal = new Gtk.Button({
+                label: 'Show', css_classes: ['flat'], valign: Gtk.Align.CENTER,
+            });
+            reveal.connect('clicked', () => {
+                const password = keyringLookup(entry);
+                secret.set_label(password === null ? 'the keyring is locked' : password);
+                reveal.set_sensitive(false);
+            });
+            const drop = Gtk.Button.new_from_icon_name('user-trash-symbolic');
+            drop.add_css_class('flat');
+            drop.set_valign(Gtk.Align.CENTER);
+            drop.set_tooltip_text('Forget this password');
+            drop.connect('clicked', () => {
+                keyringClear(entry);
+                onPasswordsChanged();
+                refresh();
+            });
+            const box = new Gtk.Box({
+                spacing: 8,
+                margin_start: 10, margin_end: 10, margin_top: 6, margin_bottom: 6,
+            });
+            box.append(text);
+            box.append(reveal);
+            box.append(drop);
+            listBox.append(new Gtk.ListBoxRow({child: box, activatable: false}));
+        }
+    };
+    search.connect('search-changed', refresh);
+
+    const content = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL});
+    content.append(search);
+    content.append(empty);
+    content.append(new Gtk.ScrolledWindow({child: listBox, vexpand: true}));
+    const view = new Adw.ToolbarView({content});
+    view.add_top_bar(new Adw.HeaderBar());
+    const window = new Adw.Window({
+        application: app, // the footgun at the top of this file
+        transient_for: win,
+        title: 'Passwords',
+        default_width: 720,
+        default_height: 560,
+        content: view,
+    });
+    refresh();
+    window.present();
+    return window;
+}
+
 function buildWindow() {
     win = new Adw.Window({
         application: app, // NOT optional — see the footgun note up top.
@@ -996,6 +1329,71 @@ function buildWindow() {
             ? 'Remove bookmark (Ctrl+D)'
             : 'Bookmark this page (Ctrl+D)');
     };
+
+    // The key. THE autofill affordance, and there is deliberately only
+    // one (#260 rule 2).
+    //
+    // It is a Gtk.MenuButton in Surfer's own chrome, not an overlay in
+    // the page: a page's synthetic `click()` reaches a DOM node, and a
+    // DOM node is not a Gtk.Button — so no script, no timer and no bus
+    // tool can produce the gesture this popover's rows are built from.
+    // `autofillVerdict` (lib/passwords.js) then checks that gesture, the
+    // agent stamp on the tab and the profile before anything is typed.
+    const keyPopover = new Gtk.Popover();
+    const keyBtn = new Gtk.MenuButton({
+        icon_name: 'dialog-password-symbolic',
+        popover: keyPopover,
+        css_classes: ['flat'],
+        tooltip_text: 'Fill a saved password',
+        visible: false,
+    });
+    const fillFromKeyring = (entry) => {
+        keyPopover.popdown();
+        const view = currentView();
+        const verdict = autofillVerdict({
+            profile: activeProfile,
+            url: view?.get_uri() ?? '',
+            // The gesture. Built HERE, in the handler for a real GTK
+            // click on a real widget, and nowhere else in this file.
+            gesture: {kind: 'click', at: Date.now(), trusted: true},
+            agentTouchedAt: view?._agentTouchedAt,
+            now: Date.now(),
+            entries: keyringEntries(),
+        });
+        if (!verdict.fill) {
+            showToast(verdict.reason);
+            return;
+        }
+        const password = keyringLookup(entry);
+        if (password === null) {
+            showToast('The keyring is locked, or that entry is gone');
+            return;
+        }
+        // The agent world, like every other script this app injects:
+        // the page cannot see it and cannot redefine what it calls.
+        evaluateInAgentWorld(view, autofillScript(entry.username, password))
+            .catch(e => logError(e, 'lisa-surfer: filling a saved password'));
+    };
+    const rebuildKeyPopover = () => {
+        if (!keyringAvailable()) { keyBtn.set_visible(false); return; }
+        const view = currentView();
+        const matches = matchesFor(keyringEntries(), view?.get_uri() ?? '', activeProfile);
+        keyBtn.set_visible(matches.length > 0);
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL, spacing: 2,
+            margin_start: 6, margin_end: 6, margin_top: 6, margin_bottom: 6,
+        });
+        for (const entry of matches) {
+            const row = new Gtk.Button({
+                label: entry.username === '' ? entry.origin : entry.username,
+                css_classes: ['flat'],
+            });
+            row.connect('clicked', () => fillFromKeyring(entry));
+            box.append(row);
+        }
+        keyPopover.set_child(box);
+    };
+    onPasswordsChanged = rebuildKeyPopover;
 
     urlBar = new Gtk.Entry({
         hexpand: true,
@@ -1071,6 +1469,7 @@ function buildWindow() {
     navRow.append(fwd);
     navRow.append(reload);
     navRow.append(star);
+    navRow.append(keyBtn);
     const navSpacer = new Gtk.Box({hexpand: true});
     navRow.append(navSpacer);
     navRow.append(new Gtk.WindowControls({side: Gtk.PackType.END}));
@@ -1085,6 +1484,7 @@ function buildWindow() {
         const view = currentView();
         urlBar.set_text(view?.get_uri() ?? '');
         onBookmarksChanged();
+        onPasswordsChanged();
     });
     // Closing the last tab closes the window; Adw.TabView handles
     // neighbour focus on close by itself.
@@ -1322,6 +1722,7 @@ function buildWindow() {
     libSection.append('History', 'app.history');
     libSection.append('Bookmarks', 'app.bookmarks');
     libSection.append('Downloads', 'app.downloads');
+    libSection.append('Passwords', 'app.passwords');
     menuModel.append_section(null, libSection);
     const prefSection = new Gio.Menu();
     prefSection.append('Reopen Tabs on Launch', 'app.restoresession');
@@ -1441,8 +1842,42 @@ function buildWindow() {
         css_classes: ['lisa-content-card'],
         margin_top: 10, margin_end: 10, margin_bottom: 10,
     });
+    // The save prompt. A BANNER and not a toast: a toast disappears,
+    // and #260's rule is that nothing reaches the keyring without the
+    // person answering. An unanswered banner saves nothing, which is
+    // the same shape `resolveConflict` gives an unanswered download
+    // dialog — default deny, for the same reason.
+    const saveBanner = new Adw.Banner({revealed: false, button_label: 'Save'});
+    const saveDismiss = Gtk.Button.new_from_icon_name('window-close-symbolic');
+    saveDismiss.add_css_class('flat');
+    saveDismiss.set_tooltip_text('Not now');
+    let pendingSave = null;
+    saveBanner.connect('button-clicked', () => {
+        const pending = pendingSave;
+        pendingSave = null;
+        saveBanner.set_revealed(false);
+        if (!pending) return;
+        if (keyringStore(pending.entry, pending.password)) {
+            showToast('Password saved to the keyring');
+            onPasswordsChanged();
+        } else {
+            showToast('Could not save the password');
+        }
+    });
+    showSaveBanner = (decision) => {
+        pendingSave = decision;
+        saveBanner.set_title(decision.prompt);
+        saveBanner.set_button_label(decision.action === 'update' ? 'Update' : 'Save');
+        saveBanner.set_revealed(true);
+    };
+    const dismissSave = () => {
+        pendingSave = null;
+        saveBanner.set_revealed(false);
+    };
+    contentCard.append(saveBanner);
     contentCard.append(findRevealer);
     contentCard.append(tabView);
+    tabView.connect('notify::selected-page', dismissSave);
 
     const split = new Adw.OverlaySplitView({
         sidebar,
@@ -1568,6 +2003,7 @@ function buildWindow() {
     add('bookmark', ['<Control>d'], () => toggleCurrentBookmark());
     add('history', ['<Control>h'], () => showHistoryWindow());
     add('bookmarks', ['<Control><Shift>o'], () => showBookmarksWindow());
+    add('passwords', ['<Control><Shift>p'], () => showPasswordsWindow());
     add('downloads', ['<Control>j'], () => {
         // The button hides itself when nothing has been downloaded, and
         // popping up a popover on a hidden widget is a GTK warning and
@@ -1621,6 +2057,7 @@ function buildWindow() {
 
     onBookmarksChanged();
     onDownloadsChanged();
+    onPasswordsChanged();
     win.present();
 }
 
