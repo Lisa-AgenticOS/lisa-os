@@ -145,6 +145,30 @@ NOT_A_DAEMON = {
 # mechanism working rather than a comment claiming it would.
 EXEMPT = {}
 
+# User-scope units that still permit AF_INET, where IPAddressDeny is a
+# no-op (see the check below for the hardware measurement). These two are
+# NOT confined today — that is #288, and it is a real hole, not a
+# formality. They are listed rather than left failing because a
+# permanently red gate teaches everyone to ignore it; every OTHER unit,
+# and every future one, fails immediately.
+#
+# Both need loopback because they serve or call an HTTP API on 127.0.0.1:
+# inferenced binds :7778 for the shell surfaces, and harnessd calls it.
+# The fix is therefore not a unit edit — it is moving that hop onto the
+# unix socket inferenced ALREADY serves (`--socket %t/lisa/inferenced.sock`),
+# after which both can take RestrictAddressFamilies=AF_UNIX and this list
+# empties. Like EXEMPT above, an entry here whose unit has been fixed is
+# itself an error, so the list cannot outlive the debt.
+USER_SCOPE_INET_DEBT = {
+    "lisa-harnessd.service": (
+        "Hosts the model and calls inferenced on 127.0.0.1:7778. #288."
+    ),
+    "lisa-inferenced-dbus.service": (
+        "Binds 127.0.0.1:7778 for the shell surfaces. Its 47fa7c6 "
+        "'egress sandbox' claimed a confinement user scope cannot give. #288."
+    ),
+}
+
 # Rule 5 names three daemons. If discovery stops finding a unit for one
 # of them — deleted, renamed, moved out of the installers — the check
 # above would go quietly green over an empty set. This is the floor.
@@ -221,14 +245,57 @@ def is_lisa_binary(name: str) -> bool:
     return name == "lisa" or name.startswith("lisa-") or name == "xdg-desktop-portal-lisa"
 
 
+def is_user_scope(root: Path, unit: Path, text: str) -> bool:
+    """Does this unit run under `systemd --user`?
+
+    Decided from the INSTALLER line that places it (the authority — a
+    file's name in this repo does not say where it lands), falling back
+    to the mkosi tree path, and finally to `WantedBy=default.target`,
+    which is the user manager's conventional target.
+    """
+    for pkgbuild in (root / "os" / "packages").rglob("PKGBUILD"):
+        joined = pkgbuild.read_text().replace("\\\n", " ")
+        for line in joined.splitlines():
+            if unit.name in line and "systemd/user/" in line:
+                return True
+    if "/systemd/user/" in str(unit):
+        return True
+    section = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif section == "Install" and line.startswith("WantedBy="):
+            if "default.target" in line:
+                return True
+    return False
+
+
+def inet_allowed(text: str) -> bool:
+    """Can this unit open an IP socket at all?
+
+    No `RestrictAddressFamilies=` means every family, so absence is the
+    permissive answer — the opposite of how a missing directive usually
+    reads, and the reason this returns True for `none`.
+    """
+    seen = False
+    for key, value, _ in service_lines(text):
+        if key != "RestrictAddressFamilies":
+            continue
+        seen = True
+        if "AF_INET" in value:
+            return True
+    return not seen
+
+
 def classify(root: Path):
-    """[(unit path, binary, posture, has_directive)] for Lisa-binary units."""
+    """[(unit, binary, posture, has_directive, user_scope, inet)]."""
     rows = []
     for unit in sorted(shipped_units(root)):
         text = unit.read_text()
         binary = exec_binary(text)
         if binary is None or not is_lisa_binary(binary):
-            rows.append((unit, binary, "out-of-scope", False))
+            rows.append((unit, binary, "out-of-scope", False, False, False))
             continue
         if binary in NO_EGRESS:
             posture = "no-egress"
@@ -242,7 +309,8 @@ def classify(root: Path):
             key == "IPAddressDeny" and value == "any"
             for key, value, _ in service_lines(text)
         )
-        rows.append((unit, binary, posture, has))
+        rows.append((unit, binary, posture, has, is_user_scope(root, unit, text),
+                     inet_allowed(text)))
     return rows
 
 
@@ -252,7 +320,7 @@ def main(argv) -> int:
 
     if "--list" in argv:
         want = argv[argv.index("--list") + 1]
-        for unit, _binary, posture, _has in rows:
+        for unit, _binary, posture, _has, _us, _in in rows:
             # `no-egress` is what the runtime harness attacks, so an
             # exempt unit must not appear in it: it demonstrably HAS
             # egress today (tests/e2e/egress-test.sh watched the portal
@@ -267,7 +335,7 @@ def main(argv) -> int:
         return 0
 
     if "--explain" in argv:
-        for unit, binary, posture, has in rows:
+        for unit, binary, posture, has, _us, _in in rows:
             mark = "IPAddressDeny=any" if has else "-"
             print(f"{posture:14} {binary or '(no ExecStart)':26} {mark:18} "
                   f"{unit.relative_to(root)}")
@@ -275,7 +343,7 @@ def main(argv) -> int:
 
     errors = []
 
-    if not any(posture != "out-of-scope" for _u, _b, posture, _h in rows):
+    if not any(posture != "out-of-scope" for _u, _b, posture, _h, _us, _in in rows):
         # A matched-nothing sweep must fail, not pass: an installer
         # refactor that moves the install lines would otherwise turn
         # this into a green no-op — the defect class it polices.
@@ -286,8 +354,47 @@ def main(argv) -> int:
 
     covered_no_egress = set()
     covered_egress = set()
-    for unit, binary, posture, has in rows:
+    for unit, binary, posture, has, user_scope, inet in rows:
         rel = unit.relative_to(root)
+        # IPAddressDeny= IS A NO-OP IN USER SCOPE. It is a cgroup BPF
+        # program, and `systemd --user` cannot load one:
+        #
+        #   lisa-agentd.service: unit configures an IP firewall, but not
+        #   running as root.
+        #
+        # — from the reference iMac's own journal. Measured there on
+        # 2026-08-05 with two transient user units:
+        #
+        #   IPAddressDeny=any + RestrictAddressFamilies=AF_UNIX AF_INET
+        #     -> curl http://example.com  HTTP=200   (reached the world)
+        #   IPAddressDeny=any + RestrictAddressFamilies=AF_UNIX
+        #     -> curl http://example.com  rc=7       (blocked)
+        #
+        # So for a user unit the ONLY directive that bites is
+        # RestrictAddressFamilies, which is a seccomp filter and needs no
+        # privilege. This check asserted IPAddressDeny alone and would
+        # have passed forever over lisa-harnessd — the model host — and
+        # over lisa-inferenced-dbus, whose "egress sandbox" commit
+        # (47fa7c6) claimed a confinement it did not have.
+        if posture == "no-egress" and user_scope and not inet \
+                and unit.name in USER_SCOPE_INET_DEBT:
+            errors.append(
+                f"{rel}: no longer permits AF_INET and is still listed in "
+                f"USER_SCOPE_INET_DEBT. Delete the entry — #288 is paid for "
+                f"this unit, and a debt list that outlives the debt is how "
+                f"the next reader learns to distrust it."
+            )
+        elif posture == "no-egress" and user_scope and inet \
+                and unit.name not in USER_SCOPE_INET_DEBT:
+            errors.append(
+                f"{rel}: runs `{binary}` under `systemd --user`, where "
+                f"{DIRECTIVE} is a NO-OP (an IP firewall needs root), and "
+                f"still permits AF_INET. Nothing confines this unit. Give it "
+                f"`RestrictAddressFamilies=AF_UNIX` — a seccomp filter, which "
+                f"works unprivileged — or move the daemon off IP sockets. "
+                f"Measured on hardware: the same directives with AF_INET "
+                f"allowed reach example.com with HTTP 200."
+            )
         if posture == "UNCLASSIFIED":
             errors.append(
                 f"{rel}: runs `{binary}`, which has no egress posture. Add it "
@@ -342,8 +449,8 @@ def main(argv) -> int:
             print(f"  {e}\n", file=sys.stderr)
         return 1
 
-    n = sum(1 for _u, _b, p, _h in rows if p == "no-egress")
-    m = sum(1 for _u, _b, p, _h in rows if p == "egress")
+    n = sum(1 for _u, _b, p, _h, _us, _in in rows if p == "no-egress")
+    m = sum(1 for _u, _b, p, _h, _us, _in in rows if p == "egress")
     print(f"egress posture: {n} no-egress units, {m} egress units, "
           f"{len(EXEMPT)} exemption(s) — OK")
     return 0
