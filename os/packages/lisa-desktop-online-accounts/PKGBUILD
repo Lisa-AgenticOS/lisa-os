@@ -61,7 +61,10 @@ license=(LGPL-2.0-or-later)
 provides=("$_pkgname=$pkgver" "libgoa-1.0.so" "libgoa-backend-1.0.so")
 conflicts=("$_pkgname")
 
-depends=(glib2 gcr-4 json-glib libsecret libsoup3 rest webkitgtk-6.0 gtk4 libadwaita krb5)
+# librest, not rest: Arch names the package librest (0.10.x); `rest`
+# resolves nowhere — caught by this package's FIRST build ever, in the
+# ports lane. Until then the depends list was documentation.
+depends=(glib2 gcr-4 json-glib libsecret libsoup3 librest webkitgtk-6.0 gtk4 libadwaita krb5)
 makedepends=(meson ninja gobject-introspection vala docbook-xsl git gtk-doc)
 
 # --- The Lisa OS client (Google Cloud project "lisaos", Desktop app).
