@@ -87,7 +87,7 @@ jobs:
               - 'os/packages/lisa/PKGBUILD'
               - '.github/workflows/ci.yml'
             gnome_panel:
-              - 'os/packages/gnome-control-center-lisa/**'
+              - 'os/packages/lisa-desktop-control-center/**'
               - '.github/workflows/ci.yml'
             llama:
               - 'os/packages/llama.cpp/**'
@@ -226,14 +226,14 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - name: makepkg gnome-control-center-lisa in Arch
+      - name: makepkg lisa-desktop-control-center in Arch
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/library/archlinux:latest bash -ec '
             # devtools provides arch-meson (used by the PKGBUILD build()).
             pacman -Syu --noconfirm --needed base-devel git devtools >/dev/null
             useradd -m builder
             printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
-            cp -r /src/os/packages/gnome-control-center-lisa /home/builder/pkg
+            cp -r /src/os/packages/lisa-desktop-control-center /home/builder/pkg
             chown -R builder:builder /home/builder/pkg
             su builder -c "cd ~/pkg && makepkg -s --nocheck --skippgpcheck --noconfirm"
             # Prove the panel landed: our desktop file must be in the package.
@@ -256,7 +256,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
-      - name: makepkg gnome-control-center-lisa in Arch Linux ARM
+      - name: makepkg lisa-desktop-control-center in Arch Linux ARM
         run: |
           sudo podman --runtime runc run --rm -v "$PWD":/src docker.io/menci/archlinuxarm@sha256:7ec87e868f830efc13ad1cf308d11f5f022e54d6f8fa3cfbe1d469f05873af80 bash -ec '
             # pacman >= 7 sandbox cannot apply inside the container.
@@ -264,7 +264,7 @@ jobs:
             pacman -Syu --noconfirm --needed base-devel git devtools >/dev/null
             useradd -m builder
             printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
-            cp -r /src/os/packages/gnome-control-center-lisa /home/builder/pkg
+            cp -r /src/os/packages/lisa-desktop-control-center /home/builder/pkg
             chown -R builder:builder /home/builder/pkg
             su builder -c "cd ~/pkg && makepkg -s --nocheck --skippgpcheck --noconfirm"
             pkg=$(ls /home/builder/pkg/gnome-control-center-[0-9]*.pkg.tar.* | grep -v -- -debug- | head -1)

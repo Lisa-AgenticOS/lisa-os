@@ -21,8 +21,8 @@ on:
       - 'os/packages/whisper.cpp/**'
       - 'os/packages/piper/**'
       - 'os/packages/zen-browser/**'
-      - 'os/packages/gnome-control-center-lisa/**'
-      - 'os/packages/gnome-online-accounts-lisa/**'
+      - 'os/packages/lisa-desktop-control-center/**'
+      - 'os/packages/lisa-desktop-online-accounts/**'
       - 'os/repo-tools/build-port.sh'
       - '.github/workflows/ports.yml'
   workflow_dispatch:
@@ -32,7 +32,7 @@ on:
           Space-separated port names to build (default: all six).
         required: false
         type: string
-        default: "llama.cpp whisper.cpp piper zen-browser gnome-control-center-lisa gnome-online-accounts-lisa"
+        default: "llama.cpp whisper.cpp piper zen-browser lisa-desktop-control-center lisa-desktop-online-accounts"
 
 permissions:
   contents: write   # uploads to the `ports` release
@@ -58,14 +58,14 @@ jobs:
           else
             PORTS=""
             for p in llama.cpp whisper.cpp piper zen-browser \
-                     gnome-control-center-lisa gnome-online-accounts-lisa; do
+                     lisa-desktop-control-center lisa-desktop-online-accounts; do
               if git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" -- "os/packages/$p/" | grep -q .; then
                 PORTS="$PORTS $p"
               fi
             done
             # A build-port.sh or workflow change with no port change:
             # rebuild everything, since the recipes themselves moved.
-            [ -n "$PORTS" ] || PORTS="llama.cpp whisper.cpp piper zen-browser gnome-control-center-lisa gnome-online-accounts-lisa"
+            [ -n "$PORTS" ] || PORTS="llama.cpp whisper.cpp piper zen-browser lisa-desktop-control-center lisa-desktop-online-accounts"
           fi
           echo "building:$PORTS"
           mkdir -p out

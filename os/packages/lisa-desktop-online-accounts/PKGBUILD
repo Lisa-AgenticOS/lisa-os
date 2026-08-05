@@ -41,7 +41,11 @@
 # redirect_uri_mismatch, register an iOS application type instead and
 # change _client_id here; nothing else moves.
 
-pkgname=gnome-online-accounts-lisa
+# lisa-desktop-*: the fork-family prefix (like lisa-desktop-shell and
+# lisa-desktop-control-center) — a GNOME component rebuilt as part of
+# Lisa Desktop, replacing stock via provides/conflicts below rather
+# than by taking its name and outranking it.
+pkgname=lisa-desktop-online-accounts
 _pkgname=gnome-online-accounts
 # Tracks the version in the image. Keep in step with Arch's, so the
 # provides/conflicts below swap cleanly.

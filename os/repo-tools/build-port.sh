@@ -40,22 +40,23 @@ case "$port" in
     # Produces BOTH split packages (zen-browser + zen-browser-launcher).
     (cd "$dir" && makepkg -d --nocheck --noconfirm)
     ;;
-  gnome-control-center-lisa)
-    # -s: arch-meson et al. Takes the gnome-control-center name so
-    # repo precedence installs it over stock. Also produces the
-    # gnome-keybindings split package.
+  lisa-desktop-control-center)
+    # -s: arch-meson et al. provides/conflicts=gnome-control-center —
+    # stock can never co-install, whatever version Arch ships. Also
+    # produces the lisa-desktop-keybindings split package.
     (cd "$dir" && makepkg -s --nocheck --skippgpcheck --noconfirm)
     ;;
-  gnome-online-accounts-lisa)
+  lisa-desktop-online-accounts)
     # Stock GOA with Lisa's own verified Google OAuth client baked in
     # via two meson -D flags (no patch) — the consent screen names the
-    # OS that is actually asking. Takes the gnome-online-accounts name
-    # for repo precedence, like the g-c-c fork above.
+    # OS that is actually asking. provides/conflicts=
+    # gnome-online-accounts, same replacement pattern as the rest of
+    # the lisa-desktop-* family.
     (cd "$dir" && makepkg -s --nocheck --skippgpcheck --noconfirm)
     ;;
   *)
     echo "unknown port: $port" >&2
-    echo "known: llama.cpp whisper.cpp piper zen-browser gnome-control-center-lisa gnome-online-accounts-lisa" >&2
+    echo "known: llama.cpp whisper.cpp piper zen-browser lisa-desktop-control-center lisa-desktop-online-accounts" >&2
     exit 1
     ;;
 esac

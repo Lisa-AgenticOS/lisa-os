@@ -132,12 +132,17 @@ jobs:
               # apps channel). The glob takes both.
               sudo -u builder bash -c "cd /build/os/packages/zen-browser && makepkg -d --nocheck --noconfirm"
               cp /build/os/packages/zen-browser/zen-browser-*.pkg.tar.* /build/repo-out/
-              # Our forked gnome-control-center: stock 50.3 + the native
-              # Intelligence panel (ADR-0012). ALARM ships stock 50.3-1 for
-              # aarch64, so pkgrel=2 outranks it there exactly as it does
-              # on Arch proper.
-              sudo -u builder bash -c "cd /build/os/packages/gnome-control-center-lisa && makepkg -s --nocheck --skippgpcheck --noconfirm"
-              cp $(ls /build/os/packages/gnome-control-center-lisa/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
+              # Our forked Settings app: stock 50.3 + the native
+              # Intelligence panel (ADR-0012). Renamed from the
+              # stock-name-taking gnome-control-center — provides/
+              # conflicts replaces stock deterministically, no pkgrel
+              # race with whatever ALARM ships.
+              sudo -u builder bash -c "cd /build/os/packages/lisa-desktop-control-center && makepkg -s --nocheck --skippgpcheck --noconfirm"
+              cp $(ls /build/os/packages/lisa-desktop-control-center/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
+              # Online Accounts with the Lisa OAuth client (#276): the
+              # consent screen names the OS that is asking, on ARM too.
+              sudo -u builder bash -c "cd /build/os/packages/lisa-desktop-online-accounts && makepkg -s --nocheck --skippgpcheck --noconfirm"
+              cp $(ls /build/os/packages/lisa-desktop-online-accounts/*.pkg.tar.* | grep -v -- -debug-) /build/repo-out/
               # lisa-keyring (arch=any) and cyrus-sasl-xoauth2: both in the
               # x86_64 release image, both were silently absent here — the
               # keyring is the [lisa] trust anchor on devices, and without
@@ -174,7 +179,7 @@ jobs:
                        lisa-notes lisa-remoted lisa-contextd llama.cpp \
                        whisper.cpp \
                        zen-browser zen-browser-launcher \
-                       gnome-control-center; do
+                       lisa-desktop-control-center; do
                 ls /build/pkgs/"$p"-*.pkg.tar.* 2>/dev/null | grep -qv -- "-debug-" \
                   || { echo "aarch64 package missing: $p" >&2; exit 1; }
               done
@@ -215,6 +220,11 @@ jobs:
                    lisa-keyring
                    # Online-Accounts mail auth (#154/#155), same as x86_64.
                    cyrus-sasl-xoauth2
+                   # The Settings fork + Lisa-OAuth Online Accounts,
+                   # same pair as x86_64 (the shared mkosi.conf names
+                   # neither — see the note there).
+                   lisa-desktop-control-center
+                   lisa-desktop-online-accounts
                    # Writing tools + double-tap-Shift (§5.7.3 layer 2).
                    # Unlike piper next door this is arch-clean — it links
                    # fcitx5, which Arch Linux ARM does package.
