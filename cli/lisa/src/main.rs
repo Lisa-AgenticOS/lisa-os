@@ -10,6 +10,7 @@ mod agent;
 mod apps;
 mod bus_tools;
 mod dev;
+mod devbox;
 mod doctor;
 mod guard;
 mod mail;
@@ -406,6 +407,22 @@ enum GuardCmd {
 
 #[derive(Subcommand)]
 enum DevCmd {
+    /// Install a package into the dev box (rootless, in your home).
+    Install {
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+    /// Remove a package and the commands it put on PATH.
+    Remove {
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+    /// What is installed, and how many commands each package publishes.
+    List,
+    /// A shell inside the dev box.
+    Shell,
+    /// Destroy the box and every shim. Real recovery, not a reinstall.
+    Reset,
     /// Are rootless containers usable here? Checks the prerequisites
     /// that fail SILENTLY (#130): the subuid/subgid range, the uidmap
     /// helpers, podman, and room on the filesystem the container store
@@ -799,6 +816,11 @@ fn run() -> anyhow::Result<()> {
         Command::Dev { cmd } => match cmd {
             DevCmd::Check { path } => dev::check_cmd(path),
             DevCmd::Doctor { needs } => dev::doctor_cmd(needs),
+            DevCmd::Install { packages } => devbox::install_cmd(&packages),
+            DevCmd::Remove { packages } => devbox::remove_cmd(&packages),
+            DevCmd::List => devbox::list_cmd(),
+            DevCmd::Shell => devbox::shell_cmd(),
+            DevCmd::Reset => devbox::reset_cmd(),
         },
         Command::Skills { cmd } => match cmd {
             SkillsCmd::List => skills::list(),
@@ -2311,6 +2333,33 @@ fn assert_transfers_protect_booted() -> anyhow::Result<()> {
 /// `/etc` is per-slot, so /etc/os-release always describes the running
 /// system; `/usr/lib/os-release` is the fallback for images that ship it
 /// only there.
+/// Record a `lisa dev` action in the Ledger (#130 phase 2).
+///
+/// "You can read exactly what it did" covers the toolchain too — a
+/// developer front door that installs software without an audit line is
+/// the one place on the machine you cannot account for.
+///
+/// Best-effort and non-fatal: a missing Ledger must not stop somebody
+/// installing a database, but it IS reported, because a silent failure
+/// here means the audit trail has a hole nobody knows about.
+pub fn ledger_note(kind: &str, detail: &str) {
+    let record = || -> anyhow::Result<()> {
+        let ledger = lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path())?;
+        ledger.append(&lisa_ledger::Event {
+            kind: kind.into(),
+            app_id: "host".into(),
+            input_hash: blake3::hash(detail.as_bytes()).to_hex().to_string(),
+            status: "ok".into(),
+            detail: detail.into(),
+            ..Default::default()
+        })?;
+        Ok(())
+    };
+    if let Err(e) = record() {
+        eprintln!("warning: could not write the Ledger entry for {kind}: {e}");
+    }
+}
+
 fn running_image_version() -> Option<String> {
     for path in ["/etc/os-release", "/usr/lib/os-release"] {
         let Ok(text) = std::fs::read_to_string(path) else {
