@@ -23,6 +23,7 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       <div class="menu">
         <a href="#what">What it is</a>
         <a href="#why">Why Lisa</a>
+        <a href="#boundary">The boundary</a>
         <a href="#ledger">The Ledger</a>
         <a href="#screens">Screenshots</a>
         <a href="#status">Status</a>
@@ -169,6 +170,28 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       </div>
     </section>
 
+    <section id="boundary" class="sec">
+      <div class="lead-2">
+        <span class="eyebrow">The boundary</span>
+        <h2>The guardrails are code the model can't reach.</h2>
+        <p>Most agentic systems keep their safety in the prompt — the model is asked nicely not to do the dangerous thing. Lisa's limits live outside the model, in deterministic code, where no amount of clever text can argue with them.</p>
+      </div>
+      <div class="rows">
+        <div class="frow"><span class="mk">▣</span><div><h3>Tiered by blast radius</h3><p>Reading is silent. Writing shows a chip. Anything destructive stops for a modal you have to answer. The tier is decided by the system before the call is dispatched — not by the model, and not by the app that asked.</p></div></div>
+        <div class="frow"><span class="mk amber">⊘</span><div><h3>Untrusted content can't pull the trigger</h3><p>A web page or an email telling the assistant to delete your files is describing an action it has no authority to cause. Content from untrusted sources is tagged where it enters and can never escalate itself into a privileged call.</p></div></div>
+        <div class="frow"><span class="mk">◇</span><div><h3>One door out</h3><p>Cloud models are welcome — through a single audited broker that holds the keys, marks the egress and writes the entry. The daemons that read your context have no network at all, so there is no second path to close.</p></div></div>
+      </div>
+      <p class="caption">Two tests we hold ourselves to: the boundary must not be reachable from inside — and it sits between the model and your machine, never between you and your own machine.</p>
+    </section>
+
+    <section id="surfaces" class="sec">
+      <div class="lead-2">
+        <span class="eyebrow">Apps as agent surfaces</span>
+        <h2>Your apps aren't just windows — they're capabilities.</h2>
+        <p>Each app declares what it can do as tools an agent may call, and carries its own durable context: your mail app remembers your mail, and only your mail. That is what turns "find the invoice from that supplier and reply that we've paid" from a demo script into the system wiring three apps together — every step tiered, every step on the record.</p>
+      </div>
+    </section>
+
     <section class="sec">
       <div class="lead-2">
         <span class="eyebrow">The assistant</span>
@@ -207,7 +230,7 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
       <div class="lead-2">
         <span class="eyebrow">Alpha, in the open</span>
         <h2>What works today.</h2>
-        <p>We build in the open and we're honest about the state. Real, on real hardware, now.</p>
+        <p>We build in the open and we're honest about the state. Real, on real hardware, now — and the right-hand column is a roadmap, not a claim.</p>
       </div>
       <div class="status">
         <div class="col">
@@ -229,6 +252,8 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
             <li><span class="c" />Apps you can generate and install locally</li>
             <li><span class="c" />Voice + wake-word loop, fully on device</li>
             <li><span class="c" />Apple Silicon images — the stack already runs on ARM64 (container-verified)</li>
+            <li><span class="c" />The assistant as an API — so every script and service on the machine can ask, not just the window</li>
+            <li><span class="c" />Lisa Server: the same core, headless — governed inference for the things it hosts</li>
           </ul>
         </div>
       </div>
