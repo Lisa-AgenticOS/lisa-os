@@ -40,15 +40,27 @@ const wm = '<path d="M20.3932 7C19.7481 7 19.17 6.84919 18.6589 6.54758C18.1478 
   </div>
 
   <div class="wrap">
-    <NuxtPage />
+    <main><NuxtPage /></main>
 
+    <!-- The title block of a drawing sheet. Every cell is a fact about
+         the thing being documented; none is filler. -->
     <footer>
-      <span class="mono">LISA OS · GPL-2.0</span> ·
-      <NuxtLink to="/docs">Docs</NuxtLink> ·
-      <NuxtLink to="/api">API</NuxtLink> ·
-      <NuxtLink to="/downloads">Downloads</NuxtLink> ·
-      <a href="https://lisa-app.common.al">lisaos.app</a> ·
-      <a :href="repo">GitHub</a>
+      <div class="titleblock">
+        <div class="tb"><span class="k">Project</span><span class="v">Lisa OS — AI-native Linux</span></div>
+        <div class="tb"><span class="k">Sheet</span><span class="v">Developer portal · lisaos.dev</span></div>
+        <div class="tb"><span class="k">Licence</span><span class="v">GPL-2.0-only</span></div>
+        <div class="tb"><span class="k">Source</span><span class="v"><a :href="repo">github.com/Lisa-AgenticOS</a></span></div>
+        <div class="tb wide"><span class="k">Companion sheet</span><span class="v"><a href="https://lisaos.app">lisaos.app</a> — what Lisa OS is, for the people who will run it</span></div>
+        <div class="tb"><span class="k">Status</span><span class="v">Alpha · built in the open</span></div>
+        <div class="tb"><span class="k">Revision</span><span class="v"><a :href="`${repo}/releases`">every release published</a></span></div>
+      </div>
+      <div class="links">
+        <NuxtLink to="/docs">Docs</NuxtLink>
+        <NuxtLink to="/api">API</NuxtLink>
+        <NuxtLink to="/downloads">Downloads</NuxtLink>
+        <NuxtLink to="/design">Design</NuxtLink>
+        <NuxtLink to="/contribute">Contribute</NuxtLink>
+      </div>
     </footer>
   </div>
 </template>

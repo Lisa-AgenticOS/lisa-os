@@ -41,8 +41,35 @@ html{scroll-behavior:smooth;scroll-padding-top:88px}
 body{font:16px/1.62 system-ui,-apple-system,"Segoe UI",Rubik,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 ::selection{background:color-mix(in srgb,var(--violet) 24%,transparent)}
 a{color:var(--violet-ink);text-decoration:none}a:hover{text-decoration:underline}
-.wrap{max-width:1000px;margin:0 auto;padding:0 32px}
-@media(max-width:560px){.wrap{padding:0 20px}}
+/* ── THE SHEET ────────────────────────────────────────────────────
+   lisaos.dev is laid out as a technical drawing sheet, not a
+   marketing column: full-bleed with a frame, a graph ground, numbered
+   zones and a title block. The devices are the ones a real drawing
+   uses, and each carries information rather than decoration.
+
+   Full width, but PROSE IS NOT: a line of text past ~75 characters is
+   measurably harder to read, so the sheet is wide and the text blocks
+   inside it are measured. Width is for structure — tables, code,
+   diagrams, the docs sidebar — never for paragraphs. */
+:root{ --measure:72ch; --grid:22px; }
+.wrap{max-width:none;margin:0;padding:0 clamp(20px,3.4vw,56px)}
+
+/* Graph ground: engineering paper, two hairline gradients. Sits under
+   everything at very low contrast — present when you look for it,
+   invisible when you are reading. */
+body{
+  background-image:
+    linear-gradient(to right, color-mix(in srgb,var(--violet) 7%,transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb,var(--violet) 7%,transparent) 1px, transparent 1px);
+  background-size:var(--grid) var(--grid);
+  background-position:-1px -1px;
+}
+.dark body{
+  background-image:
+    linear-gradient(to right, color-mix(in srgb,var(--violet) 13%,transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb,var(--violet) 13%,transparent) 1px, transparent 1px);
+}
+@media(max-width:560px){:root{--grid:16px}}
 h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balance;margin:0}
 .eyebrow{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
 
@@ -89,10 +116,34 @@ h1,h2,h3{letter-spacing:-.028em;line-height:1.08;font-weight:800;text-wrap:balan
 /* More air than the old 46px: the portal's sections are dense lists,
    and dense content needs MORE separation, not less, or the page reads
    as one wall. */
-.sec{padding:var(--s-5) 0 0;border-top:1px solid var(--line);margin-top:var(--s-5)}
-.sec:first-of-type{border-top:0;margin-top:var(--s-4)}
-.sec h2{font-size:clamp(22px,3vw,30px)}
-.sec > p{color:var(--ink-soft);margin-top:12px;max-width:64ch;line-height:1.55}
+/* ── ZONES ────────────────────────────────────────────────────────
+   Sections are numbered zones, the way a drawing sheet numbers its
+   fields. The number is real navigation on a spec-shaped page, not an
+   ornament — which is the test for whether numbering earns its place.
+   A double rule (thick over hairline) is the drafting convention for
+   a field boundary. */
+main{counter-reset:zone}
+.sec{padding:var(--s-5) 0 0;margin-top:var(--s-5);position:relative;
+     border-top:2px solid var(--ink);
+     box-shadow:0 3px 0 -2px var(--line)}
+.sec:first-of-type{border-top:0;box-shadow:none;margin-top:var(--s-4)}
+.sec h2{font-size:clamp(22px,3vw,30px);max-width:24ch}
+.sec > p{color:var(--ink-soft);margin-top:12px;max-width:var(--measure);line-height:1.55}
+/* The zone number, set in the margin like a drawing callout. It moves
+   inline above the heading when there is no margin to put it in. */
+.sec:not(:first-of-type) > h2::before{
+  counter-increment:zone;
+  content:"§" counter(zone,decimal-leading-zero);
+  font-family:ui-monospace,Menlo,monospace;font-size:12px;font-weight:600;
+  letter-spacing:.1em;color:var(--violet);
+  display:block;margin-bottom:10px;
+}
+@media(min-width:1180px){
+  .sec:not(:first-of-type) > h2::before{
+    position:absolute;left:0;top:calc(var(--s-5) + 4px);margin:0;
+  }
+  .sec:not(:first-of-type){padding-left:76px}
+}
 .anchor{scroll-margin-top:20px}
 
 pre{background:var(--mono-bg);color:var(--mono-ink);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-top:20px;overflow-x:auto;font:13.5px/1.7 ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
@@ -138,7 +189,69 @@ a.card p{color:var(--ink-soft);font-size:14.5px;margin-top:6px;line-height:1.5}
 .signin-cta{margin-top:22px;background:var(--ground);border:1px solid var(--line);border-radius:12px;padding:24px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 .signin-cta p{color:var(--ink-soft);font-size:15px;flex:1;min-width:220px}
 
-footer{border-top:1px solid var(--line);margin-top:52px;padding:32px 0 46px;color:var(--ink-faint);font-size:13.5px}
+/* ── THE PARTS GRID ───────────────────────────────────────────────
+   A drawing sheet is ruled into zones and each zone is filled with a
+   part: a numbered thing with a label and a body. This is that, as a
+   layout primitive.
+
+   Twelve columns, shared hairlines (each cell draws right + bottom,
+   the container draws top + left, so no border doubles). Parts
+   declare their span with .s2…s12. On narrow screens every part
+   becomes full width — a spec sheet that needs sideways scrolling is
+   a spec sheet nobody reads on a phone. */
+.parts{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));
+       border-top:1px solid var(--line);border-left:1px solid var(--line);
+       margin-top:var(--s-3);background:var(--ground)}
+.part{grid-column:span 12;border-right:1px solid var(--line);border-bottom:1px solid var(--line);
+      padding:20px 22px 22px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.part > .no{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;font-weight:600;
+            letter-spacing:.14em;text-transform:uppercase;color:var(--violet);}
+.part h3{font-size:16.5px;font-weight:700;letter-spacing:-.015em}
+.part p{color:var(--ink-soft);font-size:14.5px;line-height:1.55;margin:0;max-width:60ch}
+.part .big{font-size:clamp(22px,2.4vw,30px);font-weight:800;letter-spacing:-.03em;line-height:1.1}
+.part ul{margin:0;padding-left:1.05rem;color:var(--ink-soft);font-size:14.5px;line-height:1.6}
+.part li{margin:.2rem 0}
+/* A part that is a link behaves like one: the arrow travels, the rule
+   warms. No lift — a drawing sheet does not float. */
+a.part{color:inherit;transition:background .14s,border-color .14s}
+a.part:hover{text-decoration:none;background:color-mix(in srgb,var(--violet) 5%,var(--ground))}
+a.part h3{display:flex;align-items:center;gap:8px}
+a.part h3::after{content:"→";color:var(--violet);margin-left:auto;font-weight:400;transition:transform .14s}
+a.part:hover h3::after{transform:translateX(3px)}
+@media(prefers-reduced-motion:reduce){a.part,a.part h3::after{transition:none}
+  a.part:hover h3::after{transform:none}}
+/* The full twelve columns need real width: measured at 768px a
+   three-span part is ~190px, which is narrower than its own display
+   text wants. Tablets get halves instead, phones get singles. */
+@media(min-width:1000px){
+  .s2{grid-column:span 2}.s3{grid-column:span 3}.s4{grid-column:span 4}
+  .s5{grid-column:span 5}.s6{grid-column:span 6}.s7{grid-column:span 7}
+  .s8{grid-column:span 8}.s9{grid-column:span 9}.s12{grid-column:span 12}
+}
+@media(min-width:600px) and (max-width:999px){
+  .s2,.s3,.s4,.s5,.s6,.s7,.s8{grid-column:span 6}
+  .s9,.s12{grid-column:span 12}
+}
+
+/* ── TITLE BLOCK ──────────────────────────────────────────────────
+   Every drawing sheet ends in a title block: who drew it, what it is,
+   which revision, under what terms. It is the one blueprint device
+   that is pure information, which is why it belongs on a portal whose
+   whole argument is that the system shows its work. Each cell carries
+   a real fact — no cell exists to fill the grid. */
+footer{border-top:2px solid var(--ink);box-shadow:0 3px 0 -2px var(--line);
+       margin-top:var(--s-6);padding:0 0 var(--s-5);color:var(--ink-faint);font-size:13.5px}
+.titleblock{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid var(--line)}
+@media(max-width:900px){.titleblock{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:520px){.titleblock{grid-template-columns:1fr}}
+.tb{border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 16px 15px;min-height:74px}
+.tb .k{display:block;font-family:ui-monospace,Menlo,monospace;font-size:10px;font-weight:600;
+       letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)}
+.tb .v{display:block;margin-top:7px;font-size:14.5px;color:var(--ink);line-height:1.4}
+.tb .v a{color:var(--violet-ink)}
+.tb.wide{grid-column:span 2}
+@media(max-width:520px){.tb.wide{grid-column:span 1}}
+footer .links{padding:18px 0 0;display:flex;flex-wrap:wrap;gap:16px;font-size:13.5px}
 footer a{color:var(--ink-soft)}
 footer .mono{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;letter-spacing:.04em}
 
