@@ -109,8 +109,16 @@ jobs:
       - name: Week stamp for the package cache
         id: week
         run: echo "w=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-      - name: Cache built third-party packages
-        uses: actions/cache@v6
+      - name: Restore built third-party packages
+        # restore + explicit save (below), NOT the combined action: the
+        # combined action saves only when the JOB succeeds, and on
+        # 2026-08-05 four release attempts in a row built llama.cpp
+        # (~the slowest thing in this job), failed at a verification
+        # step near the end, saved nothing — and rebuilt it all on the
+        # next attempt. The packages' cacheability is decided by the
+        # build step succeeding, not by whichever assertion comes after.
+        id: pkgcache
+        uses: actions/cache/restore@v6
         with:
           path: .ci-cache/pkgs
           # EVERY PKGBUILD reachable through use_cached must be hashed
@@ -540,6 +548,16 @@ jobs:
           # left root-owned it breaks any later step that touches the tree.
           sudo chown -R "$USER:" os/mkosi/mkosi.pkgmngr 2>/dev/null || true
           ls -lh repo-out/
+      - name: Save built third-party packages
+        # Runs the moment the build step is done — BEFORE the boot,
+        # mail-chain and desktop verification steps — so a red assertion
+        # later cannot throw away an hour of compiled packages (see the
+        # restore step's comment for the day that taught this).
+        if: steps.pkgcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .ci-cache/pkgs
+          key: pkgs-v2-${{ runner.os }}-${{ steps.week.outputs.w }}-${{ hashFiles('os/packages/llama.cpp/PKGBUILD', 'os/packages/gnome-control-center-lisa/PKGBUILD', 'os/packages/whisper.cpp/PKGBUILD', 'os/packages/piper/PKGBUILD', 'os/packages/piper/pinned-deps-no-network.patch') }}
       - name: Boot check — no boot, no release
         run: |
           set -o pipefail
