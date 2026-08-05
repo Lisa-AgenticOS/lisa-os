@@ -82,3 +82,40 @@ printf '%s\0' "${paths[@]}" |
 
 echo "mkosi.finalize: initrd overlay -> io.mkosi.initrd/$(basename "$out")" \
      "(${#paths[@]} entries, $(wc -c <"$out") bytes)"
+
+# --- The desktop this image actually got (#273, #277) ---------------
+# Two facts that are cheap here and expensive at a login screen: the
+# installed lisa-desktop-shell must be the version os/mkosi/desktop.lock
+# pins, and its GNOME series must match the mutter the image resolved
+# from Arch. check-desktop.sh explains both at length.
+#
+# HERE, in finalize, because this is the only hook that runs in EVERY
+# lane — nightly, release, aarch64, local `just image` — without a
+# workflow having to remember to call it. The nightly is the lane that
+# matters most: it installs the shell straight from the rolling [lisa]
+# index, so a shell publish or an Arch mutter bump surfaces there a day
+# before a release could carry it onto a device.
+#
+# Read from the BUILT ROOT, never from a variable: mkosi.postinst.chroot
+# has already written $BUILDROOT/usr/lib/lisa/packages.manifest with
+# `pacman -Q` (postinst runs before finalize, mkosi.1 "Building
+# images"), and $BUILDROOT is one of the variables finalize scripts
+# receive (mkosi.1, the script environment table).
+lock="$SRCDIR/desktop.lock"
+manifest="$BUILDROOT/usr/lib/lisa/packages.manifest"
+if [ ! -r "$lock" ]; then
+    echo "mkosi.finalize: $lock is missing — the shell would be whatever the" >&2
+    echo "                rolling [lisa] index holds, which is issue #273." >&2
+    exit 1
+fi
+if [ -r "$manifest" ]; then
+    bash "$SRCDIR/check-desktop.sh" "$manifest" "$lock"
+else
+    # An image with no pacman gets no manifest. Never silent about it:
+    # a gate that did not run must not read like a gate that passed.
+    # nightly.yml and release.yml separately fail when the shipped
+    # image carries no packages.manifest, so this is not the only
+    # thing standing between us and a missing one.
+    echo "mkosi.finalize: no $manifest — the desktop pin (#273) and the" >&2
+    echo "                shell/mutter ABI gate (#277) did NOT run." >&2
+fi

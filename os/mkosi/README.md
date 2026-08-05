@@ -154,6 +154,86 @@ line now routes all console output to `console=ttyS0` (serial) so the
 framebuffer is free for the boot splash; a hang is diagnosed from the
 ESP journal dump rather than the on-screen unit status it used to show.
 
+## The desktop is pinned (#273), and its ABI is checked (#277)
+
+**What.** `os/mkosi/desktop.lock` names exactly one file — filename,
+sha256 and source URL — for `lisa-desktop-shell`, the GNOME Shell fork
+built by the separate `lisa-desktop` repo (ADR-0038, ADR-0039).
+`os/mkosi/check-desktop.sh` then asserts two things about the image that
+was actually built: that the installed shell is that version, and that
+the shell and `mutter` come from the same GNOME major series.
+
+**Why.** Every other remote input was already pinned — the ports by
+sha256 (`os/packages/ports.lock`, ADR-0051), the models by hash, the
+container bases by digest, mkosi by archive version (#271), the in-tree
+packages by construction. The shell was not: `Packages=lisa-desktop-shell`
+(`mkosi.conf.d/x86_64.conf`) resolved against the **rolling** `current`
+tag of the `[lisa]` index, so a publish from `lisa-desktop` between two
+image builds changed what the image shipped with nothing in the commit
+to record it — two builds of the same SHA could contain different
+desktops. And `mutter` still arrives unpinned from Arch, while GNOME
+Shell links `libmutter-<N>.so` and loads Mutter's typelib: 50.3 against
+50.4 works (the soname is stable inside a series, verified on the
+reference iMac), 50.3 against 51.0 dies at a device's login screen.
+
+**How it works**, three enforcement points, because a pin nobody checks
+is a comment:
+
+1. `release.yml` downloads the pinned file into `PackageDirectories=`
+   and refuses a sha256 mismatch. mkosi writes
+   `Include = /etc/mkosi-local.conf` ahead of the `[lisa]` repo and
+   pacman takes the first repo that has the package, so the pinned file
+   wins over the index. It goes into `/build/pkgs` and **not**
+   `/build/repo-out`, so the publish step never pushes the pinned copy
+   back onto the device channel.
+2. `mkosi.finalize` runs `check-desktop.sh` against `$BUILDROOT` in
+   **every** lane — nightly, release, aarch64, local `just image`. It
+   reads `/usr/lib/lisa/packages.manifest` (written by
+   `mkosi.postinst.chroot` from `pacman -Q`, because `/var/lib/pacman`
+   does not survive onto the shipped root), never a variable somebody
+   could forget to update. In the nightly — which has no local package
+   directory and installs from `[lisa]` — the pin is a version
+   assertion, so that lane goes red the day the index publishes a shell
+   this repo has not taken.
+3. `release.yml`'s desktop step runs the same script again against the
+   mounted artifact, so the fact is proven to have survived into the
+   image that is about to be published.
+
+**How to extend / bump.** Take the version from a `lisa-desktop`
+**release tag** (not the rolling index — the tag is what makes the pin
+immutable):
+
+```
+gh release view <tag> --repo Lisa-AgenticOS/lisa-desktop \
+  --json assets --jq '.assets[] | "\(.name)  \(.digest)"'
+```
+
+Copy the filename, the sha256 (drop the `sha256:` prefix) and the asset
+URL into `desktop.lock` — one commit, reviewable, recorded in git. The
+lock lives here rather than beside `os/packages/ports.lock` because the
+image build reads it: mkosi bind-mounts only its own config directory
+into the script sandbox as `$SRCDIR`, and the release lane copies
+`os/mkosi/` alone to `/build/mkosi`.
+
+**Limits.**
+
+- The `[lisa]` index is still configured for the build
+  (`mkosi.pkgmngr/etc/pacman.d/lisa.conf`), because `nightly.yml` builds
+  without a local package directory and has nothing else to install the
+  shell from. So #273's option 1 is only half done: the *release* image
+  no longer takes the index's word, the *nightly* still does and is
+  merely asserted against the lock. Dropping the index from the build
+  entirely (and with it the keyring-seeding class of #270) needs the
+  nightly to fetch the pinned file too.
+- `mutter` itself is still unpinned. This gate makes the drift loud, it
+  does not prevent it; pinning the Arch snapshot is a separate, larger
+  change.
+- The aarch64 lane ships stock `gnome-shell` (ADR-0021), so it has no
+  shell pin to check. The ABI half of the gate still runs there.
+- If an image carries no `packages.manifest` at all, `mkosi.finalize`
+  prints that the gates did not run and continues — `nightly.yml` and
+  `release.yml` independently fail on a missing manifest.
+
 ## Boot splash
 
 `quiet splash` + `console=ttyS0` (`mkosi.conf` `KernelCommandLine=`) hand

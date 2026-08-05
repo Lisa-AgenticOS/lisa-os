@@ -1,0 +1,63 @@
+# The desktop lock (#273): which lisa-desktop-shell package file the
+# image installs, pinned by version, sha256 AND source URL. One line
+# per artifact:
+#
+#   <filename>  <sha256>  <url>
+#
+# WHY THIS EXISTS. Everything else the image pulls is pinned — the
+# ports by sha256 (os/packages/ports.lock, ADR-0051), the models by
+# hash, the container bases by digest, mkosi by archive version
+# (#271), the in-tree packages by construction (PackageDirectories=).
+# The shell was the exception: `Packages=lisa-desktop-shell` resolved
+# against the ROLLING `current` tag of the [lisa] index, so a publish
+# from the lisa-desktop repo between two image builds changed what the
+# image shipped with no record in the commit that built it. Two builds
+# of the same SHA could contain different desktops.
+#
+# WHY IT LIVES HERE and not beside os/packages/ports.lock, which it
+# otherwise mirrors: this file is read by the image build itself
+# (mkosi.finalize -> check-desktop.sh), and mkosi bind-mounts only its
+# own config directory into the script sandbox as $SRCDIR. A lock one
+# directory up would be unreachable from inside the build — and the
+# release lane copies os/mkosi/ alone to /build/mkosi, so it would be
+# absent there twice over.
+#
+# HOW IT IS ENFORCED, three times, because a pin nobody checks is a
+# comment:
+#   1. release.yml downloads exactly this file into the local package
+#      directory and refuses a sha256 mismatch. mkosi writes
+#      `Include = /etc/mkosi-local.conf` ahead of the [lisa] repo, and
+#      pacman takes the first repo that has the package — so this file
+#      wins over the index.
+#   2. mkosi.finalize runs check-desktop.sh against the built root in
+#      EVERY lane, including the nightly, which has no local package
+#      directory and installs from [lisa]. There, this pin is a version
+#      assertion: the nightly goes red the day lisa-packages publishes
+#      a shell this repo has not taken.
+#   3. release.yml runs the same script again on the mounted artifact.
+#
+# HOW TO BUMP IT. Take the version from a lisa-desktop RELEASE TAG, not
+# from the rolling index — the tag is what makes the pin an immutable
+# reference. Then:
+#
+#   gh release view <tag> --repo Lisa-AgenticOS/lisa-desktop \
+#     --json assets --jq '.assets[] | "\(.name)  \(.digest)"'
+#
+# and copy the filename + sha256 (drop the `sha256:` prefix) and the
+# asset URL into the line below. Verify the digest by downloading the
+# file rather than trusting the API field if you have any doubt; the
+# 50.3-1 line below was verified that way on 2026-08-05:
+#
+#   curl -fsSL -o /tmp/shell.pkg.tar.zst <url> && sha256sum /tmp/shell.pkg.tar.zst
+#   14480abc8ebf54a698a958eb33030f0e221e45ec9e153d8dc485cf5045d0578e
+#
+# A bump is ONE commit that a reviewer can read, which is the whole
+# point: what an image contains is decided by the commit that built it.
+lisa-desktop-shell-50.3-1-x86_64.pkg.tar.zst  14480abc8ebf54a698a958eb33030f0e221e45ec9e153d8dc485cf5045d0578e  https://github.com/Lisa-AgenticOS/lisa-desktop/releases/download/v0.2.0/lisa-desktop-shell-50.3-1-x86_64.pkg.tar.zst
+# NOT pinned here, deliberately:
+#   * lisa-desktop-ime / the lisa-desktop meta package — the image
+#     installs neither (the IME addon ships as this repo's own lisa-ime
+#     package, built in release.yml).
+#   * the aarch64 lane — the fork is arch=(x86_64) and that lane ships
+#     stock gnome-shell (ADR-0021), so there is nothing to pin. The ABI
+#     half of the gate (#277) still runs there, against gnome-shell.

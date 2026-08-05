@@ -75,6 +75,20 @@ armv8-a baseline, and `zen-browser` pins a separate verified digest per
 architecture. Anything that genuinely cannot ship on an architecture is
 excluded there explicitly — never faked (CLAUDE.md rule 8).
 
+**Two locks, one contract.** `ports.lock` pins the prebuilt third-party
+packages the x86_64 image consumes, by sha256, from this repo's rolling
+`ports` release (ADR-0051). Its sibling for the desktop lives one
+directory over, in **`os/mkosi/desktop.lock`** (#273): the
+`lisa-desktop-shell` package file, pinned by version, sha256 *and*
+source URL to a `lisa-desktop` release tag. Same principle — what an
+image contains is decided by the commit that built it, never by whatever
+a rolling tag holds — and the reason it is not filed here is mechanical:
+the image build itself reads it (`mkosi.finalize` →
+`os/mkosi/check-desktop.sh`), and mkosi bind-mounts only its own config
+directory into the script sandbox. Bumping either is the same two-step
+shape: publish, then a one-line lock commit a reviewer can read. See
+`os/mkosi/README.md` "The desktop is pinned".
+
 **Payloads that leave the image.** `zen-browser` is a split build
 (ADR-0023 phase 1, issue #51): `zen-browser-launcher` is image contract
 and stays; `zen-browser` is 363 MiB of `/opt/zen` that moves to the

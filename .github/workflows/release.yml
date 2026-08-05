@@ -330,6 +330,30 @@ jobs:
               sed -i "s/^ImageVersion=1$/ImageVersion=${VER}/" /build/mkosi/mkosi.conf
               mkdir -p /build/pkgs /build/extra/etc/systemd/network
               cp /build/repo-out/*.pkg.tar.* /build/pkgs/
+              # The desktop, PINNED (#273). Until this line the shell was
+              # the one remote input the image took whatever-is-current
+              # of: Packages=lisa-desktop-shell resolved against the
+              # rolling `current` tag of the [lisa] index, so a publish
+              # from the lisa-desktop repo between two builds changed
+              # what the image shipped with nothing in the commit to say
+              # so. Fetch exactly the file os/mkosi/desktop.lock names,
+              # from the lisa-desktop RELEASE TAG that built it, and
+              # refuse a digest mismatch — the same contract
+              # os/packages/ports.lock has with the ports.
+              #
+              # Into /build/pkgs (PackageDirectories=) so mkosi-local
+              # outranks [lisa] and pacman takes THIS file. Deliberately
+              # NOT into /build/repo-out: that is what the publish step
+              # uploads to the [lisa] index, and re-uploading the pinned
+              # copy would push an older shell back onto the device
+              # channel every time the lock lagged a publish.
+              while read -r fname sha url; do
+                case "$fname" in ""|\#*) continue ;; esac
+                echo ">> desktop: $fname"
+                curl -fsSL --retry 3 -o "/build/pkgs/$fname" "$url"
+                echo "$sha  /build/pkgs/$fname" | sha256sum -c --quiet - \
+                  || { echo "FAIL: $fname does not match desktop.lock — refusing to ship it"; exit 1; }
+              done < /build/mkosi/desktop.lock
               printf "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n" \
                 > /build/extra/etc/systemd/network/80-dhcp.network
               mkdir -p /build/mkosi/mkosi.conf.d
@@ -563,19 +587,30 @@ jobs:
           M=$R/usr/lib/lisa/packages.manifest
           sudo test -s "$M" || say "no packages.manifest — postinst did not record the installed set."
           sudo cat "$M" > /tmp/installed.txt 2>/dev/null || : > /tmp/installed.txt
-          # The [lisa] index is a rolling tag with no version constraint,
-          # so the shell is the one input this build takes "whatever is
-          # current" of. Presence alone cannot answer "which shell did
-          # this release ship?" a week later — record the exact version
-          # in the log AND the job summary, so the answer is a click,
-          # not archaeology.
+          # Presence alone cannot answer "which shell did this release
+          # ship?" a week later — record the exact version in the log
+          # AND the job summary, so the answer is a click, not
+          # archaeology.
           shell_ver=$(grep '^lisa-desktop-shell ' /tmp/installed.txt || true)
           if [ -z "$shell_ver" ]; then
             say "lisa-desktop-shell is not installed — the image has no Lisa Desktop."
           else
-            echo "desktop: $shell_ver (from the [lisa] index, rolling 'current')"
-            echo "**Desktop:** \`$shell_ver\` (from the [lisa] index at build time)" >> "$GITHUB_STEP_SUMMARY"
+            echo "desktop: $shell_ver (pinned by os/mkosi/desktop.lock)"
+            echo "**Desktop:** \`$shell_ver\` (pinned by \`os/mkosi/desktop.lock\`)" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # #273 and #277, on the artifact that is about to be published:
+          # the shell must be the version the lock pins (it no longer
+          # comes from the rolling index — the build fetches the pinned
+          # file into PackageDirectories=), and its GNOME series must
+          # match the mutter Arch resolved, because GNOME Shell links
+          # libmutter-<N>.so and a mismatch dies at a device's login
+          # screen rather than degrading.
+          #
+          # The same script already ran inside the build (mkosi.finalize),
+          # which is what makes this cheap to repeat: this run reads the
+          # manifest out of the MOUNTED IMAGE, so it also proves the fact
+          # survived into the artifact.
+          bash os/mkosi/check-desktop.sh /tmp/installed.txt os/mkosi/desktop.lock || fail=1
           if grep -q '^gnome-shell ' /tmp/installed.txt; then
             say "stock gnome-shell is installed; it should have been replaced (provides/conflicts)."
           fi
