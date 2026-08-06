@@ -1,0 +1,7 @@
+{
+  "uuid": "lisa-glass@lisa-os.org",
+  "name": "Lisa Glass",
+  "description": "Frosted backdrop behind Lisa app windows. Mutter exposes no blur API to clients (GNOME/mutter#3023), so the compositor does it: this runs inside the Shell, where the wallpaper is reachable.",
+  "shell-version": ["50"],
+  "session-modes": ["user"]
+}

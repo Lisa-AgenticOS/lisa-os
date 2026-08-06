@@ -262,12 +262,32 @@ class NotesApp {
             // read_note is newer than the daemon on some machines. Show
             // what the list already knows rather than an error page —
             // the title is real even when the body cannot be fetched.
+            // Say it IN the pane, not only in a toast that fades. An
+            // empty editor with no explanation reads as an empty note,
+            // which is a lie about the person's data.
             this._toast(`Could not load the body: ${e.message ?? e}`);
-            full = {...note, body: ''};
+            full = {
+                ...note,
+                body: `[This note's text could not be loaded.\n\n${e.message ?? e}]`,
+                _unreadable: true,
+            };
         }
         this._selected = full;
         this._titleEntry.text = full.title ?? '';
+        // Cursor at the end, nothing selected. An entry that takes
+        // focus selects its contents, so every note opened with its
+        // title highlighted — one keystroke from being replaced, and it
+        // reads as "this is about to be overwritten" rather than "this
+        // is your note".
+        this._titleEntry.select_region(-1, -1);
         this._bodyView.buffer.set_text(full.body ?? '', -1);
+        // Read-only until update_note exists: an editable field whose
+        // edits cannot be saved is worse than a read-only one, because
+        // it invites work that will be lost.
+        const editable = false;
+        this._titleEntry.editable = editable;
+        this._bodyView.editable = editable;
+        this._bodyView.cursor_visible = editable;
         this._dateLabel.label = this._dateOf(full);
         this._deleteBtn.sensitive = true;
         this._contentStack.visible_child_name = 'note';
@@ -290,6 +310,9 @@ class NotesApp {
         this._selected = {id: null, title: '', body: ''};
         this._titleEntry.text = '';
         this._bodyView.buffer.set_text('', -1);
+        this._titleEntry.editable = true;
+        this._bodyView.editable = true;
+        this._bodyView.cursor_visible = true;
         this._dateLabel.label = 'New note';
         this._deleteBtn.sensitive = false;
         this._contentStack.visible_child_name = 'note';
