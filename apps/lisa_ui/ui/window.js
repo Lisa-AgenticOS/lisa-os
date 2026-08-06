@@ -211,6 +211,97 @@ export function lisaSplitWindow({
     };
 }
 
+/// A three-pane window: a narrow sidebar, a list, and the selected
+/// thing. Mail is this shape — rail+folders | messages | reader — and
+/// Mail is where this was EXTRACTED from, per ADR-0056 step 4: its
+/// measurements below are Mail's shipped ones, not invented defaults.
+///
+/// The glass rules are lisaSplitWindow's, applied to the leftmost pane
+/// only: the sidebar is see-through and flush to the frame, the list
+/// and content keep their own opaque ground. One window shape, one
+/// place for the window controls (the content header carries them; the
+/// list header's are suppressed by Adwaita inside the inner split, the
+/// floating sidebar's explicitly here).
+export function lisaTripleWindow({
+    app, title, width = 1280, height = 820,
+    sidebarWidth = 280, overlay = true,
+}) {
+    if (!app)
+        throw new Error('lisa_ui/window: an Adw.Application is required');
+    if (typeof title !== 'string' || !title)
+        throw new Error('lisa_ui/window: a window needs a title');
+
+    const window = new Adw.ApplicationWindow({
+        application: app,
+        title,
+        default_width: width,
+        default_height: height,
+    });
+
+    const sidebarHeader = new Adw.HeaderBar();
+    const sidebarView = new Adw.ToolbarView();
+    sidebarView.add_top_bar(sidebarHeader);
+
+    const listHeader = new Adw.HeaderBar();
+    const listView = new Adw.ToolbarView();
+    listView.add_top_bar(listHeader);
+
+    const contentHeader = new Adw.HeaderBar();
+    const contentView = new Adw.ToolbarView();
+    contentView.add_top_bar(contentHeader);
+
+    installStyle(window.get_display());
+    sidebarView.add_css_class('lisa-glass');
+    sidebarView.add_css_class('lisa-glass-edge-end');
+
+    // The inner split is the same in both modes: list | content, and
+    // Adwaita manages which of their headers shows window controls.
+    const inner = new Adw.OverlaySplitView({
+        sidebar: listView, content: contentView,
+        min_sidebar_width: 320, max_sidebar_width: 460,
+        sidebar_width_fraction: 0.34,
+    });
+
+    let outer;
+    if (overlay) {
+        // Same construction as lisaSplitWindow's overlay branch: the
+        // inner split fills the window inset past the pane, and the
+        // glass sidebar floats flush to the frame's left edge.
+        outer = new Gtk.Overlay();
+        inner.set_margin_start(sidebarWidth);
+        listView.add_css_class('lisa-ground');
+        contentView.add_css_class('lisa-ground');
+        outer.set_child(inner);
+
+        sidebarHeader.set_show_start_title_buttons(false);
+        sidebarHeader.set_show_end_title_buttons(false);
+        sidebarView.set_halign(Gtk.Align.START);
+        sidebarView.set_size_request(sidebarWidth, -1);
+        window.add_css_class('lisa-see-through');
+        outer.add_overlay(sidebarView);
+        window.content = outer;
+    } else {
+        outer = new Adw.OverlaySplitView({
+            sidebar: sidebarView, content: inner,
+            min_sidebar_width: 200, max_sidebar_width: sidebarWidth,
+            sidebar_width_fraction: 0.18,
+        });
+        window.content = outer;
+    }
+
+    // The panes are returned as the ordinary Adw.ToolbarViews they are:
+    // Mail pins a sync banner above its list and a "last synced" line
+    // below it, and add_top_bar/add_bottom_bar on the pane IS the
+    // toolkit's API for that (rule 11 — a dialect, not a wrapper).
+    return {
+        window, outer, inner, sidebarHeader, listHeader, contentHeader,
+        sidebarPane: sidebarView, listPane: listView, contentPane: contentView,
+        setSidebar: (w) => { sidebarView.content = w; },
+        setList: (w) => { listView.content = w; },
+        setContent: (w) => { contentView.content = w; },
+    };
+}
+
 /// A window control an app adds itself, with the tooltip that makes it
 /// legible. Sugar, but the kind that stops six apps spelling the same
 /// three lines six ways.

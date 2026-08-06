@@ -48,6 +48,20 @@ export default class LisaGlass {
         }
         for (const actor of global.get_window_actors())
             this._add(actor);
+        // Stacking is not a fact you can assert once (#318): the backer
+        // is inserted below its window at map, but every raise, lower,
+        // new map and workspace switch reorders window_group, and a
+        // full-stage clone that drifts ABOVE a window paints blurred
+        // wallpaper over that window's content — seen on the device as
+        // Mail rendering with its sidebar and headers "missing". So the
+        // pin is re-applied on every restack the display reports.
+        this._ids.push([global.display, global.display.connect('restacked', () => {
+            for (const [actor, entry] of this._backers ?? []) {
+                const parent = actor.get_parent();
+                if (parent && entry.bg.get_parent() === parent)
+                    parent.set_child_below_sibling(entry.bg, actor);
+            }
+        })]);
         log('lisa-glass: enabled');
     }
 

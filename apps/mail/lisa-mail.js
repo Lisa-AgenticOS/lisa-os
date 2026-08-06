@@ -37,6 +37,7 @@ import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
+import {lisaTripleWindow} from '../lisa_ui/ui/window.js';
 import {
     messageText, parseAddress, parseHeaders, readableBody, splitMessage,
 } from './lib/rfc822.js';
@@ -2017,10 +2018,16 @@ app.connect('activate', () => {
     // room, and a mail window that opens smaller than its own content
     // reads as a preview of an app.
     const display = window_default_size();
-    const window = new Adw.ApplicationWindow({
-        application: app, title: 'Mail',
-        default_width: display.width, default_height: display.height,
+    // The shared chrome (#282, ADR-0056): one window shape, the glass
+    // sidebar, one dark/light path, and the window controls where every
+    // Lisa app puts them. The three-pane primitive was extracted FROM
+    // this app — the measurements in lisa_ui are Mail's shipped ones.
+    const ui = lisaTripleWindow({
+        app, title: 'Mail',
+        width: display.width, height: display.height,
+        sidebarWidth: 280,
     });
+    const window = ui.window;
     // The file dialogs the attachment bar puts up need a parent.
     mainWindow = window;
     // How the next `activate` finds this one instead of building a
@@ -2036,13 +2043,12 @@ app.connect('activate', () => {
             selectFolder(row._account, row._folder);
     });
 
-    const sidebar = new Adw.ToolbarView();
     // The account is named in the sidebar itself — as the header's
     // subtitle when there is one account, and as the rows inside each
     // folder's expander when there are several. Either way the answer to
     // "whose mail am I reading" is on screen, which it was not.
     const sidebarTitle = new Adw.WindowTitle({title: 'Mail'});
-    sidebar.add_top_bar(new Adw.HeaderBar({title_widget: sidebarTitle}));
+    ui.sidebarHeader.set_title_widget(sidebarTitle);
     const who = accountLabel();
     if (who)
         sidebarTitle.set_subtitle(who);
@@ -2105,7 +2111,7 @@ app.connect('activate', () => {
     sidebarBody.append(new Gtk.ScrolledWindow({
         child: folderList, vexpand: true, hexpand: true,
     }));
-    sidebar.set_content(sidebarBody);
+    ui.setSidebar(sidebarBody);
 
     // Pane 2: the grouped message list.
     listBox = new Gtk.ListBox({css_classes: ['navigation-sidebar']});
@@ -2113,11 +2119,10 @@ app.connect('activate', () => {
         if (row?._message)
             showMessage(row._message);
     });
-    const listPane = new Adw.ToolbarView();
     // NOT show_title:false. That hides the title WIDGET too, so the
     // search entry below was created, packed, and invisible — which no
     // test would have caught and one screenshot did.
-    const listHeader = new Adw.HeaderBar();
+    const listHeader = ui.listHeader;
     // Smart / Classic (#250), above the list where the reference puts
     // it. A ToggleGroup would be Adw 1.7+; two grouped toggles in a
     // linked box is the same control on the Adw we pin.
@@ -2204,14 +2209,13 @@ app.connect('activate', () => {
     listHeader.pack_end(new Gtk.MenuButton({
         icon_name: 'open-menu-symbolic', menu_model: menu, tooltip_text: 'Main menu',
     }));
-    listPane.add_top_bar(listHeader);
 
     // Why nothing is arriving, when nothing is arriving — in
     // `syncStatus`'s words, over the list rather than buried in a
     // settings page nobody opens when the app looks fine.
     syncBanner = new Adw.Banner({revealed: false});
     syncBanner.connect('button-clicked', () => runSyncAction());
-    listPane.add_top_bar(syncBanner);
+    ui.listPane.add_top_bar(syncBanner);
 
     // …and how stale what IS on screen is. Quiet, and always there:
     // stale mail with a timestamp is a different experience from stale
@@ -2220,9 +2224,9 @@ app.connect('activate', () => {
         label: '', xalign: 0, margin_top: 4, margin_bottom: 4, margin_start: 12, margin_end: 12,
         css_classes: ['dim-label', 'caption'],
     });
-    listPane.add_bottom_bar(lastSyncedLabel);
+    ui.listPane.add_bottom_bar(lastSyncedLabel);
 
-    listPane.set_content(new Gtk.ScrolledWindow({child: listBox, vexpand: true}));
+    ui.setList(new Gtk.ScrolledWindow({child: listBox, vexpand: true}));
 
     // Pane 3: the reading pane.
     readerTitle = new Gtk.Label({xalign: 0, wrap: true, css_classes: ['title-2']});
@@ -2344,22 +2348,9 @@ app.connect('activate', () => {
     }))
         readerBox.append(child);
 
-    const readerPane = new Adw.ToolbarView();
-    readerHeader = new Adw.HeaderBar();
+    readerHeader = ui.contentHeader;
     readerHeader.set_title_widget(new Gtk.Label({label: '', visible: false}));
-    readerPane.add_top_bar(readerHeader);
-    readerPane.set_content(readerBox);
-
-    // Two nested split views: sidebar | (list | reader).
-    const inner = new Adw.OverlaySplitView({
-        sidebar: listPane, content: readerPane,
-        min_sidebar_width: 320, max_sidebar_width: 460, sidebar_width_fraction: 0.34,
-    });
-    const outer = new Adw.OverlaySplitView({
-        sidebar, content: inner,
-        min_sidebar_width: 200, max_sidebar_width: 280, sidebar_width_fraction: 0.18,
-    });
-    window.set_content(outer);
+    ui.setContent(readerBox);
     reloadFolders();
     updateLastSynced();
     // Asked once the window exists, and answered when GOA answers.
