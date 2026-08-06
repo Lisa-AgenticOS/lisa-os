@@ -50,6 +50,17 @@ entire agent surface with no error, warning or log line), and
 every Assistant prompt goes through, shipped with **no** egress sandbox
 while two of its own comments described one).
 
+`check-desktop-inventory.py` gained **R8** on 2026-08-06, and it is
+worth reading as a pattern rather than a rule. R2 already asked whether
+a fork's contract was *coherent* — provides and conflicts, both halves
+or neither. R8 asks the different question nobody had asked: does
+anything **act** on it? `replaces=` was missing on all three forks, and
+without it pacman never offers the swap, because a machine holding
+stock has nothing pulling a differently-named package in. So the
+2026-08-05 rename read as complete in the tree, in `ports.lock` and in
+the ADR while having happened on zero devices (#284). Coherent and
+inert are not the same property, and only one of them was checked.
+
 `check-egress-units.py` is the one that discovers its own population:
 it *interprets* the PKGBUILD install lines to find every shipped unit,
 takes each unit's `ExecStart` binary, and demands a posture for it — so a

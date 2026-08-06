@@ -293,6 +293,15 @@ _pick() {
 package_lisa-desktop-control-center() {
   provides=("gnome-control-center=$pkgver")
   conflicts=(gnome-control-center)
+  # replaces= is what makes the rename actually HAPPEN (#284).
+  # provides/conflicts describe the relationship once both names are
+  # known to pacman; neither causes an upgrade. A machine with stock
+  # `gnome-control-center` installed has nothing pulling a
+  # differently-named package in, so `pacman -Syu` would leave it on
+  # stock forever and the Intelligence panel would silently vanish on
+  # the next GNOME bump. `replaces=` is the one directive that makes
+  # -Syu offer the swap.
+  replaces=(gnome-control-center)
   depends+=(lisa-desktop-keybindings)
   optdepends=(
     'fwupd: device security panel'
@@ -319,6 +328,7 @@ package_lisa-desktop-keybindings() {
   pkgdesc="Keybindings configuration for GNOME applications (Lisa build)"
   provides=("gnome-keybindings=$pkgver")
   conflicts=(gnome-keybindings)
+  replaces=(gnome-keybindings)
   depends=()
 
   mv gkb/* "$pkgdir"

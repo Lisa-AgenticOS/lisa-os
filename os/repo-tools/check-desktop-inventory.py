@@ -106,6 +106,15 @@ Repo half (runs with no manifest at all):
       must not turn this file into a green no-op.
   R7  A FOUNDATION or INTERIM package that no lane declares, unless it
       is named in UNDECLARED_DEBT under its ceiling (see there).
+  R8  A fork with the full provides/conflicts contract on a stock name
+      but no `replaces=` on it. R2 asks whether the contract is
+      coherent; R8 asks whether anything ACTS on it, and the answer was
+      no. provides/conflicts describe a relationship once pacman knows
+      both names — neither causes an upgrade, so a machine holding
+      stock has nothing pulling a differently-named package in. The
+      2026-08-05 rename therefore read as complete in the tree, in
+      `ports.lock` and in the ADR while having happened on zero
+      devices. Vacuous by absence, one directive wide. #284.
 
 Manifest half (`--manifest FILE --lane LANE`):
 
@@ -741,6 +750,19 @@ class Inventory:
                         f"centre, half the session — can resolve at all, "
                         f"and the fork is not a replacement, it is a "
                         f"removal."
+                    )
+                # R8: and a contract nothing acts on is not a rename.
+                if not any(e.split("=")[0] == stock for e in pkg.replaces):
+                    errors.append(
+                        f"{pkg.pkgbuild}: `{name}` has the provides/conflicts "
+                        f"contract on `{stock}` but no replaces= on it — so "
+                        f"NOTHING makes an installed `{stock}` become the "
+                        f"fork. provides/conflicts describe the relationship "
+                        f"once pacman knows both names; neither one CAUSES an "
+                        f"upgrade, and a machine holding stock has nothing "
+                        f"pulling a differently-named package in. The rename "
+                        f"reads as done in the tree, in ports.lock and in the "
+                        f"ADR, and has happened on zero devices. #284."
                     )
 
         # R3: rule 11. Nothing forks the foundation, and nothing here

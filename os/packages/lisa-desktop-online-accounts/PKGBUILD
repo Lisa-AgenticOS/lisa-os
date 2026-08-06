@@ -56,10 +56,17 @@ arch=(x86_64 aarch64)
 url="https://gitlab.gnome.org/GNOME/gnome-online-accounts"
 license=(LGPL-2.0-or-later)
 
-# Takes the stock name so the local repo's precedence installs this
-# instead of Arch's, exactly as gnome-control-center-lisa does.
+# Fork by CONTRACT, not by name (#284) — the same shape as
+# lisa-desktop-control-center and lisa-desktop-shell:
+#   provides= satisfies everything that depends on the stock name;
+#   conflicts= makes co-installation impossible at any version, so we
+#     never lose the silent pkgrel race the day Arch ships higher;
+#   replaces= is what makes an installed stock package actually switch
+#     on `pacman -Syu`. Without it the rename is inert: nothing pulls a
+#     differently-named package in, and the machine stays on stock.
 provides=("$_pkgname=$pkgver" "libgoa-1.0.so" "libgoa-backend-1.0.so")
 conflicts=("$_pkgname")
+replaces=("$_pkgname")
 
 # librest, not rest: Arch names the package librest (0.10.x); `rest`
 # resolves nowhere — caught by this package's FIRST build ever, in the

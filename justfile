@@ -67,7 +67,9 @@ lint:
     # and the device still carries `gnome-control-center 50.3-2` as a
     # result (#284). The repo half runs here, offline: it fails on a
     # PKGBUILD that takes a stock name, on half a provides/conflicts
-    # contract, and on anything forking the foundation. The manifest
+    # contract, on a contract with no replaces= to act on it (R8 — the
+    # rename that read as done everywhere and had reached no device),
+    # and on anything forking the foundation. The manifest
     # half needs an image, so it runs where there is one:
     #   check-desktop-inventory.py --manifest <root>/usr/lib/lisa/packages.manifest --lane release
     python3 os/repo-tools/check-desktop-inventory.py
