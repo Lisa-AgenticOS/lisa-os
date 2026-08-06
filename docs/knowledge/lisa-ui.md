@@ -102,13 +102,14 @@ and on a device.
 
 - **It lives under `apps/`, not `libs/`, and ADR-0056 says `libs`.**
   `build-apps-payload.sh` flattens `apps/<app>` and `shell/<surface>`
-  into one tree, so an app is three levels from the repo root and two
-  from the payload root. A relative import means the same thing in both
-  only if the library sits beside the app in each. Every consumer today
-  is an app; **the day a `shell/` surface needs `lisa_ui`, that depth
-  question has to be answered properly** — the relative path will not
-  resolve for it, and papering over that with a second copy is the
-  defect this directory exists to undo.
+  into one tree, so a relative import means the same thing in both
+  trees only if the library sits beside the consumer in each. For apps
+  that is literal. For `shell/` surfaces it is the `shell/lisa_ui`
+  symlink (→ `../apps/lisa_ui`, the ADR-0060 pattern in miniature):
+  `../lisa_ui/…` resolves through it in the repo and against the real
+  directory at the payload root — verified both sides, and GJS yields
+  ONE module instance through a symlink. The symlink is repo plumbing;
+  the payload never carries it.
 - **The widget set is three window shapes and a button.** Step 4 grows
   by extraction only — the grouped sidebar list that Notes and Mail
   each still hand-roll is the obvious next candidate, when one of them
