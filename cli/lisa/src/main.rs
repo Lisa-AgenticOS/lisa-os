@@ -3624,7 +3624,10 @@ mod attachment_tests {
 
     /// Write a temp file with the given extension and bytes.
     fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("lisa-attach-tests");
+        // Per-process: a fixed name under the shared temp dir has two
+        // test binaries writing the same file at once, and a torn read
+        // here would look like an attachment-encoding bug.
+        let dir = std::env::temp_dir().join(format!("lisa-attach-tests-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         std::fs::write(&p, bytes).unwrap();

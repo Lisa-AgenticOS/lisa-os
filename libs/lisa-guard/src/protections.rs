@@ -275,7 +275,15 @@ mod tests {
 
     #[test]
     fn what_save_writes_is_what_load_reads() {
-        let dir = std::env::temp_dir().join("lisa-guard-protect-roundtrip");
+        // Per-process, because the directory is torn down at both ends
+        // of this test: a fixed name under the shared temp dir means a
+        // second `lisa-guard` test binary running concurrently deletes
+        // the file between this one's save and load. That reproduced at
+        // 56/200 with eight concurrent runners, and read as a flake.
+        let dir = std::env::temp_dir().join(format!(
+            "lisa-guard-protect-roundtrip-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("lisa").join("guard-protect");
         let want = Protections::from_paths(["/home/me/Legal", "/home/me/Tax"]);
