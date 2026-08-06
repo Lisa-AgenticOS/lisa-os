@@ -80,18 +80,64 @@ jobs:
               useradd -m builder
               printf "builder ALL=(ALL) NOPASSWD: ALL\n" > /etc/sudoers.d/builder
               chown -R builder /build
+              # Each port stands alone. Before this, the loop inherited
+              # `-e` from `bash -ec`, so the FIRST failing port aborted
+              # the container — every later port went unbuilt and, worse,
+              # the `cp` below never ran, so the ports that had already
+              # SUCCEEDED were thrown away with it. That is how a clean
+              # gnome-control-center 50.4 build (784/784, every anchor
+              # guard satisfied) produced no artifact: an unrelated port
+              # refused, and took it down.
+              #
+              # A port that declares itself blocked is SKIPPED rather
+              # than attempted. lisa-desktop-online-accounts cannot build
+              # until somebody supplies a real client secret (#276), so
+              # attempting it means a permanently red lane — and a job
+              # that is always red is a job nobody reads, which is the
+              # same lesson as the IBus unit that failed on every boot.
+              rc=0; built=""; failed=""; skipped=""
               for p in $PORTS; do
-                sudo -u builder bash /build/os/repo-tools/build-port.sh "$p" /build/out
+                blocked=$(sed -n "s/^# lisa-port-blocked: *//p" \
+                          "/build/os/packages/$p/PKGBUILD" | head -1)
+                if [ -n "$blocked" ]; then
+                  echo ">> SKIP $p — declared blocked: $blocked"
+                  skipped="$skipped $p"
+                  continue
+                fi
+                if sudo -u builder bash /build/os/repo-tools/build-port.sh "$p" /build/out; then
+                  built="$built $p"
+                else
+                  echo ">> FAIL $p"
+                  failed="$failed $p"; rc=1
+                fi
               done
+              echo "built:$built"
+              echo "failed:$failed"
+              echo "skipped:$skipped"
               mkdir -p /src/out
-              cp /build/out/*.pkg.tar.* /src/out/
-            '
+              # Publish what DID build even when a sibling failed: the
+              # image consumes only what os/packages/ports.lock pins, so
+              # an artifact on the rolling release changes nothing until
+              # a human commits its digest. The job still exits non-zero.
+              cp /build/out/*.pkg.tar.* /src/out/ 2>/dev/null || true
+              exit $rc
+            ' || build_rc=$?
           sudo chown -R "$USER:" out
-          ls -lh out/
+          ls -lh out/ || true
+          # Remembered, not raised here: the upload step must still run
+          # so a port that built is not stranded by a sibling that did
+          # not. The job is failed at the end, after publishing.
+          echo "build_rc=${build_rc:-0}" >> "$GITHUB_ENV"
       - name: Upload to the ports release + print the lock lines
+        # Publish whatever built, even on a partial failure — see above.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if ! ls out/*.pkg.tar.* >/dev/null 2>&1; then
+            echo "no artifacts to upload (every requested port failed or was skipped)"
+            exit 0
+          fi
           gh release upload ports --clobber out/*.pkg.tar.*
           {
             echo "## New ports.lock lines"
@@ -106,3 +152,17 @@ jobs:
             echo "The release build consumes ONLY what the lock pins —"
             echo "uploading here changes nothing until the lock commit lands."
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail the job if any port failed to build
+        # Last, deliberately: the artifacts that DID build are already
+        # published and their lock lines already printed, so a partial
+        # run is still useful — but it is never reported as a success.
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "${build_rc:-0}" != "0" ]; then
+            echo "one or more ports failed to build; see the build step above."
+            echo "Artifacts from the ports that DID build were uploaded — the"
+            echo "image consumes only what os/packages/ports.lock pins, so"
+            echo "nothing changes until a lock commit takes them."
+            exit 1
+          fi
+          echo "all requested ports built"

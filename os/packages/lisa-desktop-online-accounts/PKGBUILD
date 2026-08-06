@@ -1,5 +1,14 @@
 # gnome-online-accounts, built with Lisa's own Google OAuth client.
 #
+# lisa-port-blocked: #276 — _client_secret is still the placeholder, so
+# build() refuses on purpose. The ports lane SKIPS a port that says this
+# rather than attempting it: build() failing on every single run is a
+# permanently red lane, and a job that is always red is a job nobody
+# reads. Worse, until 2026-08-06 that refusal aborted the whole
+# container and stranded the artifacts of every port that had already
+# built successfully. Delete this line the moment a real secret exists;
+# the build's own guard is what actually enforces it, not this comment.
+#
 # WHY THIS EXISTS
 # The Google sign-in sheet says "Continue to GNOME", because the client
 # id is compiled into libgoa-backend and the stock one is GNOME's. An OS
