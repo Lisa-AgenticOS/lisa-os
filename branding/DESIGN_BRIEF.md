@@ -42,19 +42,21 @@ Brand — violet (two steps, one family). Deep for identity, livelier for UI.
 - The wordmark reverses to WHITE on violet/dark. Do NOT use orange as a UI
   accent — it must not compete with the reserved amber.
 
-Warm neutrals (the UI is built from these — warm-tinted, never cold gray)
-- Ink 900 `#2B2320`    — primary text on light
-- Ink 700 `#4A423D`
-- Ink 500 `#6E635C`    — secondary text
-- Ink 300 `#9A8F88`    — tertiary / captions
-- Line 200 `#E7DED8`   — borders, dividers
-- Warm White `#FFF1E9` — on-dark text, warm surfaces
-- Paper `#FAF7F5`      — light app background
+Slate neutrals (the UI is built from these — the Tailwind slate ramp;
+the warm-tinted palette was retired 2026-08-06 on the owner's call)
+- Ink 900 `#0F172A`    — primary text on light (slate-900)
+- Ink 700 `#334155`    — (slate-700)
+- Ink 500 `#64748B`    — secondary text (slate-500)
+- Ink 300 `#94A3B8`    — tertiary / captions (slate-400)
+- Line 200 `#E2E8F0`   — borders, dividers (slate-200)
+- Warm White `#F8FAFC` — on-dark text, light ground (slate-50; the token
+  keeps its historical name)
+- Paper `#F1F5F9`      — light app background (slate-100)
 - Surface `#FFFFFF`    — light cards
 
 Dark surfaces
-- Base `#1B1917` · Elevated `#262220` · Card `#302B28` · Line `#3C3531`
-  · text primary `#FFF1E9`, secondary `#B7ABA3`
+- Base `#0F172A` · Elevated `#1E293B` · Card `#1E293B` · Line `#334155`
+  · text primary `#F8FAFC`, secondary `#94A3B8`
 
 Semantic (warm-leaning, use sparingly)
 - Success `#3E9B6B` · Warning `#E0A030` · Error `#D6453C` · Info `#4A7DB0`

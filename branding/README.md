@@ -29,8 +29,8 @@ Two violets, one family: a deep brand violet + a livelier UI primary.
 | Violet 500 | `#6D45C9` | PRIMARY UI — buttons, toggles, links, the tile |
 | Violet 300 | `#9B7BE8` | hovers, gradient top |
 | White | `#FFFFFF` | the wordmark reversed on violet/dark |
-| Ink | `#2B2320` | body text, on-light foreground |
-| Warm White | `#FFF1E9` | on-dark text, warm surfaces |
+| Ink | `#0F172A` | body text, on-light foreground (slate-900) |
+| Warm White | `#F8FAFC` | on-dark text, light surfaces (slate-50; historical name) |
 
 `ANSI_COLOR` in os-release is Violet 500 (`1;38;2;109;69;201`) — the
 livelier step reads better on a dark console. The full UI token system

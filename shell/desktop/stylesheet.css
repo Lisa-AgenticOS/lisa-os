@@ -24,7 +24,7 @@
  * branding/tokens.json. Shell chrome is dark over any wallpaper, so the
  * dark ramp is the right one here and not a theme guess. */
 .lisa-dock-prompt {
-    background-color: rgba(48, 43, 40, 0.55);  /* dark.card #1E293B */
+    background-color: rgba(30, 41, 59, 0.55);  /* dark.card #1E293B */
     color: #F8FAFC;
     caret-color: #F8FAFC;
     selection-background-color: #6D45C9;
@@ -43,7 +43,7 @@
  * the dock holds a modal grab while it is focused, so a person needs to
  * see WHY their next click went nowhere. */
 .lisa-dock-prompt:focus {
-    background-color: rgba(48, 43, 40, 0.85);
+    background-color: rgba(30, 41, 59, 0.85);
     border: 1px solid #9B7BE8;  /* brand.violet-300 */
 }
 

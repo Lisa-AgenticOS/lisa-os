@@ -699,7 +699,7 @@ hex literal into their CSS and annotate it, e.g.
 `apps/surfer/lisa-surfer.js:662`:
 
 ```js
-window { background: mix(#4F378B, #1B1917, 0.72); } /* tokens: violet-700 into dark-base */
+window { background: mix(#4F378B, #0F172A, 0.72); } /* tokens: violet-700 into dark-base */
 ```
 
 So the gate catches an *unsanctioned* colour; it does not make the

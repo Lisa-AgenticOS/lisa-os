@@ -58,7 +58,7 @@ export function onScheme(fn) {
 /// The two ground tones, from branding/tokens.json rather than typed
 /// in at the call site.
 ///
-/// Surfer had `'#0F172A'` and `'#FFFFFF'` written out in two places
+/// Surfer had the dark ground and `'#FFFFFF'` written out in two places
 /// with `/* token: … */` comments beside them, because
 /// `branding/out/tokens.js` was not reachable from an app. It is now
 /// (ui/tokens.js), so the comment can go back to being a fact.

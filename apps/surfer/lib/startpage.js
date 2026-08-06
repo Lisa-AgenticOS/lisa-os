@@ -43,14 +43,14 @@ export const START_PAGE_HTML = `<!doctype html>
     width: 100%; box-sizing: border-box;
     font: inherit; font-size: 17px;
     color: #F8FAFC;
-    background: rgba(255, 241, 233, 0.09);
-    border: 1px solid rgba(255, 241, 233, 0.16);
+    background: rgba(248, 250, 252, 0.09);
+    border: 1px solid rgba(248, 250, 252, 0.16);
     border-radius: 14px;
     padding: 14px 20px;
     outline: none;
   }
   input:focus { border-color: #9B7BE8; } /* token: violet-300 */
-  input::placeholder { color: rgba(255, 241, 233, 0.45); }
+  input::placeholder { color: rgba(248, 250, 252, 0.45); }
 </style></head>
 <body>
   <form action="lisa-go:submit" method="get">
