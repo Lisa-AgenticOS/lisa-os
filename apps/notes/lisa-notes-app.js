@@ -38,12 +38,6 @@ class NotesApp {
 
         const ui = lisaSplitWindow({
             app, title: 'Notes', width: 940, height: 640, sidebarWidth: 320,
-            // A floating frosted sidebar over the note. The blur only
-            // means anything when there is content behind the pane —
-            // beside-content there is nothing to blur but a flat
-            // background (ADR-0056, Mutter#3023 for the window-over-
-            // desktop case, which is still upstream-blocked).
-            overlay: true,
         });
         this.window = ui.window;
         this._ui = ui;

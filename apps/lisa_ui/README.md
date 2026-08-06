@@ -9,10 +9,29 @@ second caller needs it, because one invented up front is a guess.
 | `mcp/protocol.js` | the JSON-RPC/MCP server edge, and the provenance tag | step 1 |
 | `mcp/client.js` | a GJS window talking to its own backend's tools | — |
 | `ui/tokens.js` | the generated design tokens, in the payload at last | step 2 |
-| `ui/window.js` | `LisaWindow` — one window shape for every surface | step 3 |
+| `ui/window.js` | `LisaWindow` + `lisaSplitWindow` — one window shape, glass by default | step 3 |
+| `ui/style.js` | the Lisa stylesheet, built at runtime from the tokens | step 2 |
 
 First consumer: `apps/notes`, whose window is built on `ui/window.js`
 and reaches its own data through `mcp/client.js`.
+
+## Glass is the default, and it is two halves
+
+A Lisa app with a sidebar gets a see-through pane flush to the window's
+left edge without asking. An app opts **out** with `overlay: false`.
+That direction is the whole point of a UI library: when looking like
+the rest of the system is something each app must remember, you get
+#282 — eight surfaces, three answers to where the window controls go.
+
+|  | comes from | needs |
+|---|---|---|
+| **transparency** | `lisa_ui` — the window paints nothing behind the pane | any GNOME |
+| **frost** | `shell/glass` — the compositor clones the wallpaper, blurs it, slides it under the window | our Shell fork |
+
+Without the extension an app is transparent but **sharp**. That is a
+fair degradation, not a broken window — and an app cannot do the frost
+half itself at any price, because a client never sees what is behind
+its own surface (GNOME/mutter#3023, open).
 
 ## What it does
 
@@ -85,8 +104,20 @@ and on a device.
   question has to be answered properly** — the relative path will not
   resolve for it, and papering over that with a second copy is the
   defect this directory exists to undo.
-- No widgets, no theme loading, no `LisaWindow` — #282 is not closed by
-  this. Steps 2–4 of ADR-0056 are unbuilt.
+- **No widget set.** ADR-0056 step 4, deliberately unbuilt: a widget is
+  extracted when a second caller needs one. `lisaSplitWindow` is the
+  only thing here that was, and Notes is why.
+- **#282 is not closed.** The chrome half is answered — one window
+  shape, one dark/light path, one sidebar — and Notes and Surfer now
+  measure identical. Mail still builds its own chrome, and the issue's
+  acceptance names Mail and the Assistant too.
+- **Frost needs `shell/glass`, which is not shipped.** It lives in the
+  repo and in `~/.local` on one device. Extensions load from the baked
+  tree at session start (#268), so reaching an image means the `lisa`
+  package and a release.
+- **`Shell.BlurEffect` is not portable.** A GSK cairo fallback cannot
+  blur at all, and the frost silently becomes plain transparency. Worth
+  a check before anyone promises glass on unknown hardware.
 - The library is *not* independently versioned, and there is no API
   version check yet. ADR-0056 requires one before the library and the
   apps can ship on different cadences; today they ship in the same

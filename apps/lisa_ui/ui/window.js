@@ -85,15 +85,27 @@ export function lisaWindow({app, title, width = 900, height = 640, content = nul
 ///
 /// Returns the two headers as well as the pages, because what an app
 /// puts IN a header is the only part of the chrome it should decide.
-/// `overlay: true` floats the sidebar OVER the content instead of
-/// beside it. That is what makes glass mean anything: `backdrop-filter`
-/// blurs what is behind a pane, and beside-content there is nothing
-/// behind it but a flat window background — blurring a flat colour
-/// returns the same flat colour. Content under the pane is the whole
-/// trick, and it is how Safari and macOS Notes do it too.
+/// Glass by DEFAULT. A Lisa app with a sidebar gets a see-through
+/// pane flush to the window's left edge, and an app opts OUT with
+/// `overlay: false` rather than opting in.
+///
+/// That direction is the point of a UI library. When it was opt-in,
+/// looking like the rest of the system was a thing each app had to
+/// remember, and #282 is the record of what happens then: eight
+/// surfaces, three answers to where the window controls go, two answers
+/// to what a sidebar is.
+///
+/// What the glass is made of, in two halves:
+///
+///   TRANSPARENCY comes from here — the window paints nothing where the
+///   pane is, so the desktop shows through. Works on any GNOME.
+///   FROST comes from the compositor — shell/glass clones the wallpaper,
+///   blurs it, and slips it under the window. Without that extension an
+///   app is transparent but sharp, which is a fair degradation and not
+///   a broken window. Apps cannot do this half themselves: mutter#3023.
 export function lisaSplitWindow({
     app, title, width = 900, height = 640,
-    sidebarTitle = title, sidebarWidth = 300, overlay = false,
+    sidebarTitle = title, sidebarWidth = 300, overlay = true,
 }) {
     if (!app)
         throw new Error('lisa_ui/window: an Adw.Application is required');
