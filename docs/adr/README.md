@@ -38,7 +38,7 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**56 records** — 5 superseded in part, 24 accepted and partly executed, 2 accepted with no code yet, 21 accepted and done, 4 proposed.
+**57 records** — 5 superseded in part, 24 accepted and partly executed, 2 accepted with no code yet, 22 accepted and done, 4 proposed.
 
 | ADR | Decision | Status | Where it actually stands |
 |---|---|---|---|
@@ -98,6 +98,7 @@ grep.
 | [0054](0054-the-websites-are-generated-not-authored-twice.md) | The websites are generated from the repo, not authored twice | accepted, partially executed | phase 0 landed: both sites now derive their colours from `branding/tokens.json`, `check-tokens.py` covers `web` as a surface, and `.github/workflows/web.yml` builds and link-checks both sites on PR. Phases 1–3 (Nuxt UI primitives, `@nuxt/content` over `docs/*.md`, derived news/downloads/API reference) have not landed and are tracked as one issue. |
 | [0055](0055-the-live-usb-is-the-image-on-removable-media.md) | The live USB is the one image on removable media; liveness is where it booted from, not a lineage | accepted, partially executed | the medium and the boot are what ship today and are CI-gated; the *guarantee* below (a live session touches only the disk it booted from) is enforced in the installer as of this ADR and only mitigated, never verified, in the mount path. §"What is not built" is the honest list. |
 | [0056](0056-lisa-ui-is-the-dialect-not-the-toolkit.md) | `lisa_ui` is the dialect, not the toolkit | accepted, not implemented | the decision is made and the name is free; the directory does not exist. Sequenced behind the harness fixes (#288, #302, #303/#304), deliberately. |
+| [0057](0057-the-monorepo-owns-the-surfaces-until-step-6.md) | the monorepo owns the shell surfaces until step 6 actually happens | accepted | — |
 
 <!-- END GENERATED INDEX -->
 

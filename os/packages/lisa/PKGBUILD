@@ -99,6 +99,15 @@ package_lisa-ime() {
         'fcitx5-qt: Qt5/6 apps'
         'fcitx5-configtool: change the trigger key or turn the gesture off'
     )
+    # The same addon is built by lisa-desktop as lisa-desktop-ime, and
+    # both were in the index owning /usr/lib/fcitx5/lisa.so,
+    # /usr/share/fcitx5/addon/lisa.conf, /etc/profile.d/lisa-ime.sh and
+    # /etc/xdg/autostart/fcitx5-lisa.desktop with no conflict declared.
+    # Nobody had reported this pair — it came out of enumerating the
+    # index rather than reading the issue (lisa-desktop#7, ADR-0057).
+    # This package is the one the image installs; the other is not
+    # installed anywhere.
+    conflicts=(lisa-desktop-ime)
     cd "$pkgbase-$pkgver"
     DESTDIR="$pkgdir" cmake --install build-ime
     # Quiet boots (#191): hide fcitx5's once-per-boot "install the
@@ -328,6 +337,24 @@ package_lisa-shell() {
     # installs carry them too (#199, the ADR-0034 lesson: a capability
     # that arrives as someone else's accident disappears the same way).
     depends=(gjs libadwaita lisa-cli libqalculate poppler-glib qpdf)
+    # This package OWNS the shell surfaces and the app tree today
+    # (ADR-0057, lisa-desktop#7). lisa-desktop and lisa-apps were built
+    # from the extracted repos in anticipation of ADR-0039 step 6 and
+    # publish into the same signed index, where they claimed 51 and 39 of
+    # this package's paths respectively with nothing declared on either
+    # side — so `pacman -S` decided which surfaces a device ran, by
+    # install order.
+    #
+    # `conflicts` and NOT `replaces`: replaces would swap this package
+    # out on the next -Syu, and the two together are 40 files SHORT of it
+    # — no launcher schema (#255: an extension whose getSettings() throws
+    # does not degrade, it fails to enable), no Assistant D-Bus
+    # activation (#210), no versionless NautilusPreviewer name, and
+    # Preview's manifest installed where agentd does not read (#241,
+    # closed, reintroduced by lisa-apps). Step 6 is a source migration;
+    # it is not a packaging flag, and the index must not let anyone
+    # mistake it for one.
+    conflicts=(lisa-desktop lisa-apps)
     # `gnome-shell` is the *name*, not necessarily the stock package:
     # the image installs lisa-desktop-shell, which provides=(gnome-shell)
     # and replaces it (ADR-0038/0048). Either satisfies this, which is
