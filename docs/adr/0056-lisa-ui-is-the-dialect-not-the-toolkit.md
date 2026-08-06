@@ -1,13 +1,18 @@
 # ADR-0056 — `lisa_ui` is the dialect, not the toolkit
 
-- **Status:** accepted, not implemented — the decision is made and the
-  name is free; the directory does not exist. Sequenced behind the
-  harness fixes (#288, #302, #303/#304), deliberately.
+- **Status:** accepted, partially executed — **step 1 landed
+  2026-08-06**: the Agent Bus edge is one file at
+  `apps/lisa_ui/mcp/protocol.js` and Mail, Surfer and Preview import it.
+  Steps 2–4 (token sheet loading, `LisaWindow`, widgets) are unbuilt, so
+  #282 is not closed.
 - **Date:** 2026-08-06
 - **Supersedes in part:** ADR-0014 (the Dart `lisa_ui`), which ADR-0047
   had already parked.
+- **Amended 2026-08-06:** the library lives at `apps/lisa_ui`, not
+  `libs/lisa_ui` — see "Where it actually lives" below.
 - **Claims:**
-  - `absent:libs/lisa_ui` — the name is free and the directory does not exist; this claim turns red the day it does
+  - `path:apps/lisa_ui/mcp/protocol.js` — step 1: one copy of the Agent Bus edge
+  - `absent:libs/lisa_ui` — the `libs/` path this ADR originally named is still unused, deliberately; see the amendment
 
 ## Context
 
@@ -64,6 +69,25 @@ What that buys, stated precisely so nobody over-claims it later:
 
 So "ship glass and every app is glass" is true for the theme layer and
 false for the widget layer. Both halves go in the README.
+
+### Where it actually lives (amended 2026-08-06)
+
+`apps/lisa_ui`, not `libs/lisa_ui`, and the reason is the shipped tree
+rather than taste. `os/repo-tools/build-apps-payload.sh` FLATTENS
+`apps/<app>` and `shell/<surface>` into one payload root, so
+`apps/mail/lib/x.js` is three levels below the repo root and
+`mail/lib/x.js` is two below the payload root. A relative import can
+only mean the same thing in both trees if the library sits beside the
+consumer in each — hence `../../lisa_ui/...`, resolving in the repo and
+on a device without a build step, a generated copy, or a path rewritten
+at package time.
+
+Every consumer of step 1 is an app, so this costs nothing today. It has
+a known edge: **a `shell/` surface cannot import it by that path**, and
+the honest answer when one needs to is to fix the depth — by staging
+into `apps/` and `shell/` subdirectories, or by resolving at runtime —
+NOT by adding a second copy. `apps/lisa_ui/README.md` carries that
+warning where somebody about to hit it will read it.
 
 ### Version skew is the cost, and it is structural
 

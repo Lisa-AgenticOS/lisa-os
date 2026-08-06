@@ -74,9 +74,9 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**59 records** — 5 superseded in part, 26 accepted and partly executed, 2 accepted with no code yet, 23 accepted and done, 3 proposed.
+**59 records** — 5 superseded in part, 27 accepted and partly executed, 1 accepted with no code yet, 23 accepted and done, 3 proposed.
 
-**155 machine-checked claims across 55 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
+**156 machine-checked claims across 55 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
 
 | ADR | Decision | Status | Checks | Where it actually stands |
 |---|---|---|---|---|
@@ -135,7 +135,7 @@ grep.
 | [0053](0053-lisa-server-is-a-product-on-the-shared-core.md) | Lisa Server is a product on the shared core, and its first surface is the Assistant as an API | proposed | — | design only, no code. Supersedes ADR-0052's framing of server mode as a flavor; ADR-0052's lineage mechanics remain correct for the day Lisa Server earns its own image. |
 | [0054](0054-the-websites-are-generated-not-authored-twice.md) | The websites are generated from the repo, not authored twice | accepted, partially executed | 3 | phase 0 landed: both sites now derive their colours from `branding/tokens.json`, `check-tokens.py` covers `web` as a surface, and `.github/workflows/web.yml` builds and link-checks both sites on PR. Phases 1–3 (Nuxt UI primitives, `@nuxt/content` over `docs/*.md`, derived news/downloads/API reference) have not landed and are tracked as one issue. |
 | [0055](0055-the-live-usb-is-the-image-on-removable-media.md) | The live USB is the one image on removable media; liveness is where it booted from, not a lineage | accepted, partially executed | 3 | the medium and the boot are what ship today and are CI-gated; the *guarantee* below (a live session touches only the disk it booted from) is enforced in the installer as of this ADR and only mitigated, never verified, in the mount path. §"What is not built" is the honest list. |
-| [0056](0056-lisa-ui-is-the-dialect-not-the-toolkit.md) | `lisa_ui` is the dialect, not the toolkit | accepted, not implemented | 1 | the decision is made and the name is free; the directory does not exist. Sequenced behind the harness fixes (#288, #302, #303/#304), deliberately. |
+| [0056](0056-lisa-ui-is-the-dialect-not-the-toolkit.md) | `lisa_ui` is the dialect, not the toolkit | accepted, partially executed | 2 | **step 1 landed 2026-08-06**: the Agent Bus edge is one file at `apps/lisa_ui/mcp/protocol.js` and Mail, Surfer and Preview import it. Steps 2–4 (token sheet loading, `LisaWindow`, widgets) are unbuilt, so #282 is not closed. |
 | [0057](0057-the-monorepo-owns-the-surfaces-until-step-6.md) | the monorepo owns the shell surfaces until step 6 actually happens | accepted | 3 | — |
 | [0058](0058-the-desktop-inventory-owned-foundation-interim.md) | the desktop inventory: owned, foundation, interim | accepted | 9 | — |
 | [0059](0059-remoted-brokers-model-egress-not-every-socket.md) | `lisa-remoted` brokers model egress, not every socket on the machine | accepted, partially executed | 3 | the reasoning and the exemption are recorded here and cited from `os/repo-tools/check-egress-units.py`. The remaining edit is CLAUDE.md rule 5's own wording, quoted verbatim in "The wording rule 5 should carry" below; until that lands, the operating manual still states the absolute this record retires. |
