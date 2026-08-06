@@ -267,6 +267,30 @@ if [ -n "$BIN" ]; then
 
     mapfile -t dfiles < <(files_for "$UNIT_REL")
     mapfile -t dprops < <(props_for "${dfiles[@]}")
+    # Give back the ONE thing NOT_SANDBOX took away, and nothing else.
+    #
+    # props_for drops StateDirectory= on purpose (see NOT_SANDBOX): it is
+    # state plumbing rather than confinement, and seven units all asking
+    # for `StateDirectory=lisa` on one host collide. But dropping it
+    # while KEEPING ProtectSystem=strict leaves the daemon with a
+    # read-only /var — so lisa-inferenced died on
+    #
+    #   Error: cannot open ledger /var/lib/lisa/ledger.db:
+    #          ledger unavailable: Read-only file system (os error 30)
+    #
+    # ...before it ever bound a port, and the check below reported
+    # "never answered /health", which reads as "the sandbox broke
+    # loopback". It did not. The harness broke the daemon.
+    #
+    # That is the failure mode this whole file exists to avoid — a unit
+    # that never started being indistinguishable from a sandbox that
+    # worked — so the fix restores the directory systemd would have made
+    # from StateDirectory=lisa, and grants write to exactly that path.
+    # It is fidelity to the shipped unit, not a hole: the network
+    # confinement under test (IPAddressDeny, RestrictAddressFamilies)
+    # is untouched, and a positive control proves that below.
+    sudo install -d -m0755 /var/lib/lisa
+    dprops+=(-p ReadWritePaths=/var/lib/lisa)
     sudo systemd-run --unit=lisa-egress-daemon "${dprops[@]}" -- \
         "$RUN_BIN" --engine llama --models-dir /var/lib/lisa-models/refs
     up=""
@@ -276,6 +300,19 @@ if [ -n "$BIN" ]; then
     done
     if [ -n "$up" ] && "$CURL" -sf 127.0.0.1:7777/health | grep -q '"status":"ok"'; then
         echo "ok: /health served under the shipped sandbox"
+        # The ReadWritePaths= above is a change to the property set the
+        # daemon runs under, so the egress block must be re-proven for
+        # THAT set — not inferred from the curl probe a few lines up,
+        # which ran without it. Same properties, network instead of
+        # loopback: it must still fail.
+        if sudo systemd-run --wait --pipe --quiet "${dprops[@]}" -- \
+               "$CURL" -sf -m 20 -o /dev/null "$PROBE_URL" 2>/dev/null; then
+            bad "the daemon's property set — the one with ReadWritePaths=" \
+                "/var/lib/lisa added — reaches $PROBE_URL. Writable state was" \
+                "supposed to restore the ledger, not the network."
+        else
+            echo "ok: the same property set still cannot reach $PROBE_URL"
+        fi
     else
         bad "lisa-inferenced never answered /health under its own unit sandbox" \
             "— loopback is supposed to survive the egress block."
