@@ -118,23 +118,43 @@ the process hosting the model that asked for it.
 ```rust
 match lisa_guard::judge_approval(&Approval {
     approve: true,
-    is_requester: true,       // the peer that parked this call
-    owns_consent_name: false, // the broker's answer, not a claim
+    is_requester: false,      // a DIFFERENT connection…
+    answerer_is_requesters_process: true, // …of the SAME process (#289)
+    owns_consent_name: true,  // the broker's answer, not a claim
+    answerer_is_consent_program: false, // /proc/<pid>/exe says otherwise
     requester_hosts_a_model: true, // /proc/<pid>/exe, not a message
-    class: ConfirmClass::Chip,
+    class: ConfirmClass::Modal,
     brokered: true,
 }) {
-    ApprovalVerdict::Refused { rule, .. } => assert_eq!(rule, "consent.self_approval"),
+    ApprovalVerdict::Refused { rule, .. } => assert_eq!(rule, "consent.same_process"),
     v => panic!("{v:?}"),
 }
 ```
 
-Two rule ids, both in `BUS_RULES`:
+Three rule ids, all in `BUS_RULES`:
 
 | rule | when | relaxable |
 |---|---|---|
 | `consent.self_approval` | a model host approving a call it made — any tier, broker or not | never (`HARD_NO_RULES`) |
 | `consent.no_surface` | a modal with no independent dialog to answer it (#244) | never, but starting the dialog resolves it |
+| `consent.same_process` | the process that parked a call approving it over a second connection (#289) | never (`HARD_NO_RULES`) |
+
+**A name is not an identity, and neither is a connection.** Both of the
+older fields say less than they look like they say, and #289 is what came
+of reading them as more:
+
+- `is_requester` compares unique **bus names**, so a `false` means "a
+  different socket", not "a different process". One process may hold as
+  many as it likes.
+- `owns_consent_name` is the broker's unforgeable answer to
+  `GetNameOwner` — and `session.conf` ships `<allow own="*"/>`, so it
+  says only that this peer called `RequestName` first.
+
+`answerer_is_requesters_process` (pidfd-pinned pids, `lisa_peer::Process`)
+and `answerer_is_consent_program` (`/proc/<pid>/exe` against an
+allowlist) are the two facts that make the sentence at the top of
+`src/consent.rs` — *a process that hosts a model may never approve a call
+it made* — say **process**.
 
 Every field of `Approval` is transport-derived. Not one is read from a
 message, which is what makes this outside the boundary rather than
@@ -142,8 +162,10 @@ inside it (ADR-0030 §2). What the requester keeps is the right to
 **withdraw** its own call, because withdrawal causes no action — a
 guardrail that stopped it would be aimed at the wrong side of the line.
 
-The corpus tables are `CONSENT_MUST_REFUSE` and `CONSENT_MUST_ALLOW` in
-`tests/corpus.rs`. The second exists because a corpus of refusals alone
+The corpus tables are `CONSENT_MUST_REFUSE`, `CONSENT_MUST_ALLOW`, and
+`CONSENT_MUST_LEARN_NOTHING` — the attempts that must be refused
+*without* a rule id, because naming one would confirm the call exists
+— in `tests/corpus.rs`. The second exists because a corpus of refusals alone
 cannot tell a working boundary from a broken one: without it a
 `judge_approval` that refused *everything* would pass.
 

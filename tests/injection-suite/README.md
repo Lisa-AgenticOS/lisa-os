@@ -92,12 +92,21 @@ hostile page that gets the model to call `navigate` also gets it to call
 `Confirm`.
 
 - `a_model_host_cannot_confirm_its_way_through_the_corpus` runs the whole
-  corpus as a model host and then tries to release every parked call from
-  the model host's own peer. Zero releases, zero dispatches.
+  corpus as a model host and then tries to release every parked call
+  **twice**: from the model host's own peer, and from a *second
+  connection of the same process* that holds `dev.lisaos.Consent1` on it
+  (#289). Zero releases, zero dispatches, and the rule id is asserted on
+  both — `consent.self_approval` for the first, `consent.same_process`
+  for the second. The id matters: every target in the corpus is modal
+  class, so `consent.no_surface` refuses them all on its own and an
+  assertion of "something stopped it" would stay green with either rule
+  deleted.
 - `the_consent_surface_can_still_release_a_corpus_call` is its positive
   control. Without it, a `confirm` that refused *everything* would make
   the test above green while shipping a system in which no privileged
-  call can ever complete.
+  call can ever complete. The dialog in it is now a different **process**
+  as well as a different connection, so the control also fails if the
+  process rule ever starts refusing the real dialog.
 
 `tests/loop_write_tier.rs` is the end-to-end answer to #216's actual
 complaint — that the write tools had no agent-loop caller and the
@@ -110,6 +119,19 @@ cannot release it; an independent surface can, and only then does it run
 and land in the undo journal; a write following a web-tagged `read_page`
 arrives escalated to a modal (#166's acceptance, previously unreachable);
 and the loop may still withdraw its own call.
+
+It also carries the two #289 reproductions, in the auditor's exact shape.
+`a_second_connection_of_the_model_host_cannot_release_its_own_call` parks
+from `:1.42` and approves from `:1.43` — one process, two connections,
+the second owning the consent name. Before the fix that test printed
+`Executed { call_id: 1, ledger_ref: 1, result: {"ok": true} }`: the
+destructive call really ran, and the Ledger credited "the consent
+surface". `a_peer_that_merely_grabbed_the_consent_name_is_not_the_dialog`
+is the other scenario — `RequestName` first, under `<allow own="*"/>`, on
+a name whose surface is activatable and therefore usually absent — and
+asserts that the refusal carries **no** rule id and renders identically
+to one for a call id that was never issued, so a squatter cannot use it
+to map which calls exist.
 
 ## What the corpus cannot see (#302)
 

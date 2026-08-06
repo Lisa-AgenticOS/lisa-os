@@ -46,10 +46,7 @@ impl Agent1 {
 /// confirmation dialog (`shell/consent`, issue #145).
 ///
 /// Identity comes from the BROKER's answer to "who owns this name",
-/// never from anything a caller asserts (ADR-0033). Program identity via
-/// `/proc/<pid>/exe` would not help here: the surface runs under
-/// `/usr/bin/gjs`, so an executable allowlist would authorise *any* GJS
-/// program in the session rather than the consent surface.
+/// never from anything a caller asserts (ADR-0033).
 ///
 /// This was `dev.lisaos.Overlay1` — the overlay BACKEND, which also
 /// hosts the model. A call the overlay originated therefore came back to
@@ -58,7 +55,63 @@ impl Agent1 {
 /// whatever the name says; pointing at a name a separate process owns is
 /// the other half, so the dialog is a different program and not merely a
 /// different role.
+///
+/// **And a name is still not an identity** (#289). This comment used to
+/// go on to argue that `/proc/<pid>/exe` "would not help here", because
+/// the surface runs under `/usr/bin/gjs`. That is a reason the exe check
+/// is *weak*, not a reason to have no check at all — and the gap it left
+/// was total: `session.conf` ships `<allow own="*"/>`, so the peer that
+/// called `RequestName` first became the universal approver, and the
+/// model's own host qualified by opening a second connection. See
+/// [`CONSENT_SURFACE_PROGRAMS`].
 const CONSENT_SURFACE: &str = "dev.lisaos.Consent1";
+
+/// Programs that may be the human's consent dialog, as absolute
+/// executable paths.
+///
+/// Read together with [`CONSENT_SURFACE`]: owning the name says a peer
+/// *asked* to be the dialog, this says what it *is*. `bus.rs` requires
+/// both, because either alone was demonstrated to be forgeable — the
+/// name by `RequestName`, and a program that has not been given the name
+/// by the broker is just another peer.
+///
+/// # The limit, stated rather than wished away
+///
+/// The consent surface is `Exec=/usr/bin/lisa-app consent/lisa-consentd.js`,
+/// and `lisa-app` ends in `exec gjs -m "$found"`. So the kernel's answer
+/// for the shipped dialog is `/usr/bin/gjs-console` — verified on the
+/// reference device, where `dev.lisaos.Consent1` is owned by pid 18669
+/// with that exe. An allowlist containing an *interpreter* authorises
+/// every program that interpreter can run:
+///
+/// - it refuses `/usr/bin/lisa-harnessd`, which is the executed exploit
+///   in #289 and the entire threat model of ADR-0029/0030 — the process
+///   the model is running inside;
+/// - it refuses every compiled squatter, and the `python3` one the #306
+///   audit actually ran;
+/// - it does **not** refuse a hostile GJS script, and a process that
+///   `fork()`s and `exec`s `gjs` gets a new pid as well, so it also
+///   steps around the same-process check.
+///
+/// What closes it is the dialog having an executable of its own —
+/// `/usr/bin/lisa-consentd` — at which point passing this check means
+/// running our code, and our code draws a window the owner has to
+/// answer. That is packaging and `shell/consent` work, not agentd's, and
+/// the entry below is already here waiting for it: `resolve_managers`
+/// drops paths that do not exist, so shipping the binary is the whole of
+/// the change on this side.
+///
+/// `comm` is not an option and never was: a process names itself
+/// (ADR-0033 §3).
+pub const CONSENT_SURFACE_PROGRAMS: [&str; 2] = [
+    // The dedicated binary. Not installed today — listed so that the
+    // day it is, it is trusted without a second edit here.
+    "/usr/bin/lisa-consentd",
+    // What the shipped dialog actually runs as. `/usr/bin/gjs` is a
+    // symlink to `gjs-console`; `resolve_managers` canonicalises, so
+    // either spelling matches the kernel's answer.
+    "/usr/bin/gjs",
+];
 
 fn fdo_err(e: BusError) -> zbus::fdo::Error {
     match e {
@@ -165,8 +218,28 @@ async fn start_consent_surface(conn: &zbus::Connection, needed: bool) {
     if surface_start(brokered, needed, false) == SurfaceStart::NotNeeded {
         return;
     }
-    let owned = consent_name_owner(conn).await.is_some();
-    if surface_start(brokered, needed, owned) != SurfaceStart::Start {
+    let owner = consent_name_owner(conn).await;
+    if surface_start(brokered, needed, owner.is_some()) != SurfaceStart::Start {
+        // The name is taken. It may be the dialog; it may be a peer that
+        // called `RequestName` first, which under `<allow own="*"/>` is
+        // anybody, and which the real surface cannot then displace
+        // because it asks with `BusNameOwnerFlags.NONE` (#289). agentd
+        // cannot take a name away from a peer — what it can do is refuse
+        // to treat that peer as the dialog (`confirm` does) and say out
+        // loud that a modal has just parked into a session whose consent
+        // name is held by something that is not a consent surface.
+        //
+        // Costs one credentials round trip, on the rare path where a
+        // human's dialog is being asked for.
+        if let Some(owner) = owner
+            && !name_owner_is_a_consent_program(conn, &owner).await
+        {
+            eprintln!(
+                "agentd: {CONSENT_SURFACE} is owned by {owner}, which is not a consent \
+                 surface program — no dialog can answer this call and it can only be \
+                 withdrawn (#289)"
+            );
+        }
         return;
     }
     let (Ok(dbus), Ok(name)) = (
@@ -181,6 +254,24 @@ async fn start_consent_surface(conn: &zbus::Connection, needed: bool) {
              this call can now only be withdrawn"
         );
     }
+}
+
+/// Is the connection currently holding the consent name running a
+/// consent-surface program?
+///
+/// Asked of the broker and the kernel about a **third** connection — the
+/// name's owner, which at park time is not the peer calling us. Fails
+/// towards `false`, so an unreadable owner produces the warning rather
+/// than silence: "we could not tell" and "it is a squatter" both mean
+/// nobody has been shown to be the dialog.
+async fn name_owner_is_a_consent_program(conn: &zbus::Connection, owner: &str) -> bool {
+    let Ok(peer) = lisa_peer::resolve_unique_name(conn, owner).await else {
+        return false;
+    };
+    exe_is_consent_program(
+        peer.is_same_user_as_us(),
+        lisa_peer::exe_of_peer(&peer).ok().as_deref(),
+    )
 }
 
 /// Programs that run a model in-process, as absolute executable paths.
@@ -214,6 +305,67 @@ async fn start_consent_surface(conn: &zbus::Connection, needed: bool) {
 /// (`bus_tools::read_tier_tools`, and #216's option 1 for that surface).
 /// A `lisa-assistd` with its own executable is what would resolve it.
 pub const MODEL_HOSTS: [&str; 1] = ["/usr/bin/lisa-harnessd"];
+
+/// Programs that may be a surface a person types into, as absolute
+/// executable paths (#306).
+///
+/// The companion of `harnessd`'s `PROMPT_SURFACES`, which lists the
+/// well-known *names*. Same split as [`CONSENT_SURFACE_PROGRAMS`] and
+/// the same reason: the name says a peer asked for the role, this says
+/// what it is running. `app.lisaos.Assistant` is D-Bus-activatable and
+/// therefore usually unowned, so under `<allow own="*"/>` the name alone
+/// went to whoever called `RequestName` first — demonstrated on the
+/// reference device with an ordinary `python3` process (#306).
+///
+/// # Why the list lives here and the names live there
+///
+/// `lisa-harnessd.service` is a per-user unit carrying `ProtectHome`,
+/// `ProtectSystem=strict` and `PrivateDevices`, which a user manager can
+/// only deliver through an implicit private user namespace — and from
+/// inside one, `readlink /proc/<peer>/exe` is EACCES for every peer
+/// outside it (#161). Re-verified while writing this, with a positive
+/// control: the same command in an unsandboxed transient user unit
+/// resolves `/usr/bin/lisa-agentd` and `/usr/bin/gjs-console`, and
+/// inside the sandboxed one both are "Permission denied".
+///
+/// So harnessd cannot answer this question about anybody, and agentd —
+/// which runs in the initial user namespace (`uid_map` `0 0 4294967295`,
+/// verified on the device) — can. Hence `IsPromptSurface`.
+///
+/// # The same limit as the consent list
+///
+/// The Assistant is `Exec=/usr/bin/lisa-app assistant/lisa-assistant.js
+/// --gapplication-service`, so the kernel's answer for it is
+/// `/usr/bin/gjs-console`. This refuses every compiled squatter and the
+/// `python3` one that was actually demonstrated; it does not refuse a
+/// hostile GJS script. `/usr/bin/lisa-assistant` is listed for the day
+/// the Assistant has an executable of its own, which is what closes it.
+pub const PROMPT_SURFACE_PROGRAMS: [&str; 2] = ["/usr/bin/lisa-assistant", "/usr/bin/gjs"];
+
+/// Does this executable belong to a surface a person types into?
+///
+/// Fails CLOSED: an unreadable peer is not a prompt surface, and the
+/// cost of being wrong is that a run is classed `Trigger::Event`, whose
+/// content is never trusted — the safe direction.
+fn exe_is_prompt_program(same_user: bool, exe: Option<&std::path::Path>) -> bool {
+    let programs: Vec<std::path::PathBuf> = PROMPT_SURFACE_PROGRAMS
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    // A model host is never a prompt surface, whatever the allowlists
+    // say. Belt and braces over the disjointness test below: the two
+    // lists being edited apart is exactly the drift that would turn the
+    // loop into its own "human typed this" (#306's laundering chain).
+    if exe_hosts_a_model(same_user, exe) {
+        return false;
+    }
+    lisa_peer::manager::may_manage(
+        same_user,
+        exe,
+        &lisa_peer::manager::resolve_managers(&programs),
+    )
+    .is_ok()
+}
 
 /// Is this caller one of Lisa's own programs?
 ///
@@ -285,6 +437,61 @@ async fn caller_hosts_a_model(conn: &zbus::Connection, header: &zbus::message::H
         peer.is_same_user_as_us(),
         lisa_peer::exe_of_peer(&peer).ok().as_deref(),
     )
+}
+
+/// Is this caller running one of the consent-surface programs?
+///
+/// The same authority as everything else here: the kernel's answer for
+/// `/proc/<pid>/exe`, through the broker's pidfd, resolved on both sides.
+/// Separated from a live connection so the decision has a test (the
+/// split #132 and #215 both exist because of).
+///
+/// Fails CLOSED, and the closed direction is the strict one: a caller we
+/// cannot place is not the dialog, so it cannot approve anything it did
+/// not park. The cost of being wrong is that a modal cannot be answered
+/// until a real dialog appears, which is #244's behaviour and not a
+/// bypass.
+fn exe_is_consent_program(same_user: bool, exe: Option<&std::path::Path>) -> bool {
+    let programs: Vec<std::path::PathBuf> = CONSENT_SURFACE_PROGRAMS
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    lisa_peer::manager::may_manage(
+        same_user,
+        exe,
+        &lisa_peer::manager::resolve_managers(&programs),
+    )
+    .is_ok()
+}
+
+/// Everything the transport can say about the peer answering a
+/// confirmation: its program, and the process behind it.
+///
+/// One `resolve` for both, because they must describe the *same* pinned
+/// process — asking twice would leave a window in which the answers came
+/// from two different peers (the #136 lesson, one level up).
+async fn answerer_identity(
+    conn: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+) -> (bool, Option<lisa_peer::Process>) {
+    let Ok(peer) = lisa_peer::resolve(conn, header).await else {
+        return (false, None);
+    };
+    let is_program = exe_is_consent_program(
+        peer.is_same_user_as_us(),
+        lisa_peer::exe_of_peer(&peer).ok().as_deref(),
+    );
+    (is_program, lisa_peer::Process::of_peer(&peer).ok())
+}
+
+/// The process behind the caller of `RequestCall`, pinned so the pid it
+/// reports cannot be recycled while the call sits parked (#289).
+async fn caller_process(
+    conn: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+) -> Option<lisa_peer::Process> {
+    let peer = lisa_peer::resolve(conn, header).await.ok()?;
+    lisa_peer::Process::of_peer(&peer).ok()
 }
 
 /// Who is calling, for the Ledger — from the transport, never from the
@@ -492,6 +699,13 @@ impl Agent1 {
         // model host may not answer its own parked confirmation, and by
         // then the answerer may be a different peer entirely (#216).
         let hosts_a_model = caller_hosts_a_model(conn, &header).await;
+        // Likewise, and for the harder half of the same question: the
+        // peer that answers may be a different CONNECTION of this same
+        // process, which every name-based check reads as somebody else
+        // (#289). Pinned by the broker's pidfd and held for as long as
+        // the call is parked, so the pid cannot be recycled underneath
+        // the comparison.
+        let requester_process = caller_process(conn, &header).await;
 
         let outcome = self
             .bus
@@ -507,6 +721,7 @@ impl Agent1 {
                 caller: lisa_peer::PeerId::of(conn, &header)
                     .map_err(|e| zbus::fdo::Error::AccessDenied(e.to_string()))?,
                 requester_hosts_a_model: hosts_a_model,
+                requester_process,
             })
             .map_err(fdo_err)?;
         let reply = outcome_reply(&outcome);
@@ -560,9 +775,16 @@ impl Agent1 {
         // the consent surface (#135) — never from the message.
         let caller = lisa_peer::PeerId::of(conn, &header)
             .map_err(|e| zbus::fdo::Error::AccessDenied(e.to_string()))?;
+        // Owning the consent name is a claim staked with `RequestName`;
+        // the program and the process behind the connection are what
+        // the kernel says. All three, because #289 is what one of them
+        // costs (CLAUDE.md 6b).
+        let (is_consent_program, process) = answerer_identity(conn, &header).await;
         let answerer = Answerer {
             consent: consent_role(conn, &caller).await,
             peer: caller,
+            is_consent_program,
+            process,
         };
         let outcome = self
             .bus
@@ -570,6 +792,59 @@ impl Agent1 {
             .map_err(fdo_err)?;
         let (_, status, detail) = outcome_reply(&outcome);
         Ok((status, detail))
+    }
+
+    /// Is the connection `unique_name` running a prompt-surface program?
+    ///
+    /// The one question `lisa-harnessd` cannot answer for itself. Its
+    /// unit is sandboxed into a private user namespace, from which
+    /// `/proc/<peer>/exe` is EACCES for every peer (#161); agentd is in
+    /// the initial namespace and can read it. Without this, harnessd's
+    /// "a human typed this" ceiling rested entirely on who owned
+    /// `app.lisaos.Assistant`, and that name is activatable, ordinarily
+    /// unowned, and grantable to anybody under `<allow own="*"/>`
+    /// (#306).
+    ///
+    /// # This is an identity oracle, and the guard is the whole of its
+    /// safety
+    ///
+    /// It tells its caller something about a third connection, so it is
+    /// restricted to callers that are themselves model hosts by
+    /// `/proc/<pid>/exe` — the same list, and the same authority, that
+    /// decides who may claim `user` provenance. Everyone else gets
+    /// `AccessDenied` with a fixed string that says nothing about the
+    /// name they asked about, so it cannot be used to probe which
+    /// connections exist.
+    ///
+    /// It answers only about **unique** names (`:1.412`).
+    /// `lisa_peer::resolve_unique_name` refuses anything else, because a
+    /// well-known name's owner can change between the question and the
+    /// answer and the point of the exercise is to stop reasoning about
+    /// names.
+    async fn is_prompt_surface(
+        &self,
+        unique_name: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<bool> {
+        if !caller_hosts_a_model(conn, &header).await {
+            // One fixed string for every refusal: "you may not ask" must
+            // not be distinguishable from "there is no such connection".
+            return Err(zbus::fdo::Error::AccessDenied(
+                "only a program that hosts a model may ask about a peer's identity".into(),
+            ));
+        }
+        let Ok(peer) = lisa_peer::resolve_unique_name(conn, &unique_name).await else {
+            // Fails closed, and says so as a plain `false` rather than
+            // an error: "we could not place it" and "it is not a prompt
+            // surface" have the same consequence, and the caller must
+            // not be able to tell a live unique name from a dead one.
+            return Ok(false);
+        };
+        Ok(exe_is_prompt_program(
+            peer.is_same_user_as_us(),
+            lisa_peer::exe_of_peer(&peer).ok().as_deref(),
+        ))
     }
 
     /// Revert the caller's last agent action via its journaled
@@ -794,6 +1069,8 @@ mod tests {
                 approve: true,
                 is_requester: true,
                 owns_consent_name: false,
+                answerer_is_consent_program: false,
+                answerer_is_requesters_process: true,
                 requester_hosts_a_model: true,
                 class: lisa_guard::ConfirmClass::Chip,
                 brokered: true,
@@ -802,6 +1079,8 @@ mod tests {
                 approve: true,
                 is_requester: true,
                 owns_consent_name: false,
+                answerer_is_consent_program: false,
+                answerer_is_requesters_process: true,
                 requester_hosts_a_model: false,
                 class: lisa_guard::ConfirmClass::Modal,
                 brokered: true,
@@ -843,6 +1122,157 @@ mod tests {
                 "adding `{host}` grants user provenance — it is a decision, not a path fix"
             );
         }
+    }
+
+    /// The park-time squat warning fails closed (#289). "We could not
+    /// read the name owner" and "the name owner is a squatter" have the
+    /// same consequence — nobody has been shown to be the dialog — so
+    /// both must produce the warning rather than silence.
+    ///
+    /// p2p is the transport with no broker to ask, which is exactly that
+    /// state; a version of this that answered `true` there would go
+    /// quiet on every session it could not inspect.
+    #[tokio::test]
+    async fn an_owner_we_cannot_read_is_not_treated_as_the_dialog() {
+        let (client_sock, server_sock) = tokio::net::UnixStream::pair().unwrap();
+        let guid = zbus::Guid::generate();
+        let server = zbus::connection::Builder::unix_stream(server_sock)
+            .server(guid)
+            .unwrap()
+            .p2p()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(client_sock)
+            .p2p()
+            .build();
+        let (_server, client) = tokio::try_join!(server, client).unwrap();
+
+        assert!(
+            !name_owner_is_a_consent_program(&client, ":1.279").await,
+            "an owner nobody could read was reported as the consent surface"
+        );
+    }
+
+    /// The consent-surface allowlist is a decision about who may say
+    /// yes on a person's behalf, so it gets the same invariants as
+    /// `MODEL_HOSTS` — and one more that matters far more than either.
+    #[test]
+    fn a_consent_surface_program_is_never_also_a_model_host() {
+        for program in CONSENT_SURFACE_PROGRAMS {
+            assert!(
+                std::path::Path::new(program).is_absolute(),
+                "`{program}` is not absolute, so `/proc/<pid>/exe` can never equal it"
+            );
+            // The whole architecture of #145 and #216 in one assertion:
+            // the process that runs the model and the process that
+            // draws the human's dialog must not be the same program.
+            // Adding an entry here that is also a model host would
+            // re-open self-approval through the front door, with the
+            // Ledger recording a consent surface.
+            assert!(
+                !MODEL_HOSTS.contains(&program),
+                "`{program}` is both a model host and a consent surface"
+            );
+            // …and it cannot be one of the management binaries either,
+            // because those are the surfaces `lisa do` runs in and the
+            // person answering their own chip must stay distinguishable
+            // from the dialog answering for them.
+            assert!(
+                !lisa_peer::manager::DEFAULT_MANAGERS.contains(&program),
+                "`{program}` is both a management program and a consent surface"
+            );
+        }
+        let mut sorted = CONSENT_SURFACE_PROGRAMS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            CONSENT_SURFACE_PROGRAMS.len(),
+            "duplicate consent surface program"
+        );
+    }
+
+    /// #306's laundering chain in one assertion. A model host that were
+    /// also a prompt surface could class its own run as "a human typed
+    /// this", and agentd would then accept the `user` provenance it
+    /// derived from itself — a loop vouching for its own input.
+    #[test]
+    fn a_prompt_surface_program_is_never_a_model_host() {
+        for program in PROMPT_SURFACE_PROGRAMS {
+            assert!(
+                std::path::Path::new(program).is_absolute(),
+                "`{program}` is not absolute, so `/proc/<pid>/exe` can never equal it"
+            );
+            assert!(
+                !MODEL_HOSTS.contains(&program),
+                "`{program}` is both a model host and a prompt surface"
+            );
+            // …and the predicate enforces it independently of the list,
+            // so the two drifting apart cannot open the hole.
+            assert!(
+                !exe_is_prompt_program(true, Some(std::path::Path::new(MODEL_HOSTS[0]))),
+                "the model host was accepted as a prompt surface"
+            );
+        }
+        assert!(
+            !exe_is_prompt_program(true, None),
+            "a caller with no readable exe was accepted as a prompt surface"
+        );
+        assert!(
+            !exe_is_prompt_program(
+                false,
+                Some(std::path::Path::new(PROMPT_SURFACE_PROGRAMS[0]))
+            ),
+            "another user's process was accepted as a prompt surface"
+        );
+    }
+
+    /// Issue #289. Owning `dev.lisaos.Consent1` said a peer had *asked*
+    /// to be the dialog; nothing said what it was. Every branch of the
+    /// program half, without a live peer.
+    #[test]
+    fn a_peer_we_cannot_place_is_not_the_consent_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("gjs-console");
+        std::fs::write(&real, b"#!/bin/sh\n").unwrap();
+        let real = real.canonicalize().unwrap();
+
+        // The real thing is decided by `CONSENT_SURFACE_PROGRAMS`, which
+        // names files that may not exist on a dev host — so the branches
+        // are exercised through the same resolver with a local
+        // allowlist, exactly as `exe_is_lisa_program` is.
+        let allow = |same_user, exe: Option<&std::path::Path>| {
+            lisa_peer::manager::may_manage(
+                same_user,
+                exe,
+                &lisa_peer::manager::resolve_managers(std::slice::from_ref(&real)),
+            )
+            .is_ok()
+        };
+        assert!(allow(true, Some(&real)));
+        assert!(!allow(true, None), "an unidentified peer became the dialog");
+        assert!(
+            !allow(false, Some(&real)),
+            "another user's process became the dialog"
+        );
+
+        // And the shipped predicate itself refuses the two things it
+        // must refuse on any host: a peer with no readable executable,
+        // and a peer from another uid.
+        assert!(
+            !exe_is_consent_program(true, None),
+            "a caller with no readable exe was accepted as the consent surface"
+        );
+        assert!(
+            !exe_is_consent_program(
+                false,
+                Some(std::path::Path::new(CONSENT_SURFACE_PROGRAMS[0]))
+            ),
+            "another user's process was accepted as the consent surface"
+        );
+        assert!(
+            !exe_is_consent_program(true, Some(std::path::Path::new(MODEL_HOSTS[0]))),
+            "the model host was accepted as the consent surface"
+        );
     }
 
     /// Every branch of the model-host test, without a live peer. The

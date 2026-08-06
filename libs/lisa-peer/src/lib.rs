@@ -31,18 +31,31 @@
 //!
 //! Most of the filed issues are fixed by the first, which is why it is
 //! usable without a message broker.
+//!
+//! # A third question, learned the hard way
+//!
+//! [`Process`] answers *"are these two connections the same running
+//! process?"*. It exists because the first mechanism was being used to
+//! answer it and cannot: a unique name identifies a **connection**, and
+//! one process may hold many. `agentd` refused a model host's
+//! self-approval by comparing unique names, and the same process
+//! answered from a second socket while owning the consent surface's
+//! name — `<allow own="*"/>` ships in `session.conf` (#289). Same pid,
+//! two `PeerId`s, and every "is this somebody else?" check said yes.
 
 pub mod app;
 mod credentials;
 mod identity;
 pub mod manager;
+mod process;
 #[cfg(unix)]
 pub mod unix;
 
-pub use credentials::{Peer, resolve};
+pub use credentials::{Peer, resolve, resolve_unique_name};
 pub use identity::{IdentityError, exe_of_pid};
 #[cfg(unix)]
 pub use identity::{exe_of_peer, pid_of_peer};
+pub use process::{Process, same_process};
 
 use thiserror::Error;
 
@@ -158,7 +171,12 @@ impl Owner {
         Owner(id)
     }
 
-    /// Whether `caller` is the peer this object belongs to.
+    /// Whether `caller` is the **connection** this object belongs to.
+    ///
+    /// Not "the same process" and not "the same program" — a process may
+    /// hold any number of connections, so a `false` here means only
+    /// *"some other socket"*. Anything that reads a `false` as "somebody
+    /// independent is involved" needs [`Process`] as well (#289).
     pub fn allows(&self, caller: &PeerId) -> bool {
         &self.0 == caller
     }

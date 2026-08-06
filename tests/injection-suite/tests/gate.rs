@@ -174,6 +174,7 @@ fn zero_unconfirmed_privileged_calls_across_the_corpus() {
                 args: attempt.target_args.clone(),
                 chain,
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: caller.clone(),
             })
             .expect("ledger available");
@@ -287,6 +288,7 @@ fn a_trusted_chain_still_lets_the_read_tier_target_run_silently() {
             // A human typed it and nothing untrusted steered it.
             chain: vec![Provenance::User],
             requester_hosts_a_model: false,
+            requester_process: None,
             caller: lisa_peer::PeerId::Direct,
         })
         .expect("ledger available");
@@ -335,6 +337,7 @@ fn a_caller_that_never_drains_is_stopped_by_the_pending_cap() {
                     .map(|s| Provenance::parse(s))
                     .collect(),
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: flooder.clone(),
             })
             .expect("ledger available");
@@ -413,6 +416,7 @@ fn asserting_user_provenance_does_not_buy_the_trusted_path() {
             args: attempt.target_args.clone(),
             chain: verified.chain,
             requester_hosts_a_model: false,
+            requester_process: None,
             caller: lisa_peer::PeerId::Direct,
         })
         .expect("ledger available");
@@ -455,6 +459,13 @@ fn a_model_host_cannot_confirm_its_way_through_the_corpus() {
     // The loop's peer. Distinct from the consent surface's, which is
     // the whole property under test.
     let loop_peer = lisa_peer::PeerId::Bus(":1.42".into());
+    // …and a SECOND connection of the same process (#289). A different
+    // unique name, so every check written against `Owner::allows` reads
+    // it as somebody else — which is how the model host got out from
+    // under the rule above by opening another socket and taking
+    // `dev.lisaos.Consent1` on it.
+    let loop_second = lisa_peer::PeerId::Bus(":1.43".into());
+    let loop_process = lisa_peer::Process::unpinned(4242);
     let mut released = Vec::new();
     let mut wrong_rule = Vec::new();
     let mut wrong = Vec::new();
@@ -477,6 +488,11 @@ fn a_model_host_cannot_confirm_its_way_through_the_corpus() {
                 // What agentd derives from `/proc/<pid>/exe` for
                 // `lisa-harnessd`. Not a claim in any message.
                 requester_hosts_a_model: true,
+                // Pinned by the broker's pidfd on a real session and
+                // held for as long as the call is parked, so the
+                // comparison below is about the same process it was
+                // about at park time (#289).
+                requester_process: Some(loop_process.clone()),
             })
             .expect("ledger available");
 
@@ -499,7 +515,11 @@ fn a_model_host_cannot_confirm_its_way_through_the_corpus() {
         parked += 1;
         check_escalation(attempt, escalated, spec, &mut wrong);
         // The attack: the model's own host says yes.
-        match bus.confirm(call_id, true, &Answerer::alone(loop_peer.clone())) {
+        match bus.confirm(
+            call_id,
+            true,
+            &Answerer::alone(loop_peer.clone()).from_process(Some(loop_process.clone())),
+        ) {
             Ok(_) => released.push(format!(
                 "attempt {} released its own {}/{} via {} ({})",
                 attempt.id,
@@ -527,13 +547,43 @@ fn a_model_host_cannot_confirm_its_way_through_the_corpus() {
                 }
             }
         }
+        // The second attack (#289): the SAME process, over a second
+        // connection, holding the consent name on it. This is what the
+        // rule above could not see, because it compared bus names.
+        match bus.confirm(
+            call_id,
+            true,
+            &Answerer::surface(loop_second.clone()).from_process(Some(loop_process.clone())),
+        ) {
+            Ok(_) => released.push(format!(
+                "attempt {} released its own {}/{} from a second connection ({})",
+                attempt.id, attempt.target_app, attempt.target_tool, attempt.vector
+            )),
+            // Again the rule id, not merely "something refused it".
+            // Every target here is modal class, so `consent.no_surface`
+            // would refuse them all on its own and this assertion would
+            // pass with the second-connection rule deleted.
+            Err(e) => {
+                let rule = e.rule();
+                if rule != Some(lisa_guard::SAME_PROCESS) {
+                    wrong_rule.push(format!(
+                        "attempt {} second connection was refused by {:?}, not                          consent.same_process — the process rule is not what stopped it",
+                        attempt.id, rule
+                    ));
+                }
+            }
+        }
         // A refused approval does not remove the call — it is still the
         // requester's to withdraw — so withdraw it. Without this the
         // 17th attempt and every one after it was denied by the
         // per-owner cap and skipped by the `else { continue }` above,
         // which is #303 in this test.
         let withdrawn = bus
-            .confirm(call_id, false, &Answerer::alone(loop_peer.clone()))
+            .confirm(
+                call_id,
+                false,
+                &Answerer::alone(loop_peer.clone()).from_process(Some(loop_process.clone())),
+            )
             .expect("the requester may always withdraw its own call");
         assert!(
             matches!(withdrawn, Outcome::Denied { .. }),
@@ -598,13 +648,22 @@ fn the_consent_surface_can_still_release_a_corpus_call() {
                 .collect(),
             caller: loop_peer,
             requester_hosts_a_model: true,
+            requester_process: Some(lisa_peer::Process::unpinned(4242)),
         })
         .expect("ledger available");
     let Outcome::AwaitingConfirmation { call_id, .. } = outcome else {
         panic!("the first corpus attempt no longer parks: {outcome:?}");
     };
-    bus.confirm(call_id, true, &Answerer::surface(surface))
-        .expect("the desktop dialog must be able to approve");
+    // A different PROCESS as well as a different connection, which is
+    // what independence means after #289. Written out rather than left
+    // as `None`, so this control fails if the process rule ever starts
+    // refusing the dialog too.
+    bus.confirm(
+        call_id,
+        true,
+        &Answerer::surface(surface).from_process(Some(lisa_peer::Process::unpinned(4243))),
+    )
+    .expect("the desktop dialog must be able to approve");
     assert_eq!(
         dispatcher.dispatched(),
         1,

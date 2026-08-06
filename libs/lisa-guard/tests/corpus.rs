@@ -1059,6 +1059,8 @@ const CONSENT_MUST_REFUSE: &[(&str, Approval, &str)] = &[
             approve: true,
             is_requester: true,
             owns_consent_name: false,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
             requester_hosts_a_model: true,
             class: ConfirmClass::Chip,
             brokered: true,
@@ -1071,6 +1073,8 @@ const CONSENT_MUST_REFUSE: &[(&str, Approval, &str)] = &[
             approve: true,
             is_requester: true,
             owns_consent_name: false,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
             requester_hosts_a_model: true,
             class: ConfirmClass::Modal,
             brokered: true,
@@ -1083,6 +1087,8 @@ const CONSENT_MUST_REFUSE: &[(&str, Approval, &str)] = &[
             approve: true,
             is_requester: true,
             owns_consent_name: true,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
             requester_hosts_a_model: true,
             class: ConfirmClass::Chip,
             brokered: true,
@@ -1095,6 +1101,8 @@ const CONSENT_MUST_REFUSE: &[(&str, Approval, &str)] = &[
             approve: true,
             is_requester: true,
             owns_consent_name: false,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
             requester_hosts_a_model: true,
             class: ConfirmClass::Modal,
             brokered: false,
@@ -1107,11 +1115,99 @@ const CONSENT_MUST_REFUSE: &[(&str, Approval, &str)] = &[
             approve: true,
             is_requester: true,
             owns_consent_name: false,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
             requester_hosts_a_model: false,
             class: ConfirmClass::Modal,
             brokered: true,
         },
         "consent.no_surface",
+    ),
+    (
+        "#289: the loop approving from a SECOND connection, holding the \
+         consent name on it",
+        Approval {
+            approve: true,
+            // A different unique name — which is exactly why the check
+            // that compared unique names said "somebody else".
+            is_requester: false,
+            owns_consent_name: true,
+            // …and it is not the consent program, because a process
+            // running a model is running a model.
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Modal,
+            brokered: true,
+        },
+        "consent.same_process",
+    ),
+    (
+        "…and it does not help to also be running a consent surface \
+         program, because the process is still the one that asked",
+        Approval {
+            approve: true,
+            is_requester: false,
+            owns_consent_name: true,
+            answerer_is_consent_program: true,
+            answerer_is_requesters_process: true,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Chip,
+            brokered: true,
+        },
+        "consent.same_process",
+    ),
+];
+
+/// Attempts that must be refused **without an id, a reason, or any
+/// indication that the call exists** (`ApprovalVerdict::NotYours`).
+///
+/// A separate table from the one above because the property is
+/// different and stronger: these callers must learn nothing. A row that
+/// drifted into producing a rule id would be a reconnaissance oracle for
+/// the next attempt (#93, #131), so "refused" is not a passing answer
+/// here — only "refused silently" is.
+const CONSENT_MUST_LEARN_NOTHING: &[(&str, Approval)] = &[
+    (
+        "#289: a peer that took `dev.lisaos.Consent1` first, under \
+         `<allow own=\"*\"/>`, while the activatable surface was not running",
+        Approval {
+            approve: true,
+            is_requester: false,
+            owns_consent_name: true,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: false,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Modal,
+            brokered: true,
+        },
+    ),
+    (
+        "…the same squatter withdrawing somebody else's call, which is \
+         a denial of service if it is allowed to land",
+        Approval {
+            approve: false,
+            is_requester: false,
+            owns_consent_name: true,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: false,
+            requester_hosts_a_model: true,
+            class: ConfirmClass::Modal,
+            brokered: true,
+        },
+    ),
+    (
+        "a plain stranger on the session bus sweeping call ids",
+        Approval {
+            approve: true,
+            is_requester: false,
+            owns_consent_name: false,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: false,
+            requester_hosts_a_model: false,
+            class: ConfirmClass::Chip,
+            brokered: true,
+        },
     ),
 ];
 
@@ -1125,6 +1221,8 @@ const CONSENT_MUST_ALLOW: &[(&str, Approval)] = &[
             approve: true,
             is_requester: false,
             owns_consent_name: true,
+            answerer_is_consent_program: true,
+            answerer_is_requesters_process: false,
             requester_hosts_a_model: true,
             class: ConfirmClass::Modal,
             brokered: true,
@@ -1136,6 +1234,8 @@ const CONSENT_MUST_ALLOW: &[(&str, Approval)] = &[
             approve: false,
             is_requester: true,
             owns_consent_name: false,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
             requester_hosts_a_model: true,
             class: ConfirmClass::Modal,
             brokered: true,
@@ -1147,6 +1247,8 @@ const CONSENT_MUST_ALLOW: &[(&str, Approval)] = &[
             approve: true,
             is_requester: true,
             owns_consent_name: false,
+            answerer_is_consent_program: false,
+            answerer_is_requesters_process: true,
             requester_hosts_a_model: false,
             class: ConfirmClass::Chip,
             brokered: true,
@@ -1170,6 +1272,19 @@ fn no_model_host_can_release_its_own_privileged_call() {
         CONSENT_MUST_REFUSE.len(),
         leaked.join("\n")
     );
+}
+
+#[test]
+fn a_squatter_learns_neither_the_rule_nor_that_the_call_exists() {
+    for (what, approval) in CONSENT_MUST_LEARN_NOTHING {
+        let v = judge_approval(approval);
+        assert_eq!(
+            v,
+            lisa_guard::ApprovalVerdict::NotYours,
+            "`{what}` did not land in the silent refusal"
+        );
+        assert_eq!(v.rule(), None, "`{what}` was told which rule refused it");
+    }
 }
 
 /// The positive control. Every refusal above is only meaningful because
@@ -1494,10 +1609,19 @@ fn the_forge_tool_surface_still_does_its_job() {
 /// not run beside another test that reads them. Rust runs each
 /// integration test binary's tests in threads, so this lives in its own
 /// `#[test]` with everything it touches created inside it.
+///
+/// The directory is a fresh `tempdir` rather than a fixed name under
+/// `/tmp`. It was `lisa-guard-protect-e2e`, which is per-machine and not
+/// per-run, so two `cargo test` invocations at once — a second checkout,
+/// another agent, a CI matrix sharing a runner — had one
+/// `remove_dir_all` the tree the other was reading. Observed here on
+/// 2026-08-06: green in isolation, `owner.protected_path` missing under
+/// a concurrent workspace run. A test that fails only when something
+/// else is running is worse than one that fails always.
 #[test]
 fn a_protection_on_disk_refuses_a_call_the_guard_would_otherwise_allow() {
-    let dir = std::env::temp_dir().join("lisa-guard-protect-e2e");
-    let _ = std::fs::remove_dir_all(&dir);
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let home = dir.join("home");
     let workspace = home.join("dev/app");
     let protected = workspace.join("client-legal");
@@ -1558,6 +1682,5 @@ fn a_protection_on_disk_refuses_a_call_the_guard_would_otherwise_allow() {
         "a protection on disk did not reach the verdict: {v:?}"
     );
     assert_eq!(v.rule(), Some("owner.protected_path"));
-
-    let _ = std::fs::remove_dir_all(&dir);
+    // `tmp` drops here and takes the tree with it.
 }

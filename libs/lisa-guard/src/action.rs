@@ -355,6 +355,10 @@ pub const BUS_RULES: &[(&str, &str)] = &[
         "consent.no_surface",
         "a destructive call with no independent consent dialog to answer it (#244)",
     ),
+    (
+        "consent.same_process",
+        "the process that parked a call approving it from a second connection (#289)",
+    ),
 ];
 
 /// The rule ids that are HARD NO — refused because of what the action
@@ -384,6 +388,11 @@ pub const HARD_NO_RULES: &[&str] = &[
     // companion `consent.no_surface` is deliberately NOT here — that
     // one is conditional, and starting the dialog resolves it.
     "consent.self_approval",
+    // The same statement about the same process, arrived at over a
+    // second socket (#289). Nothing about a session, a tier or a
+    // setting makes "I am both parties" true, so it belongs beside
+    // `consent.self_approval` and not beside the conditional one.
+    "consent.same_process",
 ];
 
 /// The verdict for one tool call.

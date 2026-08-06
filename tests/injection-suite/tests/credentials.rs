@@ -225,6 +225,13 @@ fn the_bus_dispatches_and_parks_nothing_for_a_credential_call() {
                 }),
                 chain: vec![Provenance::parse("user"), Provenance::parse("web")],
                 requester_hosts_a_model: false,
+                // p2p: no broker, so no pidfd and no process to pin
+                // (`lisa_peer::Process::of_peer`). Nothing in this test
+                // depends on it — a HARD NO is decided by what the call
+                // IS, before anybody can be asked to approve it — but
+                // `None` is the honest value rather than a convenient
+                // one, and it is what agentd itself passes on `Direct`.
+                requester_process: None,
                 caller: lisa_peer::PeerId::Direct,
             })
             .expect("ledger available");

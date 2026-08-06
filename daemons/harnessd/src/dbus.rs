@@ -316,12 +316,19 @@ impl Harness1 {
                 got.provenance()
             ),
             status: "downgraded".into(),
+            // All three facts, because the interesting downgrade is the
+            // one where they DISAGREE: `prompt_surface=true
+            // prompt_program=false` is a peer that took
+            // `app.lisaos.Assistant` while running something else, which
+            // is the #306 squat and the entry worth grepping the Ledger
+            // for afterwards.
             detail: format!(
-                "asked={} resolved={} same_user={} prompt_surface={}",
+                "asked={} resolved={} same_user={} prompt_surface={} prompt_program={}",
                 asked.provenance(),
                 got.provenance(),
                 facts.same_user,
-                facts.owns_prompt_surface
+                facts.owns_prompt_surface,
+                facts.runs_a_prompt_program
             ),
             ..Default::default()
         }) {
@@ -332,10 +339,17 @@ impl Harness1 {
     /// Refuse anything but this person's own prompt surface.
     ///
     /// Reuses `Run`'s ceiling rather than inventing a second notion of
-    /// "the owner": the same two broker answers decide both, so there is
+    /// "the owner": the same transport answers decide both, so there is
     /// one place to be wrong and one place to fix. `Trigger::Prompt` is
-    /// the ceiling only a same-uid caller holding a prompt surface's
-    /// name reaches (`caller::ceiling`).
+    /// the ceiling only a same-uid caller reaches that both holds a
+    /// prompt surface's name *and* is running a prompt-surface program
+    /// (`caller::ceiling`).
+    ///
+    /// That second half arrived with #306, and this method is the reason
+    /// it mattered most: `MemoryList` on a person's durable notes is a
+    /// dossier and `MemoryForgetAll` is destruction, and until then both
+    /// were reachable by calling `RequestName("app.lisaos.Assistant")`
+    /// before the Assistant did.
     ///
     /// The refusal says nothing about what is stored — not a count, not
     /// an id, not whether a store exists at all.

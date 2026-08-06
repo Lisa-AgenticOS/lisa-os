@@ -148,6 +148,10 @@ impl ConsentRole {
     /// Why this answerer is not an independent consent surface, in the
     /// words a person reading the Ledger needs: "the dialog is down" and
     /// "you are the dialog" are different problems with different fixes.
+    ///
+    /// Only reached once the answerer's program has been accepted —
+    /// [`Answerer::why_not_the_surface`] handles the case where the name
+    /// and the program disagree, which is the one this enum cannot see.
     fn why_not_the_surface(&self) -> &'static str {
         match self {
             ConsentRole::Surface => {
@@ -166,6 +170,22 @@ impl ConsentRole {
 pub struct Answerer {
     pub peer: PeerId,
     pub consent: ConsentRole,
+    /// The program behind this connection is a consent-surface
+    /// executable — `/proc/<pid>/exe` through the broker's pidfd
+    /// (`dbus.rs`, `CONSENT_SURFACE_PROGRAMS`), never `comm` and never
+    /// anything the message says.
+    ///
+    /// Separate from `consent` because they answer different questions
+    /// and #289 is what happens when only one is asked: `consent` says
+    /// *which connection holds the name*, and under `<allow own="*"/>`
+    /// that is decided by who called `RequestName` first.
+    pub is_consent_program: bool,
+    /// The process behind this connection, pinned by the broker's pidfd.
+    ///
+    /// `None` where the transport cannot say — p2p, and a broker that
+    /// supplied no pidfd. Compared against the requester's, because a
+    /// second connection of one process is not a second party (#289).
+    pub process: Option<lisa_peer::Process>,
 }
 
 impl Answerer {
@@ -178,14 +198,26 @@ impl Answerer {
     /// ask (`NoBroker`).
     pub fn alone(peer: PeerId) -> Answerer {
         let consent = ConsentRole::of(matches!(peer, PeerId::Bus(_)), None);
-        Answerer { peer, consent }
+        Answerer {
+            peer,
+            consent,
+            is_consent_program: false,
+            process: None,
+        }
     }
 
     /// The desktop consent surface — the human's dialog.
+    ///
+    /// Both halves, because that is what the words mean: it holds the
+    /// name AND it is running a consent-surface program. A constructor
+    /// that set only the first would let a test claim to be the dialog
+    /// on the strength of a name, which is the defect (#289).
     pub fn surface(peer: PeerId) -> Answerer {
         Answerer {
             peer,
             consent: ConsentRole::Surface,
+            is_consent_program: true,
+            process: None,
         }
     }
 
@@ -194,7 +226,41 @@ impl Answerer {
         Answerer {
             peer,
             consent: ConsentRole::Other,
+            is_consent_program: false,
+            process: None,
         }
+    }
+
+    /// The same answerer, with the process the transport pinned.
+    pub fn from_process(mut self, process: Option<lisa_peer::Process>) -> Answerer {
+        self.process = process;
+        self
+    }
+
+    /// A peer holding the consent name while running something else —
+    /// the `RequestName`-first squatter of #289 scenario 2.
+    pub fn name_squatter(peer: PeerId) -> Answerer {
+        Answerer {
+            peer,
+            consent: ConsentRole::Surface,
+            is_consent_program: false,
+            process: None,
+        }
+    }
+
+    /// Why this answerer is not the human's dialog, for the Ledger.
+    ///
+    /// The name and the program can disagree, and when they do that is
+    /// the most interesting sentence in the entry — it is a peer that
+    /// took `dev.lisaos.Consent1` while running something else (#289).
+    /// `ConsentRole` alone cannot say it, because it only ever knew
+    /// about the name.
+    fn why_not_the_surface(&self) -> &'static str {
+        if self.consent == ConsentRole::Surface && !self.is_consent_program {
+            return "it holds the consent name while running a program that is \
+                    not a consent surface";
+        }
+        self.consent.why_not_the_surface()
     }
 }
 
@@ -227,6 +293,20 @@ pub struct CallRequest {
     /// Answering from what the ANSWERER is at confirm time would be the
     /// wrong question — the property belongs to whoever asked.
     pub requester_hosts_a_model: bool,
+    /// The process that made this request, pinned by the broker's pidfd.
+    ///
+    /// Held for as long as the call is parked, which is the point: the
+    /// kernel will not recycle a pid while a pidfd for it is open, so
+    /// the comparison made at confirm time is still about the same
+    /// process it was about at park time. Storing a bare pid here would
+    /// be the reuse window ADR-0033 warns about, reintroduced by a
+    /// struct field (#136, #289).
+    ///
+    /// `None` on p2p and wherever the broker supplied no pidfd. The
+    /// companion program check (`is_consent_program`) is what refuses a
+    /// caller we cannot place, so this one may be absent without
+    /// becoming permissive on its own.
+    pub requester_process: Option<lisa_peer::Process>,
 }
 
 /// What happened to a request (or a confirmation).
@@ -758,8 +838,24 @@ impl AgentBus {
         // a property of the PAIR, and `judge_approval` computes it.
         let approval = lisa_guard::Approval {
             approve,
+            // The CONNECTION that parked it. `Owner::allows` compares
+            // unique bus names, so this is "the same socket", never
+            // "the same process" — which is the distinction #289 walked
+            // through, and which `answerer_is_requesters_process` below
+            // is here to close.
             is_requester: p.owner.allows(&answerer.peer),
             owns_consent_name: answerer.consent == ConsentRole::Surface,
+            // From `/proc/<pid>/exe` for the answering connection, via
+            // the broker's pidfd (`dbus.rs::answerer_identity`). Owning
+            // the name is what a peer ASKED FOR; this is what it IS.
+            answerer_is_consent_program: answerer.is_consent_program,
+            // Two pidfd-pinned pids, compared. Both were pinned by the
+            // broker: the requester's at park time and held ever since,
+            // the answerer's on this call.
+            answerer_is_requesters_process: lisa_peer::same_process(
+                answerer.process.as_ref(),
+                p.req.requester_process.as_ref(),
+            ),
             // From the requester's `/proc/<pid>/exe` at park time, not
             // from the answerer and not from any message.
             requester_hosts_a_model: p.req.requester_hosts_a_model,
@@ -824,7 +920,7 @@ impl AgentBus {
                             "{}: {} may not approve its own call: {}",
                             rule.unwrap_or("refused"),
                             answerer.peer,
-                            answerer.consent.why_not_the_surface()
+                            answerer.why_not_the_surface()
                         );
                         self.ledger_deny(&req, Some(start_ref), "refused", &reason)?;
                     }
@@ -855,8 +951,14 @@ impl AgentBus {
                 // WHO approved is the point of the entry: a reader must
                 // be able to tell the human's dialog from a requester
                 // that answered its own call (#135).
-                match answerer.consent {
-                    ConsentRole::Surface => "the consent surface".to_string(),
+                //
+                // Both facts, or the label is a lie. Until #289 this
+                // said "the consent surface" for anything that held the
+                // name, so a process that had merely called
+                // `RequestName` first got the Ledger to record a human
+                // dialog it never drew.
+                match (answerer.consent, answerer.is_consent_program) {
+                    (ConsentRole::Surface, true) => "the consent surface".to_string(),
                     _ => format!("{} (no consent surface)", answerer.peer),
                 }
             )),
@@ -1307,6 +1409,7 @@ mod tests {
             args,
             chain,
             requester_hosts_a_model: false,
+            requester_process: None,
             caller: lisa_peer::PeerId::Direct,
         }
     }
@@ -1725,6 +1828,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1764,6 +1868,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1808,6 +1913,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1838,6 +1944,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1868,6 +1975,7 @@ mod tests {
                 .bus
                 .request(CallRequest {
                     requester_hosts_a_model: false,
+                    requester_process: None,
                     caller: lisa_peer::PeerId::Bus(":1.10".into()),
                     ..call(
                         "org.gnome.Calendar",
@@ -1911,6 +2019,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: overlay.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -1943,6 +2052,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: requester,
                 ..call(
                     "org.gnome.Calendar",
@@ -1992,6 +2102,7 @@ mod tests {
                 .bus
                 .request(CallRequest {
                     requester_hosts_a_model: false,
+                    requester_process: None,
                     caller: cli.clone(),
                     ..call(
                         "org.gnome.Calendar",
@@ -2037,6 +2148,7 @@ mod tests {
                 .bus
                 .request(CallRequest {
                     requester_hosts_a_model: false,
+                    requester_process: None,
                     caller: lisa_peer::PeerId::Bus(":1.10".into()),
                     ..call("org.gnome.Calendar", tool, args, user())
                 })
@@ -2081,6 +2193,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -2182,6 +2295,7 @@ mod tests {
                 .bus
                 .request(CallRequest {
                     requester_hosts_a_model: false,
+                    requester_process: None,
                     caller: requester.clone(),
                     ..call(
                         "org.gnome.Calendar",
@@ -2217,6 +2331,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: requester.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -2290,6 +2405,7 @@ mod tests {
         let park = |caller: &lisa_peer::PeerId| {
             f.bus.request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: caller.clone(),
                 ..call(
                     "org.gnome.Calendar",
@@ -2635,6 +2751,7 @@ mod tests {
             .bus
             .request(CallRequest {
                 requester_hosts_a_model: false,
+                requester_process: None,
                 caller: author.clone(),
                 ..call(
                     "org.gnome.Calendar",

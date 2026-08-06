@@ -138,9 +138,109 @@ pub async fn resolve(
     })
 }
 
+/// Resolve an arbitrary connection by its **unique** bus name.
+///
+/// [`resolve`] answers "who sent me this message". This answers "who is
+/// `:1.412`", which is the question a daemon has to ask when the peer it
+/// must identify is not the one calling it — `agentd` answering
+/// `harnessd`'s "is this connection a prompt surface", because
+/// `harnessd` runs inside a user namespace and cannot read another
+/// process's `/proc` at all (#161, #306).
+///
+/// **Unique names only.** A well-known name is a claim about a role and
+/// its owner can change between the question and the answer; a unique
+/// name is assigned by the broker, is never chosen by the sender and is
+/// never reused (ADR-0033). Anything else is refused rather than looked
+/// up, so a caller cannot get this function to resolve a name and then
+/// reason about it as though it had resolved a connection.
+/// Is this the broker's own name for a connection, rather than a role
+/// somebody asked for?
+///
+/// Separated so it has a test: the surrounding function needs a live
+/// broker, and the part an attacker chooses is this string. That is the
+/// same split `PeerId::decide` exists for, and #132 is what happened
+/// without it.
+///
+/// Unique names are `:` followed by dot-separated digits. Nothing else
+/// is one — including a well-known name that merely starts with a colon
+/// somewhere, and including the empty string.
+fn is_unique_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(':') else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
+pub async fn resolve_unique_name(
+    conn: &zbus::Connection,
+    unique_name: &str,
+) -> Result<Peer, PeerError> {
+    if conn.unique_name().is_none() {
+        // p2p: there is no broker, so there is no third connection to
+        // ask about. Answering anything here would be inventing a peer.
+        return Err(PeerError::Unidentified);
+    }
+    if !is_unique_name(unique_name) {
+        return Err(PeerError::Unidentified);
+    }
+    let bus_name = zbus::names::BusName::try_from(unique_name.to_string())
+        .map_err(|_| PeerError::Unidentified)?;
+    let dbus = zbus::fdo::DBusProxy::new(conn).await?;
+    let creds = dbus
+        .get_connection_credentials(bus_name)
+        .await
+        .map_err(|_| PeerError::Unidentified)?;
+    Ok(Peer {
+        id: PeerId::Bus(unique_name.to_string()),
+        uid: creds.unix_user_id(),
+        pid: creds.process_id(),
+        #[cfg(unix)]
+        process_fd: creds.process_fd().and_then(|fd| {
+            use std::os::fd::AsFd;
+            fd.as_fd().try_clone_to_owned().ok().map(Arc::new)
+        }),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `resolve_unique_name` answers about a connection, so it must
+    /// refuse to be handed a *role*. A well-known name's owner can
+    /// change between the question and the answer, which is the whole
+    /// class of bug the caller (#306) is fixing — resolving one here
+    /// would put the defect back one layer down.
+    #[test]
+    fn only_the_brokers_own_connection_names_resolve() {
+        for good in [":1.0", ":1.42", ":1.412", ":0.1", ":1.2.3"] {
+            assert!(is_unique_name(good), "`{good}` is a unique name");
+        }
+        for bad in [
+            "app.lisaos.Assistant",
+            "dev.lisaos.Consent1",
+            "org.freedesktop.DBus",
+            ":",
+            "",
+            "1.42",
+            ":1.",
+            ":.1",
+            ":1.4 2",
+            ":1.4a",
+            " :1.42",
+            ":1.42 ",
+            "::1.42",
+            ":app.lisaos.Assistant",
+        ] {
+            assert!(
+                !is_unique_name(bad),
+                "`{bad}` was accepted as a unique name"
+            );
+        }
+    }
 
     #[test]
     fn a_direct_peer_is_always_our_own_user() {

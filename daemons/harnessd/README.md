@@ -134,16 +134,16 @@ them.
 
 ### Where the ceiling comes from (#229)
 
-The ceiling is derived from the **transport**, in `src/caller.rs`. Two
-answers, both from the message broker and neither of them anything the
-sender wrote:
+The ceiling is derived from the **transport**, in `src/caller.rs`. Three
+answers, none of them anything the sender wrote:
 
 | Question | Asked of | Used for |
 |---|---|---|
 | what uid is this connection? | `GetConnectionCredentials` | must be our own user |
 | who owns `app.lisaos.Assistant`? | `GetNameOwner` | must be this caller |
+| what program is that connection running? | **agentd**, `IsPromptSurface` → `/proc/<pid>/exe` | must be a `PROMPT_SURFACE_PROGRAMS` entry |
 
-Both true → ceiling `Prompt`. Anything else, including a caller we could
+All three true → ceiling `Prompt`. Anything else, including a caller we could
 not place at all → ceiling `Event`, the class whose content is never
 trusted. A turned-down claim is written to the Ledger as
 `harness.trigger_downgrade`, the way agentd records a provenance
@@ -154,23 +154,45 @@ Until this landed the ceiling was the literal `Trigger::Prompt` for
 every caller, so `busctl --user call … Run` — any peer on the session
 bus — drove a run in the class a person typing gets.
 
-**Why a bus name and not `/proc/<pid>/exe`.** Everywhere else in Lisa,
-program identity is the executable behind the broker's pidfd
-(ADR-0033). That mechanism cannot work *here*: this is a per-user unit
-with `ProtectHome`/`ProtectSystem`/`PrivateDevices`, which a user
-manager can only deliver through an implicit user namespace, and from
-inside one every peer's `/proc/<pid>/exe` is EACCES (#161). An exe check
-in this daemon would be a check that silently never matches. Verified on
-the reference machine: harnessd's `uid_map` is `1000 1000 1`, and
-readlink of a peer's `exe` succeeds outside the namespace and fails
-inside it. `os/repo-tools/check-user-units.py` carries the same note.
+**Why the program check comes from agentd (#306).** Everywhere else in
+Lisa, program identity is the executable behind the broker's pidfd
+(ADR-0033). That mechanism cannot work *in this process*: this is a
+per-user unit with `ProtectHome`/`ProtectSystem`/`PrivateDevices`, which
+a user manager can only deliver through an implicit user namespace, and
+from inside one every peer's `/proc/<pid>/exe` is EACCES (#161).
+Re-verified on the reference device with a positive control — the same
+`readlink` in an unsandboxed transient user unit resolves
+`/usr/bin/lisa-agentd` and `/usr/bin/gjs-console`; inside the sandboxed
+one both are "Permission denied". `os/repo-tools/check-user-units.py`
+carries the same note.
 
-**The honest limit.** A well-known name belongs to whoever asks first,
-so a peer that grabs `app.lisaos.Assistant` while the Assistant is
-closed inherits its ceiling. That is smaller than the hole it replaces —
-before, no peer had to do anything at all — and a peer holding the
-Assistant's name has also taken over the window the person launches,
-which is a much louder place to stand.
+So the question goes to `lisa-agentd`, which runs in the initial user
+namespace (`uid_map` `0 0 4294967295`, verified) and can read it:
+`dev.lisaos.Agent1.IsPromptSurface(":1.412")`. What travels is a
+**unique** bus name this daemon learned from the broker, never a claim;
+what comes back is a boolean about the kernel's view of that connection.
+Only asked when the name check already passed, and the answer is `false`
+on every failure — an unreachable agentd, a refusal, a wrong reply type
+— which costs the caller the prompt class. Fail-closed, and a real
+availability coupling worth knowing about.
+
+**Why the name alone was not enough.** A well-known name belongs to
+whoever asks first, and `app.lisaos.Assistant` is D-Bus-activatable and
+therefore not running most of the time. Demonstrated on the reference
+device from an ordinary `python3` process: `RequestName` returned `1` —
+PRIMARY_OWNER. This README used to argue that a squatter "has also taken
+over the window the person launches, which is a much louder place to
+stand". It is not: the name can be held for the seconds a `Run` takes
+and released, and the next launch works normally.
+
+**The honest limit that remains.** The Assistant is
+`Exec=/usr/bin/lisa-app assistant/lisa-assistant.js`, and `lisa-app` ends
+in `exec gjs`, so its executable is `/usr/bin/gjs-console`. The program
+check refuses every compiled squatter and the demonstrated `python3` one;
+it does not refuse a hostile GJS script. An Assistant with an executable
+of its own closes it — `/usr/bin/lisa-assistant` is already listed in
+agentd's `PROMPT_SURFACE_PROGRAMS` and unresolvable paths are dropped.
+Tracked on #306.
 
 `Schedule` is deliberately unreachable: nothing in Lisa is a scheduler
 yet, and handing out a class no shipped peer can legitimately hold would
@@ -360,11 +382,16 @@ about them.
   message-size ceiling belongs to dbus-broker's own configuration.
   Passing a file descriptor instead of a base64 data URI would remove
   the amplification entirely, and would be a redesign of the option.
-- **The trigger ceiling is a bus name, not an executable.** See "Where
-  the ceiling comes from" above: it is the strongest identity available
-  to a daemon that must keep its mount sandbox (#161), and a peer that
-  takes `app.lisaos.Assistant` while the Assistant is closed inherits
-  its ceiling.
+- **The trigger ceiling's program check is an interpreter** (#306). The
+  name half is no longer enough on its own — see "Where the ceiling comes
+  from" above — but because the Assistant runs under `gjs`, a hostile GJS
+  script still satisfies the program half. A dedicated
+  `/usr/bin/lisa-assistant` executable is what closes it.
+- **The ceiling now depends on agentd being reachable.** If it is not,
+  every run is `Trigger::Event`: no file or `run_command` family, no
+  write-tier bus tools, no `user` provenance, no memory methods. That is
+  the safe direction and it is a coupling this daemon did not have
+  before.
 - **A dotfile folder cannot be a workspace** (#231), so the assistant
   cannot help with `~/.config/nvim` in place.
 - **Write tier has not been driven by a resident model on the device.**

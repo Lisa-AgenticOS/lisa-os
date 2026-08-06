@@ -22,7 +22,13 @@
 //! 4. an independent consent surface can, and then it runs;
 //! 5. a write after a web-tagged read arrives with `web` in its chain
 //!    and escalates to a modal — #166's acceptance, finally executable;
-//! 6. the loop is TOLD it must not retry, so a refusal is not a spin.
+//! 6. the loop is TOLD it must not retry, so a refusal is not a spin;
+//! 7. a SECOND connection of the loop's own process cannot release it
+//!    either (`consent.same_process`, #289) — the walk-around that
+//!    partially defeated (3), because `is_requester` compares unique bus
+//!    names and one process may hold many;
+//! 8. and a peer that merely called `RequestName` on the consent name is
+//!    not the dialog, and learns nothing from being told so.
 
 use forge_harness::{
     AgentAction, AgentConfig, AgentEvent, ScriptedBackend, ToolCall, ToolProvider, Verifier,
@@ -48,6 +54,30 @@ fn loop_peer() -> PeerId {
 /// entire point of #145.
 fn surface_peer() -> PeerId {
     PeerId::Bus(":1.99".into())
+}
+
+/// The PROCESS the loop runs in. On a session bus this is the
+/// pidfd-pinned answer from the broker; here it is a fixture value, set
+/// by the transport for the same reason `requester_hosts_a_model` is —
+/// a transport that let its caller choose it would be reproducing the
+/// bug it exists to close.
+fn loop_process() -> lisa_peer::Process {
+    lisa_peer::Process::unpinned(4242)
+}
+
+/// The dialog's process. A different one, which is what "independent"
+/// has to mean once a name has stopped being enough (#289).
+fn surface_process() -> lisa_peer::Process {
+    lisa_peer::Process::unpinned(4243)
+}
+
+/// A SECOND connection of the process the loop runs in (#289). A
+/// different unique name and therefore a different `PeerId` — which is
+/// the whole trick: `<allow own="*"/>` ships in `session.conf`, so this
+/// connection may own `dev.lisaos.Consent1` while being the same
+/// process that parked the call.
+fn loop_second_connection() -> PeerId {
+    PeerId::Bus(":1.43".into())
 }
 
 /// The manifests the loop's catalog is built from — Surfer's real tier
@@ -196,6 +226,9 @@ impl bus_tools::BusTransport for Handle {
                 // it is a property of the fixture, and no argument the
                 // provider passes can change it.
                 requester_hosts_a_model: true,
+                // Two connections of this process would share this
+                // value, which is the fact `caller` above cannot carry.
+                requester_process: Some(loop_process()),
             })
             .map_err(|e| e.to_string())?;
         let reply = match &outcome {
@@ -355,7 +388,11 @@ fn the_loops_own_peer_cannot_release_the_call_it_parked() {
 
     let err = f
         .bus
-        .confirm(call_id, true, &Answerer::alone(loop_peer()))
+        .confirm(
+            call_id,
+            true,
+            &Answerer::alone(loop_peer()).from_process(Some(loop_process())),
+        )
         .expect_err("the model's own host approved its own write-tier call");
     assert_eq!(
         err.rule(),
@@ -368,10 +405,105 @@ fn the_loops_own_peer_cannot_release_the_call_it_parked() {
     // independence is a property of the pair (#145).
     let err = f
         .bus
-        .confirm(call_id, true, &Answerer::surface(loop_peer()))
+        .confirm(
+            call_id,
+            true,
+            &Answerer::surface(loop_peer()).from_process(Some(loop_process())),
+        )
         .expect_err("wearing both hats released the call");
     assert_eq!(err.rule(), Some("consent.self_approval"));
     assert_eq!(f.dispatcher.dispatched(), 0);
+}
+
+/// #289, and the defect `is_requester` could never have caught. The
+/// check above compares CONNECTIONS: `Owner::allows` holds a unique bus
+/// name, and `session.conf` ships `<allow own="*"/>`, so the process
+/// hosting the model opens a SECOND connection, owns
+/// `dev.lisaos.Consent1` on it, and answers its own parked call as "the
+/// consent surface".
+///
+/// The auditor's shape exactly: `:1.42` parks, `:1.43` — the same
+/// process — approves.
+#[test]
+fn a_second_connection_of_the_model_host_cannot_release_its_own_call() {
+    let f = fixture(json!({"ok": true}));
+    let transport = LoopTransport::new(Arc::clone(&f.bus));
+    run_loop(
+        &f.bus,
+        Arc::clone(&transport),
+        vec![
+            navigate_call("https://example.com"),
+            AgentAction::Done("finished".into()),
+        ],
+    );
+    let call_id = transport.parked()[0];
+
+    let err = f
+        .bus
+        .confirm(
+            call_id,
+            true,
+            &Answerer::surface(loop_second_connection()).from_process(Some(loop_process())),
+        )
+        .expect_err("a second connection of the model host released its own call");
+    assert_eq!(
+        err.rule(),
+        Some("consent.same_process"),
+        "refused for the wrong reason: {err}"
+    );
+    assert_eq!(
+        f.dispatcher.dispatched(),
+        0,
+        "the destructive call really ran"
+    );
+}
+
+/// #289's other scenario, and the one that needs no model at all. The
+/// consent surface is D-Bus-activatable, so it is not running until a
+/// modal parks; `session.conf` ships `<allow own="*"/>`; and
+/// `Gio.bus_own_name(..., BusNameOwnerFlags.NONE, ...)` means the real
+/// surface cannot take the name back. So a process that asks for
+/// `dev.lisaos.Consent1` at login becomes the approver of every parked
+/// call on the machine.
+///
+/// It must be refused, and refused **silently**: a squatter that learned
+/// "wrong program" would have learned that call 1 exists, which is the
+/// reconnaissance for the next attempt (#93, #131).
+#[test]
+fn a_peer_that_merely_grabbed_the_consent_name_is_not_the_dialog() {
+    let f = fixture(json!({"ok": true}));
+    let transport = LoopTransport::new(Arc::clone(&f.bus));
+    run_loop(
+        &f.bus,
+        Arc::clone(&transport),
+        vec![
+            navigate_call("https://example.com"),
+            AgentAction::Done("finished".into()),
+        ],
+    );
+    let call_id = transport.parked()[0];
+
+    let squatter = Answerer::name_squatter(PeerId::Bus(":1.77".into()))
+        .from_process(Some(lisa_peer::Process::unpinned(9999)));
+    let err = f
+        .bus
+        .confirm(call_id, true, &squatter)
+        .expect_err("a name squatter released somebody else's destructive call");
+    assert_eq!(f.dispatcher.dispatched(), 0);
+    assert_eq!(
+        err.rule(),
+        None,
+        "the squatter was told which rule refused it, which confirms the call exists: {err}"
+    );
+    // …and the refusal for a call that DOES exist reads exactly like the
+    // one for a call that does not, so a sweep cannot map the live ids
+    // (#131). Same id on both sides, or the comparison would only be
+    // testing that the number is printed.
+    assert_eq!(
+        err.to_string(),
+        lisa_agentd::bus::BusError::UnknownCall(call_id).to_string(),
+        "the squatter can tell a live call id from a dead one"
+    );
 }
 
 /// The positive control (4), without which the three tests above prove
@@ -399,7 +531,11 @@ fn the_consent_surface_releases_it_and_only_then_does_it_run() {
 
     let outcome = f
         .bus
-        .confirm(call_id, true, &Answerer::surface(surface_peer()))
+        .confirm(
+            call_id,
+            true,
+            &Answerer::surface(surface_peer()).from_process(Some(surface_process())),
+        )
         .expect("the dialog must be able to approve");
     assert!(
         matches!(outcome, Outcome::Executed { .. }),
@@ -471,7 +607,11 @@ fn a_write_after_a_web_tagged_read_escalates_to_a_modal() {
     let call_id = transport.parked()[0];
     let err = f
         .bus
-        .confirm(call_id, true, &Answerer::alone(loop_peer()))
+        .confirm(
+            call_id,
+            true,
+            &Answerer::alone(loop_peer()).from_process(Some(loop_process())),
+        )
         .expect_err("the loop released a web-steered write");
     assert_eq!(err.rule(), Some("consent.self_approval"));
     assert_eq!(f.dispatcher.dispatched(), 1);
@@ -496,7 +636,11 @@ fn the_loop_may_still_withdraw_its_own_parked_call() {
     let call_id = transport.parked()[0];
     let outcome = f
         .bus
-        .confirm(call_id, false, &Answerer::alone(loop_peer()))
+        .confirm(
+            call_id,
+            false,
+            &Answerer::alone(loop_peer()).from_process(Some(loop_process())),
+        )
         .expect("a loop must be able to withdraw its own call");
     assert!(matches!(outcome, Outcome::Denied { .. }));
     assert_eq!(f.dispatcher.dispatched(), 0);

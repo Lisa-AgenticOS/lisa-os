@@ -61,9 +61,26 @@ RequestCall(s app_id, s tool, s args_json, a{sv} options)
                  "confirm-modal" | "denied" | "refused"
 Confirm(t call_id, b approve) → (s status, s detail_json)
 Undo() → (s report_json)
+IsPromptSurface(s unique_name) → (b)      # model hosts only; see below
 signal ConfirmationRequested(t call_id, s spec_json)
 signal RefusalReported(t call_id, s report_json)
 ```
+
+`IsPromptSurface` is not for apps. It answers one question — *is the
+connection `:1.412` running one of `PROMPT_SURFACE_PROGRAMS`* — for
+`lisa-harnessd`, which cannot answer it for itself: its unit is a
+per-user unit with `ProtectHome`/`ProtectSystem=strict`/`PrivateDevices`,
+which a user manager can only deliver through an implicit private user
+namespace, and from inside one `readlink /proc/<peer>/exe` is EACCES for
+every peer (#161, re-verified with a positive control on the reference
+device). agentd runs in the initial namespace and can read it.
+
+It is an identity oracle, so the guard is the whole of its safety: the
+caller must itself be a model host by `/proc/<pid>/exe`, and every other
+caller gets one fixed `AccessDenied` string that says nothing about the
+name it asked about. Unique names only — a well-known name's owner can
+change between the question and the answer, which is the class of bug
+this method exists to close (#306).
 
 Read-tier calls with a fully trusted (all-`user`) chain execute
 immediately; everything else parks and emits `ConfirmationRequested`
@@ -111,16 +128,25 @@ against the home ladder alone.
 
 ### Who may answer a parked call
 
-Authority comes from the broker, never from the message (ADR-0033).
-agentd asks the bus who owns `dev.lisaos.Consent1` — the desktop consent
-surface, `shell/consent` — and compares that to the transport-assigned
-sender:
+Authority comes from the broker and the kernel, never from the message
+(ADR-0033, CLAUDE.md 6b). Three facts, and each of them was at some point
+the only one being asked:
+
+1. **which connection** parked the call (`Owner::allows`, the unique bus
+   name the broker assigned);
+2. **which process** each connection belongs to
+   (`lisa_peer::Process`, the pid pinned by the broker's pidfd);
+3. **which program** the answerer is running (`/proc/<pid>/exe` against
+   `CONSENT_SURFACE_PROGRAMS`), alongside the broker's answer to who owns
+   `dev.lisaos.Consent1`.
 
 | answering peer | withdraw (`false`) | approve a chip | approve a modal |
 |---|---|---|---|
 | the requester, **hosting a model** | yes, always | **no** | **no** |
 | the requester, any other program | yes, always | yes — the app's own inline affordance | **no** |
-| the consent surface (a different peer) | yes | yes | yes |
+| **another connection of the requester's process** | yes | **no** | **no** |
+| the consent surface: a different process, running a consent program, holding the name | yes | yes | yes |
+| a peer holding the consent name while running something else | no (`NotYours`) | no | no |
 | anyone else | no (`NotYours`) | no | no |
 
 The decision is [`lisa_guard::judge_approval`] — a pure function over
@@ -135,6 +161,23 @@ refusal carries a rule id a person can look up (`lisa guard list`):
   wearing two hats.
 - **`consent.no_surface`** — a modal with no independent dialog to answer
   it (#244).
+- **`consent.same_process`** — the process that parked a call approving
+  it over a *second connection* (#289). `is_requester` compares unique
+  bus names and `session.conf` ships `<allow own="*"/>`, so the model's
+  own host parked from `:1.5`, took `dev.lisaos.Consent1` on `:1.6`, and
+  released its own destructive call with the Ledger recording that "the
+  consent surface" said yes. Proven by execution against the real
+  `AgentBus` before the fix, and now a merge-blocking property across all
+  1320 injection-suite attempts. Also a `HARD_NO_RULES` entry: no
+  session, tier or setting makes "I am both parties" true.
+
+Owning `dev.lisaos.Consent1` is a *claim*, staked with `RequestName`, and
+under `<allow own="*"/>` anybody may stake it — the name was unowned on
+the reference device for the machine's entire life until #244. So the
+answerer must also **be** a consent-surface program by `/proc/<pid>/exe`;
+a peer that merely took the name is refused as `NotYours` and told
+nothing, because telling it "wrong program" would confirm that the call
+it guessed at exists.
 
 "Hosting a model" is not a claim. It is `/proc/<pid>/exe` compared against
 `MODEL_HOSTS` in `src/dbus.rs` — currently `/usr/bin/lisa-harnessd` — the
@@ -163,6 +206,19 @@ to "so the requester answers its own call".
 A refused approval is recorded as `tool.deny`/`refused`, once per parked
 call, naming the rule, the peer, and why it was not an independent
 surface.
+
+**Known limit — the dialog is an interpreted script.** The consent
+surface is `Exec=/usr/bin/lisa-app consent/lisa-consentd.js` and
+`lisa-app` ends in `exec gjs`, so the kernel's answer for it is
+`/usr/bin/gjs-console` (verified on the reference device). The program
+allowlist therefore refuses `/usr/bin/lisa-harnessd` — the executed #289
+exploit — and every compiled squatter, but not a hostile GJS script; and
+a process that `fork()`s before `exec gjs` also gets a fresh pid, so it
+steps around the same-process check too. What closes it is the dialog
+having an executable of its own: `/usr/bin/lisa-consentd` is already in
+`CONSENT_SURFACE_PROGRAMS` and unresolvable paths are dropped, so
+shipping that binary is the whole of the remaining change on agentd's
+side. Tracked on #289.
 
 **Known limit.** The chip row for "any other program" is still open, and
 `/usr/bin/lisa` sits in it: the CLI is both `lisa assist` (a loop) and

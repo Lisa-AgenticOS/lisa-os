@@ -9,7 +9,8 @@
 //! So the message says what the caller *wants*; this module says what
 //! the caller *may have*. `Trigger::resolve` takes the lower of the two.
 //!
-//! # Why the answer is a bus name and not an executable
+//! # Why the answer is a bus name AND a program, and why the program
+//! comes from another daemon
 //!
 //! Everywhere else in Lisa, program identity is `/proc/<pid>/exe` via
 //! the broker's pidfd (`lisa_peer::exe_of_peer`) — never `comm`, never
@@ -35,19 +36,44 @@
 //! - `GetNameOwner` → which connection currently owns a well-known name.
 //!
 //! Both are assigned by the broker and unforgeable by the sender, which
-//! is the ADR-0033 property that matters. So the ceiling is built out of
-//! those two, and this file says so out loud rather than leaving the
-//! next reader to "fix" it into an exe check that always refuses.
+//! is the ADR-0033 property that matters.
 //!
-//! # The honest limit
+//! **They are not enough** (#306). A well-known name is owned by whoever
+//! asks for it first, and `app.lisaos.Assistant` is D-Bus-activatable and
+//! therefore not running most of the time. Demonstrated on the reference
+//! device from an ordinary `python3` process: `RequestName` returned
+//! `1` — PRIMARY_OWNER — for the name that buys `Trigger::Prompt`, and
+//! `Prompt` buys the file and `run_command` family, write-tier bus
+//! tools, `user` provenance that **agentd accepts** because
+//! `/usr/bin/lisa-harnessd` is on its `MODEL_HOSTS`, and the owner-only
+//! memory methods. No prompt injection and no model required: just
+//! `RequestName` first.
 //!
-//! A well-known name is owned by whoever asks for it first. If the
-//! Assistant is not running, another session peer can take
-//! `app.lisaos.Assistant` and inherit its ceiling. That is a real
-//! weakness and it is smaller than the one it replaces: before this, no
-//! peer had to do anything at all, and a peer that takes the Assistant's
-//! name has also taken over the window the person launches, which is a
-//! far louder place to be standing.
+//! This file argued that the squat is "a far louder place to be
+//! standing". It is not: a squatter can hold the name for the seconds a
+//! `Run` takes and release it, and the next launch works normally.
+//!
+//! So the missing half is program identity, and it is fetched from
+//! **agentd**, which is not in a user namespace and can read
+//! `/proc/<peer>/exe` (`dev.lisaos.Agent1.IsPromptSurface`, and
+//! `agentd/src/dbus.rs::PROMPT_SURFACE_PROGRAMS` for the allowlist and
+//! its limits). Fetched, not trusted-by-assertion: agentd answers about
+//! a **unique** bus name this daemon learned from the broker, and the
+//! answer is a boolean about the kernel's view of that connection.
+//!
+//! # The honest limit that remains
+//!
+//! The Assistant is `Exec=/usr/bin/lisa-app assistant/lisa-assistant.js`,
+//! and `lisa-app` ends in `exec gjs`. So the program check refuses every
+//! compiled squatter and the demonstrated `python3` one, and does not
+//! refuse a hostile GJS script. An Assistant with an executable of its
+//! own is what closes that, and `PROMPT_SURFACE_PROGRAMS` already lists
+//! the path it would have.
+//!
+//! And if agentd cannot be reached, the answer is `false` and the
+//! ceiling is `Trigger::Event`. That is fail-closed and it is a real
+//! availability coupling: a harness whose agentd is down loses the
+//! prompt class rather than silently keeping it.
 
 use crate::dbus::Trigger;
 
@@ -70,7 +96,16 @@ pub struct CallerFacts {
     pub same_user: bool,
     /// `GetNameOwner` says this connection currently owns one of
     /// [`PROMPT_SURFACES`].
+    ///
+    /// Unforgeable and **not sufficient**: it says this peer called
+    /// `RequestName` first, which under `<allow own="*"/>` anybody may
+    /// do (#306).
     pub owns_prompt_surface: bool,
+    /// agentd says the program behind this connection is one of its
+    /// `PROMPT_SURFACE_PROGRAMS` — `/proc/<pid>/exe` through the
+    /// broker's pidfd, read by a daemon that is not inside a user
+    /// namespace and can therefore read it at all (#161, #306).
+    pub runs_a_prompt_program: bool,
 }
 
 impl CallerFacts {
@@ -83,22 +118,30 @@ impl CallerFacts {
     pub const UNKNOWN: CallerFacts = CallerFacts {
         same_user: false,
         owns_prompt_surface: false,
+        runs_a_prompt_program: false,
     };
 }
 
 /// The highest trust class this caller may claim.
 ///
 /// Pure, so every case below is a unit test rather than a claim. The
-/// only way up is to be this user AND to be holding a prompt surface's
-/// name; everything else — including a caller we simply could not place
-/// — is [`Trigger::Event`], the class whose content is never trusted.
+/// only way up is **three** facts at once: this user, holding a prompt
+/// surface's name, and running a prompt-surface program. Everything
+/// else — including a caller we simply could not place — is
+/// [`Trigger::Event`], the class whose content is never trusted.
+///
+/// The third fact is #306. Holding the name says a peer asked for the
+/// role; the program says what it is. Either one alone was shown to be
+/// available to any process in the session: the name by `RequestName`
+/// on an activatable and therefore unowned name, and a program that has
+/// not been given the name by the broker is just another peer.
 ///
 /// `Schedule` is deliberately unreachable: nothing in Lisa is a
 /// scheduler yet, and a ceiling that hands out a class no shipped peer
 /// can legitimately hold would be a hole with no user. A scheduler
 /// daemon arrives with its own name and its own arm of this function.
 pub fn ceiling(facts: CallerFacts) -> Trigger {
-    if facts.same_user && facts.owns_prompt_surface {
+    if facts.same_user && facts.owns_prompt_surface && facts.runs_a_prompt_program {
         Trigger::Prompt
     } else {
         Trigger::Event
@@ -139,9 +182,92 @@ pub async fn facts_of(conn: &zbus::Connection, header: &zbus::message::Header<'_
             break;
         }
     }
+    // Only asked when the name says it might matter. agentd's answer is
+    // an identity disclosure guarded by an exe check on us, so there is
+    // no reason to make it about peers whose ceiling is `Event` either
+    // way — and it keeps the cross-daemon round trip off the path of
+    // every ordinary `Run`.
+    let runs_a_prompt_program =
+        owns_prompt_surface && agentd_says_prompt_surface(conn, caller_name).await;
     CallerFacts {
         same_user,
         owns_prompt_surface,
+        runs_a_prompt_program,
+    }
+}
+
+/// How long agentd gets to answer before the caller is classed as an
+/// event source.
+///
+/// Generous, because the answer costs one `GetConnectionCredentials` and
+/// one `readlink`, and because timing out costs the person their file
+/// tools. Bounded, because the alternative is a `Run` that never
+/// returns.
+const AGENTD_IDENTITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// agentd's answer to "is `unique_name` running a prompt-surface
+/// program".
+///
+/// This daemon cannot read `/proc/<peer>/exe` from inside its own user
+/// namespace (#161) and agentd can, so the question goes over the bus to
+/// a daemon in the initial namespace. What travels is a **unique** bus
+/// name this process learned from the broker, not a claim; what comes
+/// back is a boolean about the kernel's view of that connection.
+///
+/// Fails towards `false` on every error — an unreachable agentd, a
+/// refusal, a reply of the wrong type. The consequence is
+/// [`Trigger::Event`], which is the least trusted class, so the failure
+/// direction is the safe one (and a loud one: the Assistant loses the
+/// prompt class rather than quietly keeping it).
+async fn agentd_says_prompt_surface(conn: &zbus::Connection, unique_name: &str) -> bool {
+    agentd_says_prompt_surface_within(conn, unique_name, AGENTD_IDENTITY_TIMEOUT).await
+}
+
+/// The same question with the deadline named, so a test can watch the
+/// deadline work without waiting out the shipped one.
+///
+/// Bounded at all because a peer that never answers is otherwise a `Run`
+/// that never returns. On a session bus an absent agentd is an immediate
+/// `NameHasNoOwner` from the broker, so this deadline is for the other
+/// case: a live agentd that has stopped replying. Caught by
+/// `an_unreachable_agentd_is_not_a_prompt_surface`, which hung forever
+/// before the deadline existed.
+async fn agentd_says_prompt_surface_within(
+    conn: &zbus::Connection,
+    unique_name: &str,
+    deadline: std::time::Duration,
+) -> bool {
+    let args = (unique_name,);
+    let call = conn.call_method(
+        Some("dev.lisaos.Agent1"),
+        "/dev/lisaos/Agent1",
+        Some("dev.lisaos.Agent1"),
+        "IsPromptSurface",
+        &args,
+    );
+    let reply = match tokio::time::timeout(deadline, call).await {
+        Ok(reply) => reply,
+        Err(_) => {
+            eprintln!(
+                "harnessd: agentd did not answer within {deadline:?} about {unique_name}; \
+                 this run is classed as an event, not a prompt"
+            );
+            return false;
+        }
+    };
+    match reply {
+        Ok(msg) => msg.body().deserialize::<bool>().unwrap_or(false),
+        Err(e) => {
+            // Worth a journal line: this is the difference between "the
+            // Assistant is not trusted today" and "agentd is down", and
+            // from the user's side both look like the assistant having
+            // forgotten how to open a file.
+            eprintln!(
+                "harnessd: agentd could not identify {unique_name} ({e}); \
+                 this run is classed as an event, not a prompt"
+            );
+            false
+        }
     }
 }
 
@@ -160,33 +286,70 @@ mod tests {
         assert_eq!(ceiling(CallerFacts::UNKNOWN), Trigger::Event);
     }
 
-    /// Both halves are required, and neither is enough on its own. A
+    /// All three facts are required and none is enough on its own. A
     /// caller from another uid holding the name is not this user's
-    /// surface; this user's ordinary process is not a surface at all.
+    /// surface; this user's ordinary process is not a surface at all;
+    /// and a peer that took the name while running something else is
+    /// #306, which is the case this test gained.
+    ///
+    /// Exhaustive over the eight combinations rather than three
+    /// hand-picked ones, because a ceiling is exactly the kind of
+    /// function where the case nobody wrote down is the live one.
     #[test]
     fn only_this_users_prompt_surface_reaches_the_prompt_class() {
+        for same_user in [true, false] {
+            for owns_prompt_surface in [true, false] {
+                for runs_a_prompt_program in [true, false] {
+                    let facts = CallerFacts {
+                        same_user,
+                        owns_prompt_surface,
+                        runs_a_prompt_program,
+                    };
+                    let expected = if same_user && owns_prompt_surface && runs_a_prompt_program {
+                        Trigger::Prompt
+                    } else {
+                        Trigger::Event
+                    };
+                    assert_eq!(ceiling(facts), expected, "{facts:?}");
+                }
+            }
+        }
+    }
+
+    /// #306, named so a failure says which defect came back. The
+    /// squatter demonstrated on the reference device: an ordinary
+    /// `python3` process of this user that called `RequestName` on
+    /// `app.lisaos.Assistant` and got `1` — PRIMARY_OWNER — because the
+    /// name is activatable and nobody held it.
+    ///
+    /// It has both facts the old ceiling asked for and it is still an
+    /// event source, because it is not running a prompt-surface program.
+    #[test]
+    fn a_name_squatter_does_not_reach_the_prompt_class() {
         assert_eq!(
             ceiling(CallerFacts {
                 same_user: true,
-                owns_prompt_surface: true
+                owns_prompt_surface: true,
+                runs_a_prompt_program: false,
             }),
-            Trigger::Prompt
+            Trigger::Event,
+            "taking `app.lisaos.Assistant` was enough to claim a human typed it"
         );
+    }
+
+    /// …and the positive control, without which the test above is
+    /// satisfied by a ceiling that grants nothing to anybody. The real
+    /// Assistant holds the name AND runs the program.
+    #[test]
+    fn the_real_prompt_surface_still_reaches_the_prompt_class() {
         assert_eq!(
             ceiling(CallerFacts {
                 same_user: true,
-                owns_prompt_surface: false
+                owns_prompt_surface: true,
+                runs_a_prompt_program: true,
             }),
-            Trigger::Event,
-            "an ordinary peer of this user reached the prompt class"
-        );
-        assert_eq!(
-            ceiling(CallerFacts {
-                same_user: false,
-                owns_prompt_surface: true
-            }),
-            Trigger::Event,
-            "another user's process reached the prompt class by holding the name"
+            Trigger::Prompt,
+            "the Assistant cannot reach the class a person typing gets"
         );
     }
 
@@ -200,18 +363,104 @@ mod tests {
             CallerFacts {
                 same_user: true,
                 owns_prompt_surface: true,
+                runs_a_prompt_program: true,
+            },
+            CallerFacts {
+                same_user: true,
+                owns_prompt_surface: true,
+                runs_a_prompt_program: false,
             },
             CallerFacts {
                 same_user: true,
                 owns_prompt_surface: false,
+                runs_a_prompt_program: true,
             },
             CallerFacts {
                 same_user: false,
                 owns_prompt_surface: true,
+                runs_a_prompt_program: true,
             },
         ] {
             assert_ne!(ceiling(facts), Trigger::Schedule, "{facts:?}");
         }
+    }
+
+    /// A stand-in for agentd, so the round trip that supplies the third
+    /// fact can be exercised without a message broker.
+    ///
+    /// p2p carries method calls with a destination field the peer simply
+    /// ignores, which is exactly what is wanted here: what is under test
+    /// is that this daemon **asks** and believes the reply, not how the
+    /// broker routes it.
+    struct StubAgentd {
+        answer: bool,
+    }
+
+    #[zbus::interface(name = "dev.lisaos.Agent1")]
+    impl StubAgentd {
+        fn is_prompt_surface(&self, _unique_name: String) -> bool {
+            self.answer
+        }
+    }
+
+    async fn agentd_stub(serve: Option<bool>) -> (zbus::Connection, zbus::Connection) {
+        let (client_sock, server_sock) = tokio::net::UnixStream::pair().unwrap();
+        let guid = zbus::Guid::generate();
+        let mut server = zbus::connection::Builder::unix_stream(server_sock)
+            .server(guid)
+            .unwrap()
+            .p2p();
+        if let Some(answer) = serve {
+            server = server
+                .serve_at("/dev/lisaos/Agent1", StubAgentd { answer })
+                .unwrap();
+        }
+        let client = zbus::connection::Builder::unix_stream(client_sock).p2p();
+        tokio::try_join!(server.build(), client.build()).unwrap()
+    }
+
+    /// The third fact is agentd's, and it is *fetched* — the whole point
+    /// of #306 is that this daemon cannot compute it and must not
+    /// substitute the name check for it.
+    #[tokio::test]
+    async fn the_program_fact_is_whatever_agentd_answers() {
+        for answer in [true, false] {
+            let (_server, client) = agentd_stub(Some(answer)).await;
+            assert_eq!(
+                agentd_says_prompt_surface(&client, ":1.412").await,
+                answer,
+                "harnessd did not take agentd's answer for {answer}"
+            );
+        }
+    }
+
+    /// And an agentd that never answers answers `false`, not `true`, and
+    /// answers it *eventually* — this test hung forever before the
+    /// deadline existed, which is what a `Run` would have done on a live
+    /// agentd that had stopped replying. The consequence of the `false`
+    /// is `Trigger::Event`, the least trusted class, so the failure
+    /// costs capability rather than granting it.
+    #[tokio::test]
+    async fn an_unreachable_agentd_is_not_a_prompt_surface() {
+        let (_server, client) = agentd_stub(None).await;
+        assert!(
+            !agentd_says_prompt_surface_within(
+                &client,
+                ":1.412",
+                std::time::Duration::from_millis(200)
+            )
+            .await,
+            "a peer nobody could identify was treated as a prompt surface"
+        );
+    }
+
+    /// The shipped deadline is the one production uses, and a zero or
+    /// absent one would turn the check into "agentd is never a source of
+    /// truth" or "a `Run` may hang".
+    #[test]
+    fn the_shipped_deadline_is_bounded_and_not_zero() {
+        assert!(!AGENTD_IDENTITY_TIMEOUT.is_zero());
+        assert!(AGENTD_IDENTITY_TIMEOUT <= std::time::Duration::from_secs(30));
     }
 
     /// Adding a surface here is a decision about who may claim "a human

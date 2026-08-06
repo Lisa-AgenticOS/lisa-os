@@ -47,7 +47,8 @@ pub use command::{ALLOWED_COMMANDS, Allowlist, check_command, check_command_advi
 // `consent.self_approval`, and the test stayed green with the rule
 // deleted.
 pub use consent::{
-    Approval, ApprovalVerdict, ConfirmClass, NO_SURFACE, SELF_APPROVAL, judge_approval,
+    Approval, ApprovalVerdict, ConfirmClass, NO_SURFACE, SAME_PROCESS, SELF_APPROVAL,
+    judge_approval,
 };
 pub use overrides::{Overrides, active as active_overrides, overrides_path};
 pub use path::{ContainError, contain, write_contained};

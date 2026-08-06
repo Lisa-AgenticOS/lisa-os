@@ -201,6 +201,7 @@ impl bus_tools::BusTransport for Handle {
                 chain: chain.iter().map(|s| Provenance::parse(s)).collect(),
                 caller: self.0.peer.clone(),
                 requester_hosts_a_model: true,
+                requester_process: None,
             })
             .map_err(|e| e.to_string())?;
         let reply = match &outcome {
