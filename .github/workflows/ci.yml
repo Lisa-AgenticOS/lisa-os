@@ -477,7 +477,17 @@ jobs:
           fi
           sudo podman exec lisa-e2e systemctl list-units --failed --no-pager || true
       - name: Run layer e2e
-        run: sudo podman exec lisa-e2e bash /src/tests/e2e/layer-test.sh
+        # LISA_REQUIRE_LANDLOCK: this lane runs the ONLY tests that
+        # witness the forge jail against a real kernel
+        # (libs/forge-harness/tests/confinement.rs, via makepkg check()).
+        # They skip themselves when Landlock is unavailable, and a skip is
+        # indistinguishable from a pass in the summary line — so one
+        # runner-image change could leave them green forever having
+        # observed nothing. Same reason LISA_REQUIRE_BUS_TESTS and
+        # LISA_REQUIRE_PIDFD exist above; this suite was simply missed.
+        run: |
+          sudo podman exec -e LISA_REQUIRE_LANDLOCK=1 lisa-e2e \
+            bash /src/tests/e2e/layer-test.sh
       - name: Diagnostics on failure
         if: failure()
         run: |

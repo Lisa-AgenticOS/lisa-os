@@ -61,7 +61,24 @@ useradd -m builder 2>/dev/null || true
 chown -R builder /build
 
 say "build the [lisa] repo"
-sudo -u builder bash -c 'cd /build && bash os/repo-tools/build-packages.sh /build/repo-out'
+# LISA_REQUIRE_LANDLOCK has to be carried ACROSS sudo by hand. sudo
+# resets the environment (env_reset is the default), so exporting it in
+# the job would have left it unset inside makepkg's check() — and the
+# confinement tests would have gone on skipping themselves silently,
+# which is the exact thing the variable exists to stop. A guard that
+# does not reach the thing it guards is worse than none: it reads as
+# covered.
+#
+# Announced, not assumed. The line below is what a reader greps for to
+# tell "the jail was witnessed" from "the jail was skipped".
+if [ "${LISA_REQUIRE_LANDLOCK:-}" = "1" ]; then
+    say "LISA_REQUIRE_LANDLOCK=1 — confinement tests must observe a real jail"
+else
+    say "LISA_REQUIRE_LANDLOCK unset — confinement tests may skip themselves"
+fi
+sudo -u builder \
+    LISA_REQUIRE_LANDLOCK="${LISA_REQUIRE_LANDLOCK:-}" \
+    bash -c 'cd /build && bash os/repo-tools/build-packages.sh /build/repo-out'
 
 say "install the layer"
 LISA_REPO_URL=file:///build/repo-out bash /build/os/layer/install.sh

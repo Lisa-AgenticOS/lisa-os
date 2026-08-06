@@ -71,8 +71,28 @@ fn base(name: &str) -> PathBuf {
 /// Landlock needs a kernel that has it. A machine without one is not a
 /// failure of this code and must not be reported as a pass either — the
 /// skip is printed, and CI runs on a kernel that has it.
+///
+/// **`LISA_REQUIRE_LANDLOCK=1` turns the skip into a failure**, and CI
+/// sets it. Without that, this file is one runner-image change away from
+/// being permanently green while observing nothing: these are the ONLY
+/// tests that witness the forge jail against a real kernel, and a skip
+/// looks exactly like a pass in the summary line. The repo already
+/// treats this hazard seriously elsewhere — `LISA_REQUIRE_BUS_TESTS` and
+/// `LISA_REQUIRE_PIDFD` exist for the same reason — and this suite was
+/// simply missed.
+///
+/// The dev-host case stays honest: on macOS the whole file is
+/// `cfg`-ed out, so nobody has to set anything to work locally.
 fn skip_unless_enforced(c: &Confinement) -> bool {
     if let Some(note) = c.note() {
+        if std::env::var_os("LISA_REQUIRE_LANDLOCK").is_some_and(|v| v == "1") {
+            panic!(
+                "LISA_REQUIRE_LANDLOCK=1 but there is no confinement to \
+                 observe here — {note}.\nThis lane exists to witness the \
+                 forge jail against a real kernel. Skipping would report \
+                 that it did."
+            );
+        }
         eprintln!("SKIPPED: no confinement to observe here — {note}");
         return true;
     }
