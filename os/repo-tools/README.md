@@ -61,6 +61,37 @@ stock has nothing pulling a differently-named package in. So the
 the ADR while having happened on zero devices (#284). Coherent and
 inert are not the same property, and only one of them was checked.
 
+`check-fork-derivation.py` is the other half of the same story, and the
+one that came from feeling the cost. A fork's PKGBUILD is Arch's plus a
+Lisa delta, which makes it two files in one: fields that are ours
+(`pkgname`, `provides`/`conflicts`/`replaces`, the appended sources) and
+fields that are Arch's, hand-copied and expected to track upstream
+exactly. Nothing checked the second kind, so bumping the control-center
+fork 50.3 → 50.4 went: change `pkgver` → push → ten minutes → red
+(`b2sums FAILED`) → change `b2sums[0]` → push → ten minutes → … Each
+round trip discovers ONE coupled field, because makepkg reports the
+first thing that stops it and nothing enumerates the rest.
+
+Arch's PKGBUILD is now vendored beside ours at a pinned commit
+(`upstream.PKGBUILD`), and the checker diffs the two **offline**:
+`pkgver`/`license`/`url`/`validpgpkeys` must match, `arch` and the three
+`*depends` must be supersets (a fork may add, never drop — a dropped
+`depends` fails at runtime on somebody's machine, not at build), Arch's
+`source` must be a **prefix** of ours, and `b2sums` must be as long as
+`source` with its first entries equal to Arch's. That last rule is the
+one that shipped: entry 0 pins the git tag, so it moves with `pkgver`,
+and the two are only coupled by convention.
+
+    python3 os/repo-tools/check-fork-derivation.py            # offline, in `just lint`
+    python3 os/repo-tools/check-fork-derivation.py --refresh  # fetch upstream, show the diff
+
+`--refresh` is the rebase workflow — read what moved, change our file
+once. What the checker deliberately does **not** answer is whether the
+Lisa delta still *applies*; that needs the upstream source tree, so it
+stays with the nine anchor guards in `prepare()`, which fail the build
+by name. Two checks for two failures, and neither pretends to be the
+other.
+
 `check-egress-units.py` is the one that discovers its own population:
 it *interprets* the PKGBUILD install lines to find every shipped unit,
 takes each unit's `ExecStart` binary, and demands a posture for it — so a

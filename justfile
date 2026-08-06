@@ -73,6 +73,12 @@ lint:
     # half needs an image, so it runs where there is one:
     #   check-desktop-inventory.py --manifest <root>/usr/lib/lisa/packages.manifest --lane release
     python3 os/repo-tools/check-desktop-inventory.py
+    # A fork's PKGBUILD is Arch's plus a delta, and the stock half is a
+    # hand-copy of a moving target. Bumping 50.3 -> 50.4 found its
+    # coupled fields ONE CI ROUND TRIP AT A TIME, because makepkg stops
+    # at the first and nothing enumerates the rest. This diffs our file
+    # against the vendored upstream and reports the whole set at once.
+    python3 os/repo-tools/check-fork-derivation.py
     # The ADR index used to be written by hand, and said "36 of the 37
     # records below" while there were 50. A page describing 50 files
     # must be derived from them: this rejects a status line outside the
