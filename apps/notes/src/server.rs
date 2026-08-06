@@ -232,7 +232,12 @@ fn notes_json(notes: &[NoteSummary]) -> Value {
     json!({
         "notes": notes
             .iter()
-            .map(|n| json!({ "id": n.id, "title": n.title, "created": n.created }))
+            .map(|n| json!({
+                "id": n.id,
+                "title": n.title,
+                "created": n.created,
+                "snippet": n.snippet,
+            }))
             .collect::<Vec<_>>(),
     })
 }

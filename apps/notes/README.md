@@ -18,19 +18,19 @@ existed for months before its window did.
 **The window** (`lisa-notes-app.js`, GJS) landed 2026-08-06 as the first
 consumer of `apps/lisa_ui` — ADR-0056's rule that a shared library is
 extracted from a real caller rather than designed for an imagined one.
-It does **not** open the SQLite store. It calls the same five tools the
-agent calls, over the same socket, so what the person sees and what the
-model sees are the same list by construction rather than by two pieces
-of code agreeing. That is "apps are agent surfaces" as a fact about the
-code: the tool surface is not a bolt-on beside the app, it is the app's
-API, and the window is its first client.
+It does **not** open the SQLite store. It calls the same seven tools
+the agent calls, over the same socket, so what the person sees and what
+the model sees are the same list by construction rather than by two
+pieces of code agreeing. That is "apps are agent surfaces" as a fact
+about the code: the tool surface is not a bolt-on beside the app, it is
+the app's API, and the window is its first client.
 
-**Status, precisely:** the window's model layer is tested (`tests/`, 7
-cases under node) and the tree is staged into the apps payload, but the
-window has **never been drawn** — GJS needs a display and the dev host
-is macOS. It also has no PKGBUILD install line yet, so no image ships
-it. Neither of those is "works on a device", and this paragraph exists
-so nobody reads the sections above as if they were.
+**Status, precisely:** the window's model layer is tested (`tests/`,
+cases under node), the tree is staged into the apps payload, the
+`.desktop` has its PKGBUILD install line, and the window has been drawn
+and used on the reference device (2026-08-06, from a scratch tree — the
+released image does not carry it yet). "Works on a device" currently
+means that one device, hand-deployed.
 
 Tools, from `app.lisaos.notes.json`:
 
@@ -38,9 +38,17 @@ Tools, from `app.lisaos.notes.json`:
 |---|---|---|
 | `create_note` | write | `delete_note` |
 | `list_notes` | read | — |
+| `read_note` | read | — |
+| `update_note` | write | `update_note` with what it returned |
 | `search_notes` | read | — |
 | `delete_note` | write | `restore_note` |
 | `restore_note` | write | — |
+
+`update_note` is its own undo: it returns `previous_title` and
+`previous_body`, and the manifest's undo block maps them straight back
+into another `update_note` call. `list_notes` and `search_notes`
+summaries carry a `snippet` — the first 200 characters of the body, cut
+in SQL — so a sidebar can show previews without reading every note.
 
 Deletes are **soft** in `storage.rs`, which is what makes the bus's undo
 journal able to compensate rather than merely apologise.

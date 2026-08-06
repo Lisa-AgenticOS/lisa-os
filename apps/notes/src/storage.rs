@@ -5,11 +5,17 @@ use rusqlite::{Connection, params};
 use std::path::Path;
 
 /// One row as `list_notes` reports it.
+///
+/// `snippet` is the opening of the body — enough for a list row's
+/// subtitle, cut in SQL (`substr` counts characters) so a thousand
+/// long notes never cross the socket in full just to draw a sidebar.
+/// The window truncates further for display.
 #[derive(Debug, PartialEq, Eq)]
 pub struct NoteSummary {
     pub id: i64,
     pub title: String,
     pub created: String,
+    pub snippet: String,
 }
 
 /// A whole note, body included.
@@ -64,14 +70,16 @@ impl Store {
 
     /// Active (non-deleted) notes, oldest first.
     pub fn list(&self) -> rusqlite::Result<Vec<NoteSummary>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, title, created FROM notes WHERE deleted = 0 ORDER BY id")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, created, substr(body, 1, 200)
+             FROM notes WHERE deleted = 0 ORDER BY id",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(NoteSummary {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 created: row.get(2)?,
+                snippet: row.get(3)?,
             })
         })?;
         rows.collect()
@@ -128,7 +136,7 @@ impl Store {
     pub fn search(&self, query: &str, limit: i64) -> rusqlite::Result<Vec<NoteSummary>> {
         let pattern = format!("%{}%", escape_like(query));
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, created FROM notes
+            "SELECT id, title, created, substr(body, 1, 200) FROM notes
              WHERE deleted = 0
                AND (title LIKE ?1 ESCAPE '\\' OR body LIKE ?1 ESCAPE '\\')
              ORDER BY created DESC, id DESC
@@ -139,6 +147,7 @@ impl Store {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 created: row.get(2)?,
+                snippet: row.get(3)?,
             })
         })?;
         rows.collect()
@@ -234,7 +243,10 @@ mod tests {
         let (_dir, store) = fixture();
         let id = store.create("draft", "first thoughts").unwrap();
 
-        let before = store.update(id, "final", "considered thoughts").unwrap().unwrap();
+        let before = store
+            .update(id, "final", "considered thoughts")
+            .unwrap()
+            .unwrap();
         assert_eq!(before.title, "draft");
         assert_eq!(before.body, "first thoughts");
 
@@ -287,6 +299,33 @@ mod tests {
             "created is an RFC 3339 UTC stamp: {:?}",
             notes[0].created
         );
+    }
+
+    /// A list row carries the opening of its body so a sidebar can show
+    /// a preview without reading every note in full — and a long body
+    /// is cut at 200 *characters* (SQLite `substr` semantics), so a
+    /// multibyte body cannot come back torn mid-codepoint.
+    #[test]
+    fn a_summary_carries_a_snippet_cut_by_characters_not_bytes() {
+        let (_dir, store) = fixture();
+        store.create("short", "oat milk").unwrap();
+        store.create("long", &"š".repeat(500)).unwrap();
+
+        let notes = store.list().unwrap();
+        assert_eq!(notes[0].snippet, "oat milk");
+        assert_eq!(
+            notes[1].snippet.chars().count(),
+            200,
+            "cut at 200 characters even when each is 2 bytes"
+        );
+        assert!(
+            notes[1].snippet.chars().all(|c| c == 'š'),
+            "no torn codepoint"
+        );
+
+        // Search summaries carry the same snippet.
+        let hits = store.search("oat", 20).unwrap();
+        assert_eq!(hits[0].snippet, "oat milk");
     }
 
     #[test]

@@ -500,6 +500,11 @@ package_lisa-shell() {
         "$pkgdir/usr/share/applications/app.lisaos.Mail.desktop"
     install -Dm644 apps/mail/app.lisaos.Mail.json \
         "$pkgdir/usr/share/lisa/manifests/app.lisaos.Mail.json"
+    # Notes' window (#155). Its Icon= is an absolute path into the
+    # staged tree, so the entry needs nothing installed into hicolor —
+    # the daemon, manifest and unit ship from package_lisa-notes.
+    install -Dm644 apps/notes/app.lisaos.Notes.desktop \
+        "$pkgdir/usr/share/applications/app.lisaos.Notes.desktop"
     install -Dm644 shell/assistant/app.lisaos.Assistant.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.Assistant.desktop"
     # D-Bus activation (#210): the Spotlight hand-off calls `ask` on
