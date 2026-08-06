@@ -5,18 +5,26 @@
 #
 # For EVERY unit that os/repo-tools/check-egress-units.py classifies
 # no-egress, this harness extracts that unit's own [Service] sandbox
-# **from the shipped file**, applies it with `systemd-run -p`, and
-# actually tries to reach the internet from inside it. That is a runtime
-# proof, not a string assertion, and it now covers lisa-inferenced (both
-# units), lisa-contextd, lisa-agentd, lisa-harnessd and lisa-notes —
-# where before it covered lisa-inferenced alone, under a sandbox this
-# script re-typed by hand and described as "mirrored exactly". Two lists
-# that can silently disagree is the defect, so there is now one list:
-# the units themselves.
+# **from the shipped file, plus its shipped drop-ins**, applies it with
+# `systemd-run -p`, and actually tries to reach the internet from inside
+# it. That is a runtime proof, not a string assertion. The population is
+# whatever `--list no-egress` prints — deliberately NOT enumerated here,
+# because the enumeration that used to sit in this comment had already
+# drifted (it named six units while the gate classified seven, #295),
+# which is the exact defect the derived list was introduced to remove.
+# Run `check-egress-units.py --explain` to see it.
+#
+# The drop-ins are #292 and they are the reason this comment changed. A
+# `<unit>.service.d/*.conf` handing the network back was invisible to
+# BOTH layers at once: the static gate never opened a `.conf`, and this
+# script rebuilt the sandbox from the pristine unit file, so it applied
+# a confinement the machine does not have and reported "blocked". The
+# harness now asks the classifier for the drop-ins (`--dropins`) and
+# applies them in systemd's order, after the unit.
 #
 # Only lisa-inferenced additionally gets its DAEMON run under the
 # sandbox and asked to serve loopback, and the reason is practical
-# rather than principled: it is the only one of the six that answers
+# rather than principled: it is the only no-egress daemon that answers
 # over HTTP. contextd, agentd, harnessd and notes are D-Bus/unix-socket
 # daemons needing a session bus and a populated $XDG_RUNTIME_DIR to
 # reach a state worth probing, neither of which a system-scope
@@ -88,11 +96,14 @@ RemainAfterExit NotifyAccess WatchdogSec KillMode KillSignal Slice \
 StateDirectory StateDirectoryMode RuntimeDirectory RuntimeDirectoryMode \
 CacheDirectory LogsDirectory ConfigurationDirectory WorkingDirectory"
 
-# Emit `-p` and `KEY=VALUE` for one unit file, one array element each.
+# Emit `-p` and `KEY=VALUE` for a unit file AND its drop-ins, one array
+# element each. Several files, in the order systemd applies them, so a
+# drop-in's `IPAddressDeny=` reset lands after the unit's
+# `IPAddressDeny=any` exactly as it would on the machine (#292).
 props_for() {
-    python3 - "$1" "$NOT_SANDBOX" <<'PY'
+    python3 - "$NOT_SANDBOX" "$@" <<'PY'
 import sys
-path, skip = sys.argv[1], set(sys.argv[2].split())
+skip, paths = set(sys.argv[1].split()), sys.argv[2:]
 
 # Transient units get NO specifier expansion: %h/%t are expanded when
 # systemd PARSES a unit file, and a property handed to systemd-run
@@ -102,45 +113,74 @@ path, skip = sys.argv[1], set(sys.argv[2].split())
 #
 # These are the SYSTEM-scope values even for units that ship per-user,
 # because system scope is what CI's `systemd-run` has. It changes which
-# directory a path directive points at; it changes nothing about
-# IPAddressDeny, IPAddressAllow or RestrictAddressFamilies, which are
-# the three this test exists to exercise.
+# directory a path directive points at.
+#
+# It ALSO changes IPAddressDeny and IPAddressAllow, and this comment
+# used to claim the opposite (#295). Those two are a cgroup BPF
+# program: root can load one, `systemd --user` cannot, and the user
+# manager says so in the journal —
+#
+#   lisa-agentd.service: unit configures an IP firewall, but not
+#   running as root.
+#
+# — so a per-user unit's IP filter is INERT on the machine and LIVE
+# here. That makes this harness stricter than reality for those two
+# directives, never weaker, but a "blocked" it produces for a user unit
+# may be a block the device does not have. RestrictAddressFamilies is
+# a seccomp filter and behaves identically in both scopes; it is the
+# only one of the three that confines a user unit, which is #288 and
+# why check-egress-units.py asserts it separately.
 SPECIFIERS = {
     "%h": "/root", "%t": "/run", "%S": "/var/lib", "%C": "/var/cache",
     "%L": "/var/log", "%E": "/etc", "%u": "root", "%U": "0",
 }
 
 section = None
-for raw in open(path):
-    line = raw.strip()
-    if not line or line[0] in "#;":
-        continue
-    if line.startswith("[") and line.endswith("]"):
-        section = line[1:-1]
-        continue
-    if section != "Service" or "=" not in line:
-        continue
-    key, value = (p.strip() for p in line.split("=", 1))
-    if key in skip:
-        continue
-    for spec, expansion in SPECIFIERS.items():
-        value = value.replace(spec, expansion)
-    # A path sandbox naming a directory that does not exist on the test
-    # host also fails the unit at START. The `-` prefix is systemd's own
-    # "ignore if missing" and weakens nothing this test asserts.
-    if key in ("ReadWritePaths", "ReadOnlyPaths", "InaccessiblePaths"):
-        value = " ".join(
-            v if v.startswith("-") else "-" + v for v in value.split()
-        )
-    print("-p")
-    print(f"{key}={value}")
+for path in paths:
+    section = None
+    for raw in open(path):
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        if section != "Service" or "=" not in line:
+            continue
+        key, value = (p.strip() for p in line.split("=", 1))
+        if key in skip:
+            continue
+        for spec, expansion in SPECIFIERS.items():
+            value = value.replace(spec, expansion)
+        # A path sandbox naming a directory that does not exist on the
+        # test host also fails the unit at START. The `-` prefix is
+        # systemd's own "ignore if missing" and weakens nothing this
+        # test asserts.
+        if key in ("ReadWritePaths", "ReadOnlyPaths", "InaccessiblePaths"):
+            value = " ".join(
+                v if v.startswith("-") else "-" + v for v in value.split()
+            )
+        print("-p")
+        print(f"{key}={value}")
 PY
 }
 
-run_sandboxed() {  # unit file, then command...
-    local unit="$1"; shift
-    local props=()
-    mapfile -t props < <(props_for "$unit")
+# The unit file and every drop-in that ships with it, absolute paths, in
+# application order. Derived, never listed — the same reason the unit
+# population is (#292, #295).
+files_for() {  # repo-relative unit path
+    local rel="$1" d
+    printf '%s\n' "$ROOT/$rel"
+    while IFS= read -r d; do
+        [ -n "$d" ] && printf '%s\n' "$ROOT/$d"
+    done < <(python3 "$CLASSIFY" --dropins "$rel")
+}
+
+run_sandboxed() {  # repo-relative unit path, then command...
+    local rel="$1"; shift
+    local files=() props=()
+    mapfile -t files < <(files_for "$rel")
+    mapfile -t props < <(props_for "${files[@]}")
     sudo systemd-run --wait --pipe --quiet "${props[@]}" -- "$@"
 }
 
@@ -160,18 +200,22 @@ mapfile -t NO_EGRESS_UNITS < <(python3 "$CLASSIFY" --list no-egress)
     exit 1
 }
 for rel in "${NO_EGRESS_UNITS[@]}"; do
-    unit="$ROOT/$rel"
     echo "-- $rel"
-    props_for "$unit" | paste - - | sed 's/^/     /'
+    mapfile -t FILES < <(files_for "$rel")
+    # Printed, not assumed: a drop-in silently missing from this list is
+    # the failure #292 describes, and the only way to see it is to say
+    # which files the sandbox below was built from.
+    for f in "${FILES[@]}"; do echo "     from ${f#"$ROOT/"}"; done
+    props_for "${FILES[@]}" | paste - - | sed 's/^/     /'
 
     # Per-unit control: this exact sandbox can start this exact binary.
-    if ! run_sandboxed "$unit" "$CURL" --version >/dev/null 2>&1; then
+    if ! run_sandboxed "$rel" "$CURL" --version >/dev/null 2>&1; then
         bad "$rel: curl will not even START under this sandbox — the egress" \
             "result below would be vacuous. Fix the harness or the unit."
         continue
     fi
     # The proof.
-    if run_sandboxed "$unit" "$CURL" -sf -m 15 -o /dev/null "$PROBE_URL" 2>/dev/null; then
+    if run_sandboxed "$rel" "$CURL" -sf -m 15 -o /dev/null "$PROBE_URL" 2>/dev/null; then
         bad "$rel: reached $PROBE_URL from inside the SHIPPED sandbox — this" \
             "daemon has egress and CLAUDE.md rule 5 says it must not."
     else
@@ -197,8 +241,7 @@ mapfile -t EGRESS_UNITS < <(python3 "$CLASSIFY" --list egress)
     exit 1
 }
 for rel in "${EGRESS_UNITS[@]}"; do
-    unit="$ROOT/$rel"
-    if run_sandboxed "$unit" "$CURL" -sf -m 20 -o /dev/null "$PROBE_URL" 2>/dev/null; then
+    if run_sandboxed "$rel" "$CURL" -sf -m 20 -o /dev/null "$PROBE_URL" 2>/dev/null; then
         echo "ok: $rel reaches $PROBE_URL — the broker can broker"
     else
         bad "$rel is the sole egress broker and cannot reach $PROBE_URL." \
@@ -211,7 +254,7 @@ done
 # under its own sandbox can be asserted here. See the header.
 if [ -n "$BIN" ]; then
     note "lisa-inferenced serves loopback while under its own shipped sandbox"
-    UNIT="$ROOT/os/packages/lisa/lisa-inferenced.service"
+    UNIT_REL=os/packages/lisa/lisa-inferenced.service
     # ProtectHome/PrivateTmp hide /home and /tmp, so the binary must live
     # somewhere the service can still see.
     RUN_BIN=/usr/local/bin/lisa-egress-test-bin
@@ -222,7 +265,8 @@ if [ -n "$BIN" ]; then
     }
     trap cleanup EXIT
 
-    mapfile -t dprops < <(props_for "$UNIT")
+    mapfile -t dfiles < <(files_for "$UNIT_REL")
+    mapfile -t dprops < <(props_for "${dfiles[@]}")
     sudo systemd-run --unit=lisa-egress-daemon "${dprops[@]}" -- \
         "$RUN_BIN" --engine llama --models-dir /var/lib/lisa-models/refs
     up=""

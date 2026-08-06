@@ -40,22 +40,56 @@ property is a property of the daemon: lisa-contextd may not reach the
 network in a system unit, a user unit, or any unit written after this
 comment.
 
+WHAT THE FIRST VERSION OF THAT DISCOVERY MISSED (#291, #292), because
+"discovered, not typed" is only as good as the discovery:
+
+  * It matched literal whitespace TOKENS on install lines. A source
+    held in a shell variable, produced by a `for` loop, or written as a
+    glob resolved to nothing and was **dropped in silence** — and the
+    loop form is not hypothetical, PKGBUILD:262 already ships two
+    drop-ins that way. Over the unmodified tree, 16 install lines into
+    systemd directories resolved to nothing and nobody was told.
+  * Its mkosi glob was `usr/lib/systemd/*/*.service`, so a unit baked
+    into `mkosi.extra/etc/systemd/system/` was invisible — a directory
+    the image build already uses.
+  * `*.service.d/*.conf` drop-ins were never read at all, so a drop-in
+    handing the network back to a hardened daemon passed both this gate
+    and the runtime one.
+
+So the installers are now INTERPRETED rather than pattern-matched: a
+small shell walker expands variables, `for` loops and globs, resolves
+every source to a repo file, and — the part that matters — **errors on
+anything into a systemd directory it cannot resolve**. Silence is the
+defect; an unresolved line is now a failure that names itself. On top
+of that, every systemd unit file in the tree must be accounted for by
+some installer line, so a unit added by an idiom the walker does not
+model still cannot ship unseen: it fails as an orphan.
+
+Drop-ins are merged into the unit before it is judged, and directives
+are read with systemd's own semantics — last assignment wins, an empty
+assignment RESETS the list — because `IPAddressDeny=any` followed later
+by `IPAddressDeny=` is a unit with no IP filter at all.
+
 Static assertion only. The runtime proof — actually attempting egress
 from inside each shipped sandbox and watching it fail — is
 `tests/e2e/egress-test.sh`, which takes its unit list from this file
-(`--list no-egress`) so the two can never be two lists. This check is
-still worth having on its own: the runtime test proves *the sandbox as a
-whole* blocks egress, which stays true if `IPAddressDeny` is deleted
-from a unit that also has `RestrictAddressFamilies=AF_UNIX`. Defence in
-depth only counts if losing a layer is noticed, and only a static check
-can notice that.
+(`--list no-egress`) and its drop-in list from `--dropins`, so the two
+can never be two lists. This check is still worth having on its own:
+the runtime test proves *the sandbox as a whole* blocks egress, which
+stays true if `IPAddressDeny` is deleted from a unit that also has
+`RestrictAddressFamilies=AF_UNIX`. Defence in depth only counts if
+losing a layer is noticed, and only a static check can notice that.
 
 Usage:
     check-egress-units.py             # the gate
     check-egress-units.py --explain   # print the classification table
+    check-egress-units.py --installs  # the install-line resolution table
     check-egress-units.py --list no-egress|egress|exempt|cli
+    check-egress-units.py --dropins <repo-relative unit path>
 """
 
+import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -134,6 +168,47 @@ NOT_A_DAEMON = {
     ),
 }
 
+# ------------------------------------------------------------------- debt
+#
+# THE TWO DEBT LISTS BELOW ARE RATCHETED (#293). Read this before adding
+# to either.
+#
+# Both lists remove a unit from a check — EXEMPT from the static
+# directive assertion AND, via `--list no-egress`, from the runtime
+# suite in tests/e2e/egress-test.sh; USER_SCOPE_INET_DEBT from the
+# user-scope confinement assertion. Until 2026-08-06 they were a
+# convention with nothing enforcing it: re-adding one line blinded both
+# layers at once, for free, green, in a file a reviewer reads as "the
+# gate" rather than "the units". The self-retiring property 3a0fe1f
+# claimed is real, but only in the direction of hardening — nothing at
+# all resisted going the other way.
+#
+# The ceiling below is the resistance. `len()` of each list is asserted
+# against it, so ADDING AN ENTRY FAILS unless the same commit also
+# raises the ceiling — and that second line reads, in the diff, as
+# "this change increases the number of Lisa daemons nothing confines
+# from N to N+1", which is not a sentence anyone lands by accident. A
+# ratchet is what this repo already uses for the same shape elsewhere;
+# it is the strongest mechanism available to a gate that cannot reach
+# the network to ask whether an issue is still open.
+#
+# Be exact about what this is NOT: it does not make an entry
+# impossible, and it cannot. A two-line commit that raises the ceiling
+# and adds the entry still lands. What it removes is the *free, green,
+# one-line* version, and the reviewer-attention problem — the ceiling
+# is the diff line that says what happened in plain numbers.
+#
+# Every ceiling is a number that may only go DOWN without argument.
+DEBT_CEILING = {
+    # Empty, and that is the point — see EXEMPT's own note. A ceiling of
+    # zero means the ONLY way back to a non-empty EXEMPT is a commit
+    # that says so in this dict first.
+    "EXEMPT": 0,
+    # lisa-inferenced-dbus.service, and nothing else, ever again:
+    # lisa-harnessd.service was the second entry and is gone (#288).
+    "USER_SCOPE_INET_DEBT": 1,
+}
+
 # No-egress binaries whose SHIPPED unit does not carry IPAddressDeny
 # today. Each entry is a debt, not a dispensation — and the check FAILS
 # if an exempt unit gains the directive, so the exemption deletes itself
@@ -193,39 +268,540 @@ REQUIRED_EGRESS_COVERAGE = ("lisa-remoted",)
 DIRECTIVE = "IPAddressDeny=any"
 
 
-def shipped_units(root: Path) -> set:
-    """Units this repo installs, by reading the installers.
+# ---------------------------------------------------------------- discovery
+#
+# The installers are INTERPRETED, not pattern-matched (#291). What the
+# first version did — take every whitespace token on a line mentioning
+# `systemd/system/`, keep the ones that happen to name a repo file —
+# looks like discovery and is really a filter, and everything it fails
+# to recognise falls out of the population without a word. Five ordinary
+# idioms fell out that way, one of them already in the shipping
+# PKGBUILD, and sixteen real install lines resolved to nothing in
+# silence.
+#
+# So: a small shell walker with an environment, `for` loops, globs and
+# quoting, and one rule that matters more than any of the parsing —
+# **an install into a systemd directory that cannot be resolved is an
+# ERROR**. The gate may not know; it may not be quiet about not knowing.
 
-    Backslash continuations are joined first (install lines wrap), and
-    every whitespace token that resolves to a real repo file is taken as
-    a source. Destination paths and enable-symlink targets are basenames
-    of the INSTALLED unit, which routinely differs from the repo
-    filename (lisa-remoted-user.service installs as
-    lisa-remoted.service), so they resolve to nothing and drop out.
+# Where a payload has to land before this file cares about it. All four
+# prefixes, because systemd reads all four and the image build already
+# uses two of them (`mkosi.extra/etc/systemd/system/` exists today; the
+# old `usr/lib/systemd/*/*.service` glob could not see it).
+# The trailing path is OPTIONAL: `install -Dm644 x -t "$pkgdir/usr/lib/
+# systemd/user"` names the directory with no slash after it, and a
+# pattern that demanded one skipped the line entirely.
+SYSTEMD_DEST = re.compile(
+    r"(?:^|/)(?:etc|run|lib|usr/lib|usr/local/lib)/systemd/(system|user)(?:/(.*))?$"
+)
+
+# The one substring a statement must contain before the walker judges
+# it. Deliberately the destination directory rather than the file
+# extension: a unit's SOURCE may be named anything, and routinely is
+# (lisa-remoted-user.service installs as lisa-remoted.service). No
+# trailing slash, for the same reason SYSTEMD_DEST does not require one.
+SYSTEMD_MARKERS = ("systemd/system", "systemd/user")
+
+# makepkg's own variables. `%PKGDIR%` rather than a real path so that a
+# destination which still holds an unexpanded `$something` is obvious.
+MAKEPKG_ENV = {"pkgdir": "%PKGDIR%", "srcdir": "%SRCDIR%", "startdir": "%STARTDIR%"}
+
+VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.S)
+
+COPIERS = ("install", "cp", "rsync")
+LINKERS = ("ln",)
+MAKEDIRS = ("mkdir",)
+# Shell keywords the walker steps over rather than mistaking for a
+# command. `done`/`fi` land here; `for`/`while` are handled above.
+KEYWORDS = frozenset(
+    "do done then fi else elif esac fi case function local return "
+    "{ } ( ) ;; ! time".split()
+)
+
+# Options that swallow the NEXT argument, so it is not a source.
+OPTS_WITH_ARG = frozenset(
+    ["-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group",
+     "-S", "--suffix", "-Z", "--context", "--backup"]
+)
+
+# Unit suffixes systemd knows. A destination under a systemd directory
+# ending in something else is a shape this walker does not model, and
+# says so instead of ignoring it.
+UNIT_SUFFIXES = (
+    ".service", ".socket", ".timer", ".target", ".path", ".mount",
+    ".automount", ".swap", ".slice", ".scope", ".device",
+)
+
+
+def _logical_lines(text):
+    """(first line number, joined text) — backslash continuations joined."""
+    out, buf, start = [], "", 1
+    for n, raw in enumerate(text.splitlines(), 1):
+        if not buf:
+            start = n
+        if raw.endswith("\\"):
+            buf += raw[:-1] + " "
+            continue
+        out.append((start, buf + raw))
+        buf = ""
+    if buf:
+        out.append((start, buf))
+    return out
+
+
+def _split_statements(line):
+    """Break a logical line on `;`, `&`, `|`, `&&`, `||` outside quotes."""
+    parts, cur, quote, i = [], "", "", 0
+    while i < len(line):
+        c = line[i]
+        if quote:
+            cur += c
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c in "\"'":
+            quote = c
+            cur += c
+            i += 1
+            continue
+        if c == "\\" and i + 1 < len(line):
+            cur += line[i:i + 2]
+            i += 2
+            continue
+        if c == "#" and (not cur or cur[-1].isspace()):
+            break  # comment runs to end of line
+        if line[i:i + 2] in ("&&", "||"):
+            parts.append(cur)
+            cur = ""
+            i += 2
+            continue
+        if c in ";|&":
+            parts.append(cur)
+            cur = ""
+            i += 1
+            continue
+        cur += c
+        i += 1
+    parts.append(cur)
+    return parts
+
+
+def _tokenize(pkgbuild, text, errors):
+    """[(line number, argv)] for every simple command in a PKGBUILD.
+
+    A statement shlex cannot tokenize is skipped UNLESS it names a
+    systemd directory, in which case it is an error: not understanding a
+    line that installs a unit is the failure mode this whole file is
+    about.
     """
-    units = set()
-    for pkgbuild in (root / "os" / "packages").rglob("PKGBUILD"):
-        text = pkgbuild.read_text().replace("\\\n", " ")
-        for line in text.splitlines():
-            if "systemd/system/" not in line and "systemd/user/" not in line:
+    stmts = []
+    for lineno, line in _logical_lines(text):
+        for part in _split_statements(line):
+            if not part.strip():
                 continue
-            for tok in line.split():
-                tok = tok.strip("\"'")
-                if not tok.endswith(".service") or tok.startswith("$"):
+            try:
+                argv = shlex.split(part, comments=True, posix=True)
+            except ValueError as exc:
+                if any(m in part for m in SYSTEMD_MARKERS):
+                    errors.append(
+                        f"{pkgbuild}:{lineno}: cannot tokenize a statement that "
+                        f"names a systemd directory ({exc}): {part.strip()[:120]}"
+                    )
+                continue
+            stmts.append((lineno, argv))
+    return stmts
+
+
+def _expand(word, env):
+    """Substitute $NAME / ${NAME} from env. Unknown names are left as-is
+    so that the `$` survives into the resolver and fails loudly."""
+    def sub(match):
+        name = match.group(1) or match.group(2)
+        return env.get(name, match.group(0))
+    return VAR_RE.sub(sub, word)
+
+
+def _take_block(stmts, i):
+    """Statements up to the matching `done`; returns (body, index after)."""
+    body, depth = [], 0
+    while i < len(stmts):
+        argv = stmts[i][1]
+        head = argv[0] if argv else ""
+        if head in ("for", "while", "until", "select"):
+            depth += 1
+        elif head == "done":
+            if depth == 0:
+                return body, i + 1
+            depth -= 1
+        body.append(stmts[i])
+        i += 1
+    return body, i
+
+
+def _walk(stmts, env, visit):
+    """Run the statement list, calling visit(lineno, argv) per command.
+
+    `for` loops are expanded — PKGBUILD:262 already ships two drop-ins
+    through one, and the old discovery could not see either. `if`/`case`
+    bodies are walked unconditionally, which over-collects rather than
+    under-collects: this gate would rather judge a unit that a build
+    might skip than miss one it ships.
+    """
+    i = 0
+    while i < len(stmts):
+        lineno, argv = stmts[i]
+        if not argv:
+            i += 1
+            continue
+        head = argv[0]
+        if head in ("for", "select") and "in" in argv:
+            var = argv[1]
+            values = [_expand(w, env) for w in argv[argv.index("in") + 1:]]
+            body, i = _take_block(stmts, i + 1)
+            for value in values:
+                child = dict(env)
+                child[var] = value
+                _walk(body, child, visit)
+            continue
+        if head in ("while", "until"):
+            body, i = _take_block(stmts, i + 1)
+            _walk(body, dict(env), visit)
+            continue
+        if head in KEYWORDS or head in ("if", "for", "while", "until", "select"):
+            i += 1
+            continue
+        # Leading `NAME=value` words: an assignment statement mutates the
+        # environment; an assignment PREFIX applies to that command only.
+        assigns, j = {}, 0
+        while j < len(argv):
+            match = ASSIGN_RE.match(argv[j])
+            if not match:
+                break
+            value = _expand(match.group(2), env)
+            if not value.startswith("("):  # arrays are not paths
+                assigns[match.group(1)] = value
+            j += 1
+        if j == len(argv):
+            env.update(assigns)
+            i += 1
+            continue
+        local = dict(env, **assigns) if assigns else env
+        visit(lineno, [_expand(w, local) for w in argv[j:]])
+        i += 1
+
+
+def _split_opts(argv):
+    """(options, operands) for an install/cp-shaped command line."""
+    opts, args, take_next = [], [], False
+    for tok in argv[1:]:
+        if take_next:
+            opts.append(tok)
+            take_next = False
+            continue
+        if tok == "--":
+            continue
+        if tok.startswith("-") and tok != "-":
+            opts.append(tok)
+            if tok in OPTS_WITH_ARG:
+                take_next = True
+            continue
+        args.append(tok)
+    return opts, args
+
+
+def _resolve_source(root, pkgbuild, word):
+    """Repo files a source word names, or [] if it names none.
+
+    Two bases, because PKGBUILDs use both: the extracted source tree is
+    a copy of the repo (`cd "$pkgbase-$pkgver"` then
+    `os/packages/lisa/x.service`), and a file may also be named relative
+    to the PKGBUILD's own directory.
+    """
+    hits = []
+    for base in (root, pkgbuild.parent):
+        if any(c in word for c in "*?["):
+            hits.extend(p for p in sorted(base.glob(word)) if p.is_file())
+        else:
+            candidate = base / word
+            if candidate.is_file():
+                hits.append(candidate)
+            elif candidate.is_dir():
+                hits.extend(p for p in sorted(candidate.rglob("*")) if p.is_file())
+        if hits:
+            break
+    return hits
+
+
+class Landing:
+    """One repo file landing at one path inside a systemd directory."""
+
+    __slots__ = ("src", "scope", "rel", "kind", "unit", "origin")
+
+    def __init__(self, src, scope, rel, kind, unit, origin):
+        self.src = src        # Path in the repo, or None for mkosi trees
+        self.scope = scope    # "system" | "user"
+        self.rel = rel        # path under systemd/<scope>/
+        self.kind = kind      # "unit" | "dropin" | "other-unit" | "wants"
+        self.unit = unit      # installed unit filename this belongs to
+        self.origin = origin  # "os/packages/lisa/PKGBUILD:143" or a tree path
+
+
+def _classify_dest(scope, rel, src, origin, errors):
+    """A Landing for a path under systemd/<scope>/, or None with an error."""
+    rel = rel.strip("/")
+    if not rel:
+        return None
+    match = re.fullmatch(r"([^/]+\.service)\.d/[^/]+\.conf", rel)
+    if match:
+        return Landing(src, scope, rel, "dropin", match.group(1), origin)
+    if re.fullmatch(r"[^/]+\.service", rel):
+        return Landing(src, scope, rel, "unit", rel, origin)
+    if re.fullmatch(r"[^/]+\.(?:target|service|socket|timer|path)\.(?:wants|requires)/[^/]+", rel):
+        return Landing(src, scope, rel, "wants", Path(rel).name, origin)
+    if any(rel.endswith(sfx) for sfx in UNIT_SUFFIXES) and "/" not in rel:
+        return Landing(src, scope, rel, "other-unit", rel, origin)
+    errors.append(
+        f"{origin}: installs into systemd/{scope}/ at a path this check does "
+        f"not model — `{rel}`. Teach _classify_dest() what it is; a shape "
+        f"nobody modelled is a shape nobody checked."
+    )
+    return None
+
+
+def _pkgbuild_landings(root, pkgbuild, landings, table, errors):
+    text = pkgbuild.read_text()
+    rel_pkgbuild = pkgbuild.relative_to(root)
+    stmts = _tokenize(rel_pkgbuild, text, errors)
+
+    def visit(lineno, argv):
+        if not any(m in tok for tok in argv for m in SYSTEMD_MARKERS):
+            return
+        origin = f"{rel_pkgbuild}:{lineno}"
+        head = Path(argv[0]).name
+        opts, args = _split_opts(argv)
+
+        if head in MAKEDIRS or (head == "install" and ("-d" in opts or "-D" in opts and not args[:-1])):
+            if head in MAKEDIRS or "-d" in opts:
+                table.append((origin, "mkdir", " ".join(args), "-"))
+                return
+
+        if head in LINKERS:
+            # `ln -s ../x.service .../default.target.wants/x.service` —
+            # the enable symlink. Its target must be a unit something
+            # else installs; cross-checked once discovery is complete.
+            target = args[0] if args else ""
+            dest = args[-1] if len(args) > 1 else ""
+            table.append((origin, "symlink", target, dest))
+            match = SYSTEMD_DEST.search(dest.replace("%PKGDIR%", ""))
+            if match:
+                landing = _classify_dest(match.group(1), match.group(2) or "", None,
+                                         origin, errors)
+                if landing is not None:
+                    landing.kind = "wants"
+                    landing.unit = Path(target).name
+                    landings.append(landing)
+            return
+
+        if head not in COPIERS:
+            errors.append(
+                f"{origin}: `{head}` puts something into a systemd directory "
+                f"and this check does not model that command, so whatever it "
+                f"installs is invisible here. Add it to COPIERS/LINKERS/"
+                f"MAKEDIRS or stop using it: "
+                f"{' '.join(argv)[:140]}"
+            )
+            return
+
+        if "-t" in opts or "--target-directory" in opts:
+            key = "-t" if "-t" in opts else "--target-directory"
+            dest = opts[opts.index(key) + 1]
+            sources, into_dir = args, True
+        elif len(args) < 2:
+            errors.append(
+                f"{origin}: `{head}` with fewer than two operands "
+                f"({args}) — cannot tell source from destination."
+            )
+            return
+        else:
+            dest, sources = args[-1], args[:-1]
+            into_dir = len(sources) > 1 or dest.endswith("/")
+
+        dest_match = SYSTEMD_DEST.search(dest.replace("%PKGDIR%", ""))
+        if dest_match is None:
+            # A source that mentions a systemd path but a destination
+            # that does not: not our business, but say so in the table
+            # rather than dropping it.
+            table.append((origin, "not-a-systemd-dest", " ".join(sources), dest))
+            return
+        scope, rel_dest = dest_match.group(1), dest_match.group(2) or ""
+        if not rel_dest:
+            into_dir = True   # the destination named a directory, not a file
+
+        for word in sources:
+            if "$" in word or "%SRCDIR%" in word or "%STARTDIR%" in word:
+                errors.append(
+                    f"{origin}: the source `{word}` still holds an unexpanded "
+                    f"shell expansion, so this check cannot tell WHICH file "
+                    f"lands in systemd/{scope}/. An install line it cannot "
+                    f"resolve is a unit it cannot see (#291)."
+                )
+                table.append((origin, "UNRESOLVED", word, rel_dest))
+                continue
+            hits = _resolve_source(root, pkgbuild, word)
+            if not hits:
+                errors.append(
+                    f"{origin}: the source `{word}` resolves to no file in the "
+                    f"repo, yet it is installed into systemd/{scope}/. Either "
+                    f"the path is wrong or this check cannot see it; both are "
+                    f"failures, and the old behaviour — dropping the line in "
+                    f"silence — is what #291 is."
+                )
+                table.append((origin, "UNRESOLVED", word, rel_dest))
+                continue
+            for src in hits:
+                target_rel = (
+                    f"{rel_dest.rstrip('/')}/{src.name}" if into_dir else rel_dest
+                )
+                landing = _classify_dest(scope, target_rel, src.resolve(),
+                                         origin, errors)
+                if landing is None:
                     continue
-                src = root / tok
-                if src.is_file():
-                    units.add(src.resolve())
+                landings.append(landing)
+                table.append((origin, landing.kind,
+                              str(src.resolve().relative_to(root)),
+                              f"systemd/{scope}/{landing.rel}"))
+
+    _walk(stmts, dict(MAKEPKG_ENV), visit)
+
+
+def _tree_landings(root, landings, errors):
+    """Units and drop-ins baked straight into an image tree.
+
+    Every systemd directory, not just `usr/lib/systemd/*/` — the old
+    glob could not see `mkosi.extra/etc/systemd/system/`, which the
+    image build already populates.
+    """
     for tree in ("mkosi.extra", "initrd-overlay"):
-        for unit in (root / "os").rglob(f"{tree}/usr/lib/systemd/*/*.service"):
-            units.add(unit.resolve())
-    return units
+        for base in sorted((root / "os").rglob(tree)):
+            if not base.is_dir():
+                continue
+            for path in sorted(base.rglob("*")):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                rel = path.relative_to(base).as_posix()
+                match = SYSTEMD_DEST.search("/" + rel)
+                if match is None:
+                    continue
+                origin = str(path.relative_to(root))
+                landing = _classify_dest(match.group(1), match.group(2) or "",
+                                         path.resolve(), origin, errors)
+                if landing is not None:
+                    landings.append(landing)
+
+
+def discover(root: Path):
+    """(units, dropins, table, errors).
+
+    units    — [(unit file in the repo, installed name, scope, origin)]
+    dropins  — {(scope, installed unit name): [drop-in files, applied order]}
+    table    — every install line into a systemd directory, resolved
+    errors   — the lines that could NOT be resolved, and why
+    """
+    landings, table, errors = [], [], []
+    for pkgbuild in sorted((root / "os" / "packages").rglob("PKGBUILD")):
+        _pkgbuild_landings(root, pkgbuild, landings, table, errors)
+    _tree_landings(root, landings, errors)
+
+    units, dropins, installed_names = [], {}, {}
+    for landing in landings:
+        if landing.kind == "unit" and landing.src is not None:
+            units.append((landing.src, landing.unit, landing.scope, landing.origin))
+            installed_names.setdefault(landing.scope, set()).add(landing.unit)
+        elif landing.kind == "dropin" and landing.src is not None:
+            dropins.setdefault((landing.scope, landing.unit), []).append(
+                (landing.rel, landing.src))
+        elif landing.kind == "other-unit":
+            installed_names.setdefault(landing.scope, set()).add(landing.unit)
+
+    # An enable symlink pointing at a unit nothing installs is a unit
+    # that either does not exist or is installed by an idiom this walker
+    # cannot see. Either way it is not the silence it used to be.
+    for landing in landings:
+        if landing.kind != "wants" or not landing.unit.endswith(".service"):
+            continue
+        if landing.unit not in installed_names.get(landing.scope, ()):
+            errors.append(
+                f"{landing.origin}: enables `{landing.unit}` in "
+                f"systemd/{landing.scope}/, but nothing discovered here "
+                f"installs a unit by that name. Either it ships by an idiom "
+                f"this check cannot read — in which case it also ships "
+                f"unchecked — or the symlink dangles."
+            )
+
+    # Drop-ins are applied in filename order across all drop-in dirs,
+    # which is what systemd does and what makes the merge below match
+    # `systemctl cat`.
+    for key in dropins:
+        dropins[key].sort(key=lambda pair: Path(pair[0]).name)
+
+    return units, dropins, table, errors
+
+
+# Repo files that ARE systemd fragments and are deliberately installed
+# nowhere. Empty, and it must stay a named list rather than a silence:
+# an orphan is either dead weight or a unit shipping by a route this
+# check cannot read.
+NOT_SHIPPED = {}
+
+
+def orphan_fragments(root: Path, units, dropins, errors):
+    """Every systemd fragment in the tree is installed by something.
+
+    The counterpart to discovery, and the reason a unit added by an
+    idiom the walker does not model still cannot ship unseen: it lands
+    here as an orphan. `.service` files that are D-Bus activation
+    records (`[D-BUS Service]`) are not systemd units and are skipped by
+    reading them, not by name.
+    """
+    shipped = {src.resolve() for src, _n, _s, _o in units}
+    for files in dropins.values():
+        shipped.update(src.resolve() for _rel, src in files)
+
+    for path in sorted((root / "os" / "packages").rglob("*")):
+        if not path.is_file() or path.suffix not in (".service", ".conf"):
+            continue
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        sections = set(re.findall(r"(?m)^\s*\[([^\]]+)\]\s*$", text))
+        if not sections & {"Unit", "Service", "Install", "Socket", "Timer"}:
+            continue  # D-Bus activation file, gschema override, ini of some other kind
+        rel = str(path.relative_to(root))
+        if path.resolve() in shipped or rel in NOT_SHIPPED:
+            continue
+        errors.append(
+            f"{rel}: is a systemd fragment (sections {sorted(sections)}) that "
+            f"no installer line in os/packages/**/PKGBUILD was seen to "
+            f"install. Either it ships through an idiom this check cannot "
+            f"read — and therefore ships UNCHECKED, which is #291 — or it is "
+            f"dead weight. Install it, delete it, or name it in NOT_SHIPPED "
+            f"with the reason."
+        )
 
 
 def service_lines(text: str):
-    """([Service] directive, value, line number) for uncommented lines."""
+    """([Service] directive, value, line number) for uncommented lines.
+
+    Backslash continuations are joined, because systemd joins them: a
+    multi-line `ExecStart=/bin/sh -c '\\ ... '` is ONE assignment, and
+    reading its continuation lines as separate directives invents
+    directives the unit does not have.
+    """
     section = None
-    for line_no, raw in enumerate(text.splitlines(), 1):
+    for line_no, raw in _logical_lines(text):
         line = raw.strip()
         if line.startswith("#") or line.startswith(";") or not line:
             continue
@@ -238,49 +814,112 @@ def service_lines(text: str):
         yield key.strip(), value.strip(), line_no
 
 
-def exec_binary(text: str):
-    """Basename of the unit's ExecStart binary, or None.
+def effective_values(text: str, key: str):
+    """(was it ever set, the values in force) — systemd's own semantics.
 
-    systemd allows `-`, `+`, `!`, `!!`, `:` and `@` prefixes on the
-    command; strip them or a `-/usr/bin/lisa` reads as a binary called
-    `-lisa` and lands in the unclassified pile for no reason.
+    The list directives this file reads (`IPAddressDeny`,
+    `IPAddressAllow`, `RestrictAddressFamilies`) APPEND across repeated
+    assignments, and an EMPTY assignment resets the list to nothing.
+    The first version of this check asked `any(key == ... and value ==
+    "any")` — first match wins — so
+
+        IPAddressDeny=any
+        IPAddressDeny=
+
+    read as a unit with an IP filter, while systemd reads it as a unit
+    with none (#292). On lisa-harnessd, where the family filter must
+    allow AF_UNIX only and IPAddressDeny is the second layer, that is
+    the difference between defence in depth and a comment.
     """
+    values, seen = [], False
+    for k, value, _ in service_lines(text):
+        if k != key:
+            continue
+        if value == "":
+            values, seen = [], False
+        else:
+            values.extend(value.split())
+            seen = True
+    return seen, values
+
+
+def merged_text(unit: Path, dropin_files) -> str:
+    """The unit as systemd assembles it: the file, then its drop-ins.
+
+    A `.service.d/*.conf` that hands the network back was invisible to
+    this gate and to the runtime harness at the same time (#292) — the
+    static layer never opened a `.conf`, and egress-test.sh reconstructed
+    the sandbox from the pristine unit file. Appending them here, in the
+    order systemd applies them, is what makes both layers see the unit
+    the machine actually runs.
+    """
+    parts = [unit.read_text()]
+    for _rel, path in dropin_files:
+        parts.append(f"\n# --- drop-in: {path}\n{path.read_text()}")
+    return "".join(parts)
+
+
+# argv[0] values that are a wrapper rather than the program. A Lisa
+# daemon behind one erased the daemon from this gate's population
+# entirely: `ExecStart=/bin/sh -c 'exec /usr/bin/lisa-contextd'` was
+# filed under "runs something else, out of rule 5's scope" (#292).
+WRAPPERS = frozenset(
+    "sh bash dash ash zsh ksh env setsid nohup stdbuf timeout runuser "
+    "setpriv chrt ionice nice systemd-inhibit".split()
+)
+
+# Directories a real program lives in. Without this, scanning a wrapper's
+# argv for `lisa-*` matches `/run/lisa-esp` in lisa-boot-report.service
+# and invents a daemon.
+BIN_DIRS = ("/usr/bin", "/bin", "/usr/local/bin", "/usr/sbin", "/sbin",
+            "/usr/lib/lisa", "/usr/libexec")
+
+
+def _program_name(token: str):
+    """The program a token names, or None if it is not a program at all."""
+    token = token.strip("'\"")
+    if not token:
+        return None
+    if "/" not in token:
+        return token
+    if not token.startswith("/"):
+        return None
+    parent = token.rsplit("/", 1)[0]
+    return token.rsplit("/", 1)[1] if parent in BIN_DIRS else None
+
+
+def exec_programs(text: str):
+    """(binaries, wrapped) over EVERY ExecStart= line in the unit.
+
+    Both halves are #292. Reading only the FIRST ExecStart let a second
+    one run the daemon unseen; taking argv[0] literally let any wrapper
+    hide it. systemd allows `-`, `+`, `!`, `!!`, `:` and `@` prefixes on
+    the command, stripped here or a `-/usr/bin/lisa` reads as a binary
+    called `-lisa`.
+    """
+    names, wrapped = [], False
     for key, value, _ in service_lines(text):
         if key != "ExecStart" or not value:
             continue
-        cmd = value.split()[0].lstrip("-+!:@")
-        return Path(cmd).name
-    return None
+        argv = value.split()
+        head = _program_name(argv[0].lstrip("-+!:@"))
+        if head and is_lisa_binary(head):
+            names.append(head)
+            continue
+        if head in WRAPPERS:
+            hits = [n for n in (_program_name(a) for a in argv[1:])
+                    if n and is_lisa_binary(n)]
+            if hits:
+                wrapped = True
+                names.extend(hits)
+                continue
+        if head and head not in names:
+            names.append(head)
+    return names, wrapped
 
 
 def is_lisa_binary(name: str) -> bool:
     return name == "lisa" or name.startswith("lisa-") or name == "xdg-desktop-portal-lisa"
-
-
-def is_user_scope(root: Path, unit: Path, text: str) -> bool:
-    """Does this unit run under `systemd --user`?
-
-    Decided from the INSTALLER line that places it (the authority — a
-    file's name in this repo does not say where it lands), falling back
-    to the mkosi tree path, and finally to `WantedBy=default.target`,
-    which is the user manager's conventional target.
-    """
-    for pkgbuild in (root / "os" / "packages").rglob("PKGBUILD"):
-        joined = pkgbuild.read_text().replace("\\\n", " ")
-        for line in joined.splitlines():
-            if unit.name in line and "systemd/user/" in line:
-                return True
-    if "/systemd/user/" in str(unit):
-        return True
-    section = None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1]
-        elif section == "Install" and line.startswith("WantedBy="):
-            if "default.target" in line:
-                return True
-    return False
 
 
 def inet_allowed(text: str) -> bool:
@@ -290,72 +929,159 @@ def inet_allowed(text: str) -> bool:
     permissive answer — the opposite of how a missing directive usually
     reads, and the reason this returns True for `none`.
     """
-    seen = False
-    for key, value, _ in service_lines(text):
-        if key != "RestrictAddressFamilies":
-            continue
-        seen = True
-        if "AF_INET" in value:
-            return True
-    return not seen
+    seen, families = effective_values(text, "RestrictAddressFamilies")
+    if not seen:
+        return True
+    if any(f.startswith("~") for f in families):
+        denied = {f.lstrip("~") for f in families}
+        return not {"AF_INET", "AF_INET6"} <= denied
+    return any(f in ("AF_INET", "AF_INET6") for f in families)
+
+
+class Row:
+    """One shipped unit, judged."""
+
+    __slots__ = ("unit", "installed", "scope", "binary", "posture", "has",
+                 "user_scope", "inet", "dropins", "wrapped", "origin")
+
+    def __init__(self, **kw):
+        for slot in self.__slots__:
+            setattr(self, slot, kw.get(slot))
 
 
 def classify(root: Path):
-    """[(unit, binary, posture, has_directive, user_scope, inet)]."""
-    rows = []
-    for unit in sorted(shipped_units(root)):
-        text = unit.read_text()
-        binary = exec_binary(text)
-        if binary is None or not is_lisa_binary(binary):
-            rows.append((unit, binary, "out-of-scope", False, False, False))
+    """(rows, errors) for every unit the installers place."""
+    units, dropins, _table, errors = discover(root)
+    orphan_fragments(root, units, dropins, errors)
+
+    rows, seen = [], set()
+    for unit, installed, scope, origin in sorted(units, key=lambda u: str(u[0])):
+        key = (unit, installed, scope)
+        if key in seen:
             continue
-        if binary in NO_EGRESS:
-            posture = "no-egress"
-        elif binary in EGRESS:
-            posture = "egress"
-        elif binary in NOT_A_DAEMON:
-            posture = "cli"
+        seen.add(key)
+        applied = dropins.get((scope, installed), [])
+        text = merged_text(unit, applied)
+        binaries, wrapped = exec_programs(text)
+        lisa = [b for b in binaries if is_lisa_binary(b)]
+        row = Row(unit=unit, installed=installed, scope=scope,
+                  dropins=[p for _rel, p in applied], wrapped=wrapped,
+                  origin=origin,
+                  has="any" in effective_values(text, "IPAddressDeny")[1],
+                  user_scope=(scope == "user"), inet=inet_allowed(text))
+        if not lisa:
+            row.binary = binaries[0] if binaries else None
+            row.posture = "out-of-scope"
+            rows.append(row)
+            continue
+        row.binary = lisa[0]
+        if len(set(lisa)) > 1:
+            errors.append(
+                f"{unit.relative_to(root)}: ExecStart runs more than one Lisa "
+                f"binary ({sorted(set(lisa))}). One unit, one daemon, or the "
+                f"posture below is a posture for whichever one this line "
+                f"happened to pick first."
+            )
+        if row.binary in NO_EGRESS:
+            row.posture = "no-egress"
+        elif row.binary in EGRESS:
+            row.posture = "egress"
+        elif row.binary in NOT_A_DAEMON:
+            row.posture = "cli"
         else:
-            posture = "UNCLASSIFIED"
-        has = any(
-            key == "IPAddressDeny" and value == "any"
-            for key, value, _ in service_lines(text)
-        )
-        rows.append((unit, binary, posture, has, is_user_scope(root, unit, text),
-                     inet_allowed(text)))
-    return rows
+            row.posture = "UNCLASSIFIED"
+        rows.append(row)
+    return rows, errors
 
 
 def main(argv) -> int:
     root = Path(__file__).resolve().parents[2]
-    rows = classify(root)
+
+    if "--installs" in argv:
+        # The resolution table (#291). Every install line into a systemd
+        # directory, and what it resolved to. `UNRESOLVED` rows are the
+        # ones the old discovery dropped in silence; there must be none,
+        # and if there are, the gate is already failing on them.
+        _u, _d, table, errs = discover(root)
+        print(f"{'ORIGIN':34} {'KIND':18} {'SOURCE':52} DESTINATION")
+        for origin, kind, src, dest in table:
+            print(f"{origin:34} {kind:18} {src:52} {dest}")
+        print(f"\n{len(table)} install line(s) into systemd directories, "
+              f"{sum(1 for r in table if r[1] == 'UNRESOLVED')} unresolved, "
+              f"{len(errs)} discovery error(s).")
+        return 0
+
+    rows, errors = classify(root)
+
+    if "--dropins" in argv:
+        # The runtime harness (tests/e2e/egress-test.sh) asks this for
+        # each unit it is about to attack, so the sandbox it applies is
+        # the one systemd would assemble — unit file PLUS drop-ins
+        # (#292). Without it the harness reconstructs the pristine unit
+        # and reports "blocked" for a unit the machine runs unblocked.
+        want = argv[argv.index("--dropins") + 1]
+        for row in rows:
+            if str(row.unit.relative_to(root)) == want:
+                for path in row.dropins:
+                    print(path.relative_to(root))
+        return 0
 
     if "--list" in argv:
         want = argv[argv.index("--list") + 1]
-        for unit, _binary, posture, _has, _us, _in in rows:
+        for row in rows:
             # `no-egress` is what the runtime harness attacks, so an
             # exempt unit must not appear in it: it demonstrably HAS
             # egress today (tests/e2e/egress-test.sh watched the portal
             # reach the internet), and a harness that failed on a debt
             # this file already records would just be reporting the
             # same thing twice, red.
-            exempt = unit.name in EXEMPT
-            if want == "exempt" and posture == "no-egress" and exempt:
-                print(unit.relative_to(root))
-            elif want == posture and not (posture == "no-egress" and exempt):
-                print(unit.relative_to(root))
+            exempt = row.unit.name in EXEMPT
+            if want == "exempt" and row.posture == "no-egress" and exempt:
+                print(row.unit.relative_to(root))
+            elif want == row.posture and not (row.posture == "no-egress" and exempt):
+                print(row.unit.relative_to(root))
         return 0
 
     if "--explain" in argv:
-        for unit, binary, posture, has, _us, _in in rows:
-            mark = "IPAddressDeny=any" if has else "-"
-            print(f"{posture:14} {binary or '(no ExecStart)':26} {mark:18} "
-                  f"{unit.relative_to(root)}")
+        for row in rows:
+            mark = "IPAddressDeny=any" if row.has else "-"
+            extra = f"  +{len(row.dropins)} drop-in(s)" if row.dropins else ""
+            print(f"{row.posture:14} {row.binary or '(no ExecStart)':26} "
+                  f"{mark:18} {row.unit.relative_to(root)}{extra}")
         return 0
 
-    errors = []
+    # ---- the debt ratchet (#293) ------------------------------------
+    # Checked before anything else, because both lists below SUPPRESS
+    # findings: a commit that adds an entry is a commit that turns a
+    # check off, and it may not do that in one green line. See
+    # DEBT_CEILING's note for what this does and does not buy.
+    for name, entries in (("EXEMPT", EXEMPT),
+                          ("USER_SCOPE_INET_DEBT", USER_SCOPE_INET_DEBT)):
+        ceiling = DEBT_CEILING.get(name)
+        if ceiling is None:
+            errors.append(
+                f"{name} has no entry in DEBT_CEILING. A list that removes "
+                f"units from this gate must have a stated maximum, or it is a "
+                f"convention again."
+            )
+        elif len(entries) > ceiling:
+            errors.append(
+                f"{name} holds {len(entries)} entr(ies) and DEBT_CEILING says "
+                f"at most {ceiling}: {sorted(entries)}. Every entry here takes "
+                f"a Lisa daemon OUT of a check — EXEMPT removes it from the "
+                f"runtime suite as well, via `--list no-egress`. If the debt "
+                f"is real, raise the ceiling in the same commit and say why: "
+                f"that line is the one a reviewer has to read, which is the "
+                f"whole point (#293)."
+            )
+        elif len(entries) < ceiling:
+            errors.append(
+                f"{name} holds {len(entries)} entr(ies) but DEBT_CEILING still "
+                f"says {ceiling}. Lower it — a ceiling that outlives the debt "
+                f"is headroom nobody decided to grant."
+            )
 
-    if not any(posture != "out-of-scope" for _u, _b, posture, _h, _us, _in in rows):
+    if not any(row.posture != "out-of-scope" for row in rows):
         # A matched-nothing sweep must fail, not pass: an installer
         # refactor that moves the install lines would otherwise turn
         # this into a green no-op — the defect class it polices.
@@ -366,8 +1092,24 @@ def main(argv) -> int:
 
     covered_no_egress = set()
     covered_egress = set()
-    for unit, binary, posture, has, user_scope, inet in rows:
-        rel = unit.relative_to(root)
+    for row in rows:
+        rel = row.unit.relative_to(root)
+        posture, binary, has = row.posture, row.binary, row.has
+
+        # A wrapper between systemd and the daemon means the sandbox
+        # this file reads is not the sandbox that process runs under —
+        # and it used to file the daemon under "runs something else"
+        # (#292). Refused outright rather than modelled: `ExecStart=`
+        # naming the binary is one line, and every argument for the
+        # wrapper is an argument for a script the unit could ship.
+        if row.wrapped:
+            errors.append(
+                f"{rel}: reaches `{binary}` through a shell or `env` wrapper. "
+                f"ExecStart must name the binary directly — a wrapper hides "
+                f"the daemon from this gate (it read as an out-of-scope unit "
+                f"running `sh`) and hides the real argv from the Ledger."
+            )
+
         # IPAddressDeny= IS A NO-OP IN USER SCOPE. It is a cgroup BPF
         # program, and `systemd --user` cannot load one:
         #
@@ -388,16 +1130,16 @@ def main(argv) -> int:
         # have passed forever over lisa-harnessd — the model host — and
         # over lisa-inferenced-dbus, whose "egress sandbox" commit
         # (47fa7c6) claimed a confinement it did not have.
-        if posture == "no-egress" and user_scope and not inet \
-                and unit.name in USER_SCOPE_INET_DEBT:
+        if posture == "no-egress" and row.user_scope and not row.inet \
+                and row.unit.name in USER_SCOPE_INET_DEBT:
             errors.append(
                 f"{rel}: no longer permits AF_INET and is still listed in "
                 f"USER_SCOPE_INET_DEBT. Delete the entry — #288 is paid for "
                 f"this unit, and a debt list that outlives the debt is how "
                 f"the next reader learns to distrust it."
             )
-        elif posture == "no-egress" and user_scope and inet \
-                and unit.name not in USER_SCOPE_INET_DEBT:
+        elif posture == "no-egress" and row.user_scope and row.inet \
+                and row.unit.name not in USER_SCOPE_INET_DEBT:
             errors.append(
                 f"{rel}: runs `{binary}` under `systemd --user`, where "
                 f"{DIRECTIVE} is a NO-OP (an IP firewall needs root), and "
@@ -415,21 +1157,29 @@ def main(argv) -> int:
                 f"checked (CLAUDE.md rule 5)."
             )
         elif posture == "no-egress":
-            covered_no_egress.add(binary)
-            if unit.name in EXEMPT:
+            if row.unit.name in EXEMPT:
+                # NOT counted towards REQUIRED_NO_EGRESS_COVERAGE (#293).
+                # It used to be: `covered_no_egress.add(binary)` ran
+                # before this branch, so exempting lisa-agentd.service
+                # left the "every rule-5 daemon is proven" floor
+                # satisfied by the very unit the exemption had just
+                # excused. A coverage floor that counts the units it
+                # stopped checking is not a floor.
                 if has:
                     errors.append(
                         f"{rel}: now carries {DIRECTIVE} and is still listed in "
                         f"EXEMPT. Delete the exemption — it exists to be "
                         f"deleted."
                     )
-            elif not has:
-                errors.append(
-                    f"{rel}: runs `{binary}`, which may never reach the "
-                    f"network, and does not carry {DIRECTIVE}. The unit's "
-                    f"comments are not a sandbox — lisa-inferenced-dbus.service "
-                    f"shipped that way (#275)."
-                )
+            else:
+                covered_no_egress.add(binary)
+                if not has:
+                    errors.append(
+                        f"{rel}: runs `{binary}`, which may never reach the "
+                        f"network, and does not carry {DIRECTIVE}. The unit's "
+                        f"comments are not a sandbox — "
+                        f"lisa-inferenced-dbus.service shipped that way (#275)."
+                    )
         elif posture == "egress":
             covered_egress.add(binary)
             if has:
@@ -443,9 +1193,11 @@ def main(argv) -> int:
         if binary not in covered_no_egress:
             errors.append(
                 f"CLAUDE.md rule 5 names `{binary}` as a no-egress daemon, but "
-                f"discovery found no shipped unit running it. Either it stopped "
-                f"shipping, or the installer scan stopped seeing it; both mean "
-                f"this check is no longer covering it."
+                f"discovery found no shipped unit running it — or every unit "
+                f"running it is exempt. Either it stopped shipping, the "
+                f"installer scan stopped seeing it, or an exemption excused "
+                f"the last one; all three mean this check is no longer "
+                f"covering it."
             )
     for binary in REQUIRED_EGRESS_COVERAGE:
         if binary not in covered_egress:
@@ -461,10 +1213,11 @@ def main(argv) -> int:
             print(f"  {e}\n", file=sys.stderr)
         return 1
 
-    n = sum(1 for _u, _b, p, _h, _us, _in in rows if p == "no-egress")
-    m = sum(1 for _u, _b, p, _h, _us, _in in rows if p == "egress")
+    n = sum(1 for row in rows if row.posture == "no-egress")
+    m = sum(1 for row in rows if row.posture == "egress")
+    d = sum(len(row.dropins) for row in rows)
     print(f"egress posture: {n} no-egress units, {m} egress units, "
-          f"{len(EXEMPT)} exemption(s) — OK")
+          f"{d} drop-in(s) merged, {len(EXEMPT)} exemption(s) — OK")
     return 0
 
 

@@ -33,6 +33,25 @@
 #      Same reason, one level down: the mark rides in both trees and the
 #      README has asked in prose since #45 that they move together.
 #
+# ...and question 0, which is the one this file got wrong (#298):
+#
+#   0. Is the pin THERE AT ALL, and the watermark? The first version
+#      enforced AGREEMENT and nothing else, so `rm
+#      initrd-overlay/etc/plymouth/plymouthd.conf` printed
+#      "-- no etc/plymouth/plymouthd.conf in this tree" and exited 0 —
+#      restoring, in silence, the exact "the initrd relies on the
+#      package's plymouthd.defaults, stated by nobody" condition #283
+#      was filed to close. Deleting the watermark passed the same way.
+#      "Updated in one tree" failed; "removed from one tree" did not,
+#      and #283 was itself a deletion artifact, so deletion is the
+#      regression that actually happens.
+#
+#      Every tree handed to this script is a root that boots: both
+#      os/mkosi/mkosi.extra and os/mkosi/initrd-overlay carry the pin
+#      and the mark today, and a $BUILDROOT or a mounted image must too.
+#      So absence is a FAILURE, not a note. A gate with nothing to check
+#      must not read like a gate that checked.
+#
 # Bash builtins only: no find, no awk, no sed. The same reasoning
 # check-desktop.sh gives — a gate that dies on a missing tool fails for
 # a reason nobody reads.
@@ -48,6 +67,14 @@
 
 set -uo pipefail
 shopt -s dotglob nullglob
+
+# The two files every tree must carry. Relative to the tree root, and
+# named once so the failure text and the presence assertion cannot drift
+# apart. WATERMARK's directory is `spinner/` because the pinned theme is
+# the plymouth package's spinner with our mark overlaid onto it — see
+# the themes/ discussion in check_tree().
+REQUIRED_PIN=etc/plymouth/plymouthd.conf
+REQUIRED_WATERMARK=usr/share/plymouth/themes/spinner/watermark.png
 
 fail=0
 note() { printf '%s\n' "$*"; }
@@ -111,7 +138,7 @@ check_tree() {
     [ "$FOUND_LINKS" -eq 0 ] && note "  ok    no symlinks under usr/share/plymouth"
 
     # ---- 2. the pinned theme is one this tree can provide ------------
-    local conf="$root/etc/plymouth/plymouthd.conf" theme=
+    local conf="$root/$REQUIRED_PIN" theme=
     if [ -r "$conf" ]; then
         if ! theme=$(read_theme "$conf"); then
             bad "${conf#"$root"} sets no [Daemon] Theme= — the image would"
@@ -146,7 +173,15 @@ check_tree() {
             note "        tree carries no complete theme — nothing to verify)"
         fi
     else
-        note "  --    no etc/plymouth/plymouthd.conf in this tree"
+        # #298: this used to be `note "-- no ... in this tree"` and exit
+        # 0. Deleting the pin from the initrd tree therefore PASSED,
+        # which is #283 with the file removed instead of dangling.
+        bad "$root carries no $REQUIRED_PIN."
+        bad "      Every tree this gate is handed is a root that boots, and a"
+        bad "      root with no pin inherits the plymouth package's"
+        bad "      plymouthd.defaults — which that file's own header says is"
+        bad "      rewritten on upgrade. That is the #283 condition restored by"
+        bad "      deletion. Absence here is a failure, never a note."
     fi
 }
 
@@ -155,10 +190,13 @@ selftest() {
     tmp=$(mktemp -d) || return 1
     trap 'rm -rf "$tmp"' RETURN
 
-    # A tree that is right in every way.
-    mkdir -p "$tmp/good/etc/plymouth" "$tmp/good/usr/share/plymouth/themes/bgrt"
+    # A tree that is right in every way — which since #298 means it
+    # carries BOTH required files, because absence is now a failure.
+    mkdir -p "$tmp/good/etc/plymouth" "$tmp/good/usr/share/plymouth/themes/bgrt" \
+             "$tmp/good/usr/share/plymouth/themes/spinner"
     printf '[Daemon]\nTheme=bgrt\n' > "$tmp/good/etc/plymouth/plymouthd.conf"
     printf 'Name=BGRT\n' > "$tmp/good/usr/share/plymouth/themes/bgrt/bgrt.plymouth"
+    printf 'PNG\n' > "$tmp/good/usr/share/plymouth/themes/spinner/watermark.png"
 
     # #283 itself: a symlink to a theme that was deleted.
     cp -R "$tmp/good" "$tmp/dangling"
@@ -171,6 +209,15 @@ selftest() {
     # A Theme= that is not the daemon's.
     cp -R "$tmp/good" "$tmp/nopin"
     printf '[Boot]\nTheme=bgrt\n' > "$tmp/nopin/etc/plymouth/plymouthd.conf"
+
+    # #298: the same good tree with one of the two required files
+    # DELETED. These are the cases the first version of this script
+    # passed with exit 0 — the reason it existed at all was #283, which
+    # was itself a deletion.
+    cp -R "$tmp/good" "$tmp/nopinfile"
+    rm -f "$tmp/nopinfile/etc/plymouth/plymouthd.conf"
+    cp -R "$tmp/good" "$tmp/nomark"
+    rm -f "$tmp/nomark/usr/share/plymouth/themes/spinner/watermark.png"
 
     # Two trees that disagree — the initrd's answer and the root's.
     cp -R "$tmp/good" "$tmp/other"
@@ -209,6 +256,14 @@ selftest() {
     expect 0 "an overlay tree passes"              "$tmp/overlay"
     expect 0 "matching watermarks pass"            "$tmp/overlay" "$tmp/overlay"
     expect 1 "a watermark updated in one tree fails" "$tmp/overlay" "$tmp/overlay2"
+
+    # ---- the deletion half (#298). Every one of these exited 0 before.
+    expect 1 "a tree with NO pin fails"            "$tmp/nopinfile"
+    expect 1 "a tree with NO watermark fails"      "$tmp/nomark"
+    expect 1 "the pin deleted from one of two trees fails" \
+                                                   "$tmp/good" "$tmp/nopinfile"
+    expect 1 "the watermark deleted from one of two trees fails" \
+                                                   "$tmp/good" "$tmp/nomark"
 
     # No comparator on PATH must FAIL, not quietly pass. This case is
     # here because the first version degraded to "existence only" and
@@ -256,13 +311,49 @@ PINS=$(mktemp) || exit 1
 trap 'rm -f "$PINS"' EXIT
 marks=()
 
+trees=0
 for tree in "$@"; do
     note "== $tree"
+    trees=$((trees + 1))
     check_tree "$tree"
-    wm="$tree/usr/share/plymouth/themes/spinner/watermark.png"
-    [ -r "$wm" ] && { marks+=("$wm"); note "  ok    carries the Lisa watermark"; }
-    [ -r "$wm" ] || note "  --    no watermark in this tree"
+    wm="$tree/$REQUIRED_WATERMARK"
+    if [ -r "$wm" ]; then
+        marks+=("$wm")
+        note "  ok    carries the Lisa watermark"
+    else
+        # #298 again, one level down: `note "-- no watermark in this
+        # tree"` meant `rm` passed while `edit one copy` failed.
+        bad "$tree carries no $REQUIRED_WATERMARK."
+        bad "      The mark rides in BOTH trees by construction (#45): the"
+        bad "      initrd paints the splash and the root is what survives the"
+        bad "      switch-root. Removing one copy is not 'nothing to compare',"
+        bad "      it is half a splash."
+    fi
 done
+
+# ---- 0. every tree contributed a pin and a mark ----------------------
+# check_tree() and the loop above already fail one tree at a time. This
+# is the same invariant stated over the SET, which is what #298 asked
+# for: assert the trees, not just agreement across whichever trees
+# happen to carry something. It is the backstop for the shape neither
+# per-tree check sees — a refactor that loses a tree entirely (a `break`,
+# a glob that matched one path where two were meant) would otherwise
+# leave the comparisons below holding one element and call that
+# agreement.
+pins=()
+while IFS= read -r p || [ -n "$p" ]; do
+    [ -n "$p" ] && pins+=("$p")
+done < "$PINS"
+if [ "${#pins[@]}" -ne "$trees" ]; then
+    bad "$trees tree(s) were checked but only ${#pins[@]} produced a"
+    bad "      [Daemon] Theme= pin. Every tree must pin the theme; agreement"
+    bad "      among a subset is not coverage."
+fi
+if [ "${#marks[@]}" -ne "$trees" ]; then
+    bad "$trees tree(s) were checked but only ${#marks[@]} carry the"
+    bad "      watermark. Same reason: a comparison over a subset proves"
+    bad "      nothing about the tree that dropped out."
+fi
 
 # ---- 4. the watermark moves in lockstep ------------------------------
 # README "Both copies must move together": the mark lives in BOTH
@@ -315,10 +406,7 @@ if [ ${#marks[@]} -gt 1 ]; then
 fi
 
 # ---- 3. every tree that pins a theme must pin the SAME one -----------
-pins=()
-while IFS= read -r p || [ -n "$p" ]; do
-    [ -n "$p" ] && pins+=("$p")
-done < "$PINS"
+# `pins` was read above, with section 0.
 if [ ${#pins[@]} -gt 1 ]; then
     first=${pins[0]}
     for p in "${pins[@]}"; do

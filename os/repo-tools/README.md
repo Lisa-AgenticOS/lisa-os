@@ -51,12 +51,36 @@ every Assistant prompt goes through, shipped with **no** egress sandbox
 while two of its own comments described one).
 
 `check-egress-units.py` is the one that discovers its own population:
-it reads the PKGBUILD install lines to find every shipped unit, takes each
-unit's `ExecStart` binary, and demands a posture for it — so a second unit
-for a known daemon is covered with no edit, and a daemon nobody classified
-fails the gate rather than passing it. `tests/e2e/egress-test.sh` takes its
-unit list from `--list no-egress` so the tested sandbox and the shipped
-sandbox cannot become two lists (which is exactly what they had become).
+it *interprets* the PKGBUILD install lines to find every shipped unit,
+takes each unit's `ExecStart` binary, and demands a posture for it — so a
+second unit for a known daemon is covered with no edit, and a daemon nobody
+classified fails the gate rather than passing it. `tests/e2e/egress-test.sh`
+takes its unit list from `--list no-egress` and its drop-in list from
+`--dropins` so the tested sandbox and the shipped sandbox cannot become two
+lists (which is exactly what they had become).
+
+"Interprets" is load-bearing, and #291 is why. The first version matched
+literal whitespace tokens, so a source in a shell variable, from a `for`
+loop, or behind a glob resolved to nothing and was **dropped in silence** —
+sixteen real install lines, over the unmodified tree. It now walks the
+installer with an environment, expands loops and globs, and **fails on any
+install into a systemd directory it cannot resolve**; `--installs` prints
+the whole resolution table so "there is nothing there" can be told apart
+from "I could not parse that". A second, blunter net catches whatever the
+walker cannot read: every systemd fragment in `os/packages/**` must be
+installed by some line, so a unit added by an unmodelled idiom fails as an
+orphan rather than shipping unseen. Drop-ins are merged into the unit
+before it is judged, and directives are read with systemd's own last-wins /
+empty-resets semantics (#292).
+
+    python3 os/repo-tools/check-egress-units.py --installs   # the table
+    python3 os/repo-tools/check-egress-units.py --explain    # the postures
+
+Its two debt lists (`EXEMPT`, `USER_SCOPE_INET_DEBT`) each remove a unit
+from a check, so both are **ratcheted** against `DEBT_CEILING` (#293):
+adding an entry fails unless the same commit also raises the ceiling. That
+does not make an entry impossible — nothing in a gate can — but it removes
+the free, green, one-line version and puts the number in the diff.
 
 They share a shape: read the truth from the consumer rather than restating
 it (`check-app-manifests.py` reads `SYSTEM_MANIFEST_DIR` out of

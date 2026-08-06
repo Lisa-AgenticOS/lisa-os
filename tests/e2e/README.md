@@ -12,24 +12,32 @@ Three scripts here are real and run in CI, ahead of the image suite above.
 
 **`egress-test.sh`** — CLAUDE.md rule 5, executed. For every unit that
 `os/repo-tools/check-egress-units.py` classifies no-egress, it lifts that
-unit's `[Service]` sandbox out of the **shipped file**, applies it with
-`systemd-run -p`, and tries to reach the internet from inside it. Six units
-today (lisa-inferenced ×2, contextd, agentd, harnessd, notes); before #275
-it covered lisa-inferenced alone, under a sandbox the script had re-typed
-by hand. Bracketed by two positive controls — unsandboxed egress must
-work, and egress under `lisa-remoted`'s own sandbox must work — plus a
-per-unit `curl --version` that must succeed before that unit's "blocked"
-counts for anything.
+unit's `[Service]` sandbox out of the **shipped file and its shipped
+drop-ins**, applies it with `systemd-run -p`, and tries to reach the
+internet from inside it. Before #275 it covered `lisa-inferenced` alone,
+under a sandbox the script had re-typed by hand. Bracketed by two positive
+controls — unsandboxed egress must work, and egress under `lisa-remoted`'s
+own sandbox must work — plus a per-unit `curl --version` that must succeed
+before that unit's "blocked" counts for anything.
 
     bash tests/e2e/egress-test.sh [path/to/lisa-inferenced]
 
 Linux with systemd and sudo. Without the binary argument the daemon
 liveness check is skipped and everything else still runs.
 
+The unit list is not written down anywhere — not here, not in the script.
+Ask the classifier:
+
+    python3 os/repo-tools/check-egress-units.py --explain
+
+An earlier version of this paragraph named six units while the gate
+classified seven (#295). A hand-maintained copy of a derived list is the
+defect the derived list was introduced to remove, so there is no copy.
+
 Its limits, because they are not obvious:
 
 - Only lisa-inferenced additionally gets its *daemon* run under the sandbox
-  and probed for liveness — it is the only one of the six answering over
+  and probed for liveness — it is the only no-egress daemon answering over
   HTTP; the rest are D-Bus/unix-socket daemons needing a session bus that a
   system-scope `systemd-run` has not got. Their sandbox is proven, their
   liveness under it is not.
@@ -37,11 +45,20 @@ Its limits, because they are not obvious:
   unit that also carries `RestrictAddressFamilies=AF_UNIX` and this stays
   green — correctly, since egress is still blocked. Noticing the lost layer
   is `check-egress-units.py`'s job. Run both; CI runs both.
-- `xdg-desktop-portal-lisa.service` is classified no-egress but exempt: it
-  ships no egress sandbox at all today, and a process under it does reach
-  the internet (verified 2026-08-05). The exemption lives in
-  `check-egress-units.py`, which fails the day the unit is hardened — so
-  the exemption deletes itself rather than accumulating.
+- It runs in **system scope**, and two of the three directives it exercises
+  do not mean the same thing there. `IPAddressDeny` / `IPAddressAllow` are
+  a cgroup BPF program that `systemd --user` cannot load, so for a per-user
+  unit they are live here and inert on the device (#288). That makes this
+  harness stricter than reality, never weaker — but a "blocked" it reports
+  for a user unit may be a block the machine does not have.
+  `RestrictAddressFamilies` is a seccomp filter and behaves identically in
+  both scopes; it is the only one of the three that confines a user unit,
+  which is why `check-egress-units.py` asserts it by name.
+- What it does NOT assert, contrary to what `os/packages/README.md` still
+  says: it never checks a named directive. `DynamicUser`,
+  `IPAddressAllow=localhost` and the filesystem/kernel lockdown are applied
+  by being lifted wholesale out of the unit, not verified. Only
+  `IPAddressDeny=any` is checked by name, and only in the static gate.
 
 **`layer-test.sh`** — the Track L install/uninstall e2e (M0 acceptance),
 run in an Arch systemd container.

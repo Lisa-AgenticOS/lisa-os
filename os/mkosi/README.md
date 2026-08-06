@@ -246,6 +246,28 @@ is a comment:
    mounted artifact, so the fact is proven to have survived into the
    image that is about to be published.
 
+**What it refuses to skip (#297).** Both assertions above used to be
+skippable in silence. A manifest with no shell line — a truncated
+`pacman -Q` write, or a last line lost because `read` returns non-zero
+without a trailing newline — printed "nothing to check" and exited 0;
+and the whole `desktop.lock` block was guarded on the shell being the
+*fork*, so an image that shipped **stock** `gnome-shell` never consulted
+the lock and still printed OK. That is the case where the pin matters
+most: CLAUDE.md records 2026-08-04, when a stock-named package outranked
+the fork by `pkgrel`. Both are failures now. The one lane where a stock
+shell is the recorded intent — aarch64, ADR-0021 — is recognised from
+the manifest itself (`linux-aarch64`, which only that profile installs)
+and reported as `PIN NOT CHECKED` rather than as `OK`, because "the
+check did not run" has to read differently from "the check passed".
+
+`check-desktop.sh --selftest` is that mutation matrix made permanent:
+the pinned fork passing, a lock line deleted, `mutter` deleted, the
+shell line deleted, a stock shell off the arm lane, a version mismatch,
+an ABI series mismatch, a lock pinning the shell twice, and a manifest
+with no trailing newline. CI runs it in the `image-gates` job — these
+gates otherwise only ever execute inside an image build, which a PR does
+not produce.
+
 **How to extend / bump.** Take the version from a `lisa-desktop`
 **release tag** (not the rolling index — the tag is what makes the pin
 immutable):
@@ -391,8 +413,20 @@ present and the pin is checked against them rather than deferred to the
 package. What it rejects: a dangling symlink under `usr/share/plymouth`
 (#283), a `[Daemon] Theme=` that a tree carrying themes cannot satisfy,
 a `Theme=` written outside the `[Daemon]` section, the two trees pinning
-different themes, and the watermark updated in one tree but not the
-other. `--selftest` builds fixtures for every one of those and asserts
+different themes, the watermark updated in one tree but not the
+other, and — since #298 — either of the two required files being
+**absent** from any tree it is given. That last one is not a detail: the
+gate enforced *agreement* and nothing else, so `rm
+initrd-overlay/etc/plymouth/plymouthd.conf` printed a note and exited 0,
+silently restoring the "the initrd relies on the package's
+`plymouthd.defaults`, stated by nobody" condition #283 was filed to
+close. Deleting the watermark passed the same way. #283 was itself a
+deletion, so deletion is the regression that actually happens, and it
+was the one shape nothing here saw. Every tree must now carry
+`etc/plymouth/plymouthd.conf` and
+`usr/share/plymouth/themes/spinner/watermark.png`.
+
+`--selftest` builds fixtures for every one of those and asserts
 the exit code — it is there because the first draft of the walk used
 `shopt -s globstar`, which bash 3.2 on a macOS dev host does not have,
 so the checker silently inspected nothing and passed a tree containing
