@@ -57,6 +57,7 @@ import {
 import {MAX_MATCH_COUNT, findOptions, matchLabel, searchable} from './lib/find.js';
 // The shared dark/light path and the design tokens (ADR-0056, #282).
 import {onScheme, groundColor} from '../lisa_ui/ui/theme.js';
+import {installStyle} from '../lisa_ui/ui/style.js';
 import {TOKENS} from '../lisa_ui/ui/tokens.js';
 import {zoomIn, zoomLabel, zoomOut, zoomReset} from './lib/zoom.js';
 import {
@@ -1751,7 +1752,13 @@ function buildWindow() {
     bottomBar.append(menuBtn);
 
     const scroller = new Gtk.ScrolledWindow({child: tabList, vexpand: true});
-    const sidebar = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, css_classes: ['lisa-sidebar']});
+    // The same glass pane Notes' sidebar is, from the same sheet
+    // (ADR-0056). Surfer keeps its own violet window ground; what it
+    // stops having is a private answer to what a sidebar looks like.
+    const sidebar = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        css_classes: ['lisa-sidebar', 'lisa-glass', 'lisa-glass-edge-end'],
+    });
     sidebar.append(top);
     sidebar.append(scroller);
     sidebar.append(newTabBtn);
@@ -1969,7 +1976,10 @@ function buildWindow() {
     // violet, mixed into the light ground instead.
     const loadCss = (dark) => css.load_from_string(`
         window { background: mix(${TOKENS['violet-700']}, ${dark ? TOKENS['base'] : TOKENS['warm-white']}, 0.72); }
-        .lisa-sidebar { background: transparent; }
+        /* No background here: lisa_ui's .lisa-glass provides it now.
+           Both are single-class selectors, so leaving this in would
+           make the winner depend on which provider loaded last —
+           a colour decided by load order is a colour nobody chose. */
         .lisa-urlbar {
             border-radius: 10px;
             background: alpha(#FFF1E9, 0.08); /* token: warm-white */
@@ -1998,6 +2008,7 @@ function buildWindow() {
     // replacing a `loadCss(); connect('notify::dark', loadCss)` pair
     // where forgetting either line was silent.
     onScheme(loadCss);
+    installStyle(win.get_display());
     Gtk.StyleContext.add_provider_for_display(
         win.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 
