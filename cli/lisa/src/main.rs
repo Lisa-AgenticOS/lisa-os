@@ -1142,10 +1142,20 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
     // Regular files are not planned: writing an image to a file is how
     // the image lane itself is tested, and there is nothing to destroy.
     let mut plan = None;
+    // What was planned, and what must still be true when we open it.
+    // `target` may be a `/dev/disk/by-id/*` symlink, and between the
+    // plan and the write sits an unbounded wait for a human to type
+    // ERASE — long enough for a hotplug to reassign `/dev/sdb` or for
+    // the symlink to come to mean a different device (issue #301). So
+    // the write opens the *planned* path, and then checks the device it
+    // actually got against the device number the plan was made about.
+    let mut planned: Option<(PathBuf, u64)> = None;
     if is_block {
+        use std::os::unix::fs::MetadataExt;
         // The user may have typed a symlink (/dev/disk/by-id/...); lsblk
         // reports canonical kernel names.
         let canonical = std::fs::canonicalize(target).unwrap_or_else(|_| target.clone());
+        let rdev = std::fs::metadata(&canonical)?.rdev();
         let disks = install_plan::read_topology()?;
         let facts = install_plan::read_facts();
         match install_plan::plan(
@@ -1154,7 +1164,10 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
             &facts,
             install_plan::MIN_TARGET_BYTES,
         ) {
-            Ok(p) => plan = Some(p),
+            Ok(p) => {
+                plan = Some(p);
+                planned = Some((canonical, rdev));
+            }
             Err(refusal) => bail!("{refusal}\n   `lisa install --list` shows the disks it will."),
         }
     }
@@ -1173,7 +1186,7 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
         }
         eprintln!(
             "   (this system is running from {}, not this disk)",
-            p.boot_disk
+            p.boot_disks.join(", ")
         );
     }
     if !yes {
@@ -1186,7 +1199,24 @@ fn install_cmd(target: &PathBuf, from: Option<PathBuf>, yes: bool) -> anyhow::Re
         }
     }
 
-    let mut sink = std::fs::OpenOptions::new().write(true).open(target)?;
+    // Open the path the plan was made about, not the one the user typed,
+    // and then confirm the fd really is that device. A refusal here is
+    // the topology having changed under us while the prompt was open;
+    // re-run and re-read the plan.
+    let sink_path = planned.as_ref().map_or(target, |(p, _)| p);
+    let mut sink = std::fs::OpenOptions::new().write(true).open(sink_path)?;
+    if let Some((path, planned_rdev)) = &planned {
+        use std::os::unix::fs::MetadataExt;
+        let opened = sink.metadata()?.rdev();
+        if opened != *planned_rdev {
+            bail!(
+                "{} is not the device it was when the plan was made \
+                 (device {planned_rdev} then, {opened} now) — a disk was added, removed or \
+                 re-lettered. Nothing written; re-run `lisa install --list`",
+                path.display()
+            );
+        }
+    }
     let written = match from {
         Some(path) => {
             let file = std::fs::File::open(&path)?;
