@@ -110,6 +110,21 @@ export class McpClient {
         const text = result.content?.[0]?.text;
         if (result.isError)
             throw new Error(text ?? 'tool call failed');
+
+        // `structuredContent` FIRST, because it is what our servers
+        // actually send. lisa-notes answers list_notes with
+        // `{"structuredContent":{"notes":[…]}}` and no `content` array
+        // at all — and the first version of this client read only
+        // `content[0].text`, fell through to handing back the raw
+        // envelope, and the window rendered "No notes yet" over a store
+        // that had held a note since 2026-08-03. It looked like an
+        // empty database. It was an undecoded reply.
+        //
+        // Same ordering as libs/mcp-bus's Rust client, deliberately:
+        // two clients for one protocol must not disagree about which
+        // field carries the payload.
+        if (result.structuredContent !== undefined)
+            return result.structuredContent;
         if (text === undefined)
             return result;
         try {
