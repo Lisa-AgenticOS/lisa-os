@@ -24,6 +24,7 @@
 
 import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
+import {installStyle} from './style.js';
 
 /// Build an application window with Lisa's standard chrome.
 ///
@@ -60,6 +61,7 @@ export function lisaWindow({app, title, width = 900, height = 640, content = nul
     // over content correctly under Adwaita 1.4+, including the rounded
     // corners and the shadow that make a window look like it belongs to
     // this desktop rather than to 2014.
+    installStyle(window.get_display());
     const view = new Adw.ToolbarView();
     view.add_top_bar(header);
     if (content)
@@ -112,6 +114,13 @@ export function lisaSplitWindow({
     const contentPage = new Adw.NavigationPage({
         title, child: contentView,
     });
+
+    // The Lisa sheet, installed by the primitive rather than by each
+    // app: an app should not have to opt in to looking like the system
+    // it is part of. Idempotent, so several windows cost one provider.
+    installStyle(window.get_display());
+    sidebarView.add_css_class('lisa-glass');
+    sidebarView.add_css_class('lisa-glass-edge-end');
 
     const split = new Adw.NavigationSplitView({
         sidebar: sidebarPage,

@@ -3,7 +3,12 @@ Type=Application
 Name=Notes
 Comment=Your notes — the same ones the assistant can read and write
 Exec=lisa-app notes/lisa-notes-app.js
-Icon=accessories-text-editor
+# The icon lives INSIDE the app, not in hicolor. The Desktop Entry spec
+# takes either a theme name or an absolute path here, and GIO resolves
+# an absolute path to a Gio.FileIcon — verified on the device, not
+# assumed. One less piece of an app scattered across /usr, and a step
+# toward the bundle shape: what an app IS should be one directory.
+Icon=/usr/share/lisa/shell/notes/icon.svg
 Terminal=false
 Categories=Utility;TextEditor;GTK;
 StartupNotify=true
