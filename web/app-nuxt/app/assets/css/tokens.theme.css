@@ -5,20 +5,20 @@
   --color-violet-700: #4F378B; /* brand / wordmark / deep surfaces */
   --color-violet-500: #6D45C9; /* PRIMARY UI: buttons, toggles, links, the L tile */
   --color-violet-300: #9B7BE8; /* hovers, gradient top, soft accents */
-  --color-ink-900: #2B2320; /* primary text on light */
-  --color-ink-700: #4A423D;
-  --color-ink-500: #6E635C; /* secondary text */
-  --color-ink-300: #9A8F88; /* tertiary / captions */
-  --color-line-200: #E7DED8; /* borders, dividers */
-  --color-warm-white: #FFF1E9; /* on-dark text, warm surfaces */
-  --color-paper: #FAF7F5; /* light app background */
+  --color-ink-900: #0F172A; /* primary text on light */
+  --color-ink-700: #334155;
+  --color-ink-500: #64748B; /* secondary text */
+  --color-ink-300: #94A3B8; /* tertiary / captions */
+  --color-line-200: #E2E8F0; /* borders, dividers */
+  --color-warm-white: #F8FAFC; /* on-dark text, warm surfaces */
+  --color-paper: #F1F5F9; /* light app background */
   --color-surface: #FFFFFF; /* light cards */
-  --color-base: #1B1917; /* dark app background */
-  --color-elevated: #262220;
-  --color-card: #302B28;
-  --color-line: #3C3531;
-  --color-text-primary: #FFF1E9;
-  --color-text-secondary: #B7ABA3;
+  --color-base: #0F172A; /* dark app background */
+  --color-elevated: #1E293B;
+  --color-card: #1E293B;
+  --color-line: #334155;
+  --color-text-primary: #F8FAFC;
+  --color-text-secondary: #94A3B8;
   --color-success: #3E9B6B;
   --color-warning: #E0A030;
   --color-error: #D6453C;

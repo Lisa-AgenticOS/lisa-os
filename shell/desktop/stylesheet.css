@@ -24,9 +24,9 @@
  * branding/tokens.json. Shell chrome is dark over any wallpaper, so the
  * dark ramp is the right one here and not a theme guess. */
 .lisa-dock-prompt {
-    background-color: rgba(48, 43, 40, 0.55);  /* dark.card #302B28 */
-    color: #FFF1E9;
-    caret-color: #FFF1E9;
+    background-color: rgba(48, 43, 40, 0.55);  /* dark.card #1E293B */
+    color: #F8FAFC;
+    caret-color: #F8FAFC;
     selection-background-color: #6D45C9;
     border: 1px solid transparent;
     border-radius: 18px;
@@ -36,7 +36,7 @@
 }
 
 .lisa-dock-prompt StLabel.hint-text {
-    color: #9A8F88;  /* ink.ink-300 — present, and plainly not typed yet */
+    color: #94A3B8;  /* ink.ink-300 — present, and plainly not typed yet */
 }
 
 /* Focus is the only state this field has, and it has to be obvious:
@@ -50,7 +50,7 @@
 /* The wireframe's right-pointing triangle, terminating the field. */
 .lisa-dock-prompt-go {
     icon-size: 16px;
-    color: #9A8F88;
+    color: #94A3B8;
 }
 
 .lisa-dock-prompt:focus .lisa-dock-prompt-go {
@@ -92,7 +92,7 @@
    "this leaves your hardware" and must never be spent on a mail count. */
 .lisa-dock-badge {
     background-color: #9B7BE8;
-    color: #FFF1E9;
+    color: #F8FAFC;
     border-radius: 10px;
     padding: 1px 6px;
     margin: 2px;

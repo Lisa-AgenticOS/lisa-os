@@ -4,20 +4,20 @@
 @define-color lisa_violet_700 #4F378B; /* brand / wordmark / deep surfaces */
 @define-color lisa_violet_500 #6D45C9; /* PRIMARY UI: buttons, toggles, links, the L tile */
 @define-color lisa_violet_300 #9B7BE8; /* hovers, gradient top, soft accents */
-@define-color lisa_ink_900 #2B2320; /* primary text on light */
-@define-color lisa_ink_700 #4A423D;
-@define-color lisa_ink_500 #6E635C; /* secondary text */
-@define-color lisa_ink_300 #9A8F88; /* tertiary / captions */
-@define-color lisa_line_200 #E7DED8; /* borders, dividers */
-@define-color lisa_warm_white #FFF1E9; /* on-dark text, warm surfaces */
-@define-color lisa_paper #FAF7F5; /* light app background */
+@define-color lisa_ink_900 #0F172A; /* primary text on light */
+@define-color lisa_ink_700 #334155;
+@define-color lisa_ink_500 #64748B; /* secondary text */
+@define-color lisa_ink_300 #94A3B8; /* tertiary / captions */
+@define-color lisa_line_200 #E2E8F0; /* borders, dividers */
+@define-color lisa_warm_white #F8FAFC; /* on-dark text, warm surfaces */
+@define-color lisa_paper #F1F5F9; /* light app background */
 @define-color lisa_surface #FFFFFF; /* light cards */
-@define-color lisa_base #1B1917; /* dark app background */
-@define-color lisa_elevated #262220;
-@define-color lisa_card #302B28;
-@define-color lisa_line #3C3531;
-@define-color lisa_text_primary #FFF1E9;
-@define-color lisa_text_secondary #B7ABA3;
+@define-color lisa_base #0F172A; /* dark app background */
+@define-color lisa_elevated #1E293B;
+@define-color lisa_card #1E293B;
+@define-color lisa_line #334155;
+@define-color lisa_text_primary #F8FAFC;
+@define-color lisa_text_secondary #94A3B8;
 @define-color lisa_success #3E9B6B;
 @define-color lisa_warning #E0A030;
 @define-color lisa_error #D6453C;
@@ -37,20 +37,20 @@
   --lisa-violet-700: #4F378B;
   --lisa-violet-500: #6D45C9;
   --lisa-violet-300: #9B7BE8;
-  --lisa-ink-900: #2B2320;
-  --lisa-ink-700: #4A423D;
-  --lisa-ink-500: #6E635C;
-  --lisa-ink-300: #9A8F88;
-  --lisa-line-200: #E7DED8;
-  --lisa-warm-white: #FFF1E9;
-  --lisa-paper: #FAF7F5;
+  --lisa-ink-900: #0F172A;
+  --lisa-ink-700: #334155;
+  --lisa-ink-500: #64748B;
+  --lisa-ink-300: #94A3B8;
+  --lisa-line-200: #E2E8F0;
+  --lisa-warm-white: #F8FAFC;
+  --lisa-paper: #F1F5F9;
   --lisa-surface: #FFFFFF;
-  --lisa-base: #1B1917;
-  --lisa-elevated: #262220;
-  --lisa-card: #302B28;
-  --lisa-line: #3C3531;
-  --lisa-text-primary: #FFF1E9;
-  --lisa-text-secondary: #B7ABA3;
+  --lisa-base: #0F172A;
+  --lisa-elevated: #1E293B;
+  --lisa-card: #1E293B;
+  --lisa-line: #334155;
+  --lisa-text-primary: #F8FAFC;
+  --lisa-text-secondary: #94A3B8;
   --lisa-success: #3E9B6B;
   --lisa-warning: #E0A030;
   --lisa-error: #D6453C;

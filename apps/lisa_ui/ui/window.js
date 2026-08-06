@@ -169,16 +169,16 @@ export function lisaSplitWindow({
         contentView.add_css_class('lisa-ground');
         split.set_child(contentView);
 
-        // ONE set of window controls. Both header bars drew their own,
-        // so a floating sidebar produced two close buttons in one
-        // window — the precise complaint #282 opened with, reintroduced
-        // by the fix for it.
-        sidebarHeader.set_show_start_title_buttons(false);
+        // ONE set of window controls, each side owned by the header at
+        // that EDGE (#320, #324): the floating pane is the true left
+        // edge so it keeps its start side; the content header is the
+        // right edge so it keeps its end side; everything else is
+        // suppressed, because Adwaita cannot see a Gtk.Overlay child
+        // and would otherwise place controls mid-window — or, if
+        // everything were suppressed, nowhere at all on a
+        // buttons-at-start layout. Pixel-identical on the default
+        // layout, where the start side is empty.
         sidebarHeader.set_show_end_title_buttons(false);
-        // ...and on a buttons-at-start layout the content header would
-        // draw them at x=sidebarWidth, mid-window, because the floating
-        // pane is invisible to Adwaita's placement (#320). No change on
-        // the default layout, where the start side is empty.
         contentHeader.set_show_start_title_buttons(false);
 
         // A floating panel, not a full-height slab: margins on every
@@ -282,12 +282,13 @@ export function lisaTripleWindow({
         contentView.add_css_class('lisa-ground');
         outer.set_child(inner);
 
-        sidebarHeader.set_show_start_title_buttons(false);
+        // Same edge-ownership rule as lisaSplitWindow (#320, #324): the
+        // floating pane keeps its start side (it IS the left edge), the
+        // content header keeps its end side, and the middle list header
+        // — the leftmost pane Adwaita can SEE — shows neither, so a
+        // buttons-at-start layout puts controls on the glass pane
+        // instead of at x=280 mid-window.
         sidebarHeader.set_show_end_title_buttons(false);
-        // The list header is the leftmost pane Adwaita can SEE, so on a
-        // buttons-at-start layout it would grow window controls at
-        // x=280 while the true left edge (the floating pane) has none.
-        // Pixel-identical on the default layout, where start is empty.
         listHeader.set_show_start_title_buttons(false);
         sidebarView.set_halign(Gtk.Align.START);
         sidebarView.set_size_request(sidebarWidth, -1);

@@ -28,13 +28,13 @@ export const START_PAGE_HTML = `<!doctype html>
 <style>
   html, body {
     height: 100%; margin: 0;
-    background: linear-gradient(160deg, #4F378B 0%, #1B1917 70%); /* tokens: violet-700, dark-base */
+    background: linear-gradient(160deg, #4F378B 0%, #0F172A 70%); /* tokens: violet-700, dark-base */
     font-family: Rubik, sans-serif;
     display: flex; align-items: center; justify-content: center;
   }
   form { width: min(560px, 82vw); text-align: center; }
   h1 {
-    color: #FFF1E9; /* token: warm-white */
+    color: #F8FAFC; /* token: warm-white */
     font-weight: 600; letter-spacing: .04em; margin: 0 0 28px;
     font-size: 28px;
   }
@@ -42,7 +42,7 @@ export const START_PAGE_HTML = `<!doctype html>
   input {
     width: 100%; box-sizing: border-box;
     font: inherit; font-size: 17px;
-    color: #FFF1E9;
+    color: #F8FAFC;
     background: rgba(255, 241, 233, 0.09);
     border: 1px solid rgba(255, 241, 233, 0.16);
     border-radius: 14px;

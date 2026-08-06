@@ -1252,7 +1252,7 @@ function htmlDocument(body) {
              that looks unfashionable, and every other mail client makes
              the same call: the message renders on paper, the app chrome
              around it stays dark. */
-          body { background: #FFFFFF; color: #2B2320; } /* token: ink-900 */
+          body { background: #FFFFFF; color: #0F172A; } /* token: ink-900 */
         </style></head><body>${body}</body></html>`;
 }
 
@@ -2059,7 +2059,7 @@ app.connect('activate', () => {
     const railCss = new Gtk.CssProvider();
     railCss.load_from_data(
         ACCENTS.map((hex, i) =>
-            `.lisa-acct-${i} { background-image: none; background-color: ${hex}; color: #FFF1E9; }`
+            `.lisa-acct-${i} { background-image: none; background-color: ${hex}; color: #F8FAFC; }`
         ).join('\n') +
         '\n.lisa-rail-badge { opacity: 0.75; }\n', -1);
     Gtk.StyleContext.add_provider_for_display(

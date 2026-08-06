@@ -267,8 +267,18 @@ class NotesApp {
         // keeps the editor and selects nothing.
         if (this._selected && this._selected.id != null) {
             const row = this._rowsById.get(String(this._selected.id));
+            // Liveness is judged against the BACKEND list, not the
+            // visible rows (#323): a search query can filter the
+            // selected note out of view while it very much still
+            // exists, and demoting it then would make the next save a
+            // duplicate create.
+            const alive = this._notes.some((n) => n.id === this._selected.id);
             if (row) {
                 this._list.select_row(row);
+            } else if (alive) {
+                // Filtered out, not gone: keep the id and the editor,
+                // select nothing.
+                this._list.select_row(null);
             } else if (this._editorDirty()) {
                 // The note went away underneath us — an agent deleted
                 // it, say — while the editor holds unsaved words. Those

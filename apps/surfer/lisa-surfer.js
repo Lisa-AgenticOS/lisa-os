@@ -1982,17 +1982,17 @@ function buildWindow() {
            a colour decided by load order is a colour nobody chose. */
         .lisa-urlbar {
             border-radius: 10px;
-            background: alpha(#FFF1E9, 0.08); /* token: warm-white */
-            color: #FFF1E9;
+            background: alpha(#F8FAFC, 0.08); /* token: warm-white */
+            color: #F8FAFC;
             border: none;
             min-height: 30px;
         }
         .lisa-tablist { background: transparent; }
-        .lisa-tablist row { border-radius: 10px; margin: 1px 8px; color: alpha(#FFF1E9, 0.82); }
-        .lisa-tablist row:hover { background: alpha(#FFF1E9, 0.07); }
+        .lisa-tablist row { border-radius: 10px; margin: 1px 8px; color: alpha(#F8FAFC, 0.82); }
+        .lisa-tablist row:hover { background: alpha(#F8FAFC, 0.07); }
         .lisa-tablist row:selected { background: alpha(#9B7BE8, 0.28); } /* token: violet-300 */
-        .lisa-tablist row:selected label { color: #FFF1E9; font-weight: 600; }
-        .lisa-newtab { color: alpha(#FFF1E9, 0.65); border-radius: 10px; }
+        .lisa-tablist row:selected label { color: #F8FAFC; font-weight: 600; }
+        .lisa-newtab { color: alpha(#F8FAFC, 0.65); border-radius: 10px; }
         .lisa-suggest { background: transparent; }
         .lisa-suggest row { border-radius: 8px; padding: 2px; }
         .lisa-suggest row:hover { background: alpha(#9B7BE8, 0.25); } /* token: violet-300 */

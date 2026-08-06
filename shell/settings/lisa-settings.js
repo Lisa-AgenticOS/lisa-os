@@ -495,7 +495,7 @@ class SettingsWindow {
                 const [, bytes] = file.load_bytes(null);
                 const svg = new TextDecoder().decode(bytes.toArray())
                     .replaceAll('currentColor',
-                        this._styleManager.dark ? '#FFFFFF' : '#1B1917' /* tokens: surface / dark-base */);
+                        this._styleManager.dark ? '#FFFFFF' : '#0F172A' /* tokens: surface / dark-base */);
                 texture = Gdk.Texture.new_from_bytes(new GLib.Bytes(svg));
             } catch (e) {
                 logError?.(e, `provider logo for ${providerId}`);
