@@ -6,6 +6,16 @@
       "sha256": "134ef32baa0094a86efd955a55a4389f0eea598e2243388ffbf68ffa6471bbf0"
     },
     {
+      "file": "notes.md",
+      "about": "Notes: a daemon and a window sharing one tool surface",
+      "sha256": "936827256a3714e82a0a45a61aaa74217e4ab7ee7988f5e2077fab57ea759aa2"
+    },
+    {
+      "file": "lisa-ui.md",
+      "about": "lisa_ui: the shared GJS library every Lisa window is built on",
+      "sha256": "9173c96dadf1c984b9ff44c727de9ad3727a0eb24e2dbe74e67388139f799a6b"
+    },
+    {
       "file": "surfer.md",
       "about": "Surfer, the browser",
       "sha256": "7fc12b20315d6f3a9d742fb1c34a0c83cdf238bf276a65c6bc49483e12aca81c"

@@ -58,9 +58,31 @@ The app id `app.lisaos.<Name>` (ADR-0016) is the `.desktop` basename,
 the manifest `app_id`, the socket filename, the icon name and the
 `Adw.Application` `application_id` — one string, everywhere.
 
-A window is not required: `apps/notes` is a Lisa app in Rust with no
-GUI. What *is* required is an `app.lisaos.*` id, a manifest agentd can
-find, an MCP server on the per-app socket, and a README.
+A window is not required. What *is* required is an `app.lisaos.*` id, a
+manifest agentd can find, an MCP server on the per-app socket, and a
+README. (`apps/notes` was the example of a windowless app until
+2026-08-06, when it grew one — so it is now the example of the opposite:
+a daemon and a window sharing one tool surface.)
+
+**If you do build a window, do not build it by hand.** Use
+`apps/lisa_ui`:
+
+    import {lisaSplitWindow, headerButton} from '../lisa_ui/ui/window.js';
+    import {McpClient} from '../lisa_ui/mcp/client.js';
+
+    const ui = lisaSplitWindow({app, title: 'Notes', sidebarWidth: 320});
+
+That gives one window shape, one dark/light path, the design tokens and
+the glass pane every Lisa app shares — and it is glass by DEFAULT, so an
+app opts out rather than in. Hand-rolling `Adw.ApplicationWindow` +
+`Adw.HeaderBar` is what produced #282: eight surfaces, three answers to
+where the window controls go. `apps/notes/lisa-notes-app.js` is the
+worked example; `apps/lisa_ui/README.md` is the reference.
+
+Speak to your own backend through `lisa_ui/mcp/client.js`, not by
+opening its database. Notes' window calls the same five tools the model
+calls, so what the person sees and what the model sees are the same list
+by construction rather than by two pieces of code agreeing.
 
 ## 2. Write — the four things that are not style
 

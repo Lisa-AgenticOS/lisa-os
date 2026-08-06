@@ -32,6 +32,9 @@ OUT = ROOT / "docs/knowledge"
 # the pack's index entry)
 SOURCES = [
     ("apps/mail/README.md", "mail.md", "The Mail app: reading, searching and writing email"),
+    ("apps/notes/README.md", "notes.md", "Notes: a daemon and a window sharing one tool surface"),
+    ("apps/lisa_ui/README.md", "lisa-ui.md",
+     "lisa_ui: the shared GJS library every Lisa window is built on"),
     ("apps/surfer/README.md", "surfer.md", "Surfer, the browser"),
     ("apps/preview/README.md", "preview.md", "Preview: images, PDF, and Space-to-preview in Files"),
     ("apps/terminal-integration/README.md", "terminal.md", "lisa explain / lisa suggest in the terminal"),
