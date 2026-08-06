@@ -567,37 +567,13 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
     // wrote, as this user, outside every rule in lisa-guard — once
     // execve has happened the guard is not in the process any more.
     //
-    // A Landlock ruleset is inherited and cannot be relaxed, so applying
-    // it here would confine the harness itself and every later child for
-    // the life of the daemon. It goes in pre_exec: forked, not yet
-    // exec'd. Paths are resolved before the fork; the callback only
-    // makes syscalls.
+    // The hook itself lives in `confine::confine_command`, because
+    // `run_shell` needs the same one and a second copy is a second
+    // policy (#307).
     let mut cmd = Command::new(program);
     cmd.args(argv).env("PATH", path).current_dir(jail.root());
-    let confinement = crate::confine::available();
-    #[cfg(unix)]
-    if confinement.is_enforced() {
-        let project = jail.root().to_path_buf();
-        let home = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("/"));
-        // SAFETY: runs in the forked child before exec. It allocates
-        // nothing and takes no locks — `confine` builds its rules from
-        // the two paths captured above and issues syscalls.
-        unsafe {
-            std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
-                if crate::confine::confine(&project, &home).is_enforced() {
-                    Ok(())
-                } else {
-                    // Refuse to run rather than run unconfined after
-                    // deciding confinement was available: silently
-                    // dropping the jail is the failure this exists to
-                    // prevent.
-                    Err(std::io::Error::other("landlock confinement failed"))
-                }
-            });
-        }
-    }
+    let confinement =
+        crate::confine::confine_command(&mut cmd, jail.root(), &crate::confine::user_home());
     match cmd.output() {
         Err(e) => ToolOutcome::err(format!("running `{program}`: {e}")),
         Ok(out) => {

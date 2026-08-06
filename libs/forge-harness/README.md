@@ -84,6 +84,14 @@ Nobody is watching it, so the boundaries are deterministic and live in
 - **Verdicts** — there is no human in this loop, so a command that would
   need confirmation is refused, not assumed; the reason comes back as
   tool output for the model to route around.
+- **The shell** — `run_shell` (ADR-0036 §6, `shell_tool.rs`) takes an
+  arbitrary line, so it gets the guard's *shell* reader rather than the
+  argv one, a human's consent on **every** call, and — since #307 — the
+  same Landlock ruleset `run_command` spawns under. Until then it had a
+  working directory and nothing else: the broadest tool in the harness
+  was the one with no kernel confinement, while the allowlisted tool
+  beside it had had one since #53. The human is told which they are
+  approving; `ShellRequest::confinement` carries it.
 
 **The limit, stated plainly:** none of that confines a *subprocess*.
 `run_tests` invokes `cargo test` (or the parked lane's `flutter test`)
@@ -158,6 +166,23 @@ except the loss of the workflow.
   harness. Where Landlock is unavailable (macOS, older kernels) the
   subprocess runs **unconfined and says so** in its own tool output; a
   jail reported but not closed would be worse than none.
+
+  The writable set is `registry/` and `git/` under the package caches
+  plus three named cargo lock files, **not** all of `~/.cargo` (#309):
+  `~/.cargo/bin` is on the user's `$PATH` and `~/.cargo/config.toml`
+  carries `runner = […]`, so a child that can write either has execution
+  as the user, unconfined, the next time they open a terminal. The rest
+  of `~/.cargo` and all of `~/.rustup` are **readable**, because a
+  rustup toolchain lives there and `exec` happens after `restrict_self`.
+  What that still leaves reachable is named in `confine.rs`:
+  `~/.cargo/credentials.toml` is readable, and Landlock cannot subtract
+  a path from a granted tree.
+
+  `tests/confinement.rs` is the only thing that proves any of this: it
+  runs a child that tries each escape and looks at what is on disk
+  afterwards. It is Linux-only and that is not a gap it can close —
+  Landlock is a Linux LSM, a macOS run executes nothing, and a
+  confinement can only be witnessed where it exists.
 
 - **The streaming request shape is exported, on purpose** (#225,
   closed). `openai::streaming_request_body` is what

@@ -127,6 +127,19 @@ by prompt:
    (`libs/forge-harness/src/jail.rs`: `contain()` canonicalises per
    component, `write_contained` opens with `O_NOFOLLOW`). This is the
    original requirement that started the guardrail work.
+
+   *Status note, 2026-08-06 (#307): the condition was right and the
+   citation was wrong, so this is corrected rather than rewritten.
+   `contain()` and `write_contained` are the **file** tools' mechanisms —
+   `read_file`, `write_file` — and `ShellTool` used `Jail` for exactly
+   one thing, its child's working directory. What bounds a child is
+   Landlock (`libs/forge-harness/src/confine.rs`, ADR-0029 phase 3,
+   which shipped on 2026-08-02, after this ADR was written), and it was
+   not on the `run_shell` path at all: the broadest tool in the harness
+   was the only one with no kernel confinement while the allowlisted
+   `run_command` beside it had had it since #53. #307 put `run_shell`
+   under the same ruleset, so the sentence above became true on the date
+   of this note.*
 2. **It is guard-checked**, by `lisa-guard`, before it runs — a
    deterministic policy the model cannot reach or argue with (ADR-0030).
 3. **It is never Silent.** Whatever a command *looks* like, it is treated
