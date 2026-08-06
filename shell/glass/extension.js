@@ -51,6 +51,27 @@ export default class LisaGlass {
         log('lisa-glass: enabled');
     }
 
+    /// The stale-clip failure (#314): a full-stage clone kept invisible
+    /// only by its clip is a visible patch ANYWHERE on screen the moment
+    /// the clip stops tracking the window. So the clip follows every way
+    /// a frame rect can change — including a drag, which the first
+    /// version did not watch — and the backer is hidden whenever the
+    /// window actor is (minimise, workspace switch), so even a bug in
+    /// the geometry path fails invisible rather than painting wallpaper
+    /// over someone's work.
+    _track(actor, bg) {
+        const win = actor.meta_window;
+        const ids = [
+            [win, win.connect('position-changed', () => this._fit(actor))],
+            [win, win.connect('size-changed', () => this._fit(actor))],
+            [actor, actor.connect('notify::visible', () => {
+                bg.visible = actor.visible;
+            })],
+        ];
+        bg.visible = actor.visible;
+        return ids;
+    }
+
     disable() {
         for (const [obj, id] of this._ids ?? [])
             obj.disconnect(id);
@@ -91,7 +112,7 @@ export default class LisaGlass {
                 return;
             }
             parent.insert_child_below(bg, actor);
-            this._backers.set(actor, bg);
+            this._backers.set(actor, {bg, ids: this._track(actor, bg)});
             this._fit(actor);
         } catch (e) {
             logError(e, 'lisa-glass: could not back this window');
@@ -99,7 +120,7 @@ export default class LisaGlass {
     }
 
     _fit(actor) {
-        const bg = this._backers?.get(actor);
+        const bg = this._backers?.get(actor)?.bg;
         const r = actor?.meta_window?.get_frame_rect?.();
         if (!bg || !r)
             return;
@@ -111,11 +132,13 @@ export default class LisaGlass {
     }
 
     _drop(actor) {
-        const bg = this._backers?.get(actor);
-        if (!bg)
+        const entry = this._backers?.get(actor);
+        if (!entry)
             return;
-        bg.get_parent()?.remove_child(bg);
-        bg.destroy();
+        for (const [obj, id] of entry.ids)
+            obj.disconnect(id);
+        entry.bg.get_parent()?.remove_child(entry.bg);
+        entry.bg.destroy();
         this._backers.delete(actor);
     }
 }
