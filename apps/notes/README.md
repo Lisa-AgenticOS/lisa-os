@@ -18,10 +18,11 @@ existed for months before its window did.
 **The window** (`lisa-notes-app.js`, GJS) landed 2026-08-06 as the first
 consumer of `apps/lisa_ui` — ADR-0056's rule that a shared library is
 extracted from a real caller rather than designed for an imagined one.
-It does **not** open the SQLite store. It calls the same seven tools
-the agent calls, over the same socket, so what the person sees and what
-the model sees are the same list by construction rather than by two
-pieces of code agreeing. That is "apps are agent surfaces" as a fact
+It does **not** open the SQLite store. It works through the same tool
+surface the agent calls (six of the seven — the sidebar filters
+client-side rather than calling `search_notes`), over the same socket,
+so what the person sees and what the model sees are the same list by
+construction rather than by two pieces of code agreeing. That is "apps are agent surfaces" as a fact
 about the code: the tool surface is not a bolt-on beside the app, it is
 the app's API, and the window is its first client.
 

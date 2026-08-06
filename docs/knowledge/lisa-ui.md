@@ -4,20 +4,21 @@
 
 # `lisa_ui` — the shared GJS library for Lisa surfaces
 
-ADR-0056, ADR-0047 §6. **Steps 1–3.** There is still no widget *set* —
-that is step 4, and deliberately unbuilt: a widget is extracted once a
-second caller needs it, because one invented up front is a guess.
+ADR-0056, ADR-0047 §6. **Steps 1–4 underway**: the widget set grows by
+extraction — a widget joins once a real caller needs it, because one
+invented up front is a guess. `lisaSplitWindow` was extracted for
+Notes; `lisaTripleWindow` for Mail.
 
 | module | what | ADR-0056 |
 |---|---|---|
 | `mcp/protocol.js` | the JSON-RPC/MCP server edge, and the provenance tag | step 1 |
 | `mcp/client.js` | a GJS window talking to its own backend's tools | — |
 | `ui/tokens.js` | the generated design tokens, in the payload at last | step 2 |
-| `ui/window.js` | `LisaWindow` + `lisaSplitWindow` — one window shape, glass by default | step 3 |
+| `ui/window.js` | `lisaWindow`, `lisaSplitWindow`, `lisaTripleWindow` — one window shape, glass by default | steps 3–4 |
 | `ui/style.js` | the Lisa stylesheet, built at runtime from the tokens | step 2 |
 
-First consumer: `apps/notes`, whose window is built on `ui/window.js`
-and reaches its own data through `mcp/client.js`.
+Consumers: `apps/notes` (split window + `mcp/client.js`) and
+`apps/mail` (triple window — rail+folders | messages | reader).
 
 ## Glass is the default, and it is two halves
 
@@ -108,13 +109,14 @@ and on a device.
   question has to be answered properly** — the relative path will not
   resolve for it, and papering over that with a second copy is the
   defect this directory exists to undo.
-- **No widget set.** ADR-0056 step 4, deliberately unbuilt: a widget is
-  extracted when a second caller needs one. `lisaSplitWindow` is the
-  only thing here that was, and Notes is why.
-- **#282 is not closed.** The chrome half is answered — one window
-  shape, one dark/light path, one sidebar — and Notes and Surfer now
-  measure identical. Mail still builds its own chrome, and the issue's
-  acceptance names Mail and the Assistant too.
+- **The widget set is three window shapes and a button.** Step 4 grows
+  by extraction only — the grouped sidebar list that Notes and Mail
+  each still hand-roll is the obvious next candidate, when one of them
+  changes for a reason the other shares.
+- **#282 is not closed.** Notes, Surfer and Mail are on the shared
+  chrome — Mail on `lisaTripleWindow`, verified on the device 2026-08-06
+  — but the issue's acceptance also names Preview and the Assistant,
+  and both still build their own windows.
 - **Frost needs `shell/glass`, which is not shipped.** It lives in the
   repo and in `~/.local` on one device. Extensions load from the baked
   tree at session start (#268), so reaching an image means the `lisa`
