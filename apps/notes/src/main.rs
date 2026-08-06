@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(m["mcp"]["activatable"], false);
 
         let tools = m["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         for tool in tools {
             assert_eq!(
                 tool["input_schema"]["type"], "object",
@@ -183,6 +183,17 @@ mod tests {
 
         let by_name = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
         assert_eq!(by_name("list_notes")["tier"], "read");
+        // read_note is a READ that returns a body — the one thing the
+        // surface could store and search but never hand back.
+        assert_eq!(by_name("read_note")["tier"], "read");
+        assert!(
+            by_name("read_note").get("undo").is_none(),
+            "reading is a read: nothing to undo"
+        );
+        assert_eq!(
+            by_name("read_note")["input_schema"]["required"],
+            serde_json::json!(["id"])
+        );
         assert_eq!(by_name("search_notes")["tier"], "read");
         assert!(
             by_name("search_notes").get("undo").is_none(),

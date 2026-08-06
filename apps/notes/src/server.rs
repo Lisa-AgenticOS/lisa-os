@@ -94,6 +94,7 @@ fn tools_call(id: Value, msg: &Value, store: &Store) -> Value {
     let result = match name {
         "create_note" => create_note(store, &args),
         "list_notes" => list_notes(store),
+        "read_note" => read_note(store, &args),
         "search_notes" => search_notes(store, &args),
         "delete_note" => delete_note(store, &args),
         "restore_note" => restore_note(store, &args),
@@ -164,6 +165,30 @@ fn search_notes(store: &Store, args: &Value) -> Value {
 }
 
 /// The `{notes: [...]}` shape `list_notes` and `search_notes` share.
+/// One note in full (#282 follow-up).
+///
+/// Without this the tool surface could CREATE a body, SEARCH a body,
+/// and never return one — so "summarise my notes" was impossible for
+/// the model and a reader pane was impossible for a window. Read tier:
+/// it discloses content the owner wrote, and discloses nothing that
+/// `search_notes` could not already prove existed.
+fn read_note(store: &Store, args: &Value) -> Value {
+    let id = match required_id(args, "read_note") {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    match store.read(id) {
+        Ok(Some(n)) => structured(json!({
+            "id": n.id, "title": n.title, "body": n.body, "created": n.created,
+        })),
+        // Same wording as delete_note's miss, and for the same reason:
+        // a deleted note and an absent one are one answer, so the reply
+        // does not confirm that an id the caller guessed ever existed.
+        Ok(None) => tool_error(format!("read_note: no active note with id {id}")),
+        Err(e) => tool_error(format!("read_note: {e}")),
+    }
+}
+
 fn notes_json(notes: &[NoteSummary]) -> Value {
     json!({
         "notes": notes

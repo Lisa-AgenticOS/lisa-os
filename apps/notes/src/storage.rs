@@ -12,6 +12,23 @@ pub struct NoteSummary {
     pub created: String,
 }
 
+/// A whole note, body included.
+///
+/// The body was stored from the first commit and SEARCHED from the
+/// first commit (`body LIKE ?1`) and never returned by anything. So
+/// `search_notes` could find a note by a word in its body and then
+/// hand back a title, and nothing — not the model, not a window —
+/// could read what it had found. Notes was write-only for content
+/// (#282 follow-up, found 2026-08-06 by building the window and
+/// discovering there was nothing to put in it).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Note {
+    pub id: i64,
+    pub title: String,
+    pub body: String,
+    pub created: String,
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS notes(
     id      INTEGER PRIMARY KEY,
@@ -58,6 +75,27 @@ impl Store {
             })
         })?;
         rows.collect()
+    }
+
+    /// One note in full, or `None` if it does not exist or is deleted.
+    ///
+    /// `deleted = 0` deliberately: a soft-deleted note is gone as far
+    /// as reading is concerned, and `restore_note` is the only way back.
+    /// Returning the body of something the person deleted — to a model,
+    /// on request — would make the delete a lie.
+    pub fn read(&self, id: i64) -> rusqlite::Result<Option<Note>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, body, created FROM notes WHERE id = ?1 AND deleted = 0")?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                body: row.get(2)?,
+                created: row.get(3)?,
+            })
+        })?;
+        rows.next().transpose()
     }
 
     /// Active notes whose title or body contains `query` as a literal
@@ -127,6 +165,50 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("notes.db")).unwrap();
         (dir, store)
+    }
+
+    /// The gap this closes: a body could be stored and searched and
+    /// never read back. `search` matching on body while nothing could
+    /// return one is the exact shape of the defect.
+    #[test]
+    fn a_body_can_be_read_back_after_being_searched_for() {
+        let (_dir, store) = fixture();
+        let id = store.create("groceries", "oat milk and bread").unwrap();
+
+        // Findable by a word that appears ONLY in the body...
+        let hits = store.search("oat", 20).unwrap();
+        assert_eq!(hits.len(), 1, "search matches the body");
+        assert_eq!(hits[0].id, id);
+
+        // ...and now readable, which it was not before.
+        let note = store.read(id).unwrap().expect("the note exists");
+        assert_eq!(note.title, "groceries");
+        assert_eq!(note.body, "oat milk and bread");
+        assert!(!note.created.is_empty());
+    }
+
+    /// A soft-deleted note is gone as far as reading is concerned.
+    /// Returning its body on request would make the delete a lie.
+    #[test]
+    fn a_deleted_note_cannot_be_read_until_it_is_restored() {
+        let (_dir, store) = fixture();
+        let id = store.create("secret", "the body").unwrap();
+        assert!(store.read(id).unwrap().is_some());
+
+        assert!(store.delete(id).unwrap());
+        assert!(
+            store.read(id).unwrap().is_none(),
+            "deleted stays unreadable"
+        );
+
+        assert!(store.restore(id).unwrap());
+        assert_eq!(store.read(id).unwrap().unwrap().body, "the body");
+    }
+
+    #[test]
+    fn reading_a_note_that_never_existed_is_none_not_an_error() {
+        let (_dir, store) = fixture();
+        assert!(store.read(9999).unwrap().is_none());
     }
 
     #[test]

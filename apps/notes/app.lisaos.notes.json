@@ -29,6 +29,19 @@
       }
     },
     {
+      "name": "read_note",
+      "tier": "read",
+      "description": "Read one note in full, body included",
+      "input_schema": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "integer" }
+        }
+      }
+    },
+    {
       "name": "search_notes",
       "tier": "read",
       "description": "Search active notes for a substring of title or body (case-insensitive for ASCII letters only; %, _ and \\ match literally), newest first",

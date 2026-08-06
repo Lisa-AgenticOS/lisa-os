@@ -133,9 +133,20 @@ class NotesApp {
         for (const note of visible) {
             const r = new Adw.ActionRow({
                 title: displayTitle(note),
-                subtitle: preview(note.body),
+                // list_notes returns {id,title,created} and no body, so
+                // this is the created date rather than a body preview.
+                // It said `preview(note.body)` until the first render on
+                // hardware showed every subtitle blank — a preview of a
+                // field the server does not send.
+                subtitle: note.created ? String(note.created).slice(0, 10) : '',
                 activatable: true,
             });
+            // Rows were `activatable: true` with nothing connected, so
+            // clicking a note did nothing at all. Comparing against
+            // macOS Notes side by side is what made it obvious: theirs
+            // has a reader pane, ours had a list you could only delete
+            // from.
+            r.connect('activated', () => this._open(note));
             r.add_suffix(headerButton({
                 icon: 'user-trash-symbolic',
                 tooltip: 'Delete',
@@ -143,6 +154,81 @@ class NotesApp {
             }));
             this._list.append(r);
         }
+    }
+
+    /// Open one note for reading and editing.
+    ///
+    /// The body comes from `read_note`, which did not exist until
+    /// today: `list_notes` and `search_notes` both return
+    /// {id,title,created} and nothing else, so a note's content could
+    /// be written and searched and never read back — by this window or
+    /// by the model.
+    async _open(note) {
+        let full;
+        try {
+            full = await this._mcp.call('read_note', {id: note.id});
+        } catch (e) {
+            this._toast(`Could not open: ${e.message ?? e}`);
+            return;
+        }
+        this._editor({
+            title: displayTitle(full),
+            heading: full.title ?? '',
+            body: full.body ?? '',
+            onSave: async (draft) => {
+                // No update_note on the surface yet, so saving an edit
+                // would silently create a second note. Rather than do
+                // that, the editor is read-only for existing notes and
+                // says so — a Save button that duplicates your note is
+                // worse than no Save button.
+                this._toast('Editing an existing note needs update_note (not built yet)');
+            },
+            readOnly: true,
+        });
+    }
+
+    /// One editor, used for both a new note and an existing one.
+    _editor({title, heading = '', body = '', onSave, readOnly = false}) {
+        const dialog = new Adw.Window({
+            transient_for: this.window,
+            modal: true,
+            title,
+            default_width: 620,
+            default_height: 480,
+        });
+        const view = new Adw.ToolbarView();
+        const header = new Adw.HeaderBar();
+        view.add_top_bar(header);
+
+        const titleEntry = new Gtk.Entry({
+            placeholder_text: 'Title', text: heading, editable: !readOnly,
+        });
+        const bodyView = new Gtk.TextView({
+            wrap_mode: Gtk.WrapMode.WORD_CHAR, editable: !readOnly,
+            top_margin: 8, bottom_margin: 8, left_margin: 8, right_margin: 8,
+        });
+        bodyView.buffer.set_text(body, -1);
+
+        const box = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL, spacing: 12,
+            margin_top: 12, margin_bottom: 12, margin_start: 12, margin_end: 12,
+        });
+        box.append(titleEntry);
+        box.append(new Gtk.ScrolledWindow({vexpand: true, child: bodyView}));
+        view.content = box;
+        dialog.content = view;
+
+        if (!readOnly) {
+            const save = new Gtk.Button({label: 'Save', css_classes: ['suggested-action']});
+            save.connect('clicked', async () => {
+                const buf = bodyView.buffer;
+                const text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), false);
+                await onSave({title: titleEntry.text, body: text});
+            });
+            header.pack_end(save);
+        }
+        dialog.present();
+        return dialog;
     }
 
     _compose() {
