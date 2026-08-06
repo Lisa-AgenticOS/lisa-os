@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(m["mcp"]["activatable"], false);
 
         let tools = m["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 7);
         for tool in tools {
             assert_eq!(
                 tool["input_schema"]["type"], "object",
@@ -186,6 +186,19 @@ mod tests {
         // read_note is a READ that returns a body — the one thing the
         // surface could store and search but never hand back.
         assert_eq!(by_name("read_note")["tier"], "read");
+        // An overwrite is the one write that had no way back: create is
+        // undone by delete, delete by restore, and update by another
+        // update carrying what the note held before.
+        assert_eq!(by_name("update_note")["tier"], "write");
+        assert_eq!(by_name("update_note")["undo"]["tool"], "update_note");
+        assert_eq!(
+            by_name("update_note")["undo"]["map"]["title"],
+            "$result.previous_title"
+        );
+        assert_eq!(
+            by_name("update_note")["undo"]["map"]["body"],
+            "$result.previous_body"
+        );
         assert!(
             by_name("read_note").get("undo").is_none(),
             "reading is a read: nothing to undo"

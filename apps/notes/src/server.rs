@@ -95,6 +95,7 @@ fn tools_call(id: Value, msg: &Value, store: &Store) -> Value {
         "create_note" => create_note(store, &args),
         "list_notes" => list_notes(store),
         "read_note" => read_note(store, &args),
+        "update_note" => update_note(store, &args),
         "search_notes" => search_notes(store, &args),
         "delete_note" => delete_note(store, &args),
         "restore_note" => restore_note(store, &args),
@@ -186,6 +187,44 @@ fn read_note(store: &Store, args: &Value) -> Value {
         // does not confirm that an id the caller guessed ever existed.
         Ok(None) => tool_error(format!("read_note: no active note with id {id}")),
         Err(e) => tool_error(format!("read_note: {e}")),
+    }
+}
+
+/// Replace a note's title and body (#155).
+///
+/// Write tier, and UNDOABLE: the result carries what the note held
+/// before, and the manifest maps that back into another update_note. An
+/// edit is the one write on this surface that would otherwise be
+/// impossible to take back — delete has restore, create has delete, and
+/// until now an overwrite had nothing.
+fn update_note(store: &Store, args: &Value) -> Value {
+    let id = match required_id(args, "update_note") {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let title = match required_str(args, "title", "update_note") {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+    if title.chars().count() > MAX_TITLE_CHARS {
+        return tool_error(format!(
+            "update_note: \"title\" exceeds {MAX_TITLE_CHARS} characters"
+        ));
+    }
+    if body.chars().count() > MAX_BODY_CHARS {
+        return tool_error(format!(
+            "update_note: \"body\" exceeds {MAX_BODY_CHARS} characters"
+        ));
+    }
+    match store.update(id, title, body) {
+        Ok(Some(before)) => structured(json!({
+            "id": before.id,
+            "previous_title": before.title,
+            "previous_body": before.body,
+        })),
+        Ok(None) => tool_error(format!("update_note: no active note with id {id}")),
+        Err(e) => tool_error(format!("update_note: {e}")),
     }
 }
 

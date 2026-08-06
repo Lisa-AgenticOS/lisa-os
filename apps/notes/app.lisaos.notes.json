@@ -42,6 +42,29 @@
       }
     },
     {
+      "name": "update_note",
+      "tier": "write",
+      "description": "Replace a note's title and body",
+      "undo": {
+        "tool": "update_note",
+        "map": {
+          "id": "$input.id",
+          "title": "$result.previous_title",
+          "body": "$result.previous_body"
+        }
+      },
+      "input_schema": {
+        "type": "object",
+        "required": ["id", "title"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string", "maxLength": 120 },
+          "body": { "type": "string" }
+        }
+      }
+    },
+    {
       "name": "search_notes",
       "tier": "read",
       "description": "Search active notes for a substring of title or body (case-insensitive for ASCII letters only; %, _ and \\ match literally), newest first",

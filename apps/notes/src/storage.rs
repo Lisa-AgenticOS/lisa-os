@@ -98,6 +98,27 @@ impl Store {
         rows.next().transpose()
     }
 
+    /// Replace a note's title and body, returning what it held BEFORE.
+    ///
+    /// The previous value comes back so the caller can undo — the bus's
+    /// undo journal compensates by calling `update_note` again with what
+    /// this returned, the same shape `delete_note` ↔ `restore_note`
+    /// already uses. An update with nothing to undo to would be the one
+    /// write on this surface a person could not take back.
+    ///
+    /// `None` when no *active* note has that id: a soft-deleted note is
+    /// not editable, for the same reason it is not readable.
+    pub fn update(&self, id: i64, title: &str, body: &str) -> rusqlite::Result<Option<Note>> {
+        let Some(before) = self.read(id)? else {
+            return Ok(None);
+        };
+        self.conn.execute(
+            "UPDATE notes SET title = ?2, body = ?3 WHERE id = ?1 AND deleted = 0",
+            params![id, title, body],
+        )?;
+        Ok(Some(before))
+    }
+
     /// Active notes whose title or body contains `query` as a literal
     /// substring, newest first (`created` desc, id as tiebreak), capped
     /// at `limit`. Matching is SQLite `LIKE`: case-insensitive for
@@ -203,6 +224,44 @@ mod tests {
 
         assert!(store.restore(id).unwrap());
         assert_eq!(store.read(id).unwrap().unwrap().body, "the body");
+    }
+
+    /// An update returns the PREVIOUS value, which is what makes it
+    /// undoable — the one write on this surface that would otherwise be
+    /// impossible to take back.
+    #[test]
+    fn updating_returns_what_the_note_held_before() {
+        let (_dir, store) = fixture();
+        let id = store.create("draft", "first thoughts").unwrap();
+
+        let before = store.update(id, "final", "considered thoughts").unwrap().unwrap();
+        assert_eq!(before.title, "draft");
+        assert_eq!(before.body, "first thoughts");
+
+        let now = store.read(id).unwrap().unwrap();
+        assert_eq!(now.title, "final");
+        assert_eq!(now.body, "considered thoughts");
+
+        // ...and undo is just the same call with what came back.
+        store.update(id, &before.title, &before.body).unwrap();
+        assert_eq!(store.read(id).unwrap().unwrap().body, "first thoughts");
+    }
+
+    #[test]
+    fn a_deleted_note_cannot_be_edited() {
+        let (_dir, store) = fixture();
+        let id = store.create("gone", "body").unwrap();
+        assert!(store.delete(id).unwrap());
+        assert!(store.update(id, "back", "sneaky").unwrap().is_none());
+        // ...and the write did not land underneath the refusal.
+        assert!(store.restore(id).unwrap());
+        assert_eq!(store.read(id).unwrap().unwrap().title, "gone");
+    }
+
+    #[test]
+    fn updating_a_note_that_never_existed_changes_nothing() {
+        let (_dir, store) = fixture();
+        assert!(store.update(9999, "x", "y").unwrap().is_none());
     }
 
     #[test]
