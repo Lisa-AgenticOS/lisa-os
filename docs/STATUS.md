@@ -3,7 +3,137 @@
 Living snapshot of where the build actually is, so any machine (or a
 fresh Claude Code session) can pick up without reconstructing context.
 `docs/PLAN.md` is still the source of truth for scope; this is the
-"where are we on it" companion. **Last updated: 2026-08-05.**
+"where are we on it" companion. **Last updated: 2026-08-06.**
+
+## 2026-08-06 — the reality check: two reviews, a device sweep, and 13 false ADR statuses
+
+The night's theme is not what shipped, it is what turned out not to be
+true. Two adversarial reviews plus a boot-to-desktop sweep produced
+**24 findings**; 16 are fixed, including all four remaining HIGHs. The
+pattern matters more than the count: **almost none were visible by
+reading**, and two were fixes shipped as correct the night before.
+
+**Two retractions, both mine.**
+
+1. `47fa7c6` claimed to close an egress hole on `lisa-inferenced-dbus`,
+   "the daemon every prompt goes through". It closed nothing.
+   `IPAddressDeny=any` is a **no-op in user scope** — an IP firewall is
+   a cgroup BPF program and `systemd --user` cannot load one; the
+   device's own journal says so. Measured on the iMac: those exact
+   directives with `AF_INET` allowed reach example.com with HTTP 200;
+   `RestrictAddressFamilies=AF_UNIX` gives rc=7. So the only directive
+   that bites unprivileged is the seccomp one. `lisa-harnessd` — the
+   **model host** — had unrestricted egress while both gates called it
+   confined (#288). Fixed for harnessd by moving the `:7778` hop onto
+   the unix socket inferenced already served; `inferenced-dbus` is
+   **still unconfined** and its header now opens by saying so.
+2. The injection gate has been quoted all week as "1100 attempts, zero
+   unconfirmed privileged calls". It was running **16**. Both corpus
+   tests parked from one owner and never drained, so
+   `MAX_PENDING_PER_OWNER` denied everything after the 16th *before*
+   the tier machinery saw it — and a denial correctly counts as a pass.
+   Green on 1.5% of its own corpus (#303). Now 1320/1320, using the
+   `executed` floor `tests/acl-fuzz` already had.
+
+**The single most consequential finding** is #302: `bus-tools`' taint
+check was literally `p == "web"`. Mail and Preview tagged their results
+correctly and the loop threw the tags away, so a run that had just read
+a hostile email reached agentd with the chain `["user"]` — not merely
+un-escalated, but handed `Trigger::Prompt` and the person's filesystem
+reach. ADR-0036 was written about exactly that source. The fix taints on
+**any non-`user`** provenance, and `loop_taint.rs` drives a real loop
+once per `Provenance` variant against an exhaustive match, so a new
+variant cannot be added without the loop learning it.
+
+Underneath it: `gate.rs` **never imported `bus_tools`**. It built the
+chain itself, so it proved *the bus escalates such a chain* and never
+*the loop produces one* — for as long as the file existed.
+
+**#289 partially defeated the previous night's fix.** `305164c` refused
+a model host approving its own call; the identity under that rule was a
+**bus name**, and `session.conf` ships `<allow own="*"/>`. So one
+process parked from `:1.5` and released from `:1.6` while holding
+`dev.lisaos.Consent1`, with the Ledger crediting "the consent surface".
+Now three facts: `Owner::allows` answers *same socket*, a pidfd-pinned
+`lisa_peer::Process` held on the parked call answers *same process*
+(pid reuse cannot move it; `execve` preserves the pid), and
+`/proc/<pid>/exe` answers *which program*. Residual, stated rather than
+implied: the dialog runs under `gjs`, so `fork()` + exec gjs still
+passes both halves. **An interpreter on an allowlist authorises
+everything it can run.** `/usr/bin/lisa-consentd` and
+`/usr/bin/lisa-assistant` are already listed — shipping those binaries
+is the whole remaining change, and both issues stay open for it.
+
+**`lisa install` offered the running system's own disk** when `/` sat on
+LUKS/LVM/md/multi-device btrfs, and printed "(this system is running
+from /dev/sda, not this disk)" *above* the ERASE prompt (#290). Six
+tests reproduce it against the unmodified planner first; 26 mutations,
+26 killed.
+
+**The Landlock jail had never run a build.** Found by asking "does a
+real build still work?" rather than "is it confined?": `ABI::V1` has no
+`Refer` right so every cross-directory rename was EXDEV, and `/dev` was
+granted read-only so `> /dev/null` returned EACCES (#307, #309).
+
+**Gates that pass when their subject is deleted.** `check-desktop.sh`
+exited 0 on a manifest with no shell line and skipped the pin entirely
+for stock `gnome-shell`; `check-plymouth.sh` checked agreement but not
+presence, so deleting the pin passed (#297, #298). Every gate now has
+to fail on *absence*, and mutation-by-deletion is part of the bar.
+
+**Egress discovery missed five ordinary install idioms** — one already
+in the shipping PKGBUILD — and dropped 16 install lines in silence
+(#291). It interprets the installer now; an unresolvable install into a
+systemd directory is an error.
+
+**13 of 57 ADR statuses were false, 8 of them understating** — the
+direction that gets working code deleted to match a document. ADR-0036
+said "nothing is implemented" while its shell tool shipped with all four
+of its conditions; ADR-0029 listed Landlock and structured-argv
+`suggest` as open a week after both shipped, in a file whose own text
+warns that understating "sends the next person to implement it twice".
+Statuses corrected, nine dated notes appended, and **no Context,
+Decision or Consequences prose rewritten** — those record what was
+believed on the day. The durable half: an ADR may declare `Claims:`, and
+one asserting implementation must; 142 claims across 53 records are
+checked on every `just lint`, in two pairs (`path`/`absent`,
+`symbol`/`nomatch`) because a status can be wrong in both directions.
+
+**Lisa Desktop photographed itself for the first time** (#266). GNOME 50
+gates the screenshot interface to the media-keys daemon and the portal,
+so we were locked out of our own compositor. The fork authorises by
+`/proc/<pid>/exe` under `/usr/lib/lisa/bin`, root-owned — never a bus
+name. 3840×2160 on the reference iMac's own GPU, with the negative
+controls that make it mean something: the same binary at `/usr/bin/gdbus`
+refused, the same binary owned by `lisa` refused, and the **unpatched**
+shell refusing even the authorised caller.
+
+**Also shipped:** the fork rebased to GNOME Shell 50.4, tagged,
+published and pinned by `desktop.lock` (digest computed from the
+downloaded artifact, not the API field); Surfer became a real browser —
+downloads, find, deletable history, bookmarks, session restore and
+keyring-backed passwords, with an agent refused at the credential field
+by construction; zen-browser retired; three packaging collisions across
+**94 paths** found and held apart by `conflicts=` (ADR-0057); the Dart
+lane deleted so `lisa_ui` is free for the GJS library (ADR-0056).
+
+**Confirmed on the device, read-only:** the session really is Lisa
+Desktop (`DESKTOP_SESSION=lisa-desktop`, no stock `gnome-shell` package
+installed). One asterisk — `XDG_CURRENT_DESKTOP=GNOME`, so every app
+that branches on it is told it is on GNOME. Boot is 22.4s userspace, of
+which **`plymouth-quit-wait` is 15s** (#311), on top of 38.9s of Apple
+firmware. `lisa-mail-sync` is **failed** on the device: mbsync
+authenticates, syncs nothing, exits 1 (#312).
+
+**Still waiting on the owner**, and no release changes any of it:
+`dconf reset /org/gnome/shell/favorite-apps` (a user-scope value
+permanently shadows the system default, and `$HOME` survives A/B
+updates by design — fourth instance of this pattern); the mail reap on
+real data (9,094 orphaned documents, 27,809 vectors — and fix #296's
+`any(is_dir)` guard first); the Google client secret for #276; and
+whether to stop publishing `lisa-desktop`, `lisa-desktop-ime` and
+`lisa-apps` into the signed index, since a signed stale copy is what
+made the collisions possible.
 
 ## 2026-08-05 — a release that ships, a CI review, and three decisions
 
