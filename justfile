@@ -62,6 +62,15 @@ lint:
     # must not be trusted to have checked anything.
     os/mkosi/check-plymouth.sh --selftest
     os/mkosi/check-plymouth.sh os/mkosi/mkosi.extra os/mkosi/initrd-overlay
+    # A fork that replaces stock BY NAME wins only by pkgrel, and loses
+    # the day Arch ships a higher pkgver — which it did on 2026-08-04,
+    # and the device still carries `gnome-control-center 50.3-2` as a
+    # result (#284). The repo half runs here, offline: it fails on a
+    # PKGBUILD that takes a stock name, on half a provides/conflicts
+    # contract, and on anything forking the foundation. The manifest
+    # half needs an image, so it runs where there is one:
+    #   check-desktop-inventory.py --manifest <root>/usr/lib/lisa/packages.manifest --lane release
+    python3 os/repo-tools/check-desktop-inventory.py
     # The ADR index used to be written by hand, and said "36 of the 37
     # records below" while there were 50. A page describing 50 files
     # must be derived from them: this rejects a status line outside the
