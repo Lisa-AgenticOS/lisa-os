@@ -1,0 +1,29 @@
+[package]
+name = "lisa-consentd"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The desktop consent surface: the process that owns dev.lisaos.Consent1 (issue #289, ADR-0035 §4)"
+
+[[bin]]
+name = "lisa-consentd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+futures-util = { version = "0.3.33", default-features = false, features = ["std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = [
+    "macros",
+    "rt-multi-thread",
+    "process",
+    "io-util",
+    "sync",
+    "signal",
+] }
+zbus = { version = "5.18.0", features = ["tokio"], default-features = false }
+
+[dev-dependencies]
+tempfile = "3.27.0"

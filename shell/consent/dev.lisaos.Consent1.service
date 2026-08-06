@@ -1,11 +1,33 @@
-# D-Bus activation for the desktop consent surface (issue #145).
+# D-Bus activation for the desktop consent surface (issues #145, #289).
 #
 # Separate from dev.lisaos.Overlay1 on purpose: agentd trusts whoever
 # owns THIS name to answer for the human, and the overlay backend — which
 # hosts the model — must never be able to be that peer.
 #
-# Install to $XDG_DATA_DIRS/dbus-1/services/; the packaged path below
-# matches the Track L layer layout (/usr/share/lisa).
+# THIS EXEC LINE IS A SECURITY DECISION, not a launcher convenience.
+#
+# It used to read `Exec=/usr/bin/lisa-app consent/lisa-consentd.js`, and
+# `lisa-app` ends in `exec gjs -m "$found"` — so the process that owned
+# this name reported `/usr/bin/gjs-console` as its `/proc/<pid>/exe`
+# (verified on the reference device, pid 18669). agentd checks the
+# answerer's program against an allowlist, and an allowlist containing an
+# INTERPRETER authorises every program that interpreter can run: a
+# hostile GJS script that forks and execs gjs gets a fresh pid, clears
+# the same-process check too, and is then indistinguishable from this
+# dialog (#289).
+#
+# A native launcher that execs the GJS surface would change nothing —
+# after execve the exe is gjs again. The process that OWNS the name has
+# to be the binary, so it is: /usr/bin/lisa-consentd owns the name,
+# subscribes to agentd's signals and makes the Confirm call, and spawns
+# shell/consent/lisa-consentd.js as a child with no session bus address,
+# purely to draw the window.
+#
+# It also does NOT go through `lisa-app`, and so not through the app
+# channel (ADR-0020). A dialog file that `lisa apps update` can replace
+# is a dialog anything running as the user can replace, and ADR-0030 §2's
+# first test is "is it reachable from inside?". This one surface updates
+# with the package.
 [D-BUS Service]
 Name=dev.lisaos.Consent1
-Exec=/usr/bin/lisa-app consent/lisa-consentd.js
+Exec=/usr/bin/lisa-consentd

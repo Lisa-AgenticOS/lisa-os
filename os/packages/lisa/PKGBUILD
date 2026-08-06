@@ -5,7 +5,7 @@
 # the hosted repo (M1) ships signed packages instead (PLAN §5.10).
 
 pkgbase=lisa
-pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-ime lisa-portal lisa-agentd lisa-contextd lisa-notes lisa-remoted)
+pkgname=(lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-ime lisa-portal lisa-agentd lisa-consentd lisa-contextd lisa-notes lisa-remoted)
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Lisa OS AI layer: local inference as a system service"
@@ -157,6 +157,36 @@ package_lisa-agentd() {
         "$pkgdir/usr/lib/systemd/user/lisa-harnessd.service"
     ln -s ../lisa-harnessd.service \
         "$pkgdir/usr/lib/systemd/user/default.target.wants/lisa-harnessd.service"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_lisa-consentd() {
+    pkgdesc="Lisa OS desktop consent surface: the peer that owns dev.lisaos.Consent1 (#289, ADR-0035 §4)"
+    # gjs + libadwaita draw the dialog; lisa-shell owns the renderer file
+    # at /usr/share/lisa/shell/consent/lisa-consentd.js, which this
+    # daemon spawns and which is deliberately NOT resolved through the
+    # app channel (see shell/consent/daemon/src/renderer.rs).
+    #
+    # lisa-agentd is a hard dependency in the other direction than it
+    # looks: without agentd there is nothing to answer, but without THIS
+    # package agentd refuses every destructive approval and ledgers the
+    # refusal (#244). Naming it here means an image that carries the bus
+    # carries the dialog — the "built, packaged, never installed" defect
+    # that has now happened three times (#153, #244, and this one).
+    depends=(gcc-libs gjs libadwaita lisa-shell lisa-agentd)
+    cd "$pkgbase-$pkgver"
+    # The whole of #289 in one line: the process that owns
+    # dev.lisaos.Consent1 is this binary, so agentd's `/proc/<pid>/exe`
+    # check on the answerer reads /usr/bin/lisa-consentd — a program
+    # only we ship — instead of /usr/bin/gjs-console, which is an
+    # interpreter and therefore authorises everything it can run.
+    install -Dm755 target/release/lisa-consentd "$pkgdir/usr/bin/lisa-consentd"
+    # D-Bus activation. agentd calls StartServiceByName the moment a
+    # modal parks, which is the only event that ever starts this daemon:
+    # GetNameOwner does not activate and a signal activates nothing at
+    # all (#244).
+    install -Dm644 shell/consent/dev.lisaos.Consent1.service \
+        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Consent1.service"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
@@ -405,26 +435,35 @@ package_lisa-shell() {
     ln -s /usr/share/lisa/shell/desktop \
         "$pkgdir/usr/share/gnome-shell/extensions/lisa-desktop@lisa-os.org"
 
-    # D-Bus activation for the headless overlay backend (§5.7.1).
-    install -Dm644 shell/overlay-extension/backend/dev.lisaos.Overlay1.service \
+    # D-Bus activation for the headless overlay backend (§5.7.1) and for
+    # push-to-talk capture (§5.7.5). The same process owns both names,
+    # but activation is per-name: without the second file the first key
+    # press finds nobody on dev.lisaos.Voice1, and voice appears to work
+    # only when something else started the backend first.
+    #
+    # BOTH now come from os/packages/lisa/ rather than from
+    # shell/overlay-extension/backend/, and both carry
+    # `SystemdService=lisa-overlayd.service` (#294). The copies beside
+    # the surface have a bare `Exec=` and no SystemdService=, so
+    # dbus-daemon forked the backend itself — no unit, therefore no
+    # sandbox at all, and invisible to check-egress-units.py, which
+    # discovers its population from these install lines. Packaging
+    # inputs live here with the other three activation files
+    # (Context1, Portal, Remoted), which is where this one always
+    # belonged.
+    install -Dm644 os/packages/lisa/dev.lisaos.Overlay1.service \
         "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Overlay1.service"
-    # Push-to-talk capture (§5.7.5). The same process owns this name,
-    # but activation is per-name: without this file the first key press
-    # finds nobody on dev.lisaos.Voice1, and voice appears to work only
-    # when something else started the backend first.
-    install -Dm644 shell/overlay-extension/backend/dev.lisaos.Voice1.service \
+    install -Dm644 os/packages/lisa/dev.lisaos.Voice1.service \
         "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Voice1.service"
-    # The consent surface (issue #145, ADR-0035 §4). agentd trusts
-    # whoever owns dev.lisaos.Consent1 to answer for the human, and
-    # refuses a Modal approval from the peer that made the request. Until
-    # this file exists on a device that check has nothing to point at:
-    # the name is unowned, every confirmation lands in the Absent branch,
-    # and the requester answers its own call. That is the availability
-    # fallback, not the safety property — and it is the third time a
-    # component has been built, packaged and left out of the image
-    # (lisa-portal was #153).
-    install -Dm644 shell/consent/dev.lisaos.Consent1.service \
-        "$pkgdir/usr/share/dbus-1/services/dev.lisaos.Consent1.service"
+    # …and the unit both of them activate.
+    install -Dm644 os/packages/lisa/lisa-overlayd.service \
+        "$pkgdir/usr/lib/systemd/user/lisa-overlayd.service"
+    # The consent surface's D-Bus activation file and its own binary are
+    # NOT here: they moved to package_lisa-consentd() below, because the
+    # dialog stopped being pure GJS (#289) and this package is arch=any.
+    # The renderer it draws with — shell/consent/lisa-consentd.js — is
+    # still staged into /usr/share/lisa/shell by build-apps-payload.sh
+    # above, which is why lisa-consentd depends on this package.
     # Ledger app launcher entry (§5.7.6).
     install -Dm644 shell/ledger-app/app.lisaos.LedgerApp.desktop \
         "$pkgdir/usr/share/applications/app.lisaos.LedgerApp.desktop"

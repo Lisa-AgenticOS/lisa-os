@@ -13,7 +13,8 @@
 - Supersedes nothing; changes the *primary* surface established in
   PLAN §5.7.1
 - **Claims:**
-  - `symbol:dev.lisaos.Consent1@shell/consent/lisa-consentd.js` — §4's consent surface, split out of the model host (#135)
+  - `symbol:dev.lisaos.Consent1@shell/consent/daemon/src/main.rs` — §4's consent surface, split out of the model host (#135) and given an executable of its own (#289), because a name whose owner runs an interpreter is a name any script can wear
+  - `path:shell/consent/lisa-consentd.js` — the window it draws with, spawned as a child with no session bus
   - `path:shell/consent/dev.lisaos.Consent1.service` — and its activation, so the name has one owner
 
 ## Context
@@ -219,3 +220,16 @@ at the head of this file has said so since; this section did not, and a
 reader who trusts the section titled "Status of the work" over the
 status line is the reader this audit exists for. §2's prompt-in-the-dock
 wireframe is still design.*
+
+*Status note, 2026-08-06 (#289): the consent surface now has an
+executable of its own, and the sentence above needs one correction —
+`dev.lisaos.Consent1` is owned by `/usr/bin/lisa-consentd`
+(`shell/consent/daemon`), which spawns `shell/consent/lisa-consentd.js`
+as a child with no session bus address. The reason is §4's own argument
+taken one step further: it is not enough for the dialog to be a different
+peer from the model host if that peer's `/proc/<pid>/exe` is
+`/usr/bin/gjs-console`, because then "the dialog" is any script the
+interpreter can run — including one the model host forks and execs.
+One line remains before §4 is fully closed: `CONSENT_SURFACE_PROGRAMS`
+in `daemons/agentd/src/dbus.rs` still lists `/usr/bin/gjs` beside the
+binary, and the list is a disjunction.*

@@ -16,6 +16,7 @@ members = [
     "daemons/agentd",
     "daemons/harnessd",
     "portals/xdg-desktop-portal-lisa",
+    "shell/consent/daemon",
     "cli/lisa",
     "tests/acl-fuzz",
     "tests/injection-suite",

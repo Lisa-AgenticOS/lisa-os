@@ -1,59 +1,53 @@
 #!/usr/bin/env -S gjs -m
-// lisa-consentd — the desktop consent surface, and nothing else
-// (issue #145, ADR-0035 §4, PLAN §5.10).
+// lisa-consentd.js — the consent dialog, and nothing else
+// (issues #145, #251, #289; ADR-0035 §4, ADR-0030, PLAN §5.10).
 //
-// WHY THIS PROCESS EXISTS
+// THIS FILE NO LONGER TOUCHES THE BUS.
 //
-// Until now the confirmation dialog lived in lisa-overlayd, which also
-// hosts the model. So when the overlay routed a prompt to a privileged
-// tool, the process that ASKED for the call was also the process that
-// ANSWERED for the human: `_respond()` called Agent1.Confirm on the same
-// connection that had made the RequestCall. agentd saw one peer, one
-// unique name, and could not tell the difference — the model was
-// approving itself, with a dialog drawn in between as decoration.
+// It used to be the whole consent surface: it owned `dev.lisaos.Consent1`
+// and it called `dev.lisaos.Agent1.Confirm`. That worked, and it left
+// #289 open, because `Exec=/usr/bin/lisa-app consent/lisa-consentd.js`
+// ends in `exec gjs -m "$found"` — so the kernel's answer for
+// `/proc/<pid>/exe` on the process owning the consent name was
+// `/usr/bin/gjs-console`. agentd's program allowlist therefore had to
+// contain an INTERPRETER, and an interpreter on an allowlist authorises
+// every program it can run. A hostile GJS script that forks and execs
+// gjs gets a fresh pid, satisfies the same-process check too, and is
+// then indistinguishable from this dialog.
 //
-// This is the pattern xdg-desktop-portal uses and the reason it uses it:
-// the thing that grants a capability must not be the thing that wants it.
+// So the peer moved into a binary of its own: `shell/consent/daemon`,
+// installed as `/usr/bin/lisa-consentd`. It owns the name, it subscribes
+// to agentd's signals, and it makes the `Confirm` call. This file is its
+// CHILD — the window it draws with — and it is spawned with no
+// `DBUS_SESSION_BUS_ADDRESS`, so it cannot open a session bus connection
+// even if something replaced its contents.
 //
-// WHAT THIS PROCESS MUST NEVER GROW
+// THE CHANNEL
+//
+// One JSON object per line, stdin in and stdout out
+// (`shell/consent/daemon/src/protocol.rs`):
+//
+//     in   {"kind":"confirm","call_id":41,"spec":"<agentd's json>"}
+//     in   {"kind":"refusal","call_id":41,"report":"<agentd's json>"}
+//     out  {"call_id":41,"answer":"allow"|"deny"|"dismiss"}
+//
+// The call id travels out and comes back so the parent can match an
+// answer to a dialog. It is not a capability: this process has no bus,
+// and the parent drops an answer for a dialog it did not open.
+//
+// WHAT THIS FILE MUST NEVER GROW
 //
 // No model. No prompt entry. No tool calls of its own. Its only inputs
-// are agentd's ConfirmationRequested signal and a human's click, and its
-// only output is Agent1.Confirm. The moment it can be driven by
-// generated text it stops being a second pair of eyes (ADR-0030:
-// anything reachable from inside is not a guardrail).
-//
-// It deliberately does NOT expose a D-Bus method to approve a call. A
-// peer that could ask this daemon to approve something would be able to
-// launder its own request through it, which is exactly the hole being
-// closed. The only approver is the pointer.
+// are the parent's messages and a human's click, and its only output is
+// which button was pressed. The moment it can be driven by generated
+// text it stops being a second pair of eyes (ADR-0030: anything
+// reachable from inside is not a guardrail).
 
 import Gio from 'gi://Gio';
+import GioUnix from 'gi://GioUnix';
 import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk?version=4.0';
 import Adw from 'gi://Adw?version=1';
-
-const CONSENT_BUS_NAME = 'dev.lisaos.Consent1';
-const CONSENT_OBJECT_PATH = '/dev/lisaos/Consent1';
-
-const AGENT_BUS = 'dev.lisaos.Agent1';
-const AGENT_PATH = '/dev/lisaos/Agent1';
-const AGENT_IFACE = 'dev.lisaos.Agent1';
-
-/// Read-only. There is no Approve() here on purpose — see the header.
-const CONSENT_IFACE_XML = `
-<node>
-  <interface name="dev.lisaos.Consent1">
-    <method name="Ping">
-      <arg type="s" direction="out" name="version"/>
-    </method>
-    <!-- How many confirmations are on screen. For tests and for a
-         status line; it reveals a count, never a call's contents. -->
-    <method name="PendingCount">
-      <arg type="u" direction="out" name="count"/>
-    </method>
-  </interface>
-</node>`;
 
 /// agentd's confirmation spec is JSON. Render only fields we recognise:
 /// an unknown key must not reach the dialog as trusted text, because the
@@ -145,51 +139,85 @@ function describeRefusal(reportJson) {
     };
 }
 
-class ConsentSurface {
-    constructor(app) {
-        this._app = app;
+/// The pipe back to `/usr/bin/lisa-consentd`.
+///
+/// Every answer goes through here and nowhere else: this process has no
+/// other way to affect anything, which is what makes "the dialog" a
+/// window rather than an authority.
+class Channel {
+    constructor(onMessage, onClosed) {
+        this._onMessage = onMessage;
+        this._onClosed = onClosed;
+        this._in = new Gio.DataInputStream({
+            base_stream: new GioUnix.InputStream({fd: 0, close_fd: false}),
+        });
+        this._out = new GioUnix.OutputStream({fd: 1, close_fd: false});
+        this._readLine();
+    }
+
+    /// Report a click. Written and flushed immediately: a person has
+    /// answered, and a buffered answer is a call that stays parked.
+    answer(callId, verdict) {
+        const line = `${JSON.stringify({call_id: callId, answer: verdict})}\n`;
+        try {
+            this._out.write_all(line, null);
+            this._out.flush(null);
+        } catch (e) {
+            logError(e, 'lisa-consentd.js: could not report the answer');
+        }
+    }
+
+    _readLine() {
+        this._in.read_line_async(GLib.PRIORITY_DEFAULT, null, (stream, res) => {
+            let line;
+            try {
+                [line] = stream.read_line_finish_utf8(res);
+            } catch (e) {
+                logError(e, 'lisa-consentd.js: reading from the daemon');
+                this._onClosed();
+                return;
+            }
+            // EOF: the daemon is gone. Exit rather than linger with
+            // windows nobody can answer to — the calls behind them are
+            // still parked in agentd and expire, which is safe.
+            if (line === null) {
+                this._onClosed();
+                return;
+            }
+            if (line.length > 0) {
+                try {
+                    this._onMessage(JSON.parse(line));
+                } catch (e) {
+                    logError(e, 'lisa-consentd.js: unreadable message from the daemon');
+                }
+            }
+            this._readLine();
+        });
+    }
+}
+
+class ConsentDialogs {
+    constructor(channel) {
+        this._channel = channel;
         this._open = new Map(); // call_id -> Adw.Window
-        this._bus = Gio.DBus.session;
-
-        this._impl = Gio.DBusExportedObject.wrapJSObject(CONSENT_IFACE_XML, this);
-        this._impl.export(this._bus, CONSENT_OBJECT_PATH);
-
-        this._subId = this._bus.signal_subscribe(
-            AGENT_BUS, AGENT_IFACE, 'ConfirmationRequested', AGENT_PATH, null,
-            Gio.DBusSignalFlags.NONE,
-            (_c, _s, _p, _i, _sig, params) => this._onRequested(params));
-        // A refusal arrives on its own signal, so this surface cannot
-        // mistake one for something to draw an Allow button on. There is
-        // no parked call behind it and no Confirm that could answer it.
-        this._refusalSubId = this._bus.signal_subscribe(
-            AGENT_BUS, AGENT_IFACE, 'RefusalReported', AGENT_PATH, null,
-            Gio.DBusSignalFlags.NONE,
-            (_c, _s, _p, _i, _sig, params) => this._onRefused(params));
     }
 
-    Ping() {
-        return 'lisa-consentd 0.1';
-    }
-
-    PendingCount() {
-        return this._open.size;
-    }
-
-    _onRequested(params) {
-        const [callId, specJson] = params.deepUnpack();
-        const id = Number(callId);
-        // agentd re-emits on reconnect; one dialog per call.
+    /// One message from the daemon. Two kinds, never one with a flag:
+    /// a renderer that could confuse a refusal with a confirmation would
+    /// draw an Allow button on something with no parked call behind it.
+    dispatch(msg) {
+        const id = Number(msg.call_id);
+        if (!Number.isSafeInteger(id) || id < 0)
+            return;
+        // The daemon already de-duplicates, and so does this: agentd
+        // re-emits on reconnect, and one dialog per call is the rule at
+        // every layer that can enforce it.
         if (this._open.has(id))
             return;
-        this._prompt(id, describe(specJson));
-    }
-
-    _onRefused(params) {
-        const [callId, reportJson] = params.deepUnpack();
-        const id = Number(callId);
-        if (this._open.has(id))
-            return;
-        this._report(id, describeRefusal(reportJson));
+        if (msg.kind === 'confirm')
+            this._prompt(id, describe(String(msg.spec ?? '')));
+        else if (msg.kind === 'refusal')
+            this._report(id, describeRefusal(String(msg.report ?? '')));
     }
 
     /// The refusal dialog: it REPORTS. One button, no approving control.
@@ -208,7 +236,6 @@ class ConsentSurface {
             default_width: 460,
             resizable: false,
         });
-        this._app.hold();
 
         const box = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL,
@@ -251,8 +278,9 @@ class ConsentSurface {
         });
         // The only control on this window. There is deliberately no
         // second button: nothing here approves, retries, copies or
-        // widens anything, and no Confirm call is ever made from this
-        // path — agentd parked nothing, so there is nothing to answer.
+        // widens anything, and the answer this sends is `dismiss`, which
+        // the daemon can never turn into a `Confirm` — agentd parked
+        // nothing, so there is nothing to answer.
         const ok = new Gtk.Button({label: 'OK'});
         ok.add_css_class('suggested-action');
         buttons.append(ok);
@@ -265,7 +293,7 @@ class ConsentSurface {
                 return;
             this._open.delete(callId);
             win.close();
-            this._app.release();
+            this._channel.answer(callId, 'dismiss');
         };
         ok.connect('clicked', dismiss);
         win.connect('close-request', () => {
@@ -283,10 +311,6 @@ class ConsentSurface {
             default_width: 460,
             resizable: false,
         });
-        // Hold the app alive while a dialog is up: this daemon has no
-        // main window, so without a hold the application would exit the
-        // moment it goes idle and the call would expire unanswered.
-        this._app.hold();
 
         const box = new Gtk.Box({
             orientation: Gtk.Orientation.VERTICAL,
@@ -346,8 +370,7 @@ class ConsentSurface {
                 return;
             this._open.delete(callId);
             win.close();
-            this._app.release();
-            this._confirm(callId, approve);
+            this._channel.answer(callId, approve ? 'allow' : 'deny');
         };
         deny.connect('clicked', () => answer(false));
         allow.connect('clicked', () => answer(true));
@@ -365,57 +388,17 @@ class ConsentSurface {
         win.present();
         deny.grab_focus();
     }
-
-    _confirm(callId, approve) {
-        this._bus.call(
-            AGENT_BUS, AGENT_PATH, AGENT_IFACE, 'Confirm',
-            new GLib.Variant('(tb)', [callId, approve]),
-            new GLib.VariantType('(ss)'),
-            Gio.DBusCallFlags.NONE, -1, null,
-            (conn, res) => {
-                try {
-                    conn.call_finish(res);
-                } catch (e) {
-                    // A refused Confirm is worth a log line and nothing
-                    // more: the call stays parked and expires, which is
-                    // the safe direction.
-                    logError(e, `lisa-consentd: Confirm(${callId}) failed`);
-                }
-            });
-    }
 }
 
+// `Adw.init()` initialises GTK too. Deliberately NOT `Gtk.Application`:
+// an application registers on the session bus, and this process is
+// spawned without one on purpose (`renderer.rs::STRIPPED_ENV`). A plain
+// main loop needs no bus and no application id.
 Adw.init();
-const app = new Gtk.Application({
-    application_id: 'dev.lisaos.Consent1.App',
-    flags: Gio.ApplicationFlags.IS_SERVICE,
-});
-let surface = null;
-app.connect('startup', () => {
-    // Subscribe FIRST, own the name second (#244). agentd starts this
-    // process by calling a method on dev.lisaos.Consent1 and emits
-    // ConfirmationRequested as soon as the broker says the name is
-    // owned — so owning the name has to mean "ready", or the very first
-    // prompt is emitted into a session where nobody is listening yet and
-    // the call sits parked until it expires.
-    surface = new ConsentSurface(app);
-    // No window at startup. The daemon idles until agentd asks.
-    app.hold();
-    Gio.bus_own_name(
-        Gio.BusType.SESSION,
-        CONSENT_BUS_NAME,
-        Gio.BusNameOwnerFlags.NONE,
-        null,
-        () => log(`lisa-consentd: owning ${CONSENT_BUS_NAME}`),
-        () => {
-            // Losing the name means another consent surface took it.
-            // Exiting is correct: two dialogs for one call is worse than
-            // one, and agentd only trusts whoever owns the name.
-            logError(new Error(`lost ${CONSENT_BUS_NAME} (another instance running?)`));
-            app.quit();
-        });
-});
-app.connect('activate', () => {});
-
-app.run([]);
-void surface;
+const loop = new GLib.MainLoop(null, false);
+let dialogs = null;
+const channel = new Channel(
+    (msg) => dialogs.dispatch(msg),
+    () => loop.quit());
+dialogs = new ConsentDialogs(channel);
+loop.run();

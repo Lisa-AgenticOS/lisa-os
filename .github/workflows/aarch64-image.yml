@@ -161,7 +161,7 @@ jobs:
               # This loop catches a wholesale build failure, nothing finer.
               for p in lisa-inferenced lisa-modeld lisa-cli lisa-shell lisa-agentd \
                        lisa-ime lisa-portal lisa-keyring cyrus-sasl-xoauth2 \
-                       lisa-notes lisa-remoted lisa-contextd llama.cpp \
+                       lisa-consentd lisa-notes lisa-remoted lisa-contextd llama.cpp \
                        whisper.cpp \
                        lisa-desktop-control-center; do
                 ls /build/pkgs/"$p"-*.pkg.tar.* 2>/dev/null | grep -qv -- "-debug-" \
@@ -214,6 +214,8 @@ jobs:
                    # fcitx5, which Arch Linux ARM does package.
                    lisa-ime
                    lisa-agentd
+                   # The consent dialog (#289) — see the x86_64 list.
+                   lisa-consentd
                    lisa-notes
                    lisa-remoted
                    lisa-contextd

@@ -1367,6 +1367,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lisa-consentd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "lisa-contextd"
 version = "0.1.0"
 dependencies = [
@@ -1587,6 +1600,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 name = "mcp-bus"
 version = "0.1.0"
 dependencies = [
+ "bus-tools",
  "serde_json",
  "tempfile",
  "thiserror",

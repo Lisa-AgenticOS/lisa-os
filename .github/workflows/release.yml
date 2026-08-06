@@ -347,6 +347,14 @@ jobs:
                    lisa-cli
                    lisa-shell
                    lisa-agentd
+                   # The consent dialog, and therefore the ONLY peer
+                   # that can approve a destructive call (#289): the
+                   # process owning dev.lisaos.Consent1 has to be a
+                   # program only we ship, and without this package
+                   # there is no such program on the device. Listed
+                   # beside lisa-agentd because agentd refuses every
+                   # destructive approval when nothing owns the name.
+                   lisa-consentd
                    lisa-notes
                    lisa-remoted
                    # The trust boundary itself (PLAN §5.5, ADR-0008).
