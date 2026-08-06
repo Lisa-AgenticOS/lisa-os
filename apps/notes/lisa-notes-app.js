@@ -64,9 +64,14 @@ class NotesApp {
             selection_mode: Gtk.SelectionMode.SINGLE,
             css_classes: ['navigation-sidebar'],
         });
-        this._list.connect('row-activated', (_lb, row) => {
+        // Selection, not just activation: arrow keys and the
+        // accessibility bus change the SELECTED row without ever
+        // "activating" it, and a note list you can walk with the
+        // keyboard but not read is only half a list. The id guard stops
+        // the echo when _select re-selects the row it was given.
+        this._list.connect('row-selected', (_lb, row) => {
             const note = row?._note;
-            if (note)
+            if (note && this._selected?.id !== note.id)
                 this._select(note);
         });
         this._listScroll = new Gtk.ScrolledWindow({vexpand: true, child: this._list});
@@ -132,6 +137,21 @@ class NotesApp {
         });
         this._deleteBtn.sensitive = false;
         ui.contentHeader.pack_end(this._deleteBtn);
+
+        // Closing the window is the third way to leave a note, and it
+        // saves like the other two. The close is HELD until the write
+        // finishes: returning false immediately would race process exit
+        // against the socket, and a save that only sometimes survives
+        // closing is worse than none.
+        this.window.connect('close-request', () => {
+            if (this._closing)
+                return false;
+            this._closing = true;
+            this._maybeSave()
+                .catch((e) => logError(e, 'notes: saving on close'))
+                .finally(() => this.window.destroy());
+            return true;
+        });
     }
 
     _toast(text) {
@@ -205,10 +225,10 @@ class NotesApp {
                     label: displayTitle(note), xalign: 0, ellipsize: 3,
                     css_classes: ['heading'],
                 }));
-                // `snippet` when the server sends one; list_notes does
-                // not today, so this is usually the date alone rather
-                // than a preview of a field nobody sent (which is what
-                // the first version rendered — every subtitle blank).
+                // The body's opening when the server sends one (it does
+                // since #155 closed); the date is the fallback for an
+                // older daemon or a bodyless note — never a blank
+                // subtitle, which is what the first version rendered.
                 const sub = note.snippet ? preview(note.snippet, 60) : this._dateOf(note);
                 box.append(new Gtk.Label({
                     label: sub, xalign: 0, ellipsize: 3,
@@ -249,6 +269,17 @@ class NotesApp {
 
     /// Show one note in the content pane.
     async _select(note) {
+        // Leaving a note saves it — the Apple behaviour, and the only
+        // one that makes an always-editable pane safe. A failure is
+        // said out loud; navigation still happens, because trapping
+        // someone in a note they cannot save is worse than telling
+        // them the save failed.
+        let savedOnLeave = false;
+        try {
+            savedOnLeave = await this._maybeSave();
+        } catch (e) {
+            this._toast(`Could not save your edit: ${e.message ?? e}`);
+        }
         let full = note;
         try {
             full = await this._mcp.call('read_note', {id: note.id});
@@ -275,10 +306,11 @@ class NotesApp {
         // is your note".
         this._titleEntry.select_region(-1, -1);
         this._bodyView.buffer.set_text(full.body ?? '', -1);
-        // Read-only until update_note exists: an editable field whose
-        // edits cannot be saved is worse than a read-only one, because
-        // it invites work that will be lost.
-        const editable = false;
+        // Editable now that update_note exists — except a note whose
+        // body could not be loaded: letting someone "edit" the error
+        // placeholder and save it over their real text would destroy
+        // the very data the placeholder apologises for.
+        const editable = !full._unreadable;
         this._titleEntry.editable = editable;
         this._bodyView.editable = editable;
         this._bodyView.cursor_visible = editable;
@@ -292,6 +324,12 @@ class NotesApp {
         if (row)
             this._list.select_row(row);
         this._ui.showContent();
+        // The row you just left still shows its old title and snippet;
+        // a save that only shows up after a manual reload looks like a
+        // save that did not happen. After the new note is on screen,
+        // refresh the list (selection survives via _rowsById).
+        if (savedOnLeave)
+            await this.reload();
     }
 
     /// Start a new note: an empty editor, saved when it has content.
@@ -301,6 +339,13 @@ class NotesApp {
     /// there when you change your mind, is litter the person then has
     /// to delete.
     _newNote() {
+        // Same contract as switching notes: what you were writing is
+        // saved, not discarded. Fire-and-report — the new empty editor
+        // must not wait on the socket.
+        this._maybeSave().then((did) => {
+            if (did)
+                this.reload();
+        }).catch((e) => this._toast(`Could not save your edit: ${e.message ?? e}`));
         this._selected = {id: null, title: '', body: ''};
         this._titleEntry.text = '';
         this._bodyView.buffer.set_text('', -1);
@@ -315,28 +360,43 @@ class NotesApp {
         this._titleEntry.grab_focus();
     }
 
-    /// Save whatever is in the editor.
+    /// Write the editor's state to the backend if it changed.
     ///
-    /// Creating works. UPDATING DOES NOT: the tool surface has no
-    /// update_note, so saving an edit to an existing note would create
-    /// a second copy. Rather than do that silently, an edit says so and
-    /// changes nothing. The alternative — a Save button that quietly
-    /// duplicates your note — is the kind of thing you only discover
-    /// after it has happened twenty times.
-    async _save() {
+    /// One save path for both directions: a draft with no id is created
+    /// (and adopts the id the daemon hands back, so the NEXT save is an
+    /// update rather than a duplicate); an existing note goes through
+    /// update_note, whose undo is itself. Returns whether anything was
+    /// written, so callers can toast only on a real write.
+    async _maybeSave() {
+        const s = this._selected;
+        if (!s || s._unreadable)
+            return false;
         const buf = this._bodyView.buffer;
         const body = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), false);
-        const draft = {title: this._titleEntry.text, body};
-        if (!isWorthSaving(draft))
-            return;
-        if (this._selected?.id != null) {
-            this._toast('Editing an existing note needs update_note, which is not built yet');
-            return;
+        const title = this._titleEntry.text;
+        if (s.id == null) {
+            if (!isWorthSaving({title, body}))
+                return false;
+            const out = await this._mcp.call('create_note', {title, body});
+            s.id = out?.id ?? null;
+        } else {
+            if (title === (s.title ?? '') && body === (s.body ?? ''))
+                return false;
+            await this._mcp.call('update_note', {id: s.id, title, body});
         }
+        s.title = title;
+        s.body = body;
+        return true;
+    }
+
+    /// Ctrl+S: save, and say so.
+    async _save() {
+        const created = this._selected?.id == null;
         try {
-            await this._mcp.call('create_note', draft);
-            this._toast('Note saved');
-            await this.reload();
+            if (await this._maybeSave()) {
+                this._toast(created ? 'Note saved' : 'Note updated');
+                await this.reload();
+            }
         } catch (e) {
             this._toast(`Could not save: ${e.message ?? e}`);
         }
