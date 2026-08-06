@@ -58,10 +58,19 @@ export function moveArg(from, to, pageCount) {
     return {from: f.value, to: t.value};
 }
 
-/// Where an agent-driven export may write.
+/// Where an agent-driven export may write — the decisions a string can
+/// answer on its own.
 ///
-/// `exists` is passed in — the caller does the one `file_test` — so the
-/// rule stays testable without a filesystem, exactly like `savePathFor`.
+/// It does NOT ask whether the file exists, and that omission is the fix
+/// for #299. It used to take an `exists` boolean the caller computed
+/// with `GLib.file_test`, which is check-then-act twice over: the answer
+/// is stale by the time the write happens, and `G_FILE_TEST_EXISTS`
+/// answers *false* for a dangling symlink, so the write went through the
+/// link to a path the guard never judged. Never-overwrite is now
+/// enforced by creating the file exclusively (O_CREAT|O_EXCL, which
+/// POSIX requires to fail on a symlink whether or not it dangles) and
+/// [`exportExistsError`] is the refusal that failure becomes. A rule the
+/// filesystem enforces cannot be raced; a rule a boolean enforces can.
 ///
 /// Refusals, in order, and each for its own reason:
 ///   - not a string / empty: nothing to check;
@@ -72,9 +81,8 @@ export function moveArg(from, to, pageCount) {
 ///     the string as written, so silently resolving it here would move
 ///     the target out from under the decision that approved it;
 ///   - wrong extension: `photo.png` written by the JPEG writer is a file
-///     every other program on the machine will open wrong;
-///   - **exists**: never, ever overwrite.
-export function exportTarget(path, ext, exists) {
+///     every other program on the machine will open wrong.
+export function exportTarget(path, ext) {
     if (typeof path !== 'string' || path.trim() === '')
         return {error: 'path is required'};
     if (!path.startsWith('/'))
@@ -86,9 +94,15 @@ export function exportTarget(path, ext, exists) {
     const have = dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
     if (have !== ext)
         return {error: `path must end in .${ext} for a ${ext} export`};
-    if (exists)
-        return {error: `${base} already exists — Preview never overwrites; choose another name`};
     return {value: path};
+}
+
+/// The refusal an exclusive create's EEXIST becomes: never, ever
+/// overwrite, phrased so the model can pick another name instead of
+/// retrying the same one.
+export function exportExistsError(path) {
+    const base = String(path).split('/').pop();
+    return {error: `${base} already exists — Preview never overwrites; choose another name`};
 }
 
 /// The export format asked for -> the entry from `exportFormats`, or an

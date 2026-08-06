@@ -97,6 +97,11 @@ pub struct PrunePlan {
     pub sources: Vec<String>,
     pub chunks: usize,
     pub vectors: usize,
+    /// Documents a `protect` prefix spared — unnamed by `keep` and
+    /// therefore doomed under the mirror rule, but sitting under a
+    /// corpus the caller has told us it could not read this time
+    /// (#296). Zero when the caller protects nothing.
+    pub protected: usize,
 }
 
 impl PrunePlan {
@@ -105,9 +110,18 @@ impl PrunePlan {
     }
 }
 
-/// The documents of `provenance` that `keep` does not name, with what
-/// they own. One query serving both the preview and the deletion, so
-/// the two cannot drift apart.
+/// The documents of `provenance` that `keep` does not name and no
+/// `protect` prefix covers, with what they own. One query serving both
+/// the preview and the deletion, so the two cannot drift apart.
+///
+/// `protect` is the escape from the mirror rule's one bad assumption.
+/// "Not named by `keep`" means "gone" only if the caller could actually
+/// look; when it could not — a Maildir tree behind a symlink the walk
+/// does not follow, a mount that is not up — every source under that
+/// corpus is absent from `keep` for a reason that has nothing to do with
+/// the mail (#296). A prefix says "I could not read this part", which is
+/// a different sentence from "this part is empty", and only the caller
+/// knows which one is true.
 ///
 /// Counted with two grouped scans rather than a count per document: the
 /// store this was written for holds 94,000 vectors and 43,000 mail
@@ -118,6 +132,7 @@ fn doomed(
     conn: &rusqlite::Connection,
     provenance: &str,
     keep: &std::collections::HashSet<String>,
+    protect: &[String],
 ) -> Result<(Vec<i64>, PrunePlan), StoreError> {
     let tally = |sql: &str| -> Result<std::collections::HashMap<i64, usize>, StoreError> {
         let mut stmt = conn.prepare(sql)?;
@@ -138,6 +153,10 @@ fn doomed(
     let mut plan = PrunePlan::default();
     for (doc_id, source) in rows {
         if keep.contains(&source) {
+            continue;
+        }
+        if protect.iter().any(|p| source.starts_with(p.as_str())) {
+            plan.protected += 1;
             continue;
         }
         ids.push(doc_id);
@@ -258,17 +277,21 @@ impl ContextStore {
     /// Removes exactly what [`Self::plan_prune_not_in`] named, because
     /// both are the same query (`doomed`). A preview that is computed
     /// differently from the deletion is not a preview.
+    ///
+    /// `protect` names source prefixes the caller could not enumerate
+    /// this run; nothing under one is removed. See [`doomed`].
     pub fn prune_not_in(
         &self,
         provenance: &str,
         keep: &std::collections::HashSet<String>,
+        protect: &[String],
     ) -> Result<usize, StoreError> {
         if !is_known_provenance(provenance) {
             return Err(StoreError::UnknownProvenance(provenance.to_string()));
         }
         let conn = self.conn.lock().expect("context lock");
         let tx = conn.unchecked_transaction()?;
-        let (ids, plan) = doomed(&tx, provenance, keep)?;
+        let (ids, plan) = doomed(&tx, provenance, keep, protect)?;
         for doc_id in ids {
             tx.execute("DELETE FROM chunks WHERE doc_id = ?1", [doc_id])?;
             tx.execute("DELETE FROM chunk_vectors WHERE doc_id = ?1", [doc_id])?;
@@ -291,12 +314,13 @@ impl ContextStore {
         &self,
         provenance: &str,
         keep: &std::collections::HashSet<String>,
+        protect: &[String],
     ) -> Result<PrunePlan, StoreError> {
         if !is_known_provenance(provenance) {
             return Err(StoreError::UnknownProvenance(provenance.to_string()));
         }
         let conn = self.conn.lock().expect("context lock");
-        Ok(doomed(&conn, provenance, keep)?.1)
+        Ok(doomed(&conn, provenance, keep, protect)?.1)
     }
 
     /// Search restricted to the provenance the granted `scopes` permit.
@@ -431,14 +455,15 @@ mod tests {
             ["mail:INBOX/0".to_string(), "mail:INBOX/1".to_string()]
                 .into_iter()
                 .collect();
-        let plan = store.plan_prune_not_in("mail", &keep).unwrap();
+        let plan = store.plan_prune_not_in("mail", &keep, &[]).unwrap();
         assert_eq!(plan.sources, vec!["mail:INBOX/2", "mail:INBOX/3"]);
         assert!(plan.chunks >= 2, "{plan:?}");
         assert_eq!(plan.vectors, plan.chunks, "every chunk was embedded");
+        assert_eq!(plan.protected, 0, "nothing was protected: {plan:?}");
 
         // Previewing removes nothing.
         assert_eq!(
-            store.plan_prune_not_in("mail", &keep).unwrap(),
+            store.plan_prune_not_in("mail", &keep, &[]).unwrap(),
             plan,
             "the preview mutated the store"
         );
@@ -451,14 +476,19 @@ mod tests {
                 .unwrap()
         };
         let before = vectors(&store);
-        assert_eq!(store.prune_not_in("mail", &keep).unwrap(), 2);
+        assert_eq!(store.prune_not_in("mail", &keep, &[]).unwrap(), 2);
         assert_eq!(
             vectors(&store),
             before - plan.vectors as i64,
             "the reaped documents left their vectors in the table"
         );
         // …and afterwards there is nothing left to plan.
-        assert!(store.plan_prune_not_in("mail", &keep).unwrap().is_empty());
+        assert!(
+            store
+                .plan_prune_not_in("mail", &keep, &[])
+                .unwrap()
+                .is_empty()
+        );
         // The other provenance was never in scope.
         assert!(
             !store
@@ -466,6 +496,66 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// #296's primitive: a prefix the caller could not enumerate is
+    /// spared, and the prefix is a PREFIX of the whole path segment —
+    /// `mail:b/` must not spare `mail:b2/…`, which is the classic way a
+    /// string comparison quietly protects (or reaps) a neighbour.
+    ///
+    /// Also asserts the preview and the deletion agree under protection,
+    /// because the whole point of `doomed` serving both is that a new
+    /// parameter cannot be honoured by one and forgotten by the other.
+    #[test]
+    fn a_protected_prefix_is_spared_by_both_the_plan_and_the_prune() {
+        use crate::embed::HashEmbedder;
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContextStore::open(dir.path().join("ctx.db")).unwrap();
+        for s in [
+            "mail:a/INBOX/1",
+            "mail:b/INBOX/1",
+            "mail:b/INBOX/2",
+            "mail:b2/INBOX/1",
+        ] {
+            store.add_document(s, "mail", "the parking permit").unwrap();
+        }
+        store.embed_pending(&HashEmbedder::default()).unwrap();
+
+        // `keep` names nothing at all — the shape of a walk that saw no
+        // messages. Only the protection stands between b/ and deletion.
+        let keep = std::collections::HashSet::new();
+        let protect = vec!["mail:b/".to_string()];
+        let plan = store.plan_prune_not_in("mail", &keep, &protect).unwrap();
+        assert_eq!(
+            plan.sources,
+            vec!["mail:a/INBOX/1", "mail:b2/INBOX/1"],
+            "the protected prefix ate a neighbour, or spared nothing: {plan:?}"
+        );
+        assert_eq!(plan.protected, 2, "{plan:?}");
+        assert!(plan.vectors > 0, "{plan:?}");
+
+        assert_eq!(store.prune_not_in("mail", &keep, &protect).unwrap(), 2);
+        let left: Vec<String> = {
+            let conn = store.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT source FROM documents WHERE provenance = 'mail' ORDER BY source")
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(
+            left,
+            vec!["mail:b/INBOX/1", "mail:b/INBOX/2"],
+            "the prune disagreed with its own plan"
+        );
+        // The spared documents kept their vectors: sparing a document
+        // and orphaning its embeddings is the cost the reap exists to
+        // avoid, paid in the other direction.
+        let conn = store.conn.lock().unwrap();
+        let vectors: i64 = conn
+            .query_row("SELECT count(*) FROM chunk_vectors", [], |r| r.get(0))
+            .unwrap();
+        assert!(vectors > 0, "the protected documents lost their vectors");
     }
 
     fn mixed_store() -> (tempfile::TempDir, ContextStore) {

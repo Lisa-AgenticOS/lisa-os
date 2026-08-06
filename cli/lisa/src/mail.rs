@@ -665,11 +665,19 @@ pub fn status() -> Result<()> {
     // anywhere saying so.
     let roots = declared_roots(&paths);
     for root in &roots {
+        // `walk_can_descend`, not `is_dir()`: `is_dir()` follows
+        // symlinks and the indexer's walk does not, so a symlinked
+        // account read as healthy here while the indexer saw an empty
+        // tree — the disagreement #296 is about. This line is where a
+        // person finds out the two differ.
         println!(
             "synced:      {}{}",
             root.display(),
-            if root.is_dir() {
+            if walk_can_descend(&paths.maildir, root) {
                 ""
+            } else if root.exists() {
+                "  (the indexer cannot walk it — a symlink, or unreadable; \
+                 mail indexed under it is kept, never reaped)"
             } else {
                 "  (not on disk yet)"
             }
@@ -1126,29 +1134,80 @@ pub struct IndexReport {
     pub reaped: usize,
     /// Embedding vectors those documents owned. The expensive half.
     pub reaped_vectors: usize,
-    /// The reap was refused because the config's trees are all absent
-    /// from disk — see [`trees_are_present`].
+    /// The reap was refused outright, because what the walk could not
+    /// descend was the whole Maildir rather than one account's tree.
     pub reap_refused: bool,
+    /// Declared trees the walk did not descend this run (#296), in
+    /// config order. Their indexed documents were spared rather than
+    /// read as expunged.
+    pub unwalkable: Vec<PathBuf>,
+    /// Documents those trees own that the reap therefore spared. The
+    /// number this issue is about: it is the loss that would otherwise
+    /// have happened silently.
+    pub protected: usize,
+    /// Directories the walk could not read (permission, I/O). Each one
+    /// blinds the tree it sits under, so it protects rather than reaps.
+    pub walk_errors: usize,
 }
 
-/// Is at least one declared tree actually on disk?
+/// The `mail:` source-id prefix every message under `root` shares.
 ///
-/// The guard on the reap, and the reason it is a separate function: the
-/// reap's rule is "a document whose message the walk did not see goes",
-/// which is right when the walk could see the trees and catastrophic
-/// when it could not. A config naming `/home/lisa/Mail/<account>` while
-/// that directory is missing — a Maildir on a disk that has not mounted,
-/// a home restored without its mail, a `setup` run that has not synced
-/// yet — makes every indexed message look expunged, and the mirror
-/// faithfully empties itself.
+/// Paired with [`message_source_id`] by construction — same relative
+/// path, same `cur`/`new` filtering — because a prefix that does not
+/// match the ids it is meant to select would protect nothing while
+/// looking like it did.
 ///
-/// *All* trees missing, not any: with two accounts, one set up and never
-/// synced, the missing one is normal and must not block reaping the
-/// other. And no declared trees at all is the walk-everything branch,
-/// where the Maildir root itself is the mirror (`index` already refuses
-/// to run when that is missing).
-fn trees_are_present(roots: &[PathBuf]) -> bool {
-    roots.is_empty() || roots.iter().any(|r| r.is_dir())
+/// A root that is the Maildir itself, or one outside it (which no id
+/// under this Maildir can name), yields the bare `mail:` prefix: the
+/// whole namespace, which is the honest answer when the tree cannot be
+/// distinguished from the corpus.
+fn source_prefix(maildir: &Path, root: &Path) -> String {
+    let Ok(rel) = root.strip_prefix(maildir) else {
+        return "mail:".to_string();
+    };
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter(|c| c != "cur" && c != "new")
+        .collect();
+    if parts.is_empty() {
+        return "mail:".to_string();
+    }
+    format!("mail:{}/", parts.join("/"))
+}
+
+/// Can the walk descend this declared tree, judged by stat alone?
+///
+/// `index_maildir` does NOT use this — it records what its own walk
+/// actually descended, because a predicate that agrees with the walk
+/// today is a predicate that can drift from it tomorrow, and the drift
+/// would be invisible until it deleted something. This exists for
+/// `status`, which has no walk to consult and must still tell a person
+/// that the tree they think is synced is one the indexer cannot read.
+/// `walk_and_stat_agree_on_what_can_be_descended` pins the two together.
+///
+/// Every component from the Maildir down, not just the leaf: the walk
+/// stops at the first symlink (`follow_links(false)`), so a real
+/// directory sitting behind one is just as invisible as a missing one.
+fn walk_can_descend(maildir: &Path, root: &Path) -> bool {
+    let Ok(rel) = root.strip_prefix(maildir) else {
+        return false; // The walk starts at the Maildir and never leaves it.
+    };
+    let mut at = maildir.to_path_buf();
+    // The Maildir root itself is the walk's start path, so it is
+    // resolved rather than refused; everything below must be a real
+    // directory in its own right.
+    if !at.is_dir() {
+        return false;
+    }
+    for c in rel.components() {
+        at.push(c.as_os_str());
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.is_dir() => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// The walk, the ingest and the reap, over a store the caller owns.
@@ -1171,12 +1230,57 @@ pub fn index_maildir(
     // before #185, or the orphaned tree of #224) leaves retrieval at the
     // end of the walk.
     let mut live = std::collections::HashSet::new();
-    for entry in walkdir::WalkDir::new(maildir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
+    // Which declared trees this walk actually got inside. Recorded from
+    // the walk rather than asked of the filesystem separately: the reap
+    // acts on what the walk saw, so the licence to reap has to come from
+    // the same place (#296). A tree missing from here is one whose
+    // emptiness is the walk's ignorance, not the mailbox's state.
+    let mut descended: std::collections::HashSet<PathBuf> = Default::default();
+    let mut blinded: std::collections::HashSet<PathBuf> = Default::default();
+    let mut blinded_root = false;
+    for result in walkdir::WalkDir::new(maildir).follow_links(false) {
+        let entry = match result {
+            Ok(e) => e,
+            Err(err) => {
+                // A directory the walk could not read is a tree whose
+                // contents it cannot claim to have enumerated. Silently
+                // skipping it (the old `filter_map(ok)`) turned an
+                // unreadable directory into an empty one.
+                report.walk_errors += 1;
+                let at = err.path().map(|p| p.to_path_buf());
+                println!(
+                    "walk: could not read {} ({err}) — nothing under it will be reaped",
+                    at.as_deref().unwrap_or(maildir).display()
+                );
+                match at {
+                    Some(at) => {
+                        let mut under_a_root = false;
+                        for r in roots {
+                            if at.starts_with(r) {
+                                blinded.insert(r.clone());
+                                under_a_root = true;
+                            }
+                        }
+                        if !under_a_root {
+                            blinded_root = true;
+                        }
+                    }
+                    None => blinded_root = true,
+                }
+                continue;
+            }
+        };
+        if entry.file_type().is_dir() {
+            // The walk yields a directory before descending it, and
+            // yields a symlink as a symlink — so "a directory entry at
+            // exactly this path" IS "the walk went in".
+            if roots.iter().any(|r| r == entry.path()) {
+                descended.insert(entry.path().to_path_buf());
+            }
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
         let path = entry.path();
         match verdict(maildir, roots, path) {
             Verdict::NotAMessage | Verdict::NotForRetrieval => continue,
@@ -1209,12 +1313,58 @@ pub fn index_maildir(
         }
     }
 
+    // The guard, per tree (#296). The reap's rule is "a document whose
+    // message the walk did not see is gone", which is true only of a
+    // tree the walk got inside. The old guard asked `any(is_dir)` across
+    // all roots, so one healthy account licensed the reap for every
+    // other — including one behind a symlink the walk does not follow,
+    // whose mail is intact on disk and whose entire index would go.
+    //
+    // Presence is therefore per tree, and an unreachable tree protects
+    // its own `mail:` prefix instead of blocking everyone else's reap.
+    let mut protect: Vec<String> = Vec::new();
+    if roots.is_empty() {
+        // The walk-everything branch: the Maildir root IS the tree, so
+        // a blinded walk can only refuse wholesale.
+        if blinded_root {
+            protect.push("mail:".to_string());
+        }
+    } else {
+        for root in roots {
+            if descended.contains(root) && !blinded.contains(root) {
+                continue;
+            }
+            report.unwalkable.push(root.clone());
+            let prefix = source_prefix(maildir, root);
+            if !protect.contains(&prefix) {
+                protect.push(prefix);
+            }
+        }
+        if blinded_root {
+            // An unreadable directory that belongs to no declared tree
+            // could still hold a tree's mail (an unreadable parent), so
+            // it is not attributable and the whole reap stands down.
+            protect.push("mail:".to_string());
+        }
+    }
+    report.reap_refused = protect.iter().any(|p| p == "mail:");
+
+    for root in &report.unwalkable {
+        println!(
+            "reap: NOT reaping under {} — the walk could not descend it (missing, a \
+             symlink, or unreadable). Mail there may be perfectly fine; what is \
+             indexed under it is kept, not treated as expunged.",
+            root.display()
+        );
+    }
+
     // Say what goes before it goes. `plan_prune_not_in` and
     // `prune_not_in` are the same query, so this is the removal, not an
-    // estimate of it.
-    let plan = store.plan_prune_not_in("mail", &live)?;
+    // estimate of it — and both honour the same `protect` list.
+    let plan = store.plan_prune_not_in("mail", &live, &protect)?;
     report.reaped = plan.sources.len();
     report.reaped_vectors = plan.vectors;
+    report.protected = plan.protected;
     if !plan.is_empty() {
         println!(
             "reap: {} document(s) and {} embedding vector(s) are indexed under \
@@ -1234,17 +1384,22 @@ pub fn index_maildir(
             println!("      … and {} more", plan.sources.len() - 3);
         }
     }
-    if !trees_are_present(roots) {
-        report.reap_refused = true;
-        report.reaped = 0;
-        report.reaped_vectors = 0;
+    if plan.protected > 0 {
         println!(
-            "reap: REFUSED — every tree the sync config declares is missing from disk. \
+            "reap: {} document(s) kept because the tree they belong to could not be \
+             walked. `lisa mail status` names the trees.",
+            plan.protected
+        );
+    }
+    if report.reap_refused {
+        println!(
+            "reap: REFUSED — the walk could not read the Maildir the config points at. \
              That is a Maildir that has not arrived, not a mailbox that emptied, and \
              reaping here would delete the whole mail index. Nothing was removed."
         );
-    } else if mode == Mode::Apply {
-        let pruned = store.prune_not_in("mail", &live)?;
+    }
+    if mode == Mode::Apply {
+        let pruned = store.prune_not_in("mail", &live, &protect)?;
         debug_assert_eq!(pruned, report.reaped, "the reap differed from its own plan");
         report.reaped = pruned;
     }
@@ -1783,12 +1938,16 @@ mod tests {
         assert_eq!(again.unchanged, 5, "{again:?}");
     }
 
-    /// The guard: a config whose trees are all absent from disk must not
-    /// empty the mail index. This is the accident that turns a fix into
-    /// an outage — a Maildir on an unmounted disk, a home restored
-    /// without its mail, a `setup` that has not synced yet — and the
-    /// mirror rule ("nothing on disk answers to it, so it goes") is
-    /// exactly what makes it total.
+    /// The guard: a Maildir that has not arrived must not empty the mail
+    /// index. This is the accident that turns a fix into an outage — a
+    /// Maildir on an unmounted disk, a home restored without its mail, a
+    /// `setup` that has not synced yet — and the mirror rule ("nothing
+    /// on disk answers to it, so it goes") is exactly what makes it
+    /// total.
+    ///
+    /// Both granularities, because #296 is that they were conflated:
+    /// one declared tree gone protects that tree's prefix, and the whole
+    /// Maildir gone refuses the reap outright.
     #[test]
     fn a_maildir_that_has_not_arrived_does_not_empty_the_index() {
         let home = tempfile::tempdir().unwrap();
@@ -1809,24 +1968,263 @@ mod tests {
                 .added,
             1
         );
+        assert!(walk_can_descend(&maildir, &roots[0]));
 
-        // Now the tree is gone from the walk's point of view, but the
-        // config still names it.
-        let absent = vec![maildir.join("not_mounted_yet")];
-        let report = index_maildir(&store, &maildir, &absent, Mode::Apply).unwrap();
+        // The declared tree unmounts. Its own prefix is protected; the
+        // reap is not refused, because nothing else needed to be.
+        std::fs::rename(maildir.join("acct"), home.path().join("stashed")).unwrap();
+        let report = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(report.reaped, 0, "{report:?}");
+        assert_eq!(report.protected, 1, "{report:?}");
+        assert_eq!(report.unwalkable, roots, "{report:?}");
+        assert!(!walk_can_descend(&maildir, &roots[0]));
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM documents"),
+            1,
+            "the index was emptied by a tree that had not arrived"
+        );
+
+        // The whole Maildir unmounts: nothing is attributable to a tree,
+        // so the reap stands down entirely.
+        std::fs::remove_dir_all(&maildir).unwrap();
+        let report = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
         assert!(report.reap_refused, "{report:?}");
         assert_eq!(report.reaped, 0, "{report:?}");
+        assert!(report.walk_errors >= 1, "{report:?}");
         assert_eq!(
             count(&db, "SELECT count(*) FROM documents"),
             1,
             "the index was emptied by a Maildir that had not arrived"
         );
-        assert!(
-            trees_are_present(&[]),
-            "no declared roots is the walk-everything branch"
+        // …and with no declared roots at all, the same absence still
+        // refuses: the walk-everything branch has the Maildir root as
+        // its only tree.
+        let report = index_maildir(&store, &maildir, &[], Mode::Apply).unwrap();
+        assert!(report.reap_refused, "{report:?}");
+        assert_eq!(count(&db, "SELECT count(*) FROM documents"), 1);
+    }
+
+    /// `status` and the indexer must agree about which trees are
+    /// walkable, or `status` is reassuring people about the exact case
+    /// the indexer is protecting them from.
+    ///
+    /// Two implementations on purpose (`walk_can_descend` stats,
+    /// `index_maildir` records what its own walk did) — a `status` that
+    /// walked the whole Maildir to print four lines would be paid for
+    /// every invocation. This test is the seam between them.
+    #[cfg(unix)]
+    #[test]
+    fn walk_and_stat_agree_on_what_can_be_descended() {
+        let home = tempfile::tempdir().unwrap();
+        let maildir = home.path().join("Mail");
+        let db = home.path().join("ctx.db");
+        let store = lisa_contextd::ContextStore::open(&db).unwrap();
+
+        // real, symlinked, absent, and behind a symlinked parent.
+        write_message(&maildir.join("real/INBOX/cur"), "1.lisa", "a@x.test", "hi");
+        let elsewhere = home.path().join("volume/linked");
+        write_message(&elsewhere.join("INBOX/cur"), "2.lisa", "b@x.test", "hi");
+        std::os::unix::fs::symlink(&elsewhere, maildir.join("linked")).unwrap();
+        let deep = home.path().join("volume/deep");
+        write_message(&deep.join("acct/INBOX/cur"), "3.lisa", "c@x.test", "hi");
+        std::os::unix::fs::symlink(&deep, maildir.join("deep")).unwrap();
+
+        let roots = vec![
+            maildir.join("real"),
+            maildir.join("linked"),
+            maildir.join("absent"),
+            maildir.join("deep/acct"),
+            PathBuf::from("/somewhere/else"),
+        ];
+        let report = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(
+            report.unwalkable,
+            roots[1..].to_vec(),
+            "the walk's own answer changed: {report:?}"
         );
-        assert!(trees_are_present(&roots));
-        assert!(!trees_are_present(&absent));
+        for root in &roots {
+            assert_eq!(
+                walk_can_descend(&maildir, root),
+                !report.unwalkable.contains(root),
+                "status and the indexer disagree about {}",
+                root.display()
+            );
+        }
+        // A root outside the Maildir cannot be told apart from the
+        // corpus in the id space, so it protects all of it.
+        assert!(report.reap_refused, "{report:?}");
+        assert_eq!(
+            source_prefix(&maildir, &maildir.join("linked")),
+            "mail:linked/"
+        );
+        assert_eq!(source_prefix(&maildir, &maildir), "mail:");
+        assert_eq!(
+            source_prefix(&maildir, Path::new("/somewhere/else")),
+            "mail:"
+        );
+    }
+
+    /// Five messages under two accounts, A real and B about to stop
+    /// being walkable. Returns the store, the db path and the roots.
+    fn two_accounts(home: &Path) -> (lisa_contextd::ContextStore, PathBuf, PathBuf, Vec<PathBuf>) {
+        let maildir = home.join("Mail");
+        let db = home.join("ctx.db");
+        let store = lisa_contextd::ContextStore::open(&db).unwrap();
+        for i in 0..2 {
+            write_message(
+                &maildir.join("a_at_x.test/INBOX/cur"),
+                &format!("a{i}.lisa"),
+                &format!("a{i}@x.test"),
+                "renew by Friday",
+            );
+        }
+        for i in 0..3 {
+            write_message(
+                &maildir.join("b_at_x.test/INBOX/cur"),
+                &format!("b{i}.lisa"),
+                &format!("b{i}@x.test"),
+                "parking permit renewal",
+            );
+        }
+        // A third account whose name has B's name as a string prefix.
+        // The protection is a path prefix, and a `starts_with` that
+        // forgets the separator would spare (or reap) this neighbour on
+        // B's behalf — the classic way a prefix comparison goes wrong.
+        write_message(
+            &maildir.join("b_at_x.test2/INBOX/cur"),
+            "n0.lisa",
+            "n0@x.test",
+            "neighbour",
+        );
+        let roots = vec![
+            maildir.join("a_at_x.test"),
+            maildir.join("b_at_x.test"),
+            maildir.join("b_at_x.test2"),
+        ];
+        let first = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(first.added, 6, "all accounts must index first: {first:?}");
+        store
+            .embed_pending(&lisa_contextd::embed::HashEmbedder::default())
+            .unwrap();
+        (store, db, maildir, roots)
+    }
+
+    const B_DOCS: &str = "SELECT count(*) FROM documents WHERE source LIKE 'mail:b_at_x.test/%'";
+    const B_VECTORS: &str =
+        "SELECT count(*) FROM chunk_vectors v JOIN documents d ON d.id = v.doc_id
+         WHERE d.source LIKE 'mail:b_at_x.test/%'";
+
+    /// #296: presence is asked globally (`any(is_dir)`) while the walk
+    /// descends per tree, so ONE healthy account answers the guard for
+    /// all of them — and a declared tree the walk cannot descend has its
+    /// entire live index reaped as "no message answers to it".
+    ///
+    /// The symlink is not a contrivance. `mbsync` writes *through* one,
+    /// so a Maildir moved to another volume keeps syncing mail perfectly
+    /// while `follow_links(false)` makes the walk see nothing under it.
+    /// Account A alone satisfies `trees_are_present`, and B's documents
+    /// and embedding vectors go — unattended, on the sync timer.
+    #[cfg(unix)]
+    #[test]
+    fn a_tree_the_walk_cannot_descend_keeps_its_index() {
+        let home = tempfile::tempdir().unwrap();
+        let (store, db, maildir, roots) = two_accounts(home.path());
+        let b_vectors = count(&db, B_VECTORS);
+        assert!(b_vectors > 0, "B must own vectors for the loss to be real");
+
+        // B's mail moves to another volume and a symlink is left behind.
+        let volume = home.path().join("volume/b-mail");
+        std::fs::create_dir_all(volume.parent().unwrap()).unwrap();
+        std::fs::rename(maildir.join("b_at_x.test"), &volume).unwrap();
+        std::os::unix::fs::symlink(&volume, maildir.join("b_at_x.test")).unwrap();
+        assert!(
+            maildir.join("b_at_x.test/INBOX/cur/b0.lisa").is_file(),
+            "B's mail is still on disk to anyone who follows the link"
+        );
+        // …and the neighbour genuinely expunges its one message, so the
+        // reap has real work to do that B's protection must not absorb.
+        std::fs::remove_file(maildir.join("b_at_x.test2/INBOX/cur/n0.lisa")).unwrap();
+
+        let report = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(
+            report.reaped, 1,
+            "B's protection swallowed the neighbour's expunged message: {report:?}"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM documents WHERE source LIKE 'mail:b_at_x.test2/%'"
+            ),
+            0,
+            "{report:?}"
+        );
+        assert_eq!(
+            count(&db, B_DOCS),
+            3,
+            "the live index of a tree the walk cannot descend was reaped: {report:?}"
+        );
+        assert_eq!(
+            count(&db, B_VECTORS),
+            b_vectors,
+            "B's embedding vectors went with the documents: {report:?}"
+        );
+        assert_eq!(
+            report.protected, 3,
+            "B's three documents must be counted as spared, not as absent: {report:?}"
+        );
+        assert_eq!(
+            report.unwalkable,
+            vec![maildir.join("b_at_x.test")],
+            "{report:?}"
+        );
+        // A is walked as usual — the protection is per tree, not a
+        // global refusal that would make the reap useless.
+        assert_eq!(report.unchanged, 2, "{report:?}");
+        assert!(
+            !report.reap_refused,
+            "one unwalkable tree must not refuse the whole reap: {report:?}"
+        );
+    }
+
+    /// The same defect without a symlink: B declared, previously synced,
+    /// and its directory simply not there — a mount that is not up yet.
+    /// A is a directory, so the global guard is satisfied and B's index
+    /// is reaped. The second half is the positive control: when the walk
+    /// CAN descend B, an expunged message must still be reaped, or the
+    /// fix is just "never reap".
+    #[test]
+    fn one_healthy_account_does_not_answer_for_an_absent_one() {
+        let home = tempfile::tempdir().unwrap();
+        let (store, db, maildir, roots) = two_accounts(home.path());
+        let b_vectors = count(&db, B_VECTORS);
+
+        // Positive control first: B is present, one message expunged.
+        std::fs::remove_file(maildir.join("b_at_x.test/INBOX/cur/b2.lisa")).unwrap();
+        let control = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(
+            control.reaped, 1,
+            "a walked tree stopped reaping: {control:?}"
+        );
+        assert_eq!(count(&db, B_DOCS), 2, "{control:?}");
+
+        // Now B is gone from the walk's point of view.
+        std::fs::rename(maildir.join("b_at_x.test"), home.path().join("stashed")).unwrap();
+        let report = index_maildir(&store, &maildir, &roots, Mode::Apply).unwrap();
+        assert_eq!(
+            count(&db, B_DOCS),
+            2,
+            "an absent tree's live index was reaped: {report:?}"
+        );
+        assert!(
+            count(&db, B_VECTORS) > 0 && count(&db, B_VECTORS) <= b_vectors,
+            "B's vectors went with the documents: {report:?}"
+        );
+        assert_eq!(report.reaped, 0, "{report:?}");
+        assert_eq!(report.protected, 2, "{report:?}");
+        assert_eq!(
+            report.unchanged, 3,
+            "A and the neighbour are still walked: {report:?}"
+        );
     }
 
     /// `lisa mail status` names the tree nothing syncs — #224's own

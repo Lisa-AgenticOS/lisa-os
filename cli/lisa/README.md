@@ -130,16 +130,29 @@ five-figure delete driven by how a config file parsed:
 
 - it says what it will remove **before** removing it (`--dry-run` stops
   after that report and writes nothing);
-- it **refuses** when every declared tree is missing from disk. A
-  Maildir that has not mounted, a home restored without its mail, or a
-  `setup` that has not synced yet makes every indexed message look
-  expunged; the mirror rule would then faithfully empty the index. All
-  trees missing, not any — one account set up and never synced must not
-  block reaping another's.
+- it reaps **per tree, and only trees its own walk got inside** (#296).
+  A declared tree the walk did not descend — missing because a disk has
+  not mounted, a symlink (the walk does not follow them, and `mbsync`
+  writes happily *through* one), or a directory it could not read —
+  keeps everything indexed under it. Those documents are counted as
+  *kept*, not removed, and the run names the tree.
+- when what the walk could not read is the Maildir root itself, the reap
+  is **refused** outright: nothing is attributable to a tree, so nothing
+  goes.
+
+The granularity is the whole safeguard. It used to ask "is *any*
+declared tree on disk?", which one healthy account answered for all of
+them — so an account behind a symlink had its entire live index deleted
+while its mail sat intact on disk, unattended, on the sync timer.
+Per-tree presence keeps the other direction too: a walked tree whose
+messages really were expunged is still reaped, and a neighbouring
+account whose name merely starts with the protected one's is not spared
+by accident.
 
 `lisa mail status` names any orphaned tree it finds, with a message
-count. The files are yours: nothing here ever deletes mail from disk,
-only the index rows that point at mail nothing syncs.
+count, and marks a declared tree the indexer cannot walk. The files are
+yours: nothing here ever deletes mail from disk, only the index rows
+that point at mail nothing syncs.
 
 **`lisa doctor` — the state of this machine, in one command.**
 

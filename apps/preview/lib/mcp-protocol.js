@@ -45,14 +45,16 @@ export async function handleRequest(req, tools) {
             return fail(-32601, `no tool ${JSON.stringify(name)}`);
         try {
             const out = await fn(req.params?.arguments ?? {});
-            // The tag goes INSIDE the payload as well as on the envelope:
-            // agentd unwraps content[0].text and discards the envelope,
-            // which is exactly how Surfer's first on-device run lost its
-            // tag. The spread is BEFORE the tag so a document cannot
-            // override it with a crafted field of its own.
-            const tagged = {...out, provenance: PROVENANCE};
+            // The tag goes on the ENVELOPE, once (#313). It used to go
+            // inside the payload as well, because the bus dispatcher
+            // unwrapped content[0].text and discarded the envelope —
+            // exactly how Surfer's first on-device run lost its tag.
+            // `mcp-bus`'s `carry_envelope` hoists envelope fields onto
+            // the unwrapped payload now, and the envelope wins a
+            // collision, so a document cannot override its own
+            // provenance with a crafted field.
             return reply({
-                content: [{type: 'text', text: JSON.stringify(tagged)}],
+                content: [{type: 'text', text: JSON.stringify(out)}],
                 provenance: PROVENANCE,
             });
         } catch (e) {

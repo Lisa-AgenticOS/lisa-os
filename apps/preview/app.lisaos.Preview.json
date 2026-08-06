@@ -79,7 +79,7 @@
     {
       "name": "export_page",
       "tier": "write",
-      "description": "Write the open image, or one page of the open PDF, to a new image file. Never overwrites: an existing path is refused. Format must be one this machine's image writers support; pages rasterize at 150 dpi.",
+      "description": "Write the open image, or one page of the open PDF, to a new image file. Never overwrites: an existing path is refused. A page is rendered with its pending rotation, so an export after rotate_page shows the turn. Format must be one this machine's image writers support; pages rasterize at 150 dpi.",
       "input_schema": {
         "type": "object",
         "properties": {

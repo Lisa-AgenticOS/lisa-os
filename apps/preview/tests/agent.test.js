@@ -5,7 +5,8 @@
 // number reaching poppler as `get_page(undefined)` (#198), a rotation
 // qpdf rejects after the user already confirmed the modal, or — the one
 // that matters — an export quietly replacing a file.
-import {pageArg, rotationArg, moveArg, exportTarget, formatArg} from '../lib/agent.js';
+import {pageArg, rotationArg, moveArg, exportTarget, exportExistsError, formatArg}
+    from '../lib/agent.js';
 import {assert, finish, test} from '../../../shell/testing/harness.js';
 
 const ok = (cond, name, got) =>
@@ -48,24 +49,39 @@ ok(moveArg(0, 2, 3).error.startsWith('from'), 'a bad source names `from`');
 ok(moveArg(1, 9, 3).error.startsWith('to'), 'a bad target names `to`');
 
 // --- exportTarget --------------------------------------------------
-ok(exportTarget('/home/u/a.png', 'png', false).value === '/home/u/a.png', 'a fresh path passes');
-ok(exportTarget('a.png', 'png', false).error !== undefined, 'a relative path is refused');
-ok(exportTarget('/home/u/../etc/a.png', 'png', false).error !== undefined,
+ok(exportTarget('/home/u/a.png', 'png').value === '/home/u/a.png', 'a fresh path passes');
+ok(exportTarget('a.png', 'png').error !== undefined, 'a relative path is refused');
+ok(exportTarget('/home/u/../etc/a.png', 'png').error !== undefined,
     'a .. segment is refused rather than normalized behind the guard\'s back');
-ok(exportTarget('/home/u/a.jpg', 'png', false).error !== undefined,
+ok(exportTarget('/home/u/a.jpg', 'png').error !== undefined,
     'the extension must match the format asked for');
-ok(exportTarget('/home/u/a', 'png', false).error !== undefined, 'no extension at all is refused');
-ok(exportTarget('/home/u/A.PNG', 'png', false).value !== undefined,
+ok(exportTarget('/home/u/a', 'png').error !== undefined, 'no extension at all is refused');
+ok(exportTarget('/home/u/A.PNG', 'png').value !== undefined,
     'the extension check is case-insensitive');
-ok(exportTarget('', 'png', false).error !== undefined, 'an empty path is refused');
-ok(exportTarget(null, 'png', false).error !== undefined, 'a null path is refused');
+ok(exportTarget('', 'png').error !== undefined, 'an empty path is refused');
+ok(exportTarget(null, 'png').error !== undefined, 'a null path is refused');
+
+// --- never overwrite -----------------------------------------------
 // THE one. A write-tier tool that can clobber a file is a tier that
 // lies, so the tool is made unable to do it.
-ok(exportTarget('/home/u/a.png', 'png', true).error !== undefined,
+//
+// It is no longer a boolean this module is handed (#299). `exportTarget`
+// does not ask whether the file exists, because the answer was computed
+// with `GLib.file_test(EXISTS)` — which says *false* for a dangling
+// symlink, and the write then went through the link to a path the guard
+// never judged — and was stale by the time the write happened anyway.
+// The caller creates the file with O_CREAT|O_EXCL, which POSIX requires
+// to fail on a symlink dangling or not, and turns that EEXIST into this.
+ok(exportTarget('/home/u/a.png', 'png').error === undefined,
+    'exportTarget no longer has an opinion about existence — the filesystem does');
+ok(exportExistsError('/home/u/a.png').error !== undefined,
     'an EXISTING path is refused — Preview never overwrites');
-ok(/already exists/.test(exportTarget('/home/u/a.png', 'png', true).error),
+ok(/already exists/.test(exportExistsError('/home/u/a.png').error),
     'and the refusal says why, so the model can pick another name',
-    exportTarget('/home/u/a.png', 'png', true).error);
+    exportExistsError('/home/u/a.png').error);
+ok(/^a\.png/.test(exportExistsError('/home/u/a.png').error),
+    'the refusal names the file, not the whole path — the model chose the name',
+    exportExistsError('/home/u/a.png').error);
 
 // --- formatArg -----------------------------------------------------
 const avail = [{key: 'png', label: 'PNG', ext: 'png'}, {key: 'jpeg', label: 'JPEG', ext: 'jpg'}];

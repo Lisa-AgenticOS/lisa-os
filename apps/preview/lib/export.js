@@ -2,7 +2,10 @@
 // saving) lives in lisa-preview.js; what can be got wrong quietly is
 // here and tested: which formats we OFFER (grounded in what the
 // machine's pixbuf can actually write, injected — never assumed), what
-// the exported file is called, and the rasterization arithmetic.
+// the exported file is called, the rasterization arithmetic, and (since
+// #299) WHAT an export of a page actually renders.
+
+import {rotationOf} from './reorder.js';
 
 /// The formats worth offering, in menu order. `key` is the pixbuf
 /// writer name; the list the UI shows is the intersection with the
@@ -47,6 +50,41 @@ export function exportName(sourcePath, ext, page = null) {
 /// default: crisp enough to read, not a 100 MB surprise.
 export function rasterScale(dpi = 150) {
     return dpi / 72;
+}
+
+/// The extent a page occupies once a pending rotation is applied, in
+/// PDF points, plus the normalized angle.
+///
+/// One function for the view and for the export, because #299 was
+/// exactly the two disagreeing: the canvas drew the rotation and the
+/// exporter did not, so an agent that rotated a page and exported it got
+/// an unrotated PNG and an `ok`. Quarter turns swap width and height;
+/// half turns do not. The caller rounds — the view rounds to the nearest
+/// pixel, the exporter rounds up so nothing is clipped off the edge.
+export function rotatedExtent(width, height, angle = 0) {
+    const deg = ((Math.round(angle) % 360) + 360) % 360;
+    return deg % 180 !== 0
+        ? {width: height, height: width, angle: deg}
+        : {width, height, angle: deg};
+}
+
+/// Everything an export of ONE display page renders: which ORIGINAL
+/// page, at which pending rotation, at what dpi.
+///
+/// The page and the angle travel together on purpose (#299). They used
+/// to be decided in different places — the exporter picked
+/// `order[displayIndex]` and nothing picked an angle at all — so a page
+/// the person had rotated exported unrotated, with an `ok`, while the
+/// view, the thumbnails and the window subtitle all showed the turn. A
+/// caller can no longer choose a page without also choosing its
+/// rotation, because there is one value and it carries both.
+///
+/// `rotations` is the pending DOCUMENT rotation map — the edit qpdf
+/// would write. The R key's view rotation is not in it and must not be:
+/// that one is a way of looking at the page, not a change to it.
+export function pageExportRender(order, rotations, displayIndex, dpi = 150) {
+    const page = order[displayIndex];
+    return {page, angle: rotationOf(rotations, page), dpi};
 }
 
 /// All-pages export names: the page number is part of every file.

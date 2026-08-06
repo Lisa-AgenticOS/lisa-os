@@ -130,6 +130,15 @@ NO_EGRESS = {
         "ADR-0013 first-party MCP server. Unix socket plus SQLite under "
         "$XDG_DATA_HOME. Every app tool provider inherits this posture."
     ),
+    "lisa-overlayd": (
+        "PLAN §5.7.1/§5.7.5 overlay backend (dev.lisaos.Overlay1, "
+        "dev.lisaos.Voice1). Session bus, plus an OpenAI-compat POST to "
+        "http://127.0.0.1:7778 — its inferenced companion, on loopback. "
+        "The conversation leaves this machine, if at all, from inferenced "
+        "through lisa-remoted. Until #294 it had NO unit at all: both "
+        "activation files carried a bare Exec= and dbus-daemon forked it "
+        "directly, so it was in no bucket here, not even out-of-scope."
+    ),
     "xdg-desktop-portal-lisa": (
         "PLAN §5.5 trust boundary. It brokers fds and consent; it never "
         "carries model traffic, as its own unit says."
@@ -160,11 +169,15 @@ NOT_A_DAEMON = {
         "The user-facing CLI (`lisa apps sync`, `lisa mail sync`, "
         "`lisa context sync-knowledge`), invoked as Type=oneshot. Rule 5 "
         "governs daemons; a CLI's egress is governed by the guard "
-        "catalogue and by remoted. Stated plainly because it is the "
-        "loose end: lisa-mail-sync.service does reach an IMAP host "
-        "directly rather than through the broker. That is a real "
-        "divergence from 'only remoted', it predates this check, and it "
-        "is not something a unit-file assertion can fix."
+        "catalogue and by remoted. lisa-mail-sync.service reaches an "
+        "IMAP host directly, and that is now a DECIDED exemption rather "
+        "than a loose end recorded here: see ADR-0059. Rule 5 is about "
+        "model traffic and about daemons that hold the user's context "
+        "leaving with it; a mail client contacting the user's own server "
+        "on the user's own credential is neither. The limit is in the "
+        "ADR too — sending content the model composed is model traffic "
+        "and is brokered. This string is not the place that argument "
+        "lives (#286)."
     ),
 }
 
@@ -204,9 +217,23 @@ DEBT_CEILING = {
     # zero means the ONLY way back to a non-empty EXEMPT is a commit
     # that says so in this dict first.
     "EXEMPT": 0,
-    # lisa-inferenced-dbus.service, and nothing else, ever again:
-    # lisa-harnessd.service was the second entry and is gone (#288).
-    "USER_SCOPE_INET_DEBT": 1,
+    # Two: lisa-inferenced-dbus.service, which LISTENS on 127.0.0.1:7778,
+    # and lisa-overlayd.service, which is one of the two libsoup callers
+    # on the other end of that port. The count went 1 -> 2 on 2026-08-06
+    # not because a daemon lost its confinement but because one that
+    # never had any ENTERED this gate's population at all: until #294 the
+    # overlay backend was spawned by dbus-daemon with no unit, so it was
+    # unconfined AND uncounted. A number that rises when a hidden process
+    # is made visible is the number doing its job; both entries retire
+    # together when :7778 is socket-activated or the GJS callers move
+    # onto dev.lisaos.Inference1 (#288).
+    "USER_SCOPE_INET_DEBT": 2,
+    # Three D-Bus activation records still spawned by dbus-daemon with
+    # no unit. #294 fixed the two it named (Overlay1, Voice1); the check
+    # that fixed them found three more of the same shape, all GUI
+    # surfaces rather than backends. Named and counted rather than left
+    # undiscovered — and a fourth cannot be added for free.
+    "DBUS_UNSANDBOXED_DEBT": 3,
 }
 
 # No-egress binaries whose SHIPPED unit does not carry IPAddressDeny
@@ -253,6 +280,50 @@ USER_SCOPE_INET_DEBT = {
         "LISTENS on 127.0.0.1:7778 for two libsoup callers in shell/ that "
         "have no unix-socket transport. Its 47fa7c6 'egress sandbox' "
         "claimed a confinement user scope cannot give. #288."
+    ),
+    "lisa-overlayd.service": (
+        "One of those two callers, seen from the other end: it POSTs "
+        "/v1/chat/completions to 127.0.0.1:7778 through libsoup, which "
+        "has no unix-socket transport, so AF_INET cannot be dropped "
+        "without taking the overlay's chat lane with it. New to this "
+        "list because it is new to this gate: before #294 it ran with no "
+        "unit and no sandbox of any kind, which is strictly worse than "
+        "an entry here. Retires with lisa-inferenced-dbus.service."
+    ),
+}
+
+# D-Bus activation records that STILL have no `SystemdService=`, so
+# dbus-daemon forks them itself and the process runs with no unit and no
+# sandbox at all (see dbus_activation() below).
+#
+# #294 named dev.lisaos.Overlay1 and dev.lisaos.Voice1, and those are
+# fixed: both now route through lisa-overlayd.service. The check written
+# to keep them fixed immediately found three more records of the same
+# shape — which is the point of writing a check instead of editing two
+# files. They are listed rather than left failing, for the reason stated
+# at DEBT_CEILING: a permanently red gate is a gate everyone learns to
+# skip. Each is a real hole, and all three are GUI surfaces rather than
+# headless backends, which changes the cost and not the classification:
+# two of them are MCP tool providers, so "no sandbox" applies to an
+# agent surface.
+#
+# Keyed by the record's repo path, so moving the file is a decision
+# somebody makes on purpose rather than an exemption that follows it.
+DBUS_UNSANDBOXED_DEBT = {
+    "shell/consent/dev.lisaos.Consent1.service": (
+        "The consent surface. Its own comment is a security decision "
+        "about the Exec line (#289) and says nothing about the unit; "
+        "activation still goes through dbus-daemon."
+    ),
+    "shell/assistant/app.lisaos.Assistant.service": (
+        "The Assistant window (#210 added the activation record so the "
+        "Spotlight hand-off works when the app is closed). A GTK app, "
+        "and an agent surface."
+    ),
+    "apps/preview/org.gnome.NautilusPreviewer.service": (
+        "Preview answering Nautilus's Space key. Nautilus dials the "
+        "versionless name and ping-gates it, so the record has to exist; "
+        "the unit does not yet."
     ),
 }
 
@@ -301,6 +372,19 @@ SYSTEMD_DEST = re.compile(
 # (lisa-remoted-user.service installs as lisa-remoted.service). No
 # trailing slash, for the same reason SYSTEMD_DEST does not require one.
 SYSTEMD_MARKERS = ("systemd/system", "systemd/user")
+
+# THE SECOND SPAWN PATH (#294). `dbus-daemon` starts a service itself
+# when its activation record carries only `Exec=`; the process gets no
+# unit, therefore no sandbox, and — because this file discovers its
+# population from systemd install lines — no row here at all. Not
+# `no-egress`, not `egress`, not `out-of-scope`: absent. That is exactly
+# the failure this file's docstring names when it says a unit's
+# `[Install]` lies by omission, arriving through the other door.
+#
+# So activation records are discovered from the same install lines, by
+# the same interpreter, and one is asserted about them: an `Exec=` that
+# names a Lisa binary must also name a `SystemdService=`.
+DBUS_MARKER = "dbus-1/services"
 
 # makepkg's own variables. `%PKGDIR%` rather than a real path so that a
 # destination which still holds an unexpanded `$something` is obvious.
@@ -570,17 +654,52 @@ def _classify_dest(scope, rel, src, origin, errors):
     return None
 
 
-def _pkgbuild_landings(root, pkgbuild, landings, table, errors):
+def _pkgbuild_landings(root, pkgbuild, landings, table, errors, activations):
     text = pkgbuild.read_text()
     rel_pkgbuild = pkgbuild.relative_to(root)
     stmts = _tokenize(rel_pkgbuild, text, errors)
 
     def visit(lineno, argv):
-        if not any(m in tok for tok in argv for m in SYSTEMD_MARKERS):
+        into_systemd = any(m in tok for tok in argv for m in SYSTEMD_MARKERS)
+        into_dbus = any(DBUS_MARKER in tok for tok in argv)
+        if not into_systemd and not into_dbus:
             return
         origin = f"{rel_pkgbuild}:{lineno}"
         head = Path(argv[0]).name
         opts, args = _split_opts(argv)
+
+        if into_dbus and not into_systemd:
+            # A D-Bus activation record (#294). Same resolution, same
+            # "an unresolved install is an error" rule; the assertion
+            # itself is in dbus_activation() below.
+            if head in COPIERS:
+                if "-t" in opts or "--target-directory" in opts:
+                    sources = args
+                elif len(args) >= 2:
+                    sources = args[:-1]
+                else:
+                    sources = []
+                for word in sources:
+                    if "$" in word or "%SRCDIR%" in word or "%STARTDIR%" in word:
+                        errors.append(
+                            f"{origin}: the source `{word}` installed into "
+                            f"{DBUS_MARKER}/ still holds an unexpanded shell "
+                            f"expansion, so this check cannot tell WHICH "
+                            f"activation record ships."
+                        )
+                        continue
+                    hits = _resolve_source(root, pkgbuild, word)
+                    if not hits:
+                        errors.append(
+                            f"{origin}: the source `{word}` is installed into "
+                            f"{DBUS_MARKER}/ and resolves to no file in the "
+                            f"repo. An activation record this check cannot "
+                            f"read is a second spawn path it cannot see (#294)."
+                        )
+                        continue
+                    for src in hits:
+                        activations.append((src.resolve(), origin))
+            return
 
         if head in MAKEDIRS or (head == "install" and ("-d" in opts or "-D" in opts and not args[:-1])):
             if head in MAKEDIRS or "-d" in opts:
@@ -702,16 +821,17 @@ def _tree_landings(root, landings, errors):
 
 
 def discover(root: Path):
-    """(units, dropins, table, errors).
+    """(units, dropins, table, errors, activations).
 
-    units    — [(unit file in the repo, installed name, scope, origin)]
-    dropins  — {(scope, installed unit name): [drop-in files, applied order]}
-    table    — every install line into a systemd directory, resolved
-    errors   — the lines that could NOT be resolved, and why
+    units       — [(unit file in the repo, installed name, scope, origin)]
+    dropins     — {(scope, installed unit name): [drop-in files, applied order]}
+    table       — every install line into a systemd directory, resolved
+    errors      — the lines that could NOT be resolved, and why
+    activations — [(D-Bus activation record in the repo, origin)] (#294)
     """
-    landings, table, errors = [], [], []
+    landings, table, errors, activations = [], [], [], []
     for pkgbuild in sorted((root / "os" / "packages").rglob("PKGBUILD")):
-        _pkgbuild_landings(root, pkgbuild, landings, table, errors)
+        _pkgbuild_landings(root, pkgbuild, landings, table, errors, activations)
     _tree_landings(root, landings, errors)
 
     units, dropins, installed_names = [], {}, {}
@@ -746,7 +866,68 @@ def discover(root: Path):
     for key in dropins:
         dropins[key].sort(key=lambda pair: Path(pair[0]).name)
 
-    return units, dropins, table, errors
+    return units, dropins, table, errors, activations
+
+
+def dbus_activation(root, activations, installed_units, errors):
+    """Every shipped activation record for a Lisa binary names a unit (#294).
+
+    `dbus-daemon` will start a service itself when the record carries
+    only `Exec=`. That process has no unit, so it has no sandbox — no
+    RestrictAddressFamilies, no NoNewPrivileges, nothing — and no row in
+    this gate, because the gate's population comes from systemd install
+    lines and there is no unit to install. dev.lisaos.Overlay1 and
+    dev.lisaos.Voice1 shipped that way while three activation records in
+    the same directory carried `SystemdService=`.
+
+    The rule is narrow on purpose. A record whose `Exec=` is somebody
+    else's binary is not rule 5's business and is left alone; a record
+    for a Lisa binary must route activation through systemd, and the
+    unit it names must be one discovery actually installs — otherwise
+    the `SystemdService=` line is a promise to a unit that does not
+    exist, which fails closed at runtime and reads as fixed here.
+    """
+    for path, origin in sorted(set(activations)):
+        text = path.read_text(errors="replace")
+        rel = path.relative_to(root)
+        exec_line = systemd_service = None
+        for raw in text.splitlines():
+            key, _, value = raw.partition("=")
+            key, value = key.strip(), value.strip()
+            if key == "Exec" and exec_line is None:
+                exec_line = value
+            elif key == "SystemdService" and systemd_service is None:
+                systemd_service = value
+        if not exec_line:
+            continue
+        argv = exec_line.split()
+        head = _program_name(argv[0].lstrip("-+!:@")) if argv else None
+        if not head or not is_lisa_binary(head):
+            continue
+        if not systemd_service:
+            if str(rel) in DBUS_UNSANDBOXED_DEBT:
+                continue
+            errors.append(
+                f"{rel} (installed by {origin}): a D-Bus activation record "
+                f"running `{head}` with NO SystemdService=. dbus-daemon will "
+                f"fork it directly, so it gets no unit, no sandbox and no row "
+                f"in this gate — not even out-of-scope. Give it a unit and "
+                f"name it here (#294)."
+            )
+        elif str(rel) in DBUS_UNSANDBOXED_DEBT:
+            errors.append(
+                f"{rel}: now names SystemdService={systemd_service} and is "
+                f"still listed in DBUS_UNSANDBOXED_DEBT. Delete the entry — "
+                f"the list exists to be deleted, and one that outlives its "
+                f"debt is how the next reader learns to distrust it."
+            )
+        elif systemd_service not in installed_units:
+            errors.append(
+                f"{rel} (installed by {origin}): names "
+                f"SystemdService={systemd_service}, which nothing discovered "
+                f"here installs. Activation would fail at runtime and this "
+                f"check would read as satisfied."
+            )
 
 
 # Repo files that ARE systemd fragments and are deliberately installed
@@ -874,6 +1055,36 @@ WRAPPERS = frozenset(
 BIN_DIRS = ("/usr/bin", "/bin", "/usr/local/bin", "/usr/sbin", "/sbin",
             "/usr/lib/lisa", "/usr/libexec")
 
+# OUR OWN launchers, whose first argument names the surface that will
+# actually run. Distinct from WRAPPERS above, which are REFUSED: the
+# objection to `sh -c` is that it hides the daemon from this gate and
+# the real argv from the Ledger, and neither is true here. `lisa-app`
+# takes a declared relative path under the apps tree and execs it, so
+# the surface's name is right there on the ExecStart line — what the
+# launcher varies is only WHICH copy of that surface runs (ADR-0020's
+# whole point: `lisa apps update` must take effect without a reboot).
+# The sandbox is the unit's and survives the exec regardless.
+#
+# So the posture is keyed on the surface (`lisa-overlayd`) rather than
+# on the launcher. Keying it on `lisa-app` would be the mistake this
+# file already names elsewhere — "a posture for whichever one this line
+# happened to pick first" — because every GJS surface on the system is
+# started through the same launcher (#294).
+LAUNCHERS = frozenset(["lisa-app"])
+
+
+def _launched_surface(argv):
+    """The Lisa surface a LAUNCHERS argv[0] runs, e.g. `lisa-overlayd`."""
+    for arg in argv[1:]:
+        arg = arg.strip("'\"")
+        if arg.startswith("-"):
+            continue
+        name = arg.rsplit("/", 1)[-1]
+        if name.endswith(".js"):
+            name = name[:-3]
+        return name or None
+    return None
+
 
 def _program_name(token: str):
     """The program a token names, or None if it is not a program at all."""
@@ -903,6 +1114,15 @@ def exec_programs(text: str):
             continue
         argv = value.split()
         head = _program_name(argv[0].lstrip("-+!:@"))
+        if head in LAUNCHERS:
+            # Classify the SURFACE, not the launcher every surface
+            # shares (#294). An unresolvable one falls through to the
+            # launcher's own name, which has no posture — so it fails
+            # loudly rather than passing as something classified.
+            surface = _launched_surface(argv)
+            if surface and is_lisa_binary(surface):
+                names.append(surface)
+                continue
         if head and is_lisa_binary(head):
             names.append(head)
             continue
@@ -951,8 +1171,10 @@ class Row:
 
 def classify(root: Path):
     """(rows, errors) for every unit the installers place."""
-    units, dropins, _table, errors = discover(root)
+    units, dropins, _table, errors, activations = discover(root)
     orphan_fragments(root, units, dropins, errors)
+    dbus_activation(root, activations,
+                    {installed for _u, installed, _s, _o in units}, errors)
 
     rows, seen = [], set()
     for unit, installed, scope, origin in sorted(units, key=lambda u: str(u[0])):
@@ -1002,7 +1224,7 @@ def main(argv) -> int:
         # directory, and what it resolved to. `UNRESOLVED` rows are the
         # ones the old discovery dropped in silence; there must be none,
         # and if there are, the gate is already failing on them.
-        _u, _d, table, errs = discover(root)
+        _u, _d, table, errs, _a = discover(root)
         print(f"{'ORIGIN':34} {'KIND':18} {'SOURCE':52} DESTINATION")
         for origin, kind, src, dest in table:
             print(f"{origin:34} {kind:18} {src:52} {dest}")
@@ -1056,7 +1278,8 @@ def main(argv) -> int:
     # check off, and it may not do that in one green line. See
     # DEBT_CEILING's note for what this does and does not buy.
     for name, entries in (("EXEMPT", EXEMPT),
-                          ("USER_SCOPE_INET_DEBT", USER_SCOPE_INET_DEBT)):
+                          ("USER_SCOPE_INET_DEBT", USER_SCOPE_INET_DEBT),
+                          ("DBUS_UNSANDBOXED_DEBT", DBUS_UNSANDBOXED_DEBT)):
         ceiling = DEBT_CEILING.get(name)
         if ceiling is None:
             errors.append(

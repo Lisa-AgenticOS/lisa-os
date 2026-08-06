@@ -30,9 +30,11 @@ import {COLORS, normalizeRect, isClick, viewToPage, annotRect, savePathFor, unsa
     from './lib/annotate.js';
 import {movePage, removePage, orderChanged, qpdfPageSpec, rotatePageBy, rotationOf,
     rotationsChanged, qpdfRotateArgs} from './lib/reorder.js';
-import {pageArg, rotationArg, moveArg, exportTarget, formatArg} from './lib/agent.js';
+import {pageArg, rotationArg, moveArg, exportTarget, exportExistsError, formatArg}
+    from './lib/agent.js';
 import {looksBinary, truncateText, cardSubtitle, folderSubtitle, mediaClock} from './lib/peek.js';
-import {exportFormats, saveOptions, exportName, rasterScale, pageExportNames} from './lib/export.js';
+import {exportFormats, saveOptions, exportName, rasterScale, pageExportNames, rotatedExtent,
+    pageExportRender} from './lib/export.js';
 import {normalizeStrokes, stampSize, serializeSignature, deserializeSignature} from './lib/signature.js';
 import {McpServer} from './lib/mcp.js';
 import {Previewer} from './lib/previewer.js';
@@ -268,10 +270,12 @@ function drawPage(area, cr, _w, _h) {
     const page = docPage();
     const [pw, ph] = page.get_size();
     const scale = effectiveScale();
-    const angle = pageAngle();
-    const quarter = angle % 180 !== 0;
-    const outW = Math.round((quarter ? ph : pw) * scale);
-    const outH = Math.round((quarter ? pw : ph) * scale);
+    // The same extent the exporter uses (#299): when these two were
+    // computed separately, only one of them applied the rotation.
+    const ext = rotatedExtent(pw, ph, pageAngle());
+    const angle = ext.angle;
+    const outW = Math.round(ext.width * scale);
+    const outH = Math.round(ext.height * scale);
     area.set_size_request(outW, outH);
     // White under the page: a PDF with transparent regions on a dark
     // theme renders as unreadable light-on-light without it.
@@ -756,17 +760,37 @@ function saveEdited() {
 
 // --- slice 5: export/convert + signatures --------------------------
 
-/// A display page rendered to a pixbuf at the export dpi. Goes through
-/// a temp PNG because that is the one lossless path cairo and pixbuf
-/// share; the temp is O_EXCL and unlinked immediately.
-function pageToPixbuf(page, dpi) {
+/// A display page rendered to a pixbuf at the export dpi, INCLUDING its
+/// pending rotation. Goes through a temp PNG because that is the one
+/// lossless path cairo and pixbuf share; the temp is O_EXCL and unlinked
+/// immediately.
+///
+/// It takes a `spec` from `pageExportRender` — page, angle and dpi in
+/// one value — rather than a poppler page and a dpi, so that choosing
+/// what to export cannot be separated from choosing its rotation (#299).
+/// Export used to render with no transform at all, so a page rotated by
+/// hand or by `rotate_page` came out of an export unrotated while the
+/// view, the thumbnails and the subtitle all showed the turn. Export
+/// already carries the other two pending edits — in-memory annotations
+/// and the page ORDER — so dropping only this one was never the
+/// defensible "the file as it is on disk" line it looked like.
+///
+/// The transform is `drawPage`'s, through the same `rotatedExtent`.
+function pageToPixbuf(doc, spec) {
+    const page = doc.get_page(spec.page);
     const [pw, phh] = page.get_size();
-    const scale = rasterScale(dpi);
-    const w = Math.ceil(pw * scale), h = Math.ceil(phh * scale);
+    const scale = rasterScale(spec.dpi);
+    const ext = rotatedExtent(pw, phh, spec.angle);
+    const w = Math.ceil(ext.width * scale), h = Math.ceil(ext.height * scale);
     const surface = new Cairo.ImageSurface(Cairo.Format.ARGB32, w, h);
     const cr = new Cairo.Context(surface);
     cr.setSourceRGB(1, 1, 1);
     cr.paint();
+    if (ext.angle) {
+        cr.translate(w / 2, h / 2);
+        cr.rotate(ext.angle * Math.PI / 180);
+        cr.translate(-(pw * scale) / 2, -(phh * scale) / 2);
+    }
     cr.scale(scale, scale);
     page.render(cr);
     cr.$dispose?.();
@@ -784,6 +808,48 @@ function pageToPixbuf(page, dpi) {
 function savePixbuf(pb, path, formatKey) {
     const [keys, values] = saveOptions(formatKey);
     return pb.savev(path, formatKey, keys, values);
+}
+
+/// Write a pixbuf to a path that must NOT already exist — enforced by
+/// creating it, not by asking about it (#299).
+///
+/// The old shape was `GLib.file_test(EXISTS)` and then `savev`, which
+/// fails two ways. `G_FILE_TEST_EXISTS` returns **false for a dangling
+/// symlink**, so `savev` wrote *through* the link and created a file at
+/// the link's target — a path `lisa-guard` never judged, which unwinds
+/// the `scope.hidden_folder` and `owner.protected_path` rules the guard
+/// applied to the string as written. And plainly: a file created between
+/// the test and the write was truncated.
+///
+/// `Gio.File.create` is `O_CREAT|O_EXCL`, which POSIX requires to fail
+/// with EEXIST when the path names a symbolic link — dangling or not —
+/// and there is no window between the check and the act because there is
+/// no check. The pixbuf then goes into the stream we are already
+/// holding, so no second path resolution happens at all.
+///
+/// Returns 'ok', 'exists', or false (the writer refused); throws for
+/// anything else, which the caller shows rather than swallows.
+function savePixbufExclusive(pb, path, formatKey) {
+    let stream;
+    try {
+        stream = Gio.File.new_for_path(path).create(Gio.FileCreateFlags.NONE, null);
+    } catch (e) {
+        if (e instanceof GLib.Error &&
+            e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.EXISTS))
+            return 'exists';
+        throw e;
+    }
+    try {
+        const [keys, values] = saveOptions(formatKey);
+        return pb.save_to_streamv(stream, formatKey, keys, values, null) ? 'ok' : false;
+    } finally {
+        try { stream.close(null); } catch (e) { logError(e, `closing ${path}`); }
+    }
+}
+
+/// What exporting display page `i` of the open document renders.
+function exportRender(i, order = state.pageOrder, rotations = state.pageRotations) {
+    return pageExportRender(order, rotations, i);
 }
 
 /// What THIS machine can write, asked once of GdkPixbuf itself (#146 —
@@ -841,7 +907,8 @@ function runExport(formatKey, ext, allPages) {
             try {
                 const file = src.save_finish(res);
                 if (!file) return;
-                if (!savePixbuf(pageToPixbuf(docPage(), 150), file.get_path(), formatKey))
+                if (!savePixbuf(pageToPixbuf(state.doc, exportRender(state.pageIndex)),
+                    file.get_path(), formatKey))
                     throw new Error(`the ${formatKey} writer refused the file`);
                 toast(`Exported ${file.get_basename()}`);
             } catch (e) {
@@ -866,6 +933,10 @@ function runExport(formatKey, ext, allPages) {
         // overwritten (#202) — the folder was picked, not each name.
         const names = pageExportNames(state.path, ext, state.pageOrder.length);
         const order = state.pageOrder.slice();
+        // Snapshotted with the order, and for the same reason: the
+        // export runs one page per main-loop tick, so a rotation made
+        // while it is in flight must not land on half the pages.
+        const rotations = {...state.pageRotations};
         const doc = state.doc;
         let i = 0, done = 0, skipped = 0, failed = 0;
         GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
@@ -878,14 +949,16 @@ function runExport(formatKey, ext, allPages) {
             }
             const target = `${dir.get_path()}/${names[i]}`;
             try {
-                if (GLib.file_test(target, GLib.FileTest.EXISTS)) {
-                    skipped++;
-                } else if (savePixbuf(pageToPixbuf(doc.get_page(order[i]), 150),
-                    target, formatKey)) {
-                    done++;
-                } else {
-                    failed++;
-                }
+                // Exclusive create, not file_test-then-write (#299): the
+                // folder was picked, not each name, so "already there"
+                // must be a skip the filesystem decides — including for
+                // a dangling symlink, which file_test called absent.
+                const wrote = savePixbufExclusive(
+                    pageToPixbuf(doc, exportRender(i, order, rotations)),
+                    target, formatKey);
+                if (wrote === 'exists') skipped++;
+                else if (wrote === 'ok') done++;
+                else failed++;
             } catch (e) {
                 failed++;
                 logError(e, `export page ${i + 1}`);
@@ -1576,9 +1649,15 @@ const handlers = {
         const deg = rotationArg(degrees);
         if (deg.error) return deg;
         rotatePageAt(idx.value, deg.value);
+        // `unsaved` is asked of the document, not assumed from having
+        // acted (#299): the fourth quarter-turn deletes the map entry,
+        // so a document can be genuinely clean while the tool is still
+        // reporting an edit to save.
         return {ok: true, page: idx.value + 1,
             rotation: rotationOf(state.pageRotations, state.pageOrder[idx.value]),
-            unsaved: true};
+            unsaved: rotationsChanged(state.pageRotations, state.pageOrder) ||
+                orderChanged(state.pageOrder, state.pageCount) ||
+                state.annots.length > 0};
     },
 
     /// DESTRUCTIVE tier: drop a page.
@@ -1619,12 +1698,10 @@ const handlers = {
         if (!state.path) return {error: 'nothing open'};
         const fmt = formatArg(format, availableFormats());
         if (fmt.error) return fmt;
-        const target = exportTarget(path, fmt.value.ext,
-            typeof path === 'string' && path.startsWith('/') &&
-                GLib.file_test(path, GLib.FileTest.EXISTS));
+        const target = exportTarget(path, fmt.value.ext);
         if (target.error) return target;
 
-        let pb = null, exported = null;
+        let pb = null, exported = null, rotation = 0;
         if (state.kind === 'image') {
             // The PRISTINE pixbuf, never the checkerboarded view copy:
             // the transparency checks are a view aid and must not reach
@@ -1634,16 +1711,29 @@ const handlers = {
         } else if (state.kind === 'document' && state.doc) {
             const idx = displayPageIndex(page);
             if (idx.error) return idx;
-            pb = pageToPixbuf(state.doc.get_page(state.pageOrder[idx.value]), 150);
+            // The pending rotation goes into the render (#299). Reporting
+            // `ok` for a PNG that does not show the turn the caller just
+            // asked for is the tool call that did nothing and said it
+            // worked — the thing this whole surface is written against.
+            const spec = exportRender(idx.value);
+            rotation = spec.angle;
+            pb = pageToPixbuf(state.doc, spec);
             exported = idx.value + 1;
         } else {
             return {error: `Preview cannot export a ${state.kind ?? 'file'}`};
         }
-        if (!savePixbuf(pb, target.value, fmt.value.key))
+        let wrote;
+        try {
+            wrote = savePixbufExclusive(pb, target.value, fmt.value.key);
+        } catch (e) {
+            return {error: `could not write ${target.value}: ${e.message}`};
+        }
+        if (wrote === 'exists') return exportExistsError(target.value);
+        if (wrote !== 'ok')
             return {error: `the ${fmt.value.key} writer refused ${target.value}`};
         toast(`Exported ${target.value.split('/').pop()}`);
         return {ok: true, path: target.value, format: fmt.value.key,
-            page: exported, dpi: exported === null ? null : 150};
+            page: exported, dpi: exported === null ? null : 150, rotation};
     },
 };
 

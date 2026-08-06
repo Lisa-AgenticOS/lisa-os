@@ -155,8 +155,32 @@ call arrives (rule 6a). What Preview decides is the part only Preview
 knows: **it never overwrites.** A write-tier tool that can clobber a
 file is a tier that lies, and the fix is to make the tool unable to do
 it rather than to raise the tier — declining to offer beats asking
-permission to destroy. `lib/agent.js` holds those refusals, pure and
+permission to destroy. `lib/agent.js` holds the path refusals, pure and
 tested.
+
+Never-overwrite is enforced by **creating the file, not by asking about
+it** (#299). It used to be `GLib.file_test(EXISTS)` and then `savev`,
+which is check-then-act: the answer is stale by the time the write
+happens, and `G_FILE_TEST_EXISTS` reports **false for a dangling
+symlink**, so the write went *through* the link and created a file at
+the link's target — a path `lisa-guard` never judged, which is how
+`scope.hidden_folder` and `owner.protected_path` get unwound by a
+string the guard approved. `Gio.File.create` is `O_CREAT|O_EXCL`, which
+POSIX requires to fail with `EEXIST` when the path names a symbolic
+link (dangling or not), and the pixbuf then goes into the stream that
+create returned, so no second path resolution happens at all. The
+all-pages export uses the same call for its skip-if-present rule.
+
+**Export carries the pending rotation** (#299). `export_page` and both
+menu exports render the page at its pending document rotation — the
+same `rotatedExtent` the on-screen canvas uses, so the file and every
+surface a person can see agree. Export already carried the other two
+pending edits (in-memory annotations, and the page ORDER), and dropping
+only rotation meant an agent could call `rotate_page` and then
+`export_page` and get an unrotated PNG with an `ok`. The reply now
+reports the `rotation` it rendered. The R key's *view* rotation is
+never exported: that one is a way of looking at the page, not a change
+to it.
 
 There is deliberately **no save tool** — annotations land in the window
 and the human decides with Ctrl+S whether they reach disk — and

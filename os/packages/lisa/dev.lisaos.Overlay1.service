@@ -1,0 +1,13 @@
+# D-Bus activation for the headless overlay backend (PLAN §5.7.1).
+#
+# `SystemdService=` is the whole point of this file living here rather
+# than beside the surface (#294). Without it `dbus-daemon` forks the
+# backend itself: no unit, no sandbox, no journal identity, and nothing
+# for os/repo-tools/check-egress-units.py to discover — the gate reads
+# systemd install lines, so a process with no unit is not in any bucket
+# at all. With it, activation goes through the user manager and
+# lisa-overlayd.service's confinement applies.
+[D-BUS Service]
+Name=dev.lisaos.Overlay1
+Exec=/usr/bin/lisa-app overlay-extension/backend/lisa-overlayd.js
+SystemdService=lisa-overlayd.service

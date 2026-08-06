@@ -1,0 +1,18 @@
+# D-Bus activation for push-to-talk capture (PLAN §5.7.5).
+#
+# Same executable and the same unit as dev.lisaos.Overlay1: one process
+# owns both names. It still needs its own file, because activation is
+# per-NAME — without it the first key press finds nobody on
+# dev.lisaos.Voice1 and voice only works when something else happened to
+# start the backend first, which is the kind of bug that reproduces for
+# nobody.
+#
+# `SystemdService=` names the same unit deliberately: systemd starts
+# lisa-overlayd.service and waits for its BusName=dev.lisaos.Overlay1,
+# and the process claims Voice1 in the same run. See #294 for why a
+# bare `Exec=` here was a process outside every sandbox and outside the
+# egress gate's population.
+[D-BUS Service]
+Name=dev.lisaos.Voice1
+Exec=/usr/bin/lisa-app overlay-extension/backend/lisa-overlayd.js
+SystemdService=lisa-overlayd.service

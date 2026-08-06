@@ -1,0 +1,81 @@
+# lisa-overlayd — the headless overlay backend (PLAN §5.7.1, §5.7.5).
+#
+# Owns TWO session-bus names, dev.lisaos.Overlay1 (state and token
+# streams for the overlay surface) and dev.lisaos.Voice1 (push-to-talk
+# capture), in one process. Both activation files point here, which is
+# what SystemdService= is for: activation is per-name, the process is
+# one.
+#
+# WHY THIS UNIT EXISTS AT ALL (#294). Until it did, the two activation
+# files carried a bare `Exec=` and no `SystemdService=`, so
+# `dbus-daemon` spawned the backend ITSELF. A process started that way
+# gets no unit, and therefore no sandbox of any kind — it inherits the
+# session's whole ambient environment — and it is invisible to
+# os/repo-tools/check-egress-units.py, which discovers its population
+# from systemd install lines. Not in `no-egress`, not in `egress`, not
+# even in `out-of-scope`: absent. This is the process that historically
+# hosted the model (#145), so "nobody classified it" was the wrong
+# answer twice over. Routing activation through systemd puts the
+# backend inside a unit, and the unit inside the gate.
+#
+# No [Install] section, deliberately: this is started by activation,
+# not by login. The gate reads installer lines rather than [Install]
+# for exactly that reason — a D-Bus-activated unit's [Install] lies by
+# omission.
+
+[Unit]
+Description=Lisa overlay backend (dev.lisaos.Overlay1, dev.lisaos.Voice1)
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=dev.lisaos.Overlay1
+# Through `lisa-app` so the CURRENT apps tree wins (ADR-0020): the
+# surface is updated by `lisa apps update`, and a unit that spelled
+# /usr/share/lisa/shell here would pin the backend to whatever the
+# package shipped. `check-egress-units.py` resolves this launcher to
+# the surface it names, so the gate classifies `lisa-overlayd` and not
+# the launcher — see LAUNCHERS there.
+ExecStart=/usr/bin/lisa-app overlay-extension/backend/lisa-overlayd.js
+Restart=on-failure
+RestartSec=2
+
+# WHAT THIS SANDBOX IS, AND IS NOT — the same honesty
+# lisa-inferenced-dbus.service was rewritten for (#288).
+#
+# This is a per-user unit, so IPAddressDeny= is INERT: it is a cgroup
+# BPF program and an unprivileged user manager cannot load one. It is
+# here as the second layer (live when these directives are applied in
+# system scope by tests/e2e/egress-test.sh) and because the static gate
+# requires it, so that losing it is noticed.
+#
+# The directive that would actually confine an unprivileged unit is
+# RestrictAddressFamilies=, and this backend cannot take AF_UNIX today:
+# it POSTs /v1/chat/completions to http://127.0.0.1:7778 through
+# libsoup, which has no unix-socket transport. That is the OTHER END of
+# the socket lisa-inferenced-dbus.service is already in
+# USER_SCOPE_INET_DEBT for; both entries retire together, when :7778 is
+# socket-activated or the two GJS callers move onto
+# dev.lisaos.Inference1. Until then this unit is listed there too — a
+# debt, not a dispensation.
+#
+# Loopback only, and that is the posture: the conversation leaves this
+# machine, if at all, from inferenced through lisa-remoted, which gates
+# it on per-scope consent and ledgers it (rule 5).
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+UMask=0077
+# NO MemoryDenyWriteExecute: the surface is GJS, and SpiderMonkey's JIT
+# needs writable-then-executable pages. Setting it would not harden the
+# backend, it would stop it starting — a directive that looks like
+# security and is a crash.
+#
+# NO ProtectHome/ProtectKernel*/Private*: in a per-user unit those imply
+# a private user namespace, inside which no peer's /proc/<pid>/exe is
+# readable — which breaks every ADR-0033 identity decision on this
+# session (#161). check-user-units.py enforces that; see its docstring.
