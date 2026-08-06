@@ -20,18 +20,52 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// A base directory OUTSIDE `/tmp`.
+/// A base directory provably OUTSIDE every tree the jail grants.
 ///
 /// `std::env::temp_dir()` is in the writable set on purpose (a build
-/// needs scratch space), so a probe that writes into a `tempfile`
-/// tempdir would succeed whether or not the jail closed and prove
-/// nothing. `CARGO_TARGET_TMPDIR` is under `target/`, which is granted
-/// to nothing.
+/// needs scratch space), so a probe written under it succeeds whether or
+/// not the jail closed and proves nothing.
+///
+/// This used to take `CARGO_TARGET_TMPDIR` and assert in a comment that
+/// it was "granted to nothing". That is true when the checkout is in
+/// `$HOME` — and false in the packaging lane, where makepkg builds under
+/// `/tmp/tmp.XXXXXX/src/lisa-0.1.0/`, so `target/` is under `/tmp` and
+/// every probe landed INSIDE the writable set. All seven writes
+/// succeeded and the suite reported that Landlock had failed. It had
+/// not: the test was measuring the inside of the box (#310).
+///
+/// So the premise is now CHECKED, against `confine::writable_roots` —
+/// the same list the ruleset is built from, not a copy of it. If no
+/// candidate is outside, this panics with the candidates and the grants
+/// printed, because a confinement test that cannot find unconfined
+/// ground has nothing to say and must not say "pass".
 fn base(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("confinement-{name}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("target tmpdir");
-    dir
+    let home = forge_harness::confine::user_home();
+    let candidates = [
+        Path::new(env!("CARGO_TARGET_TMPDIR")).to_path_buf(),
+        home.join(".cache/lisa-confinement-tests"),
+        PathBuf::from("/var/tmp/lisa-confinement-tests"),
+    ];
+    // `project` is granted in full, and it is the directory under test,
+    // so ask about the grants that do not depend on it.
+    let granted = forge_harness::confine::writable_roots(Path::new("/nonexistent-project"), &home);
+    for cand in &candidates {
+        let inside = granted.iter().any(|g| cand.starts_with(g));
+        if inside {
+            continue;
+        }
+        let dir = cand.join(format!("confinement-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        if fs::create_dir_all(&dir).is_ok() {
+            return dir;
+        }
+    }
+    panic!(
+        "no probe directory outside the jail's writable set — every candidate \
+         is inside it, so this test could only ever report a false failure.\n\
+         candidates: {candidates:#?}\n\
+         granted:    {granted:#?}"
+    );
 }
 
 /// Landlock needs a kernel that has it. A machine without one is not a

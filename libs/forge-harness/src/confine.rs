@@ -110,27 +110,12 @@ mod imp {
     /// the ability to add to `/dev`.
     const READ_WRITE_FILES: &[&str] = &["/dev", "/proc"];
 
-    /// Trees a build legitimately writes outside the project: the
-    /// package caches and a temp dir. Named explicitly rather than
-    /// inherited, so the list is auditable.
+    /// The writable trees, from the module-level definition.
     ///
-    /// **The cache, not the whole of `~/.cargo` (#309).** `~/.cargo` also
-    /// holds `bin/`, which rustup puts on the user's `$PATH`, and
-    /// `config.toml`, which every later `cargo` invocation reads —
-    /// `[target.'cfg(all())'] runner = […]` there is the same escape #63
-    /// closed at the argv layer, through a different door. A confined
-    /// child that can write either one has arbitrary execution as the
-    /// user, unconfined, the next time they open a terminal. The
-    /// registry is `registry/` and `git/`; those are what a build needs.
-    fn writable_caches(home: &Path) -> Vec<std::path::PathBuf> {
-        vec![
-            home.join(".cargo/registry"),
-            home.join(".cargo/git"),
-            home.join(".pub-cache/hosted"),
-            home.join(".pub-cache/git"),
-            std::env::temp_dir(),
-        ]
-    }
+    /// Deliberately a delegation and not a copy: `writable_roots`
+    /// is what tests reason about, and a jail whose list and a
+    /// test's list can differ is a jail nobody is checking (#310).
+    use super::writable_caches;
 
     /// Toolchains that live in `$HOME` rather than in `/usr`: readable
     /// and executable, never writable.
@@ -341,6 +326,50 @@ mod imp {
 }
 
 pub use imp::{available, confine};
+
+/// The directory trees a confined child may WRITE, for a given project
+/// and home.
+///
+/// Exported so a test can ask "is my probe path inside the jail?"
+/// against the real list instead of a second copy of it. #310 is why:
+/// `confinement.rs` chose its probe directories under
+/// `CARGO_TARGET_TMPDIR` and asserted in a comment that this was
+/// "granted to nothing". True when the checkout is in `$HOME`. In the
+/// packaging lane makepkg builds under `/tmp`, and `temp_dir()` is in
+/// the writable set on purpose — so every probe was written INSIDE the
+/// jail, all seven succeeded, and the suite reported that Landlock had
+/// failed. It had not. The test was measuring the inside of the box.
+///
+/// A test that hardcoded the list instead would drift the moment this
+/// one changed, which is the same defect one step later.
+pub fn writable_roots(project: &Path, home: &Path) -> Vec<std::path::PathBuf> {
+    let mut roots = vec![project.to_path_buf()];
+    roots.extend(writable_caches(home));
+    roots
+}
+
+/// Trees a build legitimately writes outside the project: the package
+/// caches and a temp dir. Named explicitly rather than inherited, so the
+/// list is auditable — and defined ONCE, here, because the ruleset and
+/// any test that reasons about the ruleset must not consult two lists.
+///
+/// **The cache, not the whole of `~/.cargo` (#309).** `~/.cargo` also
+/// holds `bin/`, which rustup puts on the user's `$PATH`, and
+/// `config.toml`, which every later `cargo` invocation reads —
+/// `[target.'cfg(all())'] runner = […]` there is the same escape #63
+/// closed at the argv layer, through a different door. A confined child
+/// that can write either one has arbitrary execution as the user,
+/// unconfined, the next time they open a terminal. The registry is
+/// `registry/` and `git/`; those are what a build needs.
+pub fn writable_caches(home: &Path) -> Vec<std::path::PathBuf> {
+    vec![
+        home.join(".cargo/registry"),
+        home.join(".cargo/git"),
+        home.join(".pub-cache/hosted"),
+        home.join(".pub-cache/git"),
+        std::env::temp_dir(),
+    ]
+}
 
 /// The home directory whose caches the confinement will make writable.
 ///
