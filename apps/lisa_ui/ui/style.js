@@ -45,7 +45,13 @@ function sheet(dark) {
     const ground = dark ? TOKENS['base'] : TOKENS['warm-white'];
     const tint = dark ? TOKENS['violet-300'] : TOKENS['violet-700'];
     const edge = dark ? alpha(TOKENS['warm-white'], 0.14) : alpha(TOKENS['ink-900'], 0.12);
-    const highlight = dark ? alpha(TOKENS['warm-white'], 0.09) : alpha('#FFFFFF', 0.75);
+    // A single hairline along the top edge, not a wash down the pane.
+    // The first version faded 75% white over 180px, which read as a
+    // BAND rather than a sheen — the top of the sidebar looked like a
+    // different colour from the bottom. css.glass has no gradient in it
+    // either: fill, blur, border, shadow. The sheen was the one thing
+    // here nobody asked for.
+    const highlight = dark ? alpha(TOKENS['warm-white'], 0.14) : alpha('#FFFFFF', 0.65);
 
     // TWO layers, and the first one is the lesson.
     //
@@ -78,7 +84,6 @@ function sheet(dark) {
        only SHOWS where the pane overlaps something — blurring a flat
        window background produces the same flat colour. */
     background-color: ${pane};
-    background-image: linear-gradient(to bottom, ${highlight}, transparent 180px);
     backdrop-filter: blur(${blur}px);
     box-shadow: 0 4px 30px ${shadow};
 }
@@ -90,6 +95,8 @@ function sheet(dark) {
 .lisa-glass-floating {
     border-radius: 14px;
     border: 1px solid ${edge};
+    /* The lit top edge of a pane of glass: one line, not a gradient. */
+    box-shadow: inset 0 1px 0 ${highlight}, 0 4px 30px ${shadow};
 }
 
 /* The seam between a glass pane and the content beside it. A hairline,
