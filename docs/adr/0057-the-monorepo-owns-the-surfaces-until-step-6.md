@@ -7,6 +7,10 @@
   direction, its schedule and its ordering
 - **Related:** ADR-0048 (Lisa Desktop is a desktop), ADR-0056 (`lisa_ui`
   is the dialect) §"One package, built from the monorepo"
+- **Claims:**
+  - `symbol:conflicts=\(lisa-desktop lisa-apps\)@os/packages/lisa/PKGBUILD` — `lisa-shell` declares the conflict this ADR decided
+  - `symbol:conflicts=\(lisa-desktop-ime\)@os/packages/lisa/PKGBUILD` — and `lisa-ime` the IME half
+  - `path:os/repo-tools/check-package-paths.py` — the gate that reads the published index rather than this tree
 
 ## Context
 

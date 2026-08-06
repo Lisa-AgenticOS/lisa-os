@@ -8,6 +8,9 @@
   made `Verdict::Deny` absolute with no override at all
 - Relates: PLAN §5.4 (Agent Bus), §5.10 + Appendix C (provenance,
   injection), `docs/VISION.md`, issues #55, #54, #53
+- **Claims:**
+  - `symbol:pub fn forbid@libs/lisa-guard/src/overrides.rs` — the owner's out-of-band relaxation
+  - `symbol:fn no_tool_call_reaches_a_dialog_that_could_approve_it@libs/lisa-guard/tests/corpus.rs` — the boundary, as a corpus entry rather than a principle
 
 ## Context
 

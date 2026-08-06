@@ -9,6 +9,9 @@
 - Relates: ADR-0020 (app update channel), ADR-0001/0003 (Track I image),
   issue #37 (Flutter SDK to /var), issue #46 (the 23 GiB flash pain that
   prompted this), M7 (installer/OOBE)
+- **Claims:**
+  - `symbol:SizeMaxBytes=10G@os/mkosi/mkosi.repart/10-root.conf` — phase 3 reverted; the slot is back at 10G
+  - `absent:os/packages/zen-browser` — phase 1: the baked browser left both lanes (#89)
 
 ## Context
 

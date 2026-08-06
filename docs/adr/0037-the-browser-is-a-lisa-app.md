@@ -12,6 +12,10 @@
   boundary), ADR-0036 (triggers and trust), PLAN §5.4, §5.8
 - Supersedes nothing. It closes the "which browser" question that
   Ladybird and a Zen fork were both candidates for.
+- **Claims:**
+  - `path:apps/surfer/app.lisaos.Surfer.json` — Surfer as an agent surface
+  - `symbol:navigate@apps/surfer/app.lisaos.Surfer.json` — the write-tier tools that landed 2026-08-03 (#166)
+  - `symbol:app.lisaos.Surfer@os/packages/lisa/PKGBUILD` — shipped in the image
 
 ## Context
 

@@ -1,11 +1,16 @@
 # ADR-0014: lisa_ui becomes the kit Lisa apps import — Material-backed now, vendored fork later
 
-- **Status:** superseded in part by ADR-0047 — `lisa_ui` keeps the name and
-  the role, but it is now the shared **GJS/GTK4** library rather than a
-  Material-backed Flutter kit, and the vendored-fork endgame is parked with
-  the lane. The argument for owning the kit stands; the toolkit it named
-  does not.
+- **Status:** superseded in part by ADR-0047, and again by ADR-0056 —
+  `lisa_ui` keeps the name and the role, but the toolkit it named is gone
+  and **the library does not exist**. Corrected 2026-08-06: this line read
+  "it is now the shared GJS/GTK4 library", which claimed as built the one
+  thing ADR-0047 records as not built. The Dart lane was deleted on
+  2026-08-06 (`d1bdc18`), `libs/lisa_ui` and `libs/lisa_flutter` are both
+  absent, and ADR-0056 is the record of what `lisa_ui` will be when it is
+  written. The argument for owning the kit stands; nothing implements it.
 - **Date:** 2026-07-24
+- **Claims:**
+  - `absent:libs/lisa_ui` — the library this ADR names does not exist; the claim goes red the day it does, which is when the status needs rewriting again
 
 ## Context
 

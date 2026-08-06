@@ -2,6 +2,9 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-24
+- **Claims:**
+  - `path:os/mkosi/mkosi.extra/usr/lib/repart.d/60-home.conf` — /home is a real partition
+  - `symbol:PARTLABEL=home@os/mkosi/mkosi.extra/etc/fstab` — and it is mounted the same pinned way as /var
 
 ## Context
 

@@ -5,6 +5,9 @@
   output, and Flutter is parked. The Forge itself (PLAN §5.12.1) stands, and
   the spike findings at the foot of this file stand as history.
 - **Date:** 2026-07-20
+- **Claims:**
+  - `path:libs/forge-harness/src/agent.rs` — the Forge stands; only the lane split was superseded
+  - `absent:libs/lisa_flutter` — the Flutter half is parked and, since 2026-08-06, deleted
 
 ## Context
 

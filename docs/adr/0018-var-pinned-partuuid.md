@@ -2,6 +2,10 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-24
+- **Claims:**
+  - `symbol:PARTLABEL=var@os/mkosi/mkosi.extra/etc/fstab` — the mount, from fstab as the Decision chose
+  - `symbol:systemd.gpt_auto=no@os/mkosi/mkosi.conf` — gpt-auto off, which is what makes the pin load-bearing
+  - `absent:os/mkosi/mkosi.extra/usr/lib/systemd/system/var.mount` — the unit two sentences in this file still credit does not exist
 
 ## Context
 
@@ -75,3 +79,12 @@ with **no disk surgery**.
   disk backing `/` via drop-ins over the fstab units; `lisa install` runs
   `btrfstune -m` on every copied btrfs so fsids never collide; and the
   fstab `PARTLABEL=` sources remain as the fallback for the one-disk case.
+
+*Status note, 2026-08-06 (ADR status audit): the Decision chose fstab over
+a `var.mount` unit and the Consequences above still say "the explicit
+`var.mount` is what drives the mount". No `var.mount` exists — there is no
+unit file for it anywhere under `os/mkosi/mkosi.extra/usr/lib/systemd/system/`,
+and the mount comes from `PARTLABEL=var /var btrfs` in
+`os/mkosi/mkosi.extra/etc/fstab`, exactly as the Decision says. The same
+phantom unit is cited in `os/mkosi/mkosi.repart/20-var.conf`'s comment. The
+mechanism is right; two sentences describing it are not.*

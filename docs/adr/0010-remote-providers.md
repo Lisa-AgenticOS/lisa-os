@@ -4,6 +4,10 @@
   provider traffic; PKCE state fixed (#110). A live sign-in on the device is
   still the outstanding confirmation.
 - **Date:** 2026-07-22
+- **Claims:**
+  - `symbol:exchange_sends_state@daemons/remoted/src/oauth.rs` — the PKCE state fix (#110)
+  - `path:daemons/remoted/src/proxy.rs` — the egress broker itself
+  - `symbol:lisa-remoted@os/repo-tools/check-egress-units.py` — and the gate that keeps it the only door out
 
 ## Context
 

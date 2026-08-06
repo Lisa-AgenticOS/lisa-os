@@ -3,6 +3,10 @@
 - **Status:** accepted — the addon builds against fcitx5 in CI and its
   protocol logic is unit-tested (`just ime-test`).
 - **Date:** 2026-07-22
+- **Claims:**
+  - `symbol:^ime-test:@justfile` — the unit tests the status names
+  - `path:ime/fcitx5-lisa/CMakeLists.txt` — the addon
+  - `symbol:ime-build:@.github/workflows/ci.yml` — built against fcitx5 in CI
 
 ## Context
 

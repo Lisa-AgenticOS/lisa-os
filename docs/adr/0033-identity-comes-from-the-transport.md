@@ -9,6 +9,10 @@
   Appendix C; issues #55, #56, #93, #94, #97, #99, #100, #101, #106,
   #107, #108
 - Implements: `libs/lisa-peer`
+- **Claims:**
+  - `path:libs/lisa-peer/src/lib.rs` — the primitive
+  - `symbol:lisa-peer@daemons/agentd/Cargo.toml` — linked where identity is decided
+  - `nomatch:lisa-peer@daemons/inferenced/Cargo.toml` — and the unfinished sweep, made checkable rather than asserted
 
 ## Context
 

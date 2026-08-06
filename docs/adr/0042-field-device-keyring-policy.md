@@ -6,6 +6,8 @@
 - Date: 2026-08-03
 - Relates: #168 (where the hang was found), the mail token fail-fast
   (cli/lisa/src/mail.rs), M7 installer (where the real policy lands)
+- **Claims:**
+  - `symbol:fn login_keyring_locked@cli/lisa/src/mail.rs` — the fail-fast this ADR decided; the visit it awaits is not checkable from a tree
 
 ## Context
 

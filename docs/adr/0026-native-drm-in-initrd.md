@@ -4,6 +4,9 @@
 - **Date:** 2026-07-26
 - **Amends:** [ADR-0017](0017-plymouth-in-initrd.md) (the "amdgpu is
   intentionally NOT forced into the initrd" clause of its Decision)
+- **Claims:**
+  - `symbol:amdgpu@os/mkosi/mkosi.conf` — the native DRM drivers in the initrd
+  - `path:os/mkosi/initrd-overlay/usr/lib/modules-load.d/lisa-drm.conf` — loaded early, ahead of the splash
 
 ## Context
 

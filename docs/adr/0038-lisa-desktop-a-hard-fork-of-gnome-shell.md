@@ -16,6 +16,10 @@
   strategy), issue #146
 - Supersedes: PLAN §3's "we patch, we don't fork the Shell **yet**"
   (§3:80). This is the Phase 3 decision that line deferred.
+- **Claims:**
+  - `path:branding/tokens.json` — step 1, the design tokens
+  - `path:os/repo-tools/check-tokens.py` — and the gate that makes them binding
+  - `path:shell/desktop/extension.js` — step 3 has not absorbed this: `shell/desktop` here is still an extension
 
 ## Context
 

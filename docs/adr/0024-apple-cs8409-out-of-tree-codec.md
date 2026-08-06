@@ -6,6 +6,9 @@
   sound through it (#44).
 - **Date:** 2026-07-25
 - **Issue:** #44
+- **Claims:**
+  - `path:os/packages/lisa-audio-cs8409/PKGBUILD` — the out-of-tree codec
+  - `symbol:_bail@os/packages/lisa-audio-cs8409/PKGBUILD` — a mismatched pin fails the build loudly, by design
 
 ## Context
 

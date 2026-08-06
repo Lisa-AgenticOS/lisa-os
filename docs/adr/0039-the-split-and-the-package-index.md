@@ -22,6 +22,10 @@
   paths take no dependency we do not control), ADR-0038 (Lisa Desktop
   is a hard fork of GNOME Shell), PLAN §3 (packaging economics), PLAN §9
 - Extends, does not supersede, ADR-0006. See "What ADR-0006 got right".
+- **Claims:**
+  - `path:os/mkosi/mkosi.pkgmngr/etc/pacman.d/lisa.conf` — step 4, the image build reads the index
+  - `path:shell/launcher` — step 6 is untouched: the surfaces are still in this repo
+  - `path:apps/mail` — and so is the app tree
 
 ## Context
 
@@ -215,3 +219,16 @@ wrote:
   receiving commits**, the split has failed in the specific way splits
   fail — two sources of truth — and the fix is to complete the removal,
   not to keep syncing.
+
+*Status note, 2026-08-06 (ADR status audit): **amended by ADR-0057**, which
+this file had no pointer to. ADR-0057 reverses this ADR's stated intent
+that `lisa-desktop` owns the shell surfaces and the IME: the monorepo keeps
+them, and `lisa-desktop` narrows in practice to the GNOME Shell fork, until
+step 6 happens as a source migration rather than a packaging change. It
+also measures the cost of the undone step 6 — 94 paths colliding across
+three package pairs in the signed index, none of them declaring
+`conflicts` — which is this ADR's own failure clause having fired. One
+further drift in the status line above: since ADR-0051 phase 2, the ports
+(`lisa-desktop-control-center` among them) no longer arrive through
+release.yml's locally built `PackageDirectories=` but prebuilt and
+sha256-pinned from the rolling `ports` release.*

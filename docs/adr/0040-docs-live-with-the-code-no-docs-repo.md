@@ -8,6 +8,9 @@
 - Relates: CLAUDE.md rule 10 (document everything we build, only what
   exists), ADR-0039 (the split), #175 (the OS knowledge pack),
   lisaos.dev (the developer portal, task of 2026-07-24)
+- **Claims:**
+  - `path:os/repo-tools/build-knowledge.py` — the one curation step
+  - `symbol:build-knowledge.py --check@justfile` — gated by just lint, not by habit
 
 ## Context
 

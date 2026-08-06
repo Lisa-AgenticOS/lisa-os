@@ -2,12 +2,20 @@
 
 - **Status:** accepted, partially executed — one loop exists: the Assistant
   runs on `dev.lisaos.Harness1` and reaches the Agent Bus through
-  `bus-tools`. Skills carry an enforced tool allowlist that no shipped skill
-  populates (#245); phase 5 (Crons) is not started.
+  `bus-tools`. Skills carry an enforced tool allowlist (`Skill::allowed_by`,
+  `libs/harness-core/src/skill.rs`), and — corrected 2026-08-06 — the one
+  shipped skill now populates it: `skills/build-lisa-app/SKILL.md` carries a
+  `tools:` line, which is what #245 was. Phase 5 (Crons) is not started, and
+  nothing in the tree schedules an agent run.
 - Date: 2026-07-26
 - Relates: ADR-0013 (harness program, the pillar model), ADR-0009 (Agent
   Bus), ADR-0015 (Assistant), PLAN §5.4 / §5.12.1, issue #25
 - Supersedes nothing; it unifies what ADR-0013 started
+- **Claims:**
+  - `symbol:dev.lisaos.Harness1@daemons/harnessd/src/dbus.rs` — the one loop
+  - `symbol:fn allowed_by@libs/harness-core/src/skill.rs` — the enforced tool allowlist
+  - `symbol:^tools:@skills/build-lisa-app/SKILL.md` — which the one shipped skill now populates (#245)
+  - `symbol:fn a_skills_allowlist_actually_narrows_what_the_loop_will_run@libs/forge-harness/src/agent.rs` — and the test that fails if it stops narrowing
 
 ## Context
 

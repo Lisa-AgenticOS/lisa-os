@@ -12,6 +12,10 @@
 - Relates: ADR-0019 (dedicated /home), ADR-0020 (app channel), ADR-0023
   (slim core, /var grows), ADR-0029/0030 (guardrails), PLAN §3, §6
 - Supersedes nothing; establishes two rules other ADRs will lean on
+- **Claims:**
+  - `symbol:fn guard_disk@cli/lisa/src/devbox.rs` — the /home disk guard that measures the store's own filesystem
+  - `symbol:NEVER_SHIM@cli/lisa/src/devbox.rs` — shims that refuse to shadow anything on PATH
+  - `symbol:fn the_box_cannot_reach_lisas_own_data_or_sockets@cli/lisa/src/devbox.rs` — the isolation test with its positive control
 
 ## Context
 

@@ -2,6 +2,9 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-24
+- **Claims:**
+  - `path:shell/assistant/app.lisaos.Assistant.desktop` — app.lisaos.* for apps
+  - `symbol:Name=dev.lisaos.Context1@os/packages/lisa/dev.lisaos.Context1.service` — dev.lisaos.* for the OS
 
 ## Context
 

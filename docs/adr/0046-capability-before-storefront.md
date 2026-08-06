@@ -10,6 +10,9 @@
   the transport).
 - **Anticipated by:** ADR-0023, which names third-party app distribution as
   a *future* goal rather than a current one.
+- **Claims:**
+  - `symbol:fn apply_tier_floor@daemons/agentd/src/manifest.rs` — the capability this ADR says must come before a storefront
+  - `path:daemons/agentd/src/registry.rs` — the registry it is enforced from
 
 ## Context
 

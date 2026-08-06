@@ -1,7 +1,17 @@
 # ADR-0051 — Third-party packages are built on change and consumed by pin, not rebuilt per release
 
-- **Status:** accepted, partially executed
+- **Status:** accepted, partially executed — phases 1 and 2 are done.
+  Corrected 2026-08-06: §"Status of execution" below lists the release.yml
+  switch from building to fetching as "not yet done", and it landed in
+  `1acbf42` — `release.yml` now pulls every port from the rolling `ports`
+  release and `sha256sum -c`s it against `os/packages/ports.lock`, refusing
+  a mismatch. Still open: `lisa-desktop-online-accounts` is absent from the
+  lock because its build refuses the placeholder client secret (#276).
 - **Date:** 2026-08-05
+- **Claims:**
+  - `path:os/packages/ports.lock` — the pin
+  - `path:os/repo-tools/build-port.sh` — the one place the makepkg flags live
+  - `symbol:ports.lock@.github/workflows/release.yml` — phase 2: the release fetches and verifies instead of building
 
 ## Context
 
@@ -99,3 +109,15 @@ sync afterwards.
   The ports.yml summary prints the exact lock lines to paste, and the
   release build refuses a lock/artifact mismatch, so forgetting the
   second commit is loud, not silent.
+
+*Status note, 2026-08-06 (ADR status audit): §"Status of execution" above
+is kept as written and its "not yet done" is done. The release.yml switch
+landed in `1acbf42`: the job now fetches each port from the rolling `ports`
+release and pipes it through `sha256sum -c` against `os/packages/ports.lock`,
+failing the build on a mismatch rather than shipping it. Two names in the
+Decision are also stale — `zen-browser` left the image (ADR-0023) and the
+g-c-c/GOA forks were renamed, so the port set in `.github/workflows/ports.yml`
+is llama.cpp, whisper.cpp, piper, `lisa-desktop-control-center` and
+`lisa-desktop-online-accounts`. The last of these is still out of the lock,
+and the blocker is sharper than "needs a seated device check": its build
+refuses to run against the placeholder client secret (#276).*

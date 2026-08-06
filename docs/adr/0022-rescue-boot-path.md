@@ -16,6 +16,10 @@
   ships in `os/mkosi/initrd-overlay/` and the nightly asserts it inside the
   built UKI. The rescue *entry* is still not installed, for the unrelated
   sd-boot default-selection reason in issue #23.
+- **Claims:**
+  - `path:os/mkosi/initrd-overlay/usr/lib/lisa/newest-good-root.sh` — the phase-3 resolver
+  - `symbol:ab-recovery:@.github/workflows/nightly.yml` — proven by execution, not asserted
+  - `path:os/mkosi/make-rescue-uki.sh` — the entry that exists and is not installed (#23)
 
 ## Context
 

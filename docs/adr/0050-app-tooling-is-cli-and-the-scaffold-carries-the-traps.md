@@ -3,7 +3,9 @@
 - **Status:** accepted, partially executed — the checker exists and the
   scaffold does not. `lisa dev check` is built (`cli/lisa/src/dev.rs`)
   and is the Forge's default verifier
-  (`Verifier::Command { program: "lisa", args: ["dev", "check"] }`,
+  (`Verifier::Command { program: <current_exe>, args: ["dev", "check"] }` —
+  the running binary rather than the string `"lisa"`, so the verifier cannot
+  pick up a different `lisa` from `$PATH`; corrected 2026-08-06,
   `cli/lisa/src/main.rs` `default_verifier`), which is how #243 closed;
   `lisa dev doctor` is built beside it, and `lisa dev` also carries
   ADR-0034's rootless dev box (`install`/`remove`/`list`/`shell`/`reset`,
@@ -24,6 +26,10 @@
   #241, #243
 - **Supersedes nothing.** It decides the *shape* of app-authoring tooling,
   which no ADR had claimed.
+- **Claims:**
+  - `symbol:fn check@cli/lisa/src/dev.rs` — `lisa dev check`, the single authority on a valid app tree (§4)
+  - `symbol:default_verifier@cli/lisa/src/main.rs` — the Forge runs `lisa dev check` as its verifier
+  - `path:cli/lisa/src/devbox.rs` — `lisa dev install|remove|list|shell|reset` (ADR-0034's box, same verb)
 
 ## Context
 

@@ -3,6 +3,10 @@
 - **Status:** accepted — both tracks ship: Track L installs onto stock Arch
   from the signed `[lisa]` index, Track I is the released image.
 - **Date:** 2026-07-20
+- **Claims:**
+  - `path:os/layer/install.sh` — Track L, onto stock Arch
+  - `symbol:\[lisa\]@os/layer/install.sh` — from the signed index
+  - `path:os/mkosi/mkosi.conf` — Track I, the released image
 
 ## Context
 

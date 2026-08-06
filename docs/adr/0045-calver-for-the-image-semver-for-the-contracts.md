@@ -5,6 +5,8 @@
 - Date: 2026-08-04
 - Relates: ADR-0001 (A/B image), ADR-0039 (per-repo packages),
   ADR-0016 (versioned D-Bus interface names)
+- **Claims:**
+  - `symbol:Name=dev.lisaos.Context1@os/packages/lisa/dev.lisaos.Context1.service` — SemVer on the contract, in the name itself
 
 ## Decision
 

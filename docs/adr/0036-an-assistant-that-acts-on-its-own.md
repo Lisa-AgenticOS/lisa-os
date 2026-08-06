@@ -1,13 +1,25 @@
 # ADR-0036: An assistant that acts on its own — triggers, trust, and what happens when nobody is watching
 
-- **Status:** proposed — design only, no code; it depends on ADR-0025's
-  loop, which exists, and on triggers, which do not.
+- **Status:** accepted, partially executed — corrected 2026-08-06 from
+  "proposed — design only, no code". §6 shipped: `ShellTool`
+  (`libs/forge-harness/src/shell_tool.rs`) is the one shell tool for the
+  long tail, and all four of its conditions are code — jailed and
+  Landlock-confined (#307), guard-checked through `lisa_guard`, never
+  Silent, and never unattended (the consent callback is the only
+  constructor). §1–§5 — trigger classes, the unattended ceiling, standing
+  grants and the "while you were away" review surface — are still design,
+  and the triggers this ADR is named for do not exist.
 - Date: 2026-07-27
 - Source: product decision, Flakerim, 2026-07-27 — *"we want to be alive"*
 - Relates: ADR-0029/0030 (guardrails and the boundary), ADR-0025 (one
   agent loop), ADR-0013 (intent routing), PLAN §5.4, §5.10, Appendix C
 - Supersedes nothing; it changes an assumption every earlier guardrail
   ADR was written under
+- **Claims:**
+  - `path:libs/forge-harness/src/shell_tool.rs` — §6's shell tool for the long tail
+  - `symbol:check_shell_line@libs/forge-harness/src/shell_tool.rs` — §6 condition 2: every line goes through `lisa-guard` first
+  - `symbol:confine_command@libs/forge-harness/src/shell_tool.rs` — §6 condition 1: the child is Landlock-confined (#307)
+  - `symbol:fn the_shell_tool_child_is_confined_to_the_project@libs/forge-harness/tests/confinement.rs` — the test that proves condition 1 rather than asserting it
 
 ## Context
 
@@ -196,3 +208,17 @@ conversational turn can propose the command — and the false positives
 Nothing is implemented. The tier machinery, provenance tags, Ledger and
 undo journal it builds on all exist; the trigger classes, grants and the
 review surface do not.
+
+*Status note, 2026-08-06 (ADR status audit): the paragraph above is no
+longer true and is kept as written, because it was true on 2026-07-27.
+§6 shipped. `libs/forge-harness/src/shell_tool.rs` is the shell tool, it
+is a separate `ToolProvider` a caller must pass explicitly, and each of
+the four conditions is enforced in code rather than in a prompt:
+`Jail` plus `confine_command` for (1), `lisa_guard::check_shell_line`
+for (2), the mandatory consent callback for (3) and (4). The guard
+batch this section calls a gate — #117-#125 — was worked, and #307-#310
+landed against this ADR on 2026-08-06. What is still design is §1-§5:
+there are no trigger classes, no schedules, no standing grants, and no
+"while you were away" review view, so the shell tool today is only ever
+reached from a prompt with a person at it — which is condition 4
+holding by construction rather than by policy.*

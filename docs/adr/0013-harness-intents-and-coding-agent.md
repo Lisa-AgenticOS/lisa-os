@@ -4,6 +4,10 @@
   the policy layer shipped in `libs/harness-core` and `lisa forge` runs on
   them. Remaining pillar: Crons, deliberately last (ADR-0025 phase 5).
 - **Date:** 2026-07-24
+- **Claims:**
+  - `symbol:pub struct Skill@libs/harness-core/src/skill.rs` — the Skills pillar
+  - `path:libs/harness-core/src/session.rs` — Sessions
+  - `path:libs/harness-core/src/memory.rs` — Memory
 
 ## Context
 

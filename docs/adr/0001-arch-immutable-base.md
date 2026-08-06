@@ -3,6 +3,10 @@
 - **Status:** accepted — the mkosi/UKI A/B image builds, boots, and
   demonstrates update *and* rollback in CI.
 - **Date:** 2026-07-20
+- **Claims:**
+  - `path:os/mkosi/mkosi.conf` — the mkosi/UKI image lane
+  - `symbol:ab-rollback:@.github/workflows/nightly.yml` — rollback demonstrated in CI, not asserted in prose
+  - `symbol:ab-sysupdate:@.github/workflows/nightly.yml` — and update
 
 ## Context
 

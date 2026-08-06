@@ -1,10 +1,15 @@
 # ADR-0029: Hard guardrails for agent actions — policy outside the model
 
 - **Status:** accepted, partially executed — phases 1–3 implemented, with
-  three adversarial review rounds folded in (corpus 49 → 128 denied). Open:
-  Landlock confinement of forge subprocesses (#53), and `lisa suggest` still
-  emits a shell string rather than the structured argv this ADR's own
-  post-mortem calls for (#88).
+  three adversarial review rounds folded in (corpus 49 → 128 denied).
+  Corrected 2026-08-06: this line named two open items and **both had
+  shipped** — Landlock confinement (#53) landed 2026-07-31 in
+  `libs/forge-harness/src/confine.rs` with `tests/confinement.rs` behind it,
+  and `lisa suggest` has returned structured `{program, args}` steps since
+  2026-07-31 (`cli/lisa/src/terminal.rs`, #88). §"Phase 3, implemented" in
+  this file recorded the first one on 2026-08-02 and the status line was
+  left behind, which is the exact failure that section warns about. Open:
+  the network, which Landlock 0.4 does not reach.
 - Date: 2026-07-26
 - Relates: ADR-0025 (one agent loop), PLAN §5.4 (Agent Bus), §5.10 +
   Appendix C (provenance, injection), §5.12.1 (forge tool jail), M5
@@ -18,6 +23,11 @@
   out-of-band, via `lisa guard allow` — and still unreachable from inside
   the probabilistic system, which is the property that actually mattered.
   Read ADR-0030 for where the boundary falls and the test for it.
+- **Claims:**
+  - `path:libs/forge-harness/src/confine.rs` — phase 3, Landlock (#53) — shipped, contrary to the old status
+  - `symbol:fn a_confined_child_cannot_write_cargo_bin_or_cargo_config@libs/forge-harness/tests/confinement.rs` — with a positive control behind it
+  - `symbol:fn screen_steps_with@cli/lisa/src/terminal.rs` — judgement runs on argv, not on a shell string (#88)
+  - `path:libs/lisa-guard/src/rules.rs` — the policy crate the model cannot reach
 
 ## Context
 

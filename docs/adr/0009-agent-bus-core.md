@@ -7,6 +7,10 @@
   activation (`mcp.activatable` is declared and unimplemented), and the §5.4
   acceptance flow end to end.
 - **Date:** 2026-07-22
+- **Claims:**
+  - `symbol:pub struct McpDispatcher@libs/mcp-bus/src/dispatcher.rs` — MCP rides per-app unix sockets
+  - `path:daemons/agentd/src/journal.rs` — the undo journal
+  - `symbol:pub activatable@daemons/agentd/src/manifest.rs` — `mcp.activatable`, declared and still unimplemented
 
 ## Context
 
@@ -99,3 +103,15 @@ resident model, assert the emitted plan) is deferred with the transport.
 - `libs/mcp-bus` does not exist yet; the `Dispatcher` trait is the seam
   it will slot into. If the vendored MCP SDK choice changes, only the
   dispatcher implementation moves — the enforcement core does not.
+
+*Status note, 2026-08-06 (ADR status audit): two things in the prose above
+are out of date in the direction that undersells the tree, and are kept as
+written. (1) The Consequences say "no first-party app ships MCP tools yet
+and no live tool executes (NullDispatcher)". `apps/notes/app.lisaos.notes.json`
+declares five tools with tiers and undo pairs, and `daemons/agentd/src/main.rs`
+wires `McpDispatcher`, not `NullDispatcher`. (2) The Decision names the
+guardrail prompt as `daemons/agentd/prompts/system-policy.md`; that path
+does not exist and the file lives at `libs/harness-core/prompts/system-policy.md`.
+The status line's two open items — socket activation for `mcp.activatable`,
+and the §5.4 acceptance flow end to end — were re-verified and are still
+open.*

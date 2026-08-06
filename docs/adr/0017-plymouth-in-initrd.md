@@ -5,6 +5,9 @@
   Plymouth is genuinely in the initrd and asserted in the nightly; the
   splash→desktop handoff has never been seen on hardware (#26).
 - **Date:** 2026-07-24
+- **Claims:**
+  - `symbol:^InitrdProfiles=plymouth@os/mkosi/mkosi.conf` — Plymouth genuinely in the initrd
+  - `path:os/mkosi/initrd-overlay/etc/plymouth/plymouthd.conf` — delivered by ADR-0028's overlay, not by mkosi.initrd
 
 ## Context
 

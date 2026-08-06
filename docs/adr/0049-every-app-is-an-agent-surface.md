@@ -17,6 +17,10 @@
   provenance envelope); issues #240, #219, #97, #56, #57, #147.
 - **Supersedes:** nothing. It names the thing the earlier decisions were
   each solving a corner of.
+- **Claims:**
+  - `symbol:fn apply_tier_floor@daemons/agentd/src/manifest.rs` — tiers at the bus
+  - `path:apps/mail/app.lisaos.Mail.json` — a per-app manifest
+  - `symbol:fn tools_cmd@cli/lisa/src/agent.rs` — `lisa tools`, the discovery surface
 
 ## Context
 

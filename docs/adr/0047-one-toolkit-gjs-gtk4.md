@@ -2,8 +2,13 @@
 
 - **Status:** accepted — GJS + GTK4/Adwaita is the documented default, #37
   is closed won't-do, and PLAN §5.8/§5.12 and ADR-0004 carry the correction.
-  Not yet done: `libs/lisa_ui` becoming the shared GJS library — the MCP
-  edge it is meant to de-duplicate still exists in triplicate.
+  Not yet done: `lisa_ui` becoming the shared GJS library — the MCP edge it
+  is meant to de-duplicate still exists in triplicate (`apps/mail`,
+  `apps/preview` and `apps/surfer` each carry their own `lib/mcp.js` and
+  `lib/mcp-protocol.js`). Corrected 2026-08-06: §2 below parks
+  `libs/lisa_ui` and `libs/lisa_flutter` "in the tree" and they were
+  deleted on 2026-08-06 (`d1bdc18`); the name is reserved and the directory
+  does not exist. ADR-0056 is what it becomes.
 - **Date:** 2026-08-04
 - **Supersedes:** ADR-0004's "Flutter lane" as the *default* for
   user-facing apps and for Forge output. PLAN §5.12 and §314 need the same
@@ -11,6 +16,11 @@
 - **Related:** ADR-0038 (design tokens), ADR-0020 (apps channel), #37
   (ship the Flutter lane on-device — to be closed by this decision), #51
   (Forge).
+- **Claims:**
+  - `path:apps/mail/lib/mcp.js` — the MCP edge, copy 1 of 3
+  - `path:apps/preview/lib/mcp.js` — copy 2
+  - `path:apps/surfer/lib/mcp.js` — copy 3, which is what "still exists in triplicate" means
+  - `absent:libs/lisa_ui` — and the library meant to de-duplicate them does not exist
 
 ## Context
 

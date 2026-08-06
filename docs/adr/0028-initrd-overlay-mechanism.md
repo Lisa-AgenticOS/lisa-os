@@ -7,6 +7,10 @@
   mechanism — a `mkosi.initrd/` overlay directory — does not exist),
   [ADR-0022](0022-rescue-boot-path.md) (phase 2's resolver shipped
   nowhere for the same reason)
+- **Claims:**
+  - `symbol:io.mkosi.initrd@os/mkosi/mkosi.finalize` — the overlay mechanism itself
+  - `path:os/mkosi/initrd-overlay` — the tree it packs
+  - `absent:os/mkosi/mkosi.initrd` — the directory this ADR exists because mkosi does not honour
 
 ## Context
 

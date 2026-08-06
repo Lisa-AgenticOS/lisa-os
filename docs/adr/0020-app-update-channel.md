@@ -4,6 +4,9 @@
   pull payloads. The channel is monolithic, which per-app store versioning
   will have to change (#239).
 - **Date:** 2026-07-25
+- **Claims:**
+  - `symbol:CHANNELS@cli/lisa/src/apps.rs` — the channel table the status calls monolithic
+  - `path:os/packages/lisa/lisa-apps-sync.service` — devices pull payloads on a timer
 
 ## Context
 

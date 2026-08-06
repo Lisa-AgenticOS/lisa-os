@@ -2,6 +2,9 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-21
+- **Claims:**
+  - `symbol:GNU GENERAL PUBLIC LICENSE@LICENSE` — the licence itself
+  - `symbol:GPL-2.0-only@Cargo.toml` — and every crate in the workspace declares it
 
 ## Context
 

@@ -2,6 +2,10 @@
 
 - **Status:** accepted — installed on the device since v20260730.55 (#153).
 - **Date:** 2026-07-22
+- **Claims:**
+  - `path:portals/xdg-desktop-portal-lisa/src/portal.rs` — the standalone service
+  - `path:os/packages/lisa/xdg-desktop-portal-lisa.service` — and the unit that ships it
+  - `symbol:dev.lisaos.portal@portals/xdg-desktop-portal-lisa/src/portal.rs` — its own interface names
 
 ## Context
 
@@ -59,3 +63,14 @@ objects move behind `org.freedesktop.portal.Desktop` unchanged.
 - The portal session ledger lives per-user (`~/.local/share/lisa/`);
   unifying it with the system daemons' StateDirectory ledger is a
   Ledger-app concern (§5.7.6), not a portal one.
+
+*Status note, 2026-08-06 (ADR status audit): the Consequences above say
+the shell owes one more D-Bus service, "the consent dialog", and that
+until it ships first-use grants can only come from
+`dev.lisaos.portal.Grants` or `--consent allow`. It shipped:
+`shell/consent/lisa-consentd.js` with `shell/consent/dev.lisaos.Consent1.service`
+(ADR-0035 §4, #135). The portal's own client still names
+`dev.lisaos.Shell` as the consent bus (`portals/xdg-desktop-portal-lisa/src/consent.rs`)
+while agentd talks to `dev.lisaos.Consent1` — two names for one job, which
+is a real inconsistency and is recorded here rather than fixed in a
+document.*

@@ -6,6 +6,8 @@
 - **Date:** 2026-08-06
 - **Supersedes in part:** ADR-0014 (the Dart `lisa_ui`), which ADR-0047
   had already parked.
+- **Claims:**
+  - `absent:libs/lisa_ui` — the name is free and the directory does not exist; this claim turns red the day it does
 
 ## Context
 

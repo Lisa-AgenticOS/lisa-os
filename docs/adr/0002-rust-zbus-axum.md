@@ -1,8 +1,16 @@
 # ADR-0002: Rust with zbus + axum for system daemons
 
-- **Status:** accepted — every daemon under `daemons/` is Rust on zbus, with
-  axum where there is HTTP.
+- **Status:** accepted — every daemon that serves a bus is Rust on zbus, with
+  axum where there is HTTP (`inferenced`, `remoted`). Corrected 2026-08-06:
+  the word was "every", and `daemons/modeld` has never been on zbus — it
+  declares neither zbus nor axum and ships no unit, because it is the
+  content-addressed store `lisa models` links rather than a running service.
+  CLAUDE.md rule 5 already carried the same correction.
 - **Date:** 2026-07-20
+- **Claims:**
+  - `symbol:^zbus@daemons/inferenced/Cargo.toml` — zbus where there is a bus
+  - `symbol:^axum@daemons/inferenced/Cargo.toml` — axum where there is HTTP
+  - `nomatch:zbus@daemons/modeld/Cargo.toml` — and modeld still is not a bus daemon, which is the 2026-08-06 correction
 
 ## Context
 

@@ -6,6 +6,10 @@
   installer as of this ADR and only mitigated, never verified, in the
   mount path. §"What is not built" is the honest list.
 - **Date:** 2026-08-05
+- **Claims:**
+  - `symbol:fn is_live_session@cli/lisa/src/install_plan.rs` — liveness is read off the booted medium, not a lineage
+  - `path:os/mkosi/mkosi.extra/usr/lib/systemd/system-generators/lisa-boot-disk-generator` — the topology resolver §"What is not built" says fails open
+  - `path:os/mkosi/mkosi.extra/usr/lib/udev/rules.d/59-lisa-boot-disk.rules` — the link_priority scoping the same section calls insufficient
 
 ## Context
 

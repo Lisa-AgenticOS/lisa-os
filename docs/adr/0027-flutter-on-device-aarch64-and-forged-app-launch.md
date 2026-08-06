@@ -10,6 +10,10 @@
   ADR-0019 (home partition), ADR-0020 (app channel + launcher indirection),
   ADR-0021 (aarch64 lane), ADR-0023 (slim core, /var grows), ADR-0025
   (one agent loop / Skills), issue #37
+- **Claims:**
+  - `path:skills/build-lisa-app/SKILL.md` — §3, the part unaffected by ADR-0047
+  - `symbol:/usr/share/lisa/skills@os/packages/lisa/PKGBUILD` — installed where §3 says
+  - `absent:forge/app/lib` — the on-device Flutter build path is parked with the lane
 
 ## Context
 

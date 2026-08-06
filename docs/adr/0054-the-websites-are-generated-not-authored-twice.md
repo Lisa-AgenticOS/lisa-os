@@ -8,6 +8,10 @@
   over `docs/*.md`, derived news/downloads/API reference) have not
   landed and are tracked as one issue.
 - **Date:** 2026-08-05
+- **Claims:**
+  - `path:.github/workflows/web.yml` — phase 0: the sites finally have CI
+  - `symbol:"web"@os/repo-tools/check-tokens.py` — phase 0: `web` is a token surface
+  - `path:branding/tokens.json` — the one palette both sites derive from
 
 ## Context
 

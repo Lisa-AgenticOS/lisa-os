@@ -7,6 +7,9 @@
 - **Relates:** PLAN §5.3 (Settings panel), §5.11 (providers), §8 (local
   model fit); ADR-0008 (remoted); supersedes the standalone-only settings
   plan for the AI surface.
+- **Claims:**
+  - `symbol:cc_lisa_panel_get_type@os/packages/lisa-desktop-control-center/cc-lisa-panel.h` — the panel, at its real path (see the 2026-08-06 note)
+  - `symbol:dev.lisaos.Remote1@os/packages/lisa-desktop-control-center/cc-lisa-panel.c` — provider OAuth, native in C
 
 ## Context
 
@@ -94,3 +97,19 @@ list — deferred.
   on macOS. The panel is written against the fetched 50.3 API to be
   correct-by-construction, and gated on a green package build before it
   reaches an image.
+
+*Status note, 2026-08-06 (ADR status audit): two drifts, recorded rather
+than rewritten. (1) **The package moved.** Everything above names
+`os/packages/gnome-control-center-lisa`; the directory is
+`os/packages/lisa-desktop-control-center` since the 2026-08-05 rename that
+CLAUDE.md's "fork packages replace stock by contract, never by name" rule
+required. Following this ADR to find the package fails. (2) **The panel is
+already at the v2 scope this ADR sequences for later.** Providers, keys and
+OAuth were to stay in `app.lisaos.Settings` until v2, with the panel merely
+linking out; the shipped `cc-lisa-panel.c` speaks `dev.lisaos.Remote1`
+directly and implements sign-in natively (`BeginLogin`, `LoginCompleted`,
+`oauth_capable`). The package also ships a second panel,
+`cc-system-updates-lisa.c`, which this ADR never mentions and which its
+"bounded to two anchored edits plus the panel directory" maintenance
+argument does not cover. ADR-0048 §3 still puts the whole thing on a
+retirement path in favour of `shell/settings`.*

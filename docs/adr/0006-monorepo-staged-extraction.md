@@ -4,6 +4,11 @@
   ADR's own four triggers has fired; the two that fired are ones it could
   not have contained.
 - **Date:** 2026-07-21
+- **Claims:**
+  - `path:models/catalog/catalog.toml` — stage 1 trigger unfired: the catalog is still here
+  - `path:libs/liblisa/Cargo.toml` — stage 2 unfired
+  - `path:libs/forge-harness/Cargo.toml` — stage 3 unfired
+  - `path:ime/fcitx5-lisa/CMakeLists.txt` — stage 4 unfired
 
 ## Context
 
@@ -64,3 +69,15 @@ catalog, published crate), never via git submodules.
   triggers above remain unfired and are recorded as held in ADR-0039:
   no live catalog channel, no external `liblisa` consumer, no shipped
   Flutter app, nothing upstreamed.
+
+*Status note, 2026-08-06 (ADR status audit): the appendix above says
+"Extracted: `lisa-desktop` (`shell/*`, `ime/*`) and `lisa-apps`", and that
+is true of the extraction and not of the removal. ADR-0039 step 6 —
+deleting `shell/` and `apps/` from this repo — was never done, so both
+trees still hold the same source and both are still git-tracked here.
+ADR-0057 (2026-08-06) re-decides which of the two is the owner: the
+monorepo keeps the shell surfaces, the app tree and the IME addon, and
+`lisa-desktop` narrows to the GNOME Shell fork. Read the appendix as
+"copied out", not as "gone from here". This ADR's own four staged
+triggers remain unfired, which is what its status line claims and what
+was verified.*

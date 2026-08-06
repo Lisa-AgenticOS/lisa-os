@@ -12,6 +12,9 @@
   (identity from the transport), PLAN §5.7 (Shell surfaces)
 - Supersedes nothing; changes the *primary* surface established in
   PLAN §5.7.1
+- **Claims:**
+  - `symbol:dev.lisaos.Consent1@shell/consent/lisa-consentd.js` — §4's consent surface, split out of the model host (#135)
+  - `path:shell/consent/dev.lisaos.Consent1.service` — and its activation, so the name has one owner
 
 ## Context
 
@@ -205,3 +208,14 @@ so the next revision has a list rather than a re-derivation:
 Nothing is implemented. Before any of it is, the ADR needs the answers
 above — and the last of them, where the consent dialog lives, is the only
 one that is not a matter of taste.
+
+*Status note, 2026-08-06 (ADR status audit): the paragraph above is kept
+as written and is false as of 2026-08-04. §4 — "the one question that is
+a security decision" — was answered and shipped: `shell/consent/lisa-consentd.js`
+owns `dev.lisaos.Consent1`, `shell/consent/dev.lisaos.Consent1.service`
+activates it, and `daemons/agentd` looks the name's owner up through the
+broker rather than trusting a caller (#135, #216, #289). The status line
+at the head of this file has said so since; this section did not, and a
+reader who trusts the section titled "Status of the work" over the
+status line is the reader this audit exists for. §2's prompt-in-the-dock
+wireframe is still design.*

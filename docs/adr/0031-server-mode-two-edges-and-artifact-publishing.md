@@ -13,6 +13,8 @@
 - Relates: PLAN §5.11 (Personal Compute Node), §5.12 (Forge), M7;
   ADR-0020 (apps channel), ADR-0023 (slim core, /var grows),
   ADR-0029/0030 (guardrails); issues #53, #54, #55
+- **Claims:**
+  - `absent:daemons/serverd` — neither edge exists; the claim goes red the day one does
 
 ## Context
 

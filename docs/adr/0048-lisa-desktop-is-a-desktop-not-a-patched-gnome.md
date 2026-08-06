@@ -20,6 +20,10 @@
   repo), ADR-0046 + Amendment 1 (capability before storefront; build our
   own store; the elementary precedent), ADR-0047 (GJS + GTK4 is the one
   toolkit), issues #170, #208, #239, lisa-desktop#1.
+- **Claims:**
+  - `path:apps/files/README.md` — Files is a README
+  - `path:apps/photos/README.md` — and so is Photos
+  - `path:os/packages/lisa-desktop-control-center/PKGBUILD` — on a retirement path with nothing removed
 
 ## Context
 

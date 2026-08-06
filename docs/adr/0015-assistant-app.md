@@ -2,13 +2,23 @@
 
 - **Status:** accepted, partially executed — the window ships, streams and
   is ledgered on the device, and read-tier tools reach it through
-  `dev.lisaos.Harness1`. No write tier and no memory across conversations
-  (#157). **Widened by ADR-0053:** this ADR's "one headless backend,
+  `dev.lisaos.Harness1`. Corrected 2026-08-06: this line said "no write tier
+  and no memory across conversations (#157)" and **both had shipped** —
+  memory is `shell/assistant/lib/memory.js` against `MemoryList`/`MemoryForget`
+  on `dev.lisaos.Harness1` (`daemons/harnessd/src/dbus.rs`), and the write
+  tier is offered and gated by `bus_tools::write_tier_allowed` with agentd
+  enforcing it (#216), not by any filter in a GJS window. Open: the device
+  acceptance of the write path. **Widened by ADR-0053:** this ADR's "one headless backend,
   many thin frontends" is the pattern Lisa Server extends over a
   network — the GJS window becomes one frontend among several (web,
   API, mobile) rather than *the* Assistant, which makes the backend
   contract public API and something to version deliberately.
 - **Date:** 2026-07-24
+- **Claims:**
+  - `path:shell/assistant/lisa-assistant.js` — the window
+  - `symbol:memory_forget@daemons/harnessd/src/dbus.rs` — memory across conversations (#157), which the old status denied
+  - `symbol:pub fn write_tier_allowed@libs/bus-tools/src/lib.rs` — the write tier, gated rather than absent
+  - `symbol:fn only_a_person_at_a_prompt_with_a_dialog_gets_write_tier@libs/bus-tools/src/lib.rs` — and the test that keeps it gated
 
 ## Context
 

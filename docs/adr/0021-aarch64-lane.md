@@ -1,10 +1,17 @@
 # ADR-0021: aarch64 image lane on an Arch Linux ARM base
 
 - **Status:** accepted, partially executed — the aarch64 image builds and
-  boots in CI on an ALARM base with the same package set as x86_64. No
-  aarch64 image has been published, and ARM has speech in but not out (no
-  onnxruntime on Arch Linux ARM).
+  boots in CI on an ALARM base. Corrected 2026-08-06: "with the same package
+  set as x86_64" stopped being true when ADR-0038's Shell fork landed —
+  `mkosi.conf.d/aarch64.conf` installs **stock** `gnome-shell` and says so,
+  because `lisa-desktop-shell` is `arch=(x86_64)`, so this lane ships a
+  desktop that is not Lisa Desktop. No aarch64 image has been published, and
+  ARM has speech in but not out (no onnxruntime on Arch Linux ARM).
 - **Date:** 2026-07-25
+- **Claims:**
+  - `path:os/mkosi/mkosi.conf.d/aarch64.conf` — the lane
+  - `path:.github/workflows/aarch64-image.yml` — built in CI
+  - `symbol:gnome-shell@os/mkosi/mkosi.conf.d/aarch64.conf` — stock GNOME Shell, the reason the package set is NOT the same
 
 ## Context
 

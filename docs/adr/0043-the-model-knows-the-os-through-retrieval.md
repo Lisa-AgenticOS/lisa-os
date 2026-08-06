@@ -9,6 +9,10 @@
 - Relates: ADR-0040 (docs live with the code; one generator, two
   consumers), ADR-0029/0030 (guardrail boundary), #175, #176 (the
   recall work this depends on), rule 6a/6b
+- **Claims:**
+  - `symbol:sync-knowledge@os/packages/lisa/lisa-knowledge-sync.service` — phase 1's session-start unit
+  - `path:os/repo-tools/build-knowledge.py` — the generator behind the pack
+  - `symbol:system@daemons/contextd/src/index.rs` — the `system` provenance the pack carries
 
 ## Context
 

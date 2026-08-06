@@ -7,6 +7,10 @@
 - Relates: ADR-0039 (the index), ADR-0034 (no uncontrolled
   dependencies in update paths), lisa-os#171; operational detail lives
   in lisa-packages' README
+- **Claims:**
+  - `path:os/packages/lisa-keyring/lisa-packages.pub` — the pinned key ships
+  - `symbol:737240D1@os/packages/lisa-keyring/PKGBUILD` — and the fingerprint is asserted at build time
+  - `symbol:SigLevel = Optional@os/mkosi/mkosi.pkgmngr/etc/pacman.d/lisa.conf` — still Optional, which is what the status predicts
 
 ## Context
 

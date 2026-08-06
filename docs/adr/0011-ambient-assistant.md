@@ -11,6 +11,11 @@
   classification running unprompted) and the `voiced` daemon. Nothing in the
   repo records unprompted (#158).
 - **Date:** 2026-07-23
+- **Claims:**
+  - `symbol:pub fn addressed_intent@libs/liblisa/src/tasks.rs` — the classifier the primitives use
+  - `path:os/packages/whisper.cpp/PKGBUILD` — speech in, packaged by the image lane
+  - `path:os/packages/piper/PKGBUILD` — speech out
+  - `absent:daemons/voiced` — this ADR's actual subject, the always-on loop, has no daemon
 
 ## Context
 
