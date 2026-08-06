@@ -88,21 +88,15 @@ function sheet(dark) {
     box-shadow: 0 4px 30px ${shadow};
 }
 
-/* A pane that floats over content: rounded, edged all round, and it
-   keeps its own shadow. The full-height variant uses the seam below
-   instead, because a radius on a pane flush to the window edge shows
-   the window's corner through the gap. */
-.lisa-glass-floating {
-    border-radius: 14px;
-    border: 1px solid ${edge};
-    /* The lit top edge of a pane of glass: one line, not a gradient. */
-    box-shadow: inset 0 1px 0 ${highlight}, 0 4px 30px ${shadow};
-}
-
 /* The seam between a glass pane and the content beside it. A hairline,
    not a border: a 1px line at full contrast is what makes a translucent
    panel look like a table cell. */
 .lisa-glass-edge-end { border-right: 1px solid ${edge}; }
+
+/* A window that lets the desktop through wherever nothing paints, so a
+   translucent pane over it is genuinely see-through. Unblurred: that
+   half needs Mutter#3023. */
+.lisa-see-through { background-color: transparent; }
 
 /* The window ground the glass sits on. Named so an app can opt a single
    window out without redefining the palette. */

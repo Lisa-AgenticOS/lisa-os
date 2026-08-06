@@ -139,8 +139,22 @@ export function lisaSplitWindow({
         // sits underneath the sidebar and the app looks like two
         // windows stacked — which is exactly what the first attempt
         // looked like.
-        const gap = 12;
+        // Flush to the frame, not floating inside it. A pane inset from
+        // the window edge leaves a strip of wallpaper down the left of
+        // the app, which reads as a gap rather than as a layer — and on
+        // a rounded window the toolkit already clips the corners, so
+        // the pane follows the frame for free.
+        const gap = 0;
+        // Content is INSET past the pane and keeps its own opaque
+        // ground. That leaves the region behind the pane painting
+        // nothing — which, with a see-through window, is the DESKTOP.
+        //
+        // The trade is explicit and worth stating: content beside the
+        // pane means there is nothing of the app to blur through it, so
+        // this buys transparency and gives up frost. Frost over the
+        // desktop is Mutter#3023 and is not ours to fix.
         contentView.set_margin_start(sidebarWidth + gap);
+        contentView.add_css_class('lisa-ground');
         split.set_child(contentView);
 
         // ONE set of window controls. Both header bars drew their own,
@@ -155,10 +169,12 @@ export function lisaSplitWindow({
         // rather than a region of the window.
         sidebarView.set_halign(Gtk.Align.START);
         sidebarView.set_size_request(sidebarWidth, -1);
-        sidebarView.set_margin_top(gap);
-        sidebarView.set_margin_bottom(gap);
-        sidebarView.set_margin_start(gap);
-        sidebarView.add_css_class('lisa-glass-floating');
+        sidebarView.add_css_class('lisa-glass-edge-end');
+        // The window itself is see-through where nothing paints. Mutter
+        // cannot BLUR what is behind a window (#3023, open), but plain
+        // alpha compositing has always worked — so the desktop shows
+        // through the pane even though it is not frosted.
+        window.add_css_class('lisa-see-through');
         split.add_overlay(sidebarView);
         window.content = split;
     } else {
