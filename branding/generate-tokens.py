@@ -140,6 +140,24 @@ def main():
         if p.parent.is_dir():
             want[p] = theme_css
 
+    # The shared GJS library gets the sheet too (ADR-0056 step 2), for
+    # the same reason and by the same mechanism.
+    #
+    # `branding/` is NOT staged into the apps payload —
+    # build-apps-payload.sh copies app trees — so an app importing
+    # branding/out/tokens.js resolves on a dev host and throws on a
+    # device: a green test suite over an app that cannot start, which
+    # apps/mail/lib/rail.js names as this repo's most-repeated defect.
+    # rail.js copied the account palette by hand instead and said the
+    # fix belonged in the shared library, "once, for every app". This is
+    # that once.
+    #
+    # Generated rather than imported, so there is still exactly one
+    # source: edit tokens.json, regenerate, or `--check` fails.
+    lisa_ui = repo / "apps" / "lisa_ui" / "ui"
+    if lisa_ui.parent.is_dir():
+        want[lisa_ui / "tokens.js"] = js(tokens)
+
     if "--check" in sys.argv:
         stale = [
             str(p) for p, text in want.items()

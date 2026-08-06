@@ -1,9 +1,18 @@
 # `lisa_ui` — the shared GJS library for Lisa surfaces
 
-ADR-0056, ADR-0047 §6. **Step 1 only: the Agent Bus edge.** There is no
-widget set here yet, and that is deliberate — ADR-0056 step 4 says a
-widget is extracted once a second caller needs it, because one invented
-up front is a guess.
+ADR-0056, ADR-0047 §6. **Steps 1–3.** There is still no widget *set* —
+that is step 4, and deliberately unbuilt: a widget is extracted once a
+second caller needs it, because one invented up front is a guess.
+
+| module | what | ADR-0056 |
+|---|---|---|
+| `mcp/protocol.js` | the JSON-RPC/MCP server edge, and the provenance tag | step 1 |
+| `mcp/client.js` | a GJS window talking to its own backend's tools | — |
+| `ui/tokens.js` | the generated design tokens, in the payload at last | step 2 |
+| `ui/window.js` | `LisaWindow` — one window shape for every surface | step 3 |
+
+First consumer: `apps/notes`, whose window is built on `ui/window.js`
+and reaches its own data through `mcp/client.js`.
 
 ## What it does
 

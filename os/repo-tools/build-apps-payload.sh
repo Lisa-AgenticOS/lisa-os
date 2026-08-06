@@ -35,7 +35,7 @@ ap_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # stays in the tree as the panel's reference.
 ap_surfaces=(overlay-extension launcher desktop ledger-app assistant consent)
 # The apps (PLAN §5.8) that ride the same tree and the same launcher.
-ap_apps=(surfer mail preview)
+ap_apps=(surfer mail preview notes)
 # The shared GJS library (ADR-0056). It is staged at the ROOT of the
 # tree, beside the apps, because that is the only place a relative
 # import can mean the same thing in this repo and in the shipped tree:
@@ -57,6 +57,20 @@ done
 # directory this script just created — it never touches the source tree.
 find "$ap_dest" -depth -type d \( -name tests -o -name testing -o -name spike \) \
     -exec rm -rf {} +
+
+# This payload is the INTERPRETED tree (ADR-0020, ADR-0047): GJS source
+# a device runs as-is, which is the whole reason an app update is a file
+# copy rather than an image. Compiled-language sources are not part of
+# that and must not ride along.
+#
+# apps/notes is why this exists: it is a Rust crate that grew a GJS
+# window, so `cp -a apps/notes` brings Cargo.toml and src/*.rs with it.
+# Harmless bytes, but a payload that contains Rust invites the next
+# person to think it is built here, and `lisa apps update` would ship
+# them to every device forever.
+find "$ap_dest" -type f -name '*.rs' -delete
+find "$ap_dest" -type f -name 'Cargo.toml' -delete
+find "$ap_dest" -depth -type d -empty -delete
 
 # A tree with no assistant is not a Lisa apps tree: that entry point is
 # `lisa apps`' probe for "is this a real payload", so a staging change

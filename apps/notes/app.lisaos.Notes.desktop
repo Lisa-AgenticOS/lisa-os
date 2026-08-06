@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Notes
+Comment=Your notes — the same ones the assistant can read and write
+Exec=lisa-app notes/lisa-notes-app.js
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;TextEditor;GTK;
+StartupNotify=true

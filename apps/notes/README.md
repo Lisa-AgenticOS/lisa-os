@@ -6,12 +6,31 @@ Agent Bus), ADR-0047 (GJS + GTK4/Adwaita is the one toolkit),
 
 ## What it does
 
-Notes is an MCP server today, and **not yet a GUI**. `lisa-notes` listens
-on `<socket_dir>/app.lisaos.notes.sock` (default `/run/lisa/mcp`), speaks
+Notes is two halves that share one API.
+
+**The daemon** (`lisa-notes`, Rust) listens on
+`<socket_dir>/app.lisaos.notes.sock` (default `/run/lisa/mcp`), speaks
 newline-delimited JSON-RPC 2.0 per `libs/mcp-bus`, and keeps notes in
-SQLite under the user's XDG data dir. agentd's `McpDispatcher` connects to
-it; it was the first real tool on the Agent Bus, which is why it exists
-before its window does.
+SQLite under the user's XDG data dir. agentd's `McpDispatcher` connects
+to it; it was the first real tool on the Agent Bus, which is why it
+existed for months before its window did.
+
+**The window** (`lisa-notes-app.js`, GJS) landed 2026-08-06 as the first
+consumer of `apps/lisa_ui` — ADR-0056's rule that a shared library is
+extracted from a real caller rather than designed for an imagined one.
+It does **not** open the SQLite store. It calls the same five tools the
+agent calls, over the same socket, so what the person sees and what the
+model sees are the same list by construction rather than by two pieces
+of code agreeing. That is "apps are agent surfaces" as a fact about the
+code: the tool surface is not a bolt-on beside the app, it is the app's
+API, and the window is its first client.
+
+**Status, precisely:** the window's model layer is tested (`tests/`, 7
+cases under node) and the tree is staged into the apps payload, but the
+window has **never been drawn** — GJS needs a display and the dev host
+is macOS. It also has no PKGBUILD install line yet, so no image ships
+it. Neither of those is "works on a device", and this paragraph exists
+so nobody reads the sections above as if they were.
 
 Tools, from `app.lisaos.notes.json`:
 
