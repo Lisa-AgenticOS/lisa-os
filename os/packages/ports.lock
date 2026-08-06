@@ -28,8 +28,14 @@ piper-v1.6.0-1-x86_64.pkg.tar.zst  60b75a18a854bbef9ade09b5d4af596d5aa3a399d2a7f
 # carry provides/conflicts instead, so stock can never co-install.
 # Digests taken from the artifacts on the ports release, not from the
 # build summary: the lock pins what is actually downloadable.
-lisa-desktop-control-center-50.3-1-x86_64.pkg.tar.zst  c682995bbb7105cc1309957c6f753813fde8e7ce93e470ab2c74854128c7ad5b
-lisa-desktop-keybindings-50.3-1-x86_64.pkg.tar.zst  aaece5a734ddcd8fb4542eb668787a8e002b5ceb07c177cd7a1736c5c6517560
+# Bumped 2026-08-06 to 50.4-1: Arch shipped gnome-control-center 50.4-1 on
+# 2026-08-04, and these packages now carry replaces= (#284) — so shipping the
+# 50.3 build would have made the first thing replaces= ever did a DOWNGRADE of
+# the user's Settings. The rebase applied clean: 784/784, and not one of the
+# nine prepare() anchor guards fired against GNOME 50.4 source.
+# Digests computed from the downloaded files, not from the release API field.
+lisa-desktop-control-center-50.4-1-x86_64.pkg.tar.zst  a51986b5648fac74064883ce9fabb1423867b56cbfe3154957409eca1e18cbb6
+lisa-desktop-keybindings-50.4-1-x86_64.pkg.tar.zst  fb8eeccb7f915e674a622a75fcf3711c9888f48aed8032fcbf81f6319fd09b0e
 # lisa-desktop-online-accounts is NOT here yet: its build refuses to run
 # while _client_secret is the placeholder (#276), and the guard is right
 # — the placeholder would fail Google sign-in after the person has typed
