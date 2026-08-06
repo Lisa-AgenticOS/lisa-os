@@ -55,7 +55,7 @@
       },
       "input_schema": {
         "type": "object",
-        "required": ["id", "title"],
+        "required": ["id", "title", "body"],
         "additionalProperties": false,
         "properties": {
           "id": { "type": "integer" },

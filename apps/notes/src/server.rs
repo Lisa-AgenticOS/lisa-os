@@ -206,7 +206,13 @@ fn update_note(store: &Store, args: &Value) -> Value {
         Ok(t) => t,
         Err(e) => return e,
     };
-    let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+    // REQUIRED, unlike create's optional body (#317): update REPLACES
+    // both fields, so a title-only call would silently wipe the body.
+    // A model renaming a note is exactly the caller that would omit it.
+    let body = match required_str(args, "body", "update_note") {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
     if title.chars().count() > MAX_TITLE_CHARS {
         return tool_error(format!(
             "update_note: \"title\" exceeds {MAX_TITLE_CHARS} characters"
@@ -418,6 +424,28 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(err, McpError::Tool(ref msg) if msg.contains("exceeds")),
+            "{err:?}"
+        );
+
+        // a title-only update is refused, not treated as "empty body"
+        // (#317): update REPLACES both fields, and the caller most
+        // likely to omit the body — a model renaming a note — is the
+        // one whose note it would wipe.
+        let err = client
+            .call_tool("update_note", &json!({"id": id, "title": "renamed"}))
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::Tool(ref msg) if msg.contains("missing required argument")),
+            "{err:?}"
+        );
+        let err = client
+            .call_tool(
+                "update_note",
+                &json!({"id": id, "title": "renamed", "body": 7}),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, McpError::Tool(ref msg) if msg.contains("must be a string")),
             "{err:?}"
         );
 

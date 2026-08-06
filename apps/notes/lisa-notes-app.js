@@ -52,7 +52,7 @@ class NotesApp {
         ui.sidebarHeader.pack_start(headerButton({
             icon: 'document-new-symbolic',
             tooltip: 'New note',
-            onClick: () => this._newNote(),
+            onClick: () => this._newNote().catch((e) => logError(e)),
         }));
         ui.sidebarHeader.pack_end(headerButton({
             icon: 'view-refresh-symbolic',
@@ -91,6 +91,9 @@ class NotesApp {
             placeholder_text: 'Title',
             css_classes: ['title-2', 'flat'],
             has_frame: false,
+            // The daemon refuses longer titles (#319); stopping the
+            // keystroke here beats a note that fails every autosave.
+            max_length: 120,
         });
         this._bodyView = new Gtk.TextView({
             wrap_mode: Gtk.WrapMode.WORD_CHAR,
@@ -114,6 +117,11 @@ class NotesApp {
         editorBox.append(this._titleEntry);
         editorBox.append(bodyScroll);
         this._editor = editorBox;
+        // Typing anything re-arms the save-before-close protection: a
+        // standing "close again to discard" must not quietly apply to
+        // words written after the warning.
+        this._titleEntry.connect('changed', () => (this._discardOk = false));
+        this._bodyView.buffer.connect('changed', () => (this._discardOk = false));
 
         this._contentEmpty = new Adw.StatusPage({
             icon_name: 'document-open-symbolic',
@@ -144,12 +152,23 @@ class NotesApp {
         // against the socket, and a save that only sometimes survives
         // closing is worse than none.
         this.window.connect('close-request', () => {
-            if (this._closing)
+            // After a failed save was reported, the next close is the
+            // informed discard and goes straight through.
+            if (this._closing || this._discardOk)
                 return false;
             this._closing = true;
+            // A FAILED save keeps the window open (#319): destroying
+            // anyway would discard everything typed since the last good
+            // save, silently, at the exact moment the person believes
+            // they are done. They can close again to leave without the
+            // edit — that second close is an informed one.
             this._maybeSave()
-                .catch((e) => logError(e, 'notes: saving on close'))
-                .finally(() => this.window.destroy());
+                .then(() => this.window.destroy())
+                .catch((e) => {
+                    this._closing = false;
+                    this._discardOk = true;
+                    this._toast(`Not saved — close again to discard: ${e.message ?? e}`);
+                });
             return true;
         });
     }
@@ -242,7 +261,11 @@ class NotesApp {
         }
 
         // Keep the selection across a reload when the note still exists.
-        if (this._selected) {
+        // A DRAFT (id null) has no row by design — clearing the
+        // selection for it would wipe the editor mid-composition the
+        // moment any background reload lands (#315), so a draft simply
+        // keeps the editor and selects nothing.
+        if (this._selected && this._selected.id != null) {
             const row = this._rowsById.get(String(this._selected.id));
             if (row)
                 this._list.select_row(row);
@@ -278,7 +301,17 @@ class NotesApp {
         try {
             savedOnLeave = await this._maybeSave();
         } catch (e) {
-            this._toast(`Could not save your edit: ${e.message ?? e}`);
+            // STAY on the note (#319): navigating away after a failed
+            // save is how everything typed since the last good save
+            // silently vanishes. The text is still on screen, which is
+            // the one place it certainly survives. The list selection
+            // already moved on click, so it is put back.
+            this._toast(`Could not save — staying here: ${e.message ?? e}`);
+            const back = this._selected.id != null
+                ? this._rowsById.get(String(this._selected.id)) ?? null
+                : null;
+            this._list.select_row(back);
+            return;
         }
         let full = note;
         try {
@@ -338,14 +371,18 @@ class NotesApp {
     /// that appears in the list the moment you click New, and stays
     /// there when you change your mind, is litter the person then has
     /// to delete.
-    _newNote() {
+    async _newNote() {
         // Same contract as switching notes: what you were writing is
-        // saved, not discarded. Fire-and-report — the new empty editor
-        // must not wait on the socket.
-        this._maybeSave().then((did) => {
-            if (did)
-                this.reload();
-        }).catch((e) => this._toast(`Could not save your edit: ${e.message ?? e}`));
+        // saved, not discarded — and a save that FAILS keeps the editor
+        // on what you wrote (#319) instead of replacing it with a blank
+        // page.
+        try {
+            if (await this._maybeSave())
+                await this.reload();
+        } catch (e) {
+            this._toast(`Could not save — staying here: ${e.message ?? e}`);
+            return;
+        }
         this._selected = {id: null, title: '', body: ''};
         this._titleEntry.text = '';
         this._bodyView.buffer.set_text('', -1);
@@ -368,6 +405,27 @@ class NotesApp {
     /// update_note, whose undo is itself. Returns whether anything was
     /// written, so callers can toast only on a real write.
     async _maybeSave() {
+        // One save at a time (#316): Ctrl+S starts a create, and a row
+        // click before the reply lands would start a second — the id is
+        // only adopted when the first returns, so the same draft would
+        // land twice. Later requests wait for the running one, then
+        // re-read the editor; the dirty check makes the retry a no-op
+        // when the first save already wrote it.
+        while (this._saving)
+            await this._saving;
+        this._saving = this._writeEditorState();
+        try {
+            const wrote = await this._saving;
+            // Any save that gets through revokes a pending "close again
+            // to discard" — the situation it warned about is over.
+            this._discardOk = false;
+            return wrote;
+        } finally {
+            this._saving = null;
+        }
+    }
+
+    async _writeEditorState() {
         const s = this._selected;
         if (!s || s._unreadable)
             return false;
@@ -444,7 +502,7 @@ app.connect('activate', () => {
     app.set_accels_for_action('app.save', ['<Primary>s']);
 
     const fresh = new Gio.SimpleAction({name: 'new'});
-    fresh.connect('activate', () => notes._newNote());
+    fresh.connect('activate', () => notes._newNote().catch((e) => logError(e)));
     app.add_action(fresh);
     app.set_accels_for_action('app.new', ['<Primary>n']);
 
