@@ -74,9 +74,9 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**59 records** — 5 superseded in part, 27 accepted and partly executed, 1 accepted with no code yet, 23 accepted and done, 3 proposed.
+**60 records** — 5 superseded in part, 27 accepted and partly executed, 2 accepted with no code yet, 23 accepted and done, 3 proposed.
 
-**156 machine-checked claims across 55 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
+**160 machine-checked claims across 56 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
 
 | ADR | Decision | Status | Checks | Where it actually stands |
 |---|---|---|---|---|
@@ -139,6 +139,7 @@ grep.
 | [0057](0057-the-monorepo-owns-the-surfaces-until-step-6.md) | the monorepo owns the shell surfaces until step 6 actually happens | accepted | 3 | — |
 | [0058](0058-the-desktop-inventory-owned-foundation-interim.md) | the desktop inventory: owned, foundation, interim | accepted | 9 | — |
 | [0059](0059-remoted-brokers-model-egress-not-every-socket.md) | `lisa-remoted` brokers model egress, not every socket on the machine | accepted, partially executed | 3 | the reasoning and the exemption are recorded here and cited from `os/repo-tools/check-egress-units.py`. The remaining edit is CLAUDE.md rule 5's own wording, quoted verbatim in "The wording rule 5 should carry" below; until that lands, the operating manual still states the absolute this record retires. |
+| [0060](0060-the-app-bundle-lisa-framework-lisa-sdk.md) | the app bundle, `lisa.framework` and `lisa.sdk` | accepted, not implemented | 4 | this record fixes the shape before the code exists, because the alternative is seven more surfaces hand-rolling the same proxies while the shape stays folklore. |
 
 <!-- END GENERATED INDEX -->
 
