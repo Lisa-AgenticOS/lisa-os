@@ -38,7 +38,7 @@
 //! use harness_core::{MemKv, Memory, Role, SessionStore, Turn};
 //!
 //! let memory = Memory::open(dir.path().join("memory.db"))?;
-//! memory.remember("user", "prefers dark theme", &["ui"])?;
+//! memory.remember("user", "prefers dark theme", &["prov:user", "ui"])?;
 //!
 //! // On Lisa the store bridges Context1 app-memory; tests use MemKv.
 //! let sessions = SessionStore::new(MemKv::default());
@@ -46,7 +46,7 @@
 //! let session = sessions.append(&session.id, Role::User, "theme this app", None)?;
 //!
 //! let turn = Turn::new("You are Lisa, an on-device assistant.", "make it dark")
-//!     .with_digest(memory.digest("user", 1000)?)
+//!     .with_digest(memory.digest("user", 1000, "prov:user")?)
 //!     .with_history(session.history(20));
 //! let body = turn.request_body(); // → POST to /v1/chat/completions
 //! // ... caller sends `body`, reads choices[0].message.content ...

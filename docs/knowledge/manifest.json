@@ -3,7 +3,7 @@
     {
       "file": "mail.md",
       "about": "The Mail app: reading, searching and writing email",
-      "sha256": "b9fe7f8932684ae6ae272b0eee703770fd072cfcd891897c57c412680fa1f9f2"
+      "sha256": "134ef32baa0094a86efd955a55a4389f0eea598e2243388ffbf68ffa6471bbf0"
     },
     {
       "file": "surfer.md",
@@ -13,7 +13,7 @@
     {
       "file": "preview.md",
       "about": "Preview: images, PDF, and Space-to-preview in Files",
-      "sha256": "59db360fd755dea18bdf97757504dcc4b2b60dce393afcab830c0314d99f5876"
+      "sha256": "27e52ba3582876eb00f8697602d2e80ee03956a230aa831899fc2b42184a7bd0"
     },
     {
       "file": "terminal.md",
@@ -38,7 +38,7 @@
     {
       "file": "cli.md",
       "about": "The lisa command line",
-      "sha256": "86efefe56603fc2a78865b5a365ec97d6ce04381129e3bced47ff34a90173de6"
+      "sha256": "e0f7bbb8e907a13769b3c14e5b2b129ded173970a71b96d53e511816eac2af4d"
     }
   ],
   "$comment": "GENERATED \u2014 see build-knowledge.py. Consumed by `lisa context sync-knowledge` and the lisaos.dev docs build."

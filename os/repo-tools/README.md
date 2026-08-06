@@ -76,11 +76,25 @@ empty-resets semantics (#292).
     python3 os/repo-tools/check-egress-units.py --installs   # the table
     python3 os/repo-tools/check-egress-units.py --explain    # the postures
 
-Its two debt lists (`EXEMPT`, `USER_SCOPE_INET_DEBT`) each remove a unit
-from a check, so both are **ratcheted** against `DEBT_CEILING` (#293):
-adding an entry fails unless the same commit also raises the ceiling. That
-does not make an entry impossible — nothing in a gate can — but it removes
-the free, green, one-line version and puts the number in the diff.
+It reads **D-Bus activation records** from the same install lines (#294).
+`dbus-daemon` starts a service itself when the record carries only
+`Exec=` — no unit, therefore no sandbox, and no row in this gate at all,
+because the population comes from systemd install lines and there is no
+unit to install. That is the same "`[Install]` lies by omission" problem
+arriving through the other door, and it is how `dev.lisaos.Overlay1` and
+`dev.lisaos.Voice1` — the backend that historically hosted the model —
+ran unconfined and unclassified. A record whose `Exec=` names a Lisa
+binary must name a `SystemdService=`, and that unit must be one
+discovery actually installs; a record for somebody else's binary is not
+rule 5's business and is left alone.
+
+Its three debt lists (`EXEMPT`, `USER_SCOPE_INET_DEBT`,
+`DBUS_UNSANDBOXED_DEBT`) each remove something from a check, so all are
+**ratcheted** against `DEBT_CEILING` (#293): adding an entry fails unless
+the same commit also raises the ceiling, and *removing* one fails unless
+it lowers it. That does not make an entry impossible — nothing in a gate
+can — but it removes the free, green, one-line version and puts the
+number in the diff.
 
 They share a shape: read the truth from the consumer rather than restating
 it (`check-app-manifests.py` reads `SYSTEM_MANIFEST_DIR` out of

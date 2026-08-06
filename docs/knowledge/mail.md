@@ -43,11 +43,14 @@ content, so they are not a route into the corpus, and an agent has no id
 to act on there anyway — `search_mail` hands none out.
 
 **Everything they emit is tagged `mail` provenance**, on the JSON-RPC
-envelope *and* inside the payload — agentd unwraps `content[0].text` and
-discards the envelope, which is how the browser's tag was lost on its
-first on-device run. The tag is a constant applied on the way out, and
-the spread puts it *after* the handler's fields, so a message whose body
-contains `{"provenance":"user"}` cannot relabel itself.
+envelope, once. It used to be written twice — envelope *and* payload —
+because the bus dispatcher unwrapped `content[0].text` and threw the
+envelope away, which is how the browser's tag was lost on its first
+on-device run. `mcp-bus`'s `carry_envelope` hoists the envelope's fields
+onto the unwrapped payload now (#313), so the workaround is gone from
+all three apps and the tag has one home. The tag is still a constant
+applied on the way out, and the envelope wins a collision, so a message
+whose body contains `{"provenance":"user"}` cannot relabel itself.
 
 That tag is what makes "read my mail, then do something privileged" ask
 first: agentd escalates the confirmation tier of any call whose chain

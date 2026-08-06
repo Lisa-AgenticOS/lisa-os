@@ -128,9 +128,61 @@ resolve("wat",    ceiling=Prompt) → Event    unrecognised = least trusted
 ```
 
 The resolved class becomes the first entry in every call's provenance
-chain (`user` / `schedule` / `event`), and `bus-tools` appends `web`
-once anything web-tagged has been read. agentd escalates on the worst of
+chain (`user` / `schedule` / `event`), and `bus-tools` appends every
+untrusted class the run has since read. agentd escalates on the worst of
 them.
+
+## Taint belongs to the conversation, not the run (#305)
+
+`bus_tools::Taint` is one-way — nothing removes a tag, because the model
+has read the content and nothing un-reads it — and it used to be built
+fresh on every `Run`. Right rule, wrong scope. The model reads a
+**conversation**:
+
+1. *"what does this page say?"* → Surfer answers `provenance: "web"` →
+   this turn's bus calls go out `["user","web"]` and escalate.
+2. *"ok, do that"* arrives as a **new `Run`** carrying the prior turns in
+   `options["history"]`. `Taint::new()`. Empty. Chain `["user"]`, no
+   escalation, and `bus::grant_for` resolves `Trigger::Prompt`.
+
+Tool results are not replayed, so the page text does not literally
+return; the model's own restatement of it does, at full `user` trust.
+ADR-0030's premise is that we do not rely on the model declining to
+launder.
+
+**The scope now.** `src/conversation.rs` keeps a set per conversation,
+`Run` seeds the run's `Taint` from it, and folds what the run read back
+when the loop ends. The fold is a union: a run adds to its
+conversation's taint and can never hand it back smaller — the same
+asymmetry `Trigger::resolve` uses one level up.
+
+**What clears it, and on whose authority.** Two things, and neither is
+reachable from the process the model runs in (CLAUDE.md rule 6a):
+
+- **starting a new conversation** — a person's act at a prompt surface;
+- **restarting this daemon**, which drops the store (it is in memory).
+
+There is deliberately **no method to clear a live conversation's taint**.
+An API that forgets what a run has read is precisely what an injected
+instruction would ask for. A person who wants a clean chain opens a new
+chat: one click for them, everything for a page.
+
+**How a conversation is identified.** `Run` has no session parameter and
+the Assistant sends none — it replays `[{role, content}]` per run and
+nothing else. So the conversation is its **owner** (the broker-assigned
+unique name, so one peer's conversation is never another's — ADR-0033)
+plus **the first user turn**: on turn one the prompt *is* that turn, on
+every later turn it is `history[0]`. Two limits, stated rather than
+papered over: two chats opening with the same sentence share a set
+(over-escalation, the safe direction), and a surface that trims the head
+of its history loses the set. No shipped surface trims; the one that
+starts to is the one that should send a real session id.
+
+**Attachments now cost what they carry.** `options["attachments"]`
+forwards a screenshot or a scanned document verbatim into the model's
+context and contributed *nothing* to the chain — the same attack with no
+tag anywhere. An image part now contributes `screen`, any other part
+`file`, on arrival, before the model sees it.
 
 ### Where the ceiling comes from (#229)
 
@@ -281,6 +333,14 @@ scope per user (`src/memory.rs`).
   recency, capped at 800 characters — goes into the system prompt on
   every turn, so a memory nobody asks for is still available. That is the
   whole reason the store existed unused for a year.
+- **Untrusted notes cannot evict the person's own (#300).** Half the
+  digest budget is reserved for `prov:user` notes and filled from a pool
+  of their own, so no volume of untrusted notes can take the ambient
+  prompt. Before it, a hundred notes written during one web-tainted run
+  displaced every trusted note from every later conversation —
+  including one recalled twenty times — permanently, because eviction
+  was by recency and nothing prunes. An unclaimed reserve is spent on
+  everything else rather than wasted.
 - **Provenance is stamped, never passed.** `remember` takes only `text`.
   The note's class comes from the run's resolved trigger plus whatever
   the run has already read, so a conversation that has read a web page
@@ -405,10 +465,26 @@ about them.
 - **Memory is one scope, `user`.** Per-project memory is a schema the
   store already supports and nothing yet writes; saying so beats letting
   a reader infer it from the constant.
-- **Nothing prunes memory.** Notes accumulate until a person deletes
-  them. The digest is bounded, so an oversized store costs disk and
-  `recall` quality rather than context — but there is no forgetting
-  curve, and a store that only grows will eventually need one.
+- **Nothing prunes memory, and nothing rate-limits `remember`.** Notes
+  accumulate until a person deletes them. Since #300 the digest reserve
+  means volume can no longer buy ambient prompt space, so what an
+  unbounded write loop costs is disk, `recall` quality and a Memory pane
+  nobody can read — not context. There is still no forgetting curve and
+  no per-run write cap, which #300 names as the alternative fix.
+- **The conversation taint is in memory and bounded to 256
+  conversations** (#305). Restarting the daemon clears every set, and
+  the 257th conversation evicts the oldest. Both lose taint, which is
+  the fail-open direction; both take a person's action (a restart, or
+  256 fresh chats) rather than a page's, which is why the bound is
+  generous rather than tight.
+- **The three lines that wire the conversation taint into `Run` are not
+  covered by a test.** `TaintStore::open`/`close` and the key derivation
+  are exercised end to end — through a real `bus_tools::AgentBusTools`,
+  asserting the chain that reaches the wire — and `parse_history` →
+  `key_for` has its own test in `dbus.rs`. What no test reaches is
+  `Run` itself calling them, because a caller only has an owner over a
+  message broker and these tests run on macOS with none. Stated rather
+  than implied.
 - **A memory note's provenance cannot be repaired.** If a note was
   learned during a tainted run, it stays untrusted for ever, even if the
   fact in it is true and the person agrees with it. Forgetting and

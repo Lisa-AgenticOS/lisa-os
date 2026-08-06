@@ -115,13 +115,27 @@ untrusted content (#157).
   `user` claim on a *result*. No shipped app makes it.
 - **The catalog is a snapshot.** An app that registers a tool mid-run is
   not picked up; the tool list is handed to the backend once.
-- **The envelope's provenance is still discarded on the way in.**
-  `libs/mcp-bus/src/client.rs`'s `extract_tool_result` unwraps
-  `content[0].text` and drops the JSON-RPC envelope, so the whole scheme
-  depends on every app tagging *inside* the payload as well as on the
-  envelope. All three MCP apps do it, and each one has a comment
-  explaining why — which is three copies of a workaround for one bug
-  that has no issue of its own yet.
+- **The envelope's provenance used to be discarded on the way in
+  (#313, fixed).** `libs/mcp-bus/src/client.rs`'s `extract_tool_result`
+  unwrapped `content[0].text` and dropped the JSON-RPC envelope, so the
+  whole scheme depended on every app tagging *inside* the payload as
+  well as on the envelope. All three MCP apps did, each with a comment
+  explaining why — three copies of a workaround for one bug, in files
+  that had already drifted apart. `carry_envelope` now hoists the
+  envelope's fields onto the unwrapped payload and lets the envelope win
+  a collision, the apps tag once, and an app that tags only the envelope
+  arrives tainted. The same hole was open on the `structuredContent`
+  branch, which the issue read as unaffected; both are closed.
+- **Taint is scoped to the CONVERSATION, and only in `harnessd`
+  (#305).** `Taint` itself is still per-object and one-way; what changed
+  is who owns it. `lisa-harnessd` keeps a per-conversation set
+  (`src/conversation.rs`) and seeds each run's `Taint` from it, so a page
+  read in turn one still escalates the write in turn two. **A surface
+  that builds its own provider and lets `Taint::new()` stand gets the
+  per-run scope.** For `lisa assist` that is correct rather than a gap —
+  the process runs one conversation and exits — but a second
+  multi-turn surface would have to carry a set of its own, and nothing
+  in this crate makes it.
 - **`Provenance` is not the single source of truth for tag spellings.**
   `daemons/contextd/src/acl.rs` knows `calendar` and `system`, which the
   enum does not; they parse to `Provenance::Other`, which is untrusted,

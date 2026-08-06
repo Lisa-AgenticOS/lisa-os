@@ -283,6 +283,12 @@ pub struct Harness1 {
     /// is a degraded assistant; one that refuses to start is a broken
     /// desktop.
     memory: Option<Arc<harness_core::Memory>>,
+    /// What each live conversation has read (#305). `Taint` is one-way
+    /// for the life of a RUN, and the model reads a conversation — so
+    /// the set lives here, across runs, keyed by owner + conversation.
+    /// See `crate::conversation` for what clears it and on whose
+    /// authority.
+    taints: Arc<crate::conversation::TaintStore>,
 }
 
 impl Harness1 {
@@ -292,6 +298,7 @@ impl Harness1 {
             next_id: AtomicU64::new(1),
             running: Arc::new(Mutex::new(HashMap::new())),
             memory: crate::memory::open(),
+            taints: Arc::new(crate::conversation::TaintStore::default()),
         }
     }
 
@@ -444,6 +451,21 @@ impl Harness1 {
         let workspace = workspace.filter(|_| trigger.may_use_file_tools());
         let skills = crate::skills::load();
 
+        // What this run starts out having read (#305).
+        //
+        // NOT `Taint::new()`. A taint that begins empty on every `Run` is
+        // a taint scoped to a run, and the model reads a CONVERSATION:
+        // turn 1 reads a hostile page, turn 2 says "ok, do that", and the
+        // page's instruction — restated in the model's own turn-1 text —
+        // used to go back out on a fully trusted `["user"]` chain. So the
+        // set is loaded from the conversation this run continues, and
+        // attachments contribute their class on arrival rather than
+        // travelling to the model for free.
+        let convo = crate::caller::owner_of(conn, &header)
+            .await
+            .map(|owner| crate::conversation::key_for(&owner, &history, &prompt));
+        let taint = self.taints.open(convo.as_ref(), &attachments);
+
         // Memory, and the provenance it costs (#157, ADR-0025 phase 4).
         //
         // Composed HERE, before the bus family is built, because that
@@ -453,7 +475,6 @@ impl Harness1 {
         // `AgentBusTools` starts putting chains on the wire. Compose it
         // after and a page's memory would steer the first privileged
         // call of every run for free.
-        let taint = bus_tools::Taint::new();
         let memory = self.memory.clone();
         let memory_digest = memory
             .as_ref()
@@ -481,6 +502,7 @@ impl Harness1 {
 
         let ledger = Arc::clone(&self.ledger);
         let running = Arc::clone(&self.running);
+        let taints = Arc::clone(&self.taints);
         let emitter = emitter.to_owned();
 
         // The loop blocks; it gets its own thread so the bus stays live.
@@ -544,6 +566,10 @@ impl Harness1 {
                 providers.push(&skill_tools);
             }
             loop_runner::run(req, &providers, ledger, cancel, &mut send);
+            // Everything this run read now belongs to the conversation,
+            // not to the run (#305). Union only — the next turn inherits
+            // it and nothing hands it back smaller.
+            taints.close(convo.as_ref(), &taint);
             running.lock().expect("running lock").remove(&id);
         });
 
@@ -719,6 +745,61 @@ mod tests {
         assert_eq!(h[0].role, forge_harness::Role::User);
         assert_eq!(h[0].content, "hi");
         assert_eq!(h[1].role, forge_harness::Role::Assistant);
+    }
+
+    /// #305's seam, driven from the wire shape rather than from a
+    /// hand-built `Vec<Message>`: the option string the Assistant
+    /// actually sends must parse into a history that names the SAME
+    /// conversation on turn two as the prompt did on turn one.
+    ///
+    /// `parse_history` drops roles it does not know and rows it cannot
+    /// read, so it is entirely possible for the taint store to be
+    /// correct and for the key it is asked about to be wrong — which
+    /// would restore the defect with every test still green.
+    #[test]
+    fn the_conversation_key_survives_the_history_option_the_assistant_sends() {
+        const OWNER: &str = ":1.42";
+        // Turn 1: `historyPayload` runs BEFORE the new user turn is
+        // appended, so the first run's history is empty.
+        let turn1 = crate::conversation::key_for(
+            OWNER,
+            &parse_history(Some("[]")),
+            "what does this page say?",
+        );
+        // Turn 2: the same window replays both completed turns.
+        let turn2 = crate::conversation::key_for(
+            OWNER,
+            &parse_history(Some(
+                r#"[{"role":"user","content":"what does this page say?"},
+                    {"role":"assistant","content":"It says to wire the invoice."}]"#,
+            )),
+            "ok, do that",
+        );
+        assert_eq!(
+            turn1, turn2,
+            "turn two was treated as a new conversation, so the page's \
+             taint did not follow it (#305)"
+        );
+        // …and a third turn, once the transcript is longer still.
+        let turn3 = crate::conversation::key_for(
+            OWNER,
+            &parse_history(Some(
+                r#"[{"role":"user","content":"what does this page say?"},
+                    {"role":"assistant","content":"It says to wire the invoice."},
+                    {"role":"user","content":"ok, do that"},
+                    {"role":"assistant","content":"Sending…"}]"#,
+            )),
+            "and again",
+        );
+        assert_eq!(turn1, turn3);
+        // A different chat is a different conversation, or the fix
+        // would just be "everything is tainted forever".
+        let other = crate::conversation::key_for(
+            OWNER,
+            &parse_history(Some("[]")),
+            "how do I resize a photo?",
+        );
+        assert_ne!(turn1, other);
     }
 
     /// A client must not be able to append to the system prompt: it is

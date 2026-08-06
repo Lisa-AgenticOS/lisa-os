@@ -11,3 +11,9 @@ thiserror = "2.0.19"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# #313's test reads the dispatched result with the SAME function the
+# agent loop reads it with, rather than re-implementing "is this
+# tainted?" here — a test that reproduces the consumer is a test that can
+# agree with itself while the product disagrees. Dev-only: nothing in the
+# shipped transport knows about tool families.
+bus-tools = { version = "0.1.0", path = "../bus-tools" }

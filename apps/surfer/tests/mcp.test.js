@@ -46,12 +46,17 @@ test('the initialized notification gets NO reply', () => {
     assertEq(rNote, null);
 });
 
-test('tools/call tags the PAYLOAD web — the envelope gets stripped downstream', () => {
-    const payload = JSON.parse(rCall.result.content[0].text);
-    assertEq(payload.provenance, 'web',
-        'agentd unwraps content[0].text and drops the envelope; the tag must survive that');
-    assertEq(payload.title, 'T');
+test('tools/call tags the ENVELOPE web, once (#313)', () => {
     assertEq(rCall.result.provenance, 'web');
+    const payload = JSON.parse(rCall.result.content[0].text);
+    assertEq(payload.title, 'T');
+    // The payload used to carry a second copy, because the bus
+    // dispatcher unwrapped content[0].text and dropped the envelope.
+    // `mcp-bus`'s `carry_envelope` hoists envelope fields onto the
+    // unwrapped payload now, so the duplicate is gone and the tag has
+    // one home.
+    assertEq(payload.provenance, undefined,
+        'the payload copy of the tag is back — one tag, one place (#313)');
 });
 
 test('a throwing tool is an isError result, not a dead socket', () => {

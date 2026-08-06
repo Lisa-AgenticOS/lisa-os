@@ -147,24 +147,90 @@ impl McpClient {
     }
 }
 
+/// The envelope keys that describe the MCP result's *shape* rather than
+/// the app's answer. Everything else an app puts beside `content` is the
+/// app talking to the bus, and [`carry_envelope`] keeps it.
+const SHAPE_KEYS: [&str; 3] = ["content", "structuredContent", "isError"];
+
+/// Hoist the envelope's own fields onto the payload we unwrapped from it
+/// (#313).
+///
+/// # Why this exists
+///
+/// `extract_tool_result` unwraps a lone text block into the value it
+/// holds, which is the shape the loop and the Ledger want. It used to
+/// return *only* that value, so anything an app set as a sibling of
+/// `content` — including `provenance`, the tag that decides whether a
+/// run is tainted — was gone before any caller saw it.
+///
+/// It survived because all three shipped MCP apps tagged provenance
+/// **twice**, once on the envelope and once inside the text payload,
+/// each with a comment explaining the workaround. Three copies of a
+/// workaround for one bug is not a mechanism: the fourth app tags the
+/// envelope the way MCP invites, gets discarded, and is treated as
+/// trusted. That is #302's failure mode through a different door.
+///
+/// # The rules, and why each one is the safe direction
+///
+/// - **The envelope wins a collision.** The envelope is written by the
+///   app's own edge — a constant in `lib/mcp-protocol.js` — while the
+///   payload is assembled from the content the app just read. A mail
+///   body reading `{"provenance":"user"}` is text, not a claim, and
+///   after the double-tagging came out of the apps this function is the
+///   only thing standing between that text and the chain.
+/// - **A payload that cannot hold siblings is wrapped**, under
+///   `content`, rather than returned bare with the tag dropped. A lone
+///   array or a lone string has nowhere to put a `provenance` key, and
+///   "there was nowhere to put it" is how a tag goes missing quietly.
+/// - **An envelope with nothing but shape keys changes nothing.** The
+///   overwhelmingly common result is `{content: […]}` and it must come
+///   back byte-identical, or every existing caller pays for this fix.
+fn carry_envelope(payload: Value, envelope: &Value) -> Value {
+    let Some(fields) = envelope.as_object() else {
+        return payload;
+    };
+    let mut extras = fields
+        .iter()
+        .filter(|(k, _)| !SHAPE_KEYS.contains(&k.as_str()));
+    let Some(first) = extras.next() else {
+        return payload;
+    };
+    let mut merged = match payload {
+        Value::Object(map) => map,
+        other => serde_json::Map::from_iter([("content".to_string(), other)]),
+    };
+    for (k, v) in std::iter::once(first).chain(extras) {
+        merged.insert(k.clone(), v.clone());
+    }
+    Value::Object(merged)
+}
+
 /// Shape an MCP `tools/call` result into the bus's result `Value`:
 /// `structuredContent` wins; a lone text block holding JSON is parsed
 /// back into a value (a lone non-JSON text block becomes `Value::String`);
 /// anything else is returned verbatim. `isError: true` maps to
 /// [`McpError::Tool`] with the text content as the message.
+///
+/// Both unwrapping branches run the result through [`carry_envelope`],
+/// so an app's envelope fields survive the unwrap (#313). The issue read
+/// the ordering as protecting the `structuredContent` branch; it does
+/// not — `Ok(structured.clone())` dropped the envelope exactly as the
+/// text shortcut did, and both are fixed here.
 fn extract_tool_result(result: Value) -> Result<Value, McpError> {
     if result.get("isError").and_then(Value::as_bool) == Some(true) {
         return Err(McpError::Tool(content_text(&result)));
     }
     if let Some(structured) = result.get("structuredContent") {
-        return Ok(structured.clone());
+        return Ok(carry_envelope(structured.clone(), &result));
     }
     if let Some(content) = result.get("content").and_then(Value::as_array)
         && content.len() == 1
         && content[0].get("type").and_then(Value::as_str) == Some("text")
         && let Some(text) = content[0].get("text").and_then(Value::as_str)
     {
-        return Ok(serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string())));
+        let payload =
+            serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()));
+        return Ok(carry_envelope(payload, &result));
     }
     Ok(result)
 }

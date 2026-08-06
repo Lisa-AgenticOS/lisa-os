@@ -37,6 +37,7 @@
 //! egress belongs to lisa-remoted (CLAUDE.md rule 5).
 
 mod caller;
+mod conversation;
 mod dbus;
 mod loop_runner;
 mod memory;
