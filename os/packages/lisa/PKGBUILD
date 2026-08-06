@@ -434,6 +434,10 @@ package_lisa-shell() {
         "$pkgdir/usr/share/gnome-shell/extensions/lisa-launcher@lisa-os.org"
     ln -s /usr/share/lisa/shell/desktop \
         "$pkgdir/usr/share/gnome-shell/extensions/lisa-desktop@lisa-os.org"
+    # The frosted backdrop (mutter#3023 is why this is an extension and
+    # not a CSS property in the apps).
+    ln -s /usr/share/lisa/shell/glass \
+        "$pkgdir/usr/share/gnome-shell/extensions/lisa-glass@lisa-os.org"
 
     # D-Bus activation for the headless overlay backend (§5.7.1) and for
     # push-to-talk capture (§5.7.5). The same process owns both names,

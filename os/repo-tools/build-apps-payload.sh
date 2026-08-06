@@ -33,7 +33,7 @@ ap_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # Intelligence panel (ADR-0012 v2), so nothing launches it, and shipping a
 # second settings surface is how the wrong one gets edited. Its source
 # stays in the tree as the panel's reference.
-ap_surfaces=(overlay-extension launcher desktop ledger-app assistant consent)
+ap_surfaces=(overlay-extension launcher desktop glass ledger-app assistant consent)
 # The apps (PLAN §5.8) that ride the same tree and the same launcher.
 ap_apps=(surfer mail preview notes)
 # The shared GJS library (ADR-0056). It is staged at the ROOT of the

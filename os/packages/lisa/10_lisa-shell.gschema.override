@@ -14,7 +14,7 @@
 #   because it is a GNOME key, not a Lisa one.
 
 [org.gnome.shell]
-enabled-extensions=['lisa-overlay@lisa-os.org', 'lisa-launcher@lisa-os.org', 'lisa-desktop@lisa-os.org']
+enabled-extensions=['lisa-overlay@lisa-os.org', 'lisa-launcher@lisa-os.org', 'lisa-desktop@lisa-os.org', 'lisa-glass@lisa-os.org']
 # The dock. Same list, same order, as
 # os/mkosi/mkosi.extra/etc/dconf/db/local.d/30-lisa-dock — which is
 # where the reasoning lives, and which the two tracks need separately
