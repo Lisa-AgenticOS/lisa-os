@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lisa OS — state of the build · 2026-08-05</title>
+<title>Lisa OS — state of the build · 2026-08-06</title>
 <style>
   :root {
     --bg: #faf9fc;
@@ -86,6 +86,13 @@
   .card .next b { color: var(--accent); }
   code, .iss { font: .85em ui-monospace, "SF Mono", Menlo, monospace; }
   .iss { color: var(--accent); font-weight: 600; white-space: nowrap; }
+  ul.risks { list-style: none; padding: 0; max-width: 80ch; }
+  ul.risks > li {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    border-left: 3px solid var(--warn);
+    padding: .8rem 1.1rem; margin: .6rem 0; font-size: .93rem;
+  }
+  ul.risks > li b { color: var(--ink); }
   ol.moves { counter-reset: m; list-style: none; padding: 0; max-width: 80ch; }
   ol.moves > li {
     background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
@@ -108,28 +115,29 @@
 
 <header class="page">
   <h1>Lisa OS — state of the build</h1>
-  <div class="sub">Snapshot generated 2026-08-05 (updated: org-wide) · org <code>Lisa-AgenticOS</code> · latest OS release <b>v20260804.77</b>, next one building · 38 open issues across the org · this file is untracked, regenerate at will</div>
+  <div class="sub">Snapshot generated 2026-08-06 · org <code>Lisa-AgenticOS</code> · latest OS release <b>v20260805.81</b> · shell <b>lisa-desktop-shell 50.4</b> pinned and published</div>
 </header>
 
-<p class="lead">One theme runs through everything below: <b>the build is far ahead of its own verification.</b>
-Roughly three days of finished, tested, mutation-checked work is stacked behind two gates — a green nightly
-(so a release can be cut) and a working session restart on the iMac (<span class="iss">#267</span>, so anything
-visual can be seen at all). Until those two open, most “done” work is done-but-unseen. That is why the next
-moves are sequencing, not feature choice.</p>
+<p class="lead">The theme has changed. Yesterday it was <b>the build is ahead of its own verification</b>. Tonight the
+verification caught up and found that <b>a lot of what was believed done was not</b> — including two fixes shipped
+as correct the night before. Twenty-four findings came out of two adversarial reviews and a device sweep; sixteen
+are fixed, all four remaining HIGHs among them. Nothing below is claimed on the strength of a green test alone:
+every fix in this batch was mutated and watched go red first.</p>
 
 <div class="banner">
-  <h3>Right now — nightly fully green, release build in flight <span class="pill warn">building</span></h3>
-  <p><b>The keyring blocker (<span class="iss">#270</span>) is fixed and proven:</b> mkosi builds its keyring in its
-  own sandbox; the fix seeds the [lisa] key there, and the image job is green.</p>
-  <p><b>The <code>ab-sysupdate</code> red was the harness, not the OS:</b> a re-run against the same image artifact
-  passed all five jobs. The guest’s network probe cannot detect a dead host server under QEMU user-net and the
-  server is never verified host-side — filed as <span class="iss">#272</span> so the next occurrence doesn’t cost
-  a diagnosis round.</p>
-  <p><b>The release dispatch then failed to parse:</b> the build step’s templated run block had outgrown GitHub’s
-  21,000-character expression cap (the #270 keyring work pushed it over — every dispatch since Aug 4 evening would
-  have failed). Fixed in <code>564c9f0</code> by passing <code>VER</code> via <code>env:</code>. <b>Release run
-  31012229114 is now building</b>; it ships the keyring fix, <code>lisa dev</code>, the Mail redesign, and the
-  Aug-4 shell fixes to the device.</p>
+  <h3>Lisa Desktop photographed itself <span class="pill good">first time</span></h3>
+  <p>GNOME 50 gates <code>org.gnome.Shell.Screenshot</code> to the media-keys daemon and the portal, so we were
+  locked out of our own compositor (<span class="iss">#266</span>). The fork now authorises a caller by
+  <code>/proc/&lt;pid&gt;/exe</code> under <code>/usr/lib/lisa/bin</code>, root-owned and not group-writable —
+  never a bus name, which anything on the seat can claim. <b>3840×2160, captured on the reference iMac's own GPU.</b>
+  Negative controls are what make it mean something: the same binary at <code>/usr/bin/gdbus</code> is refused, the
+  same binary owned by <code>lisa</code> is refused, and the <i>unpatched</i> shell refuses even the authorised
+  caller. A Lisa capture forces the flashspot whatever the argument says — measured, luminance 0.866 vs 0.628 —
+  so no capture is invisible.</p>
+  <p><b>The desktop is confirmed ours</b>, from the device rather than the packaging:
+  <code>DESKTOP_SESSION=lisa-desktop</code>, session <code>gnome-session --session=lisa</code>, and no stock
+  <code>gnome-shell</code> package installed at all. One asterisk: <code>XDG_CURRENT_DESKTOP=GNOME</code>, so every
+  app that branches on that variable is told it is on GNOME (lisa-desktop<span class="iss">#2</span>).</p>
 </div>
 
 <h2><span class="n">1</span>Milestones</h2>
@@ -137,298 +145,105 @@ moves are sequencing, not feature choice.</p>
 <thead><tr><th>Milestone</th><th>Scope</th><th>Stage</th><th>What’s actually left</th></tr></thead>
 <tbody>
 <tr><td class="num"><b>M0</b></td><td>Bootable A/B OS image + release channel</td><td><span class="pill good">done, CI-enforced</span></td>
-  <td>Steady state. Track L (pacman layer) is the live distribution channel; Track I (immutable image) builds nightly. Arch base still unpinned in release builds; mkosi itself unpinned (<span class="iss">#271</span>, new).</td></tr>
+  <td>The shell was the image’s last unpinned remote input; <code>desktop.lock</code> now pins it by version + sha256 + release URL, with a build-time gate asserting the installed version <i>and</i> that shell and mutter share a GNOME series. mkosi and the Arch base are pinned (<span class="iss">#271</span>). Left: the build still cannot verify <code>[lisa]</code> (<span class="iss">#270</span>), so <code>SigLevel</code> stays <code>Optional</code>.</td></tr>
 <tr><td class="num"><b>M1</b></td><td>Inference substrate (inferenced, modeld)</td><td><span class="pill good">functionally complete</span></td>
-  <td>LoRA hot-swap; latency budgets on reference hardware. Six pinned models incl. embeddings. Streaming, D-Bus, guided generation, QoS all verified.</td></tr>
+  <td>Unchanged and healthy. <b>New:</b> harnessd now reaches inferenced over the unix socket rather than loopback TCP, which is what let its unit take <code>RestrictAddressFamilies=AF_UNIX</code> (<span class="iss">#288</span>).</td></tr>
 <tr><td class="num"><b>M2</b></td><td>Portal, per-app identity, Ledger</td><td><span class="pill warn">core landed, edges open</span></td>
-  <td>Ledger is done and load-bearing (inference gate). Portal core exists (per-app identity, consent, grants) but no Flatpak demo app, no shell consent dialog, no Settings surface.</td></tr>
+  <td>The portal shipped with <b>no egress confinement at all</b> while its own comment said it needed none — found by running the sandbox instead of grepping it (<span class="iss">#285</span>, fixed). Still open: no Flatpak demo app, no Settings surface for grants (<span class="iss">#253</span>).</td></tr>
 <tr><td class="num"><b>M3</b></td><td>Context fabric (contextd)</td><td><span class="pill good">working + growing</span></td>
-  <td>Index, provenance, hybrid search (stemmer + vector fallthrough), mail indexed (<span class="iss">#170</span>), OS knowledge pack (<span class="iss">#175</span>). Left: file watchers, ACL fuzz suite, portal Context surfaces, mail double-index cleanup (<span class="iss">#224</span>).</td></tr>
-<tr><td class="num"><b>M4</b></td><td>Shell (fork), IME, prompt surfaces</td><td><span class="pill warn">shipped into image, unverified on screen</span></td>
-  <td>Lisa Desktop <i>replaced</i> GNOME Shell in the image — and nobody has logged in. Blocked behind <span class="iss">#267</span>: Log Out does nothing, and it is the only way to reload the Shell on Wayland.</td></tr>
-<tr><td class="num"><b>M5</b></td><td>Agent Bus (agentd)</td><td><span class="pill warn">core landed, wire deferred</span></td>
-  <td>Tiers, provenance escalation, undo journal, ledgering all tested. Left: MCP wire transport, registry lifecycle (<span class="iss">#240</span>), peer-credential provenance (<span class="iss">#55</span>), and the fact that no agent loop can reach write-tier tools (<span class="iss">#216</span>).</td></tr>
-<tr><td class="num"><b>M6</b></td><td>First-party apps + Forge + lisa dev</td><td><span class="pill warn">broad, uneven</span></td>
-  <td>Assistant, Mail, Surfer, Ledger, Notes, Preview, Terminal exist. Files (<span class="iss">#254</span>) and Photos: not started. <code>lisa dev</code> phases 0–2 built and proven live — but unshipped (<span class="iss">#130</span>).</td></tr>
-<tr><td class="num"><b>M7</b></td><td>Installer, OOBE, recovery</td><td><span class="pill hold">early</span></td>
-  <td>Proto-installer (<code>lisa install</code>) works. Rescue path for a locked-root emergency (<span class="iss">#23</span>) open; live-USB try-then-install flow pending.</td></tr>
-</tbody>
-</table></div>
+  <td>The orphaned-Maildir reap shipped (<span class="iss">#224</span>) — cause was scope-of-ownership, not document identity. <b>The device is not cured:</b> 9,094 orphaned documents and 27,809 vectors remain, and the timer runs <code>mail sync</code>, not <code>mail index</code>, so the reap does not auto-run. Fix <span class="iss">#296</span> first — the guard is <code>any(is_dir)</code>.</td></tr>
+<tr><td class="num"><b>M4</b></td><td>Shell (fork), IME, prompt surfaces</td><td><span class="pill good">running on hardware, now visible</span></td>
+  <td>Confirmed running on the iMac and photographed. Fork rebased to GNOME Shell <b>50.4</b>, tagged, published, pinned. Left: nobody has <i>logged in</i> at 50.4 (lisa-desktop<span class="iss">#1</span>), Log Out still does nothing (<span class="iss">#267</span>) and on Wayland it is the only way to reload the Shell.</td></tr>
+<tr><td class="num"><b>M5</b></td><td>Agent Bus (agentd)</td><td><span class="pill warn">boundary rebuilt tonight</span></td>
+  <td><span class="iss">#216</span> closed: a real loop now drives real write-tier tools. But the reviews found the boundary underneath was resting on names — <span class="iss">#289</span> (a second connection of the same process could approve its own destructive call) and <span class="iss">#306</span>. Both now derive identity from a pidfd-pinned process and <code>/proc/&lt;pid&gt;/exe</code>. Left: registry lifecycle (<span class="iss">#240</span>), MCP socket activation.</td></tr>
+<tr><td class="num"><b>M6</b></td><td>Apps + Forge</td><td><span class="pill warn">Surfer is real now</span></td>
+  <td>Surfer gained downloads, find-in-page, deletable history, bookmarks, session restore and keyring-backed passwords — and zen-browser was retired, so Lisa ships one browser. Preview’s slices got the agent surface they shipped without. Left: <code>lisa_ui</code> does not exist (ADR-0056), Files and Photos are a README each.</td></tr>
+</tbody></table></div>
 
-<h2><span class="n">2</span>The verification debt — what’s done but unseen</h2>
-<p>These are finished per their tests, and every one of them needs either <b>a release on the device</b> or
-<b>a person at the iMac</b> (or both) before its issue can honestly close. This queue is the single biggest
-pile in the project, and it all drains through the same two gates.</p>
+<h2><span class="n">2</span>The reality check — what two reviews and a device sweep found</h2>
+<p>Two adversarial reviews (a code review of the batch, then a full harness audit asking of every safety property
+<i>“mechanism, or prose?”</i>) plus a boot-to-desktop sweep produced <b>24 findings</b>. The pattern is the point:
+almost none were visible by reading.</p>
 <div class="tablewrap"><table>
-<thead><tr><th>Work</th><th>Landed as</th><th>Blocked on</th></tr></thead>
+<thead><tr><th>Finding</th><th>Why it survived</th><th>State</th></tr></thead>
 <tbody>
-<tr><td>Mail rail + per-account folders + settings + Smart/Classic (<span class="iss">#248</span> <span class="iss">#249</span> <span class="iss">#250</span>)</td><td>21 commits, tested, mutation-checked</td><td>release → session restart → eyes</td></tr>
-<tr><td>Super+Space actually bound (<span class="iss">#255</span>), dock pins actually applied (part of <span class="iss">#263</span>)</td><td>gschema + dconf fixes</td><td>release → session restart</td></tr>
-<tr><td>Lisa Desktop as the default session (replaces GNOME Shell)</td><td>in the image, asserted against the mounted image in CI</td><td><b>nobody has logged in</b> — needs a person</td></tr>
-<tr><td>Surfer sidebar tabs (<span class="iss">#182</span>), profiles module (<span class="iss">#259</span>/<span class="iss">#181</span>)</td><td>running as surfer-dev on the iMac / logic landed</td><td>seated eyes / session wiring</td></tr>
-<tr><td><code>lisa dev</code> install/remove/shell/doctor (<span class="iss">#130</span>)</td><td>proven live on the iMac — but via a hand-copied binary</td><td>packaging + release (the copy is not the product)</td></tr>
-<tr><td>Boot splash appearance, speakers (CS8409), push-to-talk key</td><td>mechanisms in image / packaged</td><td>a human in the room (<span class="iss">#26</span> would automate the splash check)</td></tr>
-<tr><td>fcitx5 nag suppression (<span class="iss">#191</span>)</td><td>shipped file correct</td><td>a fresh session — the passing on-device test was the user’s shadow copy</td></tr>
-</tbody>
-</table></div>
+<tr><td><b>Only <code>web</code> tainted a run</b> (<span class="iss">#302</span>)</td>
+  <td><code>result_is_web_tagged</code> was literally <code>p == "web"</code>. Mail and Preview tagged results correctly; the loop discarded them. A hostile email got the Prompt-class filesystem ladder.</td><td><span class="pill good">fixed</span></td></tr>
+<tr><td><b>The merge gate ran 16 of 1100 attempts</b> (<span class="iss">#303</span>)</td>
+  <td>Both corpus tests parked from one owner and never drained, so the pending cap denied everything after the 16th <i>before</i> the tier machinery saw it — and a denial counts as a pass. Green on 1.5% of its own corpus.</td><td><span class="pill good">fixed — 1320/1320</span></td></tr>
+<tr><td><b>Escalation asserted by one test</b> (<span class="iss">#304</span>)</td>
+  <td>All five <code>gate.rs</code> tests passed with the suite’s headline property deleted.</td><td><span class="pill good">fixed — 3 go red</span></td></tr>
+<tr><td><b>A second socket is not a second party</b> (<span class="iss">#289</span>)</td>
+  <td>Consent was resolved from bus-name ownership, and <code>session.conf</code> ships <code>&lt;allow own="*"/&gt;</code>. This partially defeated the previous night’s self-approval fix.</td><td><span class="pill good">fixed</span></td></tr>
+<tr><td><b><code>lisa install</code> offered your own disk</b> (<span class="iss">#290</span>)</td>
+  <td>When <code>/</code> sat on LUKS/LVM/md/multi-device btrfs, ownership was string equality over depth-1 children — and it printed “this system is running from /dev/sda, not this disk” above the ERASE prompt.</td><td><span class="pill good">fixed — 26/26 mutations</span></td></tr>
+<tr><td><b><code>IPAddressDeny</code> is a no-op in user scope</b> (<span class="iss">#288</span>)</td>
+  <td>An IP firewall is cgroup BPF; <code>systemd --user</code> cannot load one. The model host had unrestricted egress while both gates called it confined.</td><td><span class="pill warn">harnessd fixed; inferenced-dbus not</span></td></tr>
+<tr><td><b>The Landlock jail had never run a build</b> (<span class="iss">#307</span>, <span class="iss">#309</span>)</td>
+  <td>Found by asking “does a real build still work?” rather than “is it confined?”. <code>ABI::V1</code> has no <code>Refer</code>, so every cross-directory rename was EXDEV; <code>/dev</code> was granted read-only, so <code>&gt; /dev/null</code> was EACCES.</td><td><span class="pill good">fixed</span></td></tr>
+<tr><td><b>Gates that pass when their subject is deleted</b> (<span class="iss">#297</span>, <span class="iss">#298</span>)</td>
+  <td>Vacuous-by-absence. A manifest with no shell line exited 0; deleting the plymouth pin passed.</td><td><span class="pill good">fixed — deletion is now red</span></td></tr>
+<tr><td><b>Egress discovery missed five install idioms</b> (<span class="iss">#291</span>)</td>
+  <td>One of them was already in the shipping PKGBUILD, and 16 install lines resolved to nothing in silence.</td><td><span class="pill good">fixed — 28 resolve, 0 dropped</span></td></tr>
+<tr><td><b>13 of 57 ADR statuses were false</b></td>
+  <td>Eight <i>understated</i> — the direction that gets working code deleted. ADR-0036 said “nothing is implemented” while its shell tool shipped with all four of its conditions.</td><td><span class="pill good">corrected + 142 checked claims</span></td></tr>
+</tbody></table></div>
 
-<h2><span class="n">3</span>Workstreams</h2>
-<div class="cards">
-
-<div class="card">
-  <h3>Release &amp; CI <span class="pill bad">blocked</span></h3>
-  <p>The pipe everything else drains through.</p>
-  <ul>
-    <li><span class="iss">#270</span> keyring — fixed, image green; closes when a release ships it</li>
-    <li><code>ab-sysupdate</code> red — re-run in flight; probe can’t detect a dead server (harness gap)</li>
-    <li><span class="iss">#271</span> mkosi unpinned — the one build tool that can change overnight</li>
-    <li><span class="iss">#26</span> capture Plymouth splash in CI · <span class="iss">#27</span> torrent mirror</li>
-  </ul>
-  <div class="next"><b>Next:</b> green suite → cut release → update iMac. Then pin mkosi.</div>
-</div>
-
-<div class="card">
-  <h3>Desktop Shell <span class="pill bad">keystone blocker</span></h3>
-  <p>The fork shipped as <i>the</i> shell; verification is gated here.</p>
-  <ul>
-    <li><span class="iss">#267</span> Log Out does nothing — <b>blocks reloading the Shell at all</b></li>
-    <li><span class="iss">#262</span> Show Apps dead · <span class="iss">#263</span> Assistant not launchable</li>
-    <li><span class="iss">#266</span> GNOME 50 locks us out of screenshot in our own compositor</li>
-    <li><span class="iss">#256</span> ⌘ on Apple keyboards · <span class="iss">#190</span> dock badges (parser landed, renderer next)</li>
-  </ul>
-  <div class="next"><b>Next:</b> fix <span class="iss">#267</span> first — every other visual claim queues behind it.</div>
-</div>
-
-<div class="card">
-  <h3>Mail <span class="pill warn">built, unseen</span></h3>
-  <p>Four panes, honest account state, curated sidebar.</p>
-  <ul>
-    <li><span class="iss">#248</span>/<span class="iss">#249</span>/<span class="iss">#250</span> rail + settings + Smart — awaiting a screen</li>
-    <li><span class="iss">#224</span> orphaned Maildir over-indexed — indexer fixed; 26k stale vectors still in the store (owner’s call to delete)</li>
-    <li><span class="iss">#170</span> mail-in-contextd — landed; device run rides next payload</li>
-    <li>Compose attachments + inline images — next feature slice</li>
-  </ul>
-  <div class="next"><b>Next:</b> verify on screen after the release; then compose.</div>
-</div>
-
-<div class="card">
-  <h3>Surfer <span class="pill warn">security spine growing</span></h3>
-  <p>The browser an agent uses without being you.</p>
-  <ul>
-    <li><span class="iss">#259</span>/<span class="iss">#181</span> profiles — tested logic landed; WebKit session wiring is the remaining half</li>
-    <li><span class="iss">#216</span> write tools exist but <b>no agent loop can reach them</b> — the escalation story is documented, unreachable</li>
-    <li><span class="iss">#182</span> sidebar tabs — running on device, awaiting eyes</li>
-    <li><span class="iss">#260</span> passwords: keyring manager, fields unreachable by agents — not started</li>
-  </ul>
-  <div class="next"><b>Next:</b> wire profiles into real sessions, then make <span class="iss">#216</span> honest.</div>
-</div>
-
-<div class="card">
-  <h3>Assistant &amp; Agent Bus <span class="pill warn">read-only agent</span></h3>
-  <p>The differentiator: apps as agent surfaces.</p>
-  <ul>
-    <li><span class="iss">#157</span> write-tier tools + cross-conversation memory — the big unstarted feature</li>
-    <li><span class="iss">#240</span> registry lifecycle — a renamed app still advertises tools</li>
-    <li><span class="iss">#55</span> D-Bus provenance vs peer credentials — old, load-bearing</li>
-    <li>Coding loop can check its own work (<code>lisa dev check</code>) — landed</li>
-  </ul>
-  <div class="next"><b>Next:</b> after the queue drains, <span class="iss">#157</span> is the highest-value feature in the repo.</div>
-</div>
-
-<div class="card">
-  <h3>Developer tooling <span class="pill warn">built, unshipped</span></h3>
-  <p><code>lisa dev</code>: rootless containers, shims, doctor (<span class="iss">#130</span>).</p>
-  <ul>
-    <li>Phases 0–2 done: install/remove/list/shell/reset, disk guard, doctor — proven live on the iMac</li>
-    <li>Ships automatically with the next release (it lives in the lisa-cli crate); the on-device proof so far used a hand-copied binary</li>
-    <li>Left: re-verify from the shipped package, lint gate for orphaned shims, aarch64 base-image decision</li>
-  </ul>
-  <div class="next"><b>Next:</b> verify from the shipped package after the release lands, then close <span class="iss">#130</span>.</div>
-</div>
-
-<div class="card">
-  <h3>Context &amp; retrieval <span class="pill good">healthy</span></h3>
-  <p>The memory the model actually uses.</p>
-  <ul>
-    <li>Hybrid search, knowledge pack, mail provenance — landed and field-tested</li>
-    <li><span class="iss">#175</span> later phases · file watchers · ACL fuzz suite</li>
-  </ul>
-  <div class="next"><b>Next:</b> nothing urgent — this stream can idle while the queue drains.</div>
-</div>
-
-<div class="card">
-  <h3>Input / IME <span class="pill hold">two known gaps</span></h3>
-  <ul>
-    <li><span class="iss">#208</span> double-Shift summon can’t reach fcitx5 on Wayland — gesture is toolkit-scoped; honest status needs recording</li>
-    <li><span class="iss">#191</span> nag fix shipped but only provable on a fresh session (shadow copy)</li>
-  </ul>
-  <div class="next"><b>Next:</b> both are verify-or-redesign items for the device session.</div>
-</div>
-
-<div class="card">
-  <h3>Update &amp; recovery <span class="pill warn">good CI, open field edges</span></h3>
-  <ul>
-    <li>A/B update, rollback, interrupted-transfer marking (<span class="iss">#159</span> class) all CI-proven</li>
-    <li><span class="iss">#19</span> unprivileged update from the desktop — retest after next release</li>
-    <li><span class="iss">#23</span> user-survivable rescue path — locked-root emergency is still a brick</li>
-  </ul>
-  <div class="next"><b>Next:</b> <span class="iss">#19</span> retest is cheap once the release lands; <span class="iss">#23</span> is a real project.</div>
-</div>
-
-</div>
+<h2><span class="n">3</span>What is still open, by severity</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>#</th><th>Finding</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td class="num"><span class="iss">#288</span></td><td>inferenced-dbus is still unconfined</td><td>It <i>listens</i> on :7778 for two libsoup callers, and libsoup has no unix-socket transport. Socket activation is the fix: <code>RestrictAddressFamilies</code> filters <code>socket(2)</code>, never <code>accept(2)</code> on an inherited fd.</td></tr>
+<tr><td class="num"><span class="iss">#289</span> <span class="iss">#306</span></td><td>Residual: an interpreter on an allowlist</td><td>The consent dialog and the Assistant both run under <code>gjs</code>, so <code>fork()</code> + exec gjs satisfies both checks. <code>/usr/bin/lisa-consentd</code> and <code>/usr/bin/lisa-assistant</code> are already listed — shipping the binaries is the whole remaining change.</td></tr>
+<tr><td class="num"><span class="iss">#313</span></td><td>mcp-bus discards the result envelope</td><td>Provenance survives only because all three apps double-tag it — in three files that have already drifted.</td></tr>
+<tr><td class="num"><span class="iss">#305</span></td><td>Taint is per-<code>Run</code></td><td>A hostile page’s influence re-enters the next turn on a clean <code>["user"]</code> chain.</td></tr>
+<tr><td class="num"><span class="iss">#287</span></td><td>No gate has booted two Lisa disks</td><td>The exact configuration the dual-disk work protects has never been executed anywhere. The boot-disk generator also fails <i>open</i>.</td></tr>
+<tr><td class="num"><span class="iss">#296</span> <span class="iss">#299</span> <span class="iss">#300</span> <span class="iss">#294</span> <span class="iss">#286</span> <span class="iss">#311</span> <span class="iss">#312</span> <span class="iss">#284</span></td><td>The MEDIUM tail</td><td>Mail reap guard, Preview rotation-on-export, digest eviction, unsandboxed activatable units, mail-sync bypassing the broker, a 15s <code>plymouth-quit-wait</code>, a failed sync unit on the device, a stale package in the index.</td></tr>
+</tbody></table></div>
 
 <h2><span class="n">4</span>The org, repo by repo</h2>
-<p>Five repositories exist under <code>Lisa-AgenticOS</code> — there is no <code>lisa-server</code> repo, and
-that is worth saying plainly: the “make and serve” server mode is ADR-0031, <b>accepted with zero implementation</b>
-(tracked by <span class="iss">#158</span>). All state below read live from GitHub on 2026-08-05.</p>
-
-<div class="cards">
-
-<div class="card">
-  <h3>lisa-os <span class="pill acc">the monorepo</span></h3>
-  <p>Daemons, CLI, guard, OS image, shell surfaces, apps — still the tree where all development happens.</p>
-  <ul>
-    <li>36 open issues · latest release v20260804.77 · next release building now</li>
-    <li>Nightly: image + 4 A/B suites, all green after today’s two fixes</li>
-    <li>Cargo workspace + GJS trees + mkosi profiles; 14 lint gates</li>
-  </ul>
-  <div class="next"><b>State:</b> healthy, active — everything in sections 1–3 is this repo.</div>
-</div>
-
-<div class="card">
-  <h3>lisa-desktop <span class="pill warn">extracted, drifting</span></h3>
-  <p>Shell surfaces + IME; will vendor the GNOME Shell fork (ADR-0038).</p>
-  <ul>
-    <li>v0.2.0 released Aug 4 (3 assets); CI green; 2 open issues</li>
-    <li><b>The image now installs its package</b> (<code>lisa-desktop-shell</code> from [lisa]) — this repo is load-bearing for what boots</li>
-    <li>Its #1: ADR-0038 step 2 (vendor + build the actual fork, byte-identical to GNOME Shell 50.3) — <b>not started</b>; today the repo is extensions + packaging, not yet a fork</li>
-    <li>Its #2: the full rename — GNOME appears nowhere</li>
-  </ul>
-  <div class="next"><b>State:</b> see the drift warning below — main’s last code commit is Aug 2.</div>
-</div>
-
-<div class="card">
-  <h3>lisa-apps <span class="pill warn">extracted, dormant</span></h3>
-  <p>The app suite: Mail, Surfer, Preview, Recorder (GJS, MCP-native).</p>
-  <ul>
-    <li>v0.1.0 released Aug 2 (1 asset); CI green; 0 open issues</li>
-    <li>Vendored 79-line GJS test harness so suites run standalone</li>
-    <li>All Mail/Surfer work since Aug 2 — the entire four-pane redesign — is in the monorepo only; the image still takes apps from the monorepo’s own packaging, so devices are not behind, but this repo is</li>
-  </ul>
-  <div class="next"><b>State:</b> a snapshot ageing since Aug 2; harmless today because it is not yet the shipping path.</div>
-</div>
-
-<div class="card">
-  <h3>lisa-packages <span class="pill good">live and doing its job</span></h3>
-  <p>The hosted, signed [lisa] pacman index (ADR-0039).</p>
-  <ul>
-    <li>Rolling <code>current</code> release with 60 assets; publish workflow green (last run Aug 4)</li>
-    <li>Packages and db signed with the dedicated key; pubkey ships in the image via lisa-keyring</li>
-    <li>Proven by execution: a clean Arch container given only the <code>Server=</code> line installs the OS packages</li>
-  </ul>
-  <div class="next"><b>State:</b> the only split repo fully doing the job the split intended.</div>
-</div>
-
-<div class="card">
-  <h3>.github <span class="pill hold">org profile</span></h3>
-  <ul>
-    <li>Organization profile page; untouched since Jul 24</li>
-  </ul>
-  <div class="next"><b>State:</b> fine as-is; refresh once the next release’s screenshots exist.</div>
-</div>
-
-<div class="card">
-  <h3>Websites &amp; server mode <span class="pill hold">staging / unbuilt</span></h3>
-  <ul>
-    <li><b>lisaos.app</b> (marketing) + <b>lisaos.dev</b> (developer portal): built in Nuxt 4, live on staging (<code>lisa-app/lisa-dev.common.al</code>); real domains secured 2026-07-23, deliberately not wired up yet</li>
-    <li><b>Server mode</b> (“make and serve”, ADR-0031): accepted, sequenced after the injection suite, <b>no code and no repo</b> — <span class="iss">#158</span> is the honest record</li>
-  </ul>
-  <div class="next"><b>State:</b> parked on purpose; nothing here blocks the OS.</div>
-</div>
-
-</div>
-
-<div class="banner" style="margin-top:1.2rem">
-  <h3>⚠ Split-repo drift — two sources of truth for the shell are live</h3>
-  <p>The Aug 2 split (ADR-0039) extracted <code>shell/*</code> and <code>apps/*</code> into lisa-desktop and
-  lisa-apps, but <b>no sync mechanism exists</b> — development continued in the monorepo, and the split repos’
-  main branches have had no code since Aug 2. Meanwhile ADR-0039 step 4 made the image install
-  <code>lisa-desktop-shell</code> <i>from lisa-desktop’s package</i>: the shell that boots is built from the
-  older tree, while the monorepo’s shell fixes (dock badges parser, key bindings) ride its own packaging.
-  Step 6 of the plan — remove the trees from the monorepo so one copy exists — is the real fix; until then,
-  every shell change needs a deliberate answer to “which repo does the device get this from?”, or it quietly
-  ships from neither.</p>
-</div>
-
-<h2><span class="n">5</span>CI pipeline review — 2026-08-05</h2>
-<p>Three parallel reviewers audited every workflow in all four repos against the current architecture.
-~30 findings; the mechanical ones were <b>fixed the same day</b> (commits <code>694578f</code>…<code>e1dfc90</code> in
-lisa-os, <code>91457ce</code> in lisa-packages, <code>0b33da6</code> in lisa-apps); the decision-shaped ones became
-issues. The dominant defect class, by far: <b>gates that stay green while asserting nothing</b> — a skipped
-branch that prints nothing, a fallback that examines the wrong artifact, a pipeline whose exit status belongs
-to the wrong command.</p>
-
 <div class="tablewrap"><table>
-<thead><tr><th>Finding</th><th>Status</th></tr></thead>
+<thead><tr><th>Repo</th><th>State</th><th>What changed tonight</th></tr></thead>
 <tbody>
-<tr><td>screenshots lane <b>unable to build an image at all</b> since ADR-0039 step 4 (keyring fix never propagated)</td><td><span class="pill good">fixed</span></td></tr>
-<tr><td>nightly's USB-boot gate (#46) examined the <b>wrong initrd</b> — bare <code>lisa.raw</code> path, silent fallback to the standalone initrd</td><td><span class="pill good">fixed</span></td></tr>
-<tr><td>Nightly asserted <b>nothing about the desktop</b> — the daily job that would see lisa-desktop drift first</td><td><span class="pill good">fixed</span> — presence + stock-absence + exact version printed</td></tr>
-<tr><td>release's package upload could publish an <b>empty [lisa] update in a green run</b> (ls|grep|xargs status bug)</td><td><span class="pill good">fixed</span></td></tr>
-<tr><td>ab-sysupdate harness blind to a dead HTTP server (#272 — today's false red)</td><td><span class="pill good">fixed</span> — HTTP probe + host-side readiness + exhaustion marker</td></tr>
-<tr><td>aarch64 image: header claimed Lisa Desktop, ships stock GNOME; <b>autologin into a session that doesn't exist</b>; lisa-portal built but never installed</td><td><span class="pill good">fixed</span> — honest header, arm session record + assertion, portal/keyring/SASL installed</td></tr>
-<tr><td>mkosi unpinned on 3 of 4 lanes; archlinuxarm base unpinned (#271)</td><td><span class="pill good">fixed</span> — 26-5 everywhere, digest pin</td></tr>
-<tr><td>No gate measured templated run-block length (the 21k release-dispatch failure class)</td><td><span class="pill good">fixed</span> — new lint check, mutation-proven</td></tr>
-<tr><td>[lisa] publish: <b>fails open on missing signing key</b>; db rebuilt from scratch per dispatch with the full-set rule in operator memory only</td><td><span class="pill good">fixed</span> in lisa-packages — fail-closed + full-set guard + sig verify</td></tr>
-<tr><td>lisa-apps: Preview's agent manifest installed where <b>agentd never looks</b> — its tools silently didn't exist</td><td><span class="pill good">fixed</span></td></tr>
-<tr><td>ci.yml: shell/apps packaging ungated at PR time; egress harness vs shipped units = two hand-mirrored lists</td><td><span class="pill good">partially fixed</span> — filters + unit greps; harness unification is <span class="iss">#275</span></td></tr>
-<tr><td><code>lisa-desktop-shell</code>: the image's only unpinned remote input</td><td><span class="pill warn">issue</span> <span class="iss">#273</span> — pin-by-URL recommended</td></tr>
-<tr><td>release's desktop integration test mostly asserts the <b>monorepo's</b> files, not the hosted fork's</td><td><span class="pill warn">issue</span> <span class="iss">#274</span></td></tr>
-<tr><td>Egress proven for 1 of 3 no-network daemons; modeld ships no unit</td><td><span class="pill warn">issue</span> <span class="iss">#275</span></td></tr>
-<tr><td>lisa-desktop: pkgver decoupled from tags (v0.2.0 shipped 0.1.0 packages); no token gate covers the fork's CSS</td><td><span class="pill warn">issues</span> lisa-desktop #3, #4</td></tr>
-<tr><td>ADR-0039's split-failure clause has triggered (66 monorepo commits vs frozen split repos)</td><td><span class="pill warn">recorded</span> on <span class="iss">#171</span> — step 6 is the fix</td></tr>
-</tbody>
-</table></div>
-<p>Also merged as part of this pass: lisa-desktop's <code>main</code> was fast-forwarded to the v0.2.0 vendor-branch
-tip — the shipped fork existed only on an unmerged branch, and a tag cut from the old main would have produced
-a release with <b>no shell package at all</b>. Every other branch in the org was verified merged-or-superseded
-and deleted; the org is now main-only.</p>
+<tr><td><code>lisa-os</code></td><td><span class="pill good">green</span></td><td>Eleven commits: the four HIGH fixes, six gate fixes, the ADR audit, ADR-0056/0057, the Dart lane deleted.</td></tr>
+<tr><td><code>lisa-desktop</code></td><td><span class="pill warn">two PRs open</span></td><td>Fork rebased to 50.4 and tagged v0.3.0 (green: 290 targets, js-delta 197/197, <code>conflicts=</code> refused stock). <b>PR #8</b> packaging conflicts, <b>PR #9</b> the screenshot capability. Neither merged.</td></tr>
+<tr><td><code>lisa-apps</code></td><td><span class="pill bad">stale and published</span></td><td>Four slices behind on Preview, ships a dead <code>NautilusPreviewer2</code> service, and installs a manifest where agentd does not read — reintroducing closed <span class="iss">#241</span>. <b>Recommendation: stop publishing it.</b></td></tr>
+<tr><td><code>lisa-packages</code></td><td><span class="pill warn">index live, one stale entry</span></td><td>Republished with shell 50.4. Still serves a stock-named <code>gnome-control-center</code> beside the fork (<span class="iss">#284</span>) — the pkgrel-outrank race the fork rule retired.</td></tr>
+</tbody></table></div>
 
-<h2><span class="n">6</span>What to tackle next — in order</h2>
-<p>The ordering principle: <b>drain the verification queue before adding to it.</b> Every new feature landed
-now joins the same unseen pile. The fastest way to make three days of work real is one release and one
-session at the machine.</p>
+<h2><span class="n">5</span>What to tackle next — in order</h2>
 <ol class="moves">
-  <li><b>Get the nightly green and cut the release.</b>
-      <p>In flight. If the re-run passes, cut immediately; if it fails the same way, the harness gets a verified server-liveness check before anything else, because a gate that fails for its own reasons blocks everything.</p></li>
-  <li><b>Fix <span class="iss">#267</span> (Log Out does nothing).</b>
-      <p>The keystone: it is the only way to restart the Shell on Wayland, and ~10 issues’ worth of finished work cannot be verified until a session can be restarted. Small surface, outsized leverage.</p></li>
-  <li><b>One seated verification session at the iMac.</b>
-      <p>Update to the new release, log into Lisa Desktop (first human ever), then burn the queue in one pass: #255 Super+Space, #263 dock, #262 Show Apps, mail rail/settings/Smart, Surfer tabs, splash, #191 on a fresh session, #19 unprivileged update. Each one closes or files honestly.</p></li>
-  <li><b>Ship <code>lisa dev</code> (<span class="iss">#130</span>) through the channel.</b>
-      <p>It already works; it just isn’t a product until the release installs it. Packaging + the shim lint gate closes the issue.</p></li>
-  <li><b>Then choose one feature lane and stay in it.</b>
-      <p>Recommendation: the agent-capability lane — <span class="iss">#216</span> (make write tools reachable) then <span class="iss">#157</span> (Assistant write-tier + memory). It is the thesis of the OS; Mail compose and Surfer passwords are worthy seconds.</p></li>
+  <li><b>Merge lisa-desktop PR #8 and #9</b>, tag, publish, bump <code>desktop.lock</code>. The screenshot capability is what makes every future visual claim checkable.</li>
+  <li><b>Ship <code>lisa-consentd</code> and <code>lisa-assistant</code> as real binaries.</b> Small, and it closes <span class="iss">#289</span> and <span class="iss">#306</span> properly rather than mostly.</li>
+  <li><b>Wave 2</b> — the eleven remaining findings, grouped by territory.</li>
+  <li><b>Cut the release.</b> It carries the 50.4 shell, so logging in closes lisa-desktop<span class="iss">#1</span>.</li>
+  <li><b><code>lisa_ui</code> step 1</b> (ADR-0056): the Agent Bus edge, absorbing three drifted copies of <code>mcp-protocol.js</code>. Then <code>LisaWindow</code>, which closes <span class="iss">#282</span> by construction.</li>
 </ol>
 
-<h2><span class="n">7</span>Standing risks worth naming</h2>
+<h2><span class="n">6</span>Waiting on the owner</h2>
 <div class="tablewrap"><table>
-<thead><tr><th>Risk</th><th>Why it matters</th></tr></thead>
+<thead><tr><th>Item</th><th>Why it cannot be automated</th></tr></thead>
 <tbody>
-<tr><td>Unpinned build inputs (<span class="iss">#271</span>, Arch base)</td><td>A build that was green yesterday can go red with zero commits — every such failure costs a diagnosis day, as #270 nearly did.</td></tr>
-<tr><td>Split-repo drift (section 4)</td><td>The shell that boots is built from lisa-desktop’s Aug-2 tree while shell development continues in the monorepo. ADR-0039 step 6 (remove the monorepo copy) is the fix; until then every shell change can silently ship from the wrong tree, or neither.</td></tr>
-<tr><td>Harness failures that impersonate OS failures (<span class="iss">#272</span>)</td><td>Today’s ab-sysupdate red cost a full re-run to prove innocent. A gate whose own infrastructure can fail invisibly taxes every future red with “is it us?”.</td></tr>
-<tr><td>Issues rot faster than they close</td><td>#146 sat open for weeks because its checkboxes named a renamed directory. The report you are reading exists partly to counter this.</td></tr>
-<tr><td>User-scope shadows on the reference iMac</td><td>Three times a passing on-device test was the user’s copy passing, not the shipped file. Any device verification must check for the shadow first.</td></tr>
-<tr><td>Screenshot lockout (<span class="iss">#266</span>)</td><td>Until the compositor can screenshot itself, visual verification stays manual and rationed — which feeds the debt in section 2.</td></tr>
-<tr><td>Documented-but-unreachable capability (<span class="iss">#216</span>)</td><td>This repo’s most repeated defect class is documenting intent as behavior. #216 is the live instance.</td></tr>
-</tbody>
-</table></div>
+<tr><td><code>dconf reset /org/gnome/shell/favorite-apps</code></td><td>A user-scope value permanently shadows the system default, and <code>$HOME</code> survives A/B updates by design. No release can clear it; <span class="iss">#263</span> stays broken on that machine until it is run. Fourth instance of this pattern on the iMac.</td></tr>
+<tr><td>The mail reap</td><td>9,094 orphaned documents, 27,809 vectors — on the owner’s real data. Fix <span class="iss">#296</span> first.</td></tr>
+<tr><td>The Google client secret</td><td>The build guard correctly refuses a placeholder, so “Continue to GNOME” stays on the sign-in screen until the real secret is in the packaging path (<span class="iss">#276</span>).</td></tr>
+<tr><td>Stop publishing three stale packages</td><td><code>lisa-desktop</code>, <code>lisa-desktop-ime</code>, <code>lisa-apps</code>. A signed stale copy is more dangerous than no package.</td></tr>
+<tr><td>~380 MiB of stranded zen payload</td><td>On <code>/var</code>, now unmanaged since the channel was removed. Nothing prunes it.</td></tr>
+</tbody></table></div>
 
-<div class="foot">
-Sources: <code>docs/STATUS.md</code>, open issues at generation time, nightly run 31009250386, the task ledger.
-This report is a snapshot, not a source of truth — <code>docs/PLAN.md</code> owns scope, <code>docs/STATUS.md</code> owns history.
-</div>
+<h2><span class="n">7</span>Standing risks worth naming</h2>
+<ul class="risks">
+  <li><b>A green gate is not a working gate.</b> Three vacuous tests were caught this week, plus two gates that passed when their subject was <i>deleted</i>. Every new gate now has to fail on absence, and mutation-by-deletion is part of the bar.</li>
+  <li><b>A mutation sweep that cannot compile scores perfectly.</b> One sweep reported 25/25 killed while 15 mutations had been rejected by the compiler — a broken workspace is indistinguishable from a killed mutant. Sweeps run out-of-tree now.</li>
+  <li><b>Documentation that understates is the dangerous kind.</b> Eight ADRs claimed less than the code did. That is what makes someone rebuild a thing that exists, or delete working code to match a doc.</li>
+  <li><b>An interpreter on an allowlist authorises everything it can run.</b> The reason <span class="iss">#289</span> and <span class="iss">#306</span> are not fully closed.</li>
+  <li><b>Two repos still ship the same files.</b> ADR-0057 settled ownership and <code>conflicts=</code> makes it loud, but ADR-0039 step 6 — the source migration — is untouched, and it is the seam that would duplicate <code>lisa_ui</code> the same way.</li>
+</ul>
+
+<footer class="page">
+  <p>Generated 2026-08-06 from the repository, the device at 192.168.1.7, and CI. Every claim here was checked by
+  running something; where it was not, the text says so.</p>
+</footer>
 
 </main>
 </body>
