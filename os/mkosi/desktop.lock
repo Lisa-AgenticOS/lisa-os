@@ -44,16 +44,29 @@
 #     --json assets --jq '.assets[] | "\(.name)  \(.digest)"'
 #
 # and copy the filename + sha256 (drop the `sha256:` prefix) and the
-# asset URL into the line below. Verify the digest by downloading the
-# file rather than trusting the API field if you have any doubt; the
-# 50.3-1 line below was verified that way on 2026-08-05:
+# asset URL into the line below. COMPUTE the digest from the downloaded
+# file rather than copying the API field: the field is GitHub telling
+# you what it thinks it stored, and a pin whose value came from the same
+# place as the file is not an independent check of it.
 #
 #   curl -fsSL -o /tmp/shell.pkg.tar.zst <url> && sha256sum /tmp/shell.pkg.tar.zst
-#   14480abc8ebf54a698a958eb33030f0e221e45ec9e153d8dc485cf5045d0578e
+#
+# The 50.4-2 line below was verified that way on 2026-08-06, and against
+# two further copies that must agree if the chain is coherent — the
+# asset the [lisa] index serves under the same name, and the
+# %SHA256SUM% the index db records for it:
+#
+#   e68f10c2d114087242af4a2dda56c1e42e600e974bec837229bcc927176e1676
+#
+# NOTE ON PKGREL, learned here: 50.4-2 is 50.4-1 plus the screenshot
+# patch (#266). pkgver stays at the GNOME release the fork is rebased
+# onto, so a patch of ours has to move pkgrel — and it has to, because
+# the gate below compares VERSIONS. Two different packages both called
+# 50.4-1 would pass this pin while the image shipped the other one.
 #
 # A bump is ONE commit that a reviewer can read, which is the whole
 # point: what an image contains is decided by the commit that built it.
-lisa-desktop-shell-50.4-1-x86_64.pkg.tar.zst  a14ee857870e83211725b8a0b7233d2826692380b283c66e872060a577f75401  https://github.com/Lisa-AgenticOS/lisa-desktop/releases/download/v0.3.0/lisa-desktop-shell-50.4-1-x86_64.pkg.tar.zst
+lisa-desktop-shell-50.4-2-x86_64.pkg.tar.zst  e68f10c2d114087242af4a2dda56c1e42e600e974bec837229bcc927176e1676  https://github.com/Lisa-AgenticOS/lisa-desktop/releases/download/v0.4.0/lisa-desktop-shell-50.4-2-x86_64.pkg.tar.zst
 # NOT pinned here, deliberately:
 #   * lisa-desktop-ime / the lisa-desktop meta package — the image
 #     installs neither (the IME addon ships as this repo's own lisa-ime
