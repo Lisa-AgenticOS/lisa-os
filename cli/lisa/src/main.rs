@@ -417,6 +417,13 @@ enum GuardCmd {
     Allow { rule: String },
     /// Enforce a rule again.
     Forbid { rule: String },
+    /// Put a folder out of bounds for agent actions. TIGHTENING only —
+    /// this can never permit anything, so it is always safe to run
+    /// (#253).
+    Protect { path: PathBuf },
+    /// Take back a protection YOU added. Cannot reach a built-in rule:
+    /// unprotecting /etc does not make /etc writable.
+    Unprotect { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -717,6 +724,8 @@ fn run() -> anyhow::Result<()> {
             GuardCmd::List => guard::list_cmd(),
             GuardCmd::Allow { rule } => guard::allow_cmd(&rule),
             GuardCmd::Forbid { rule } => guard::forbid_cmd(&rule),
+            GuardCmd::Protect { path } => guard::protect_cmd(&path),
+            GuardCmd::Unprotect { path } => guard::unprotect_cmd(&path),
         },
         Command::Models { cmd, store } => models(cmd, store),
         Command::Do {

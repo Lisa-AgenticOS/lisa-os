@@ -52,7 +52,7 @@ pub use consent::{
 };
 pub use overrides::{Overrides, active as active_overrides, overrides_path};
 pub use path::{ContainError, contain, write_contained};
-pub use protections::Protections;
+pub use protections::{Protections, active as active_protections, protections_path};
 pub use shell::{Invocation, check_shell_line};
 
 use std::fmt;

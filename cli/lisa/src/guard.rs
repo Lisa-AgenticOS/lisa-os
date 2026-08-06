@@ -126,6 +126,22 @@ pub(crate) fn list_cmd() -> Result<()> {
         println!("  {id:<width$}  {kind:<8}  {what}");
     }
 
+    // The owner's own protections (#253). A separate section because it
+    // is a separate KIND of thing: the two above are rules Lisa ships
+    // and you may relax, this is a list you wrote and only you can
+    // change. Shown even when empty, so the verb that adds to it is
+    // discoverable from the page that shows policy — tightening may be
+    // offered from anywhere, which is the half of #253 that is safe.
+    let protections = lisa_guard::active_protections();
+    println!("\nYour protected folders. Only you can add or remove these:\n");
+    if protections.is_empty() {
+        println!("  (none)  —  `lisa guard protect <folder>` puts one out of bounds");
+    } else {
+        for p in protections.iter() {
+            println!("  {}", p.display());
+        }
+    }
+
     // A relaxation for a rule id that no longer exists is dead config,
     // and silently ignoring it is how stale policy accumulates.
     let unknown: Vec<&str> = active
@@ -195,6 +211,85 @@ pub(crate) fn forbid_cmd(rule: &str) -> Result<()> {
     save(&path, &overrides)?;
     println!("`{rule}` is enforced again");
     Ok(())
+}
+
+/// Put a folder out of bounds for agent actions (#253).
+///
+/// The mirror of `allow_cmd`, and the asymmetry between them is the
+/// point. `allow` LOOSENS — it turns a refusal into a warning — which is
+/// why ADR-0030 keeps it out-of-band, reachable only from a terminal the
+/// owner is sitting at. This TIGHTENS. It adds a `HardNo` and can never
+/// permit anything, so the failure mode of being talked into running it
+/// is not a failure mode, and it is safe to offer from anywhere.
+///
+/// That difference is structural rather than a convention here:
+/// [`Protections`] holds only paths the owner added, so there is no
+/// representation of a built-in rule for this verb to reach, and
+/// [`unprotect_cmd`] can therefore only take back what this put in.
+/// `judge` consults the set as an ADDITIONAL refusal, never as a lookup
+/// that could answer "allowed" — a path absent from it means "this set
+/// has no opinion", never "this set permits it".
+pub(crate) fn protect_cmd(path: &std::path::Path) -> Result<()> {
+    let (file, mut protections) = load_protections()?;
+    // Refused rather than resolved against the cwd. A protection that
+    // depends on where the agent happens to be running protects a
+    // different thing each time, which is worse than no protection
+    // because it reads as one.
+    if !path.is_absolute() {
+        bail!(
+            "`{}` is relative. A protection has to name one folder on this \
+             machine, not a different one depending on where a process \
+             started. Try `{}`.",
+            path.display(),
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(path)
+                .display()
+        );
+    }
+    if !protections.add(path) {
+        println!("{} is already protected", path.display());
+        return Ok(());
+    }
+    protections
+        .save(&file)
+        .with_context(|| format!("writing {}", file.display()))?;
+    println!("{} is out of bounds for agent actions", path.display());
+    println!("  in effect now — no restart, and it applies to everything beneath it");
+    Ok(())
+}
+
+/// Take back a protection the owner added.
+///
+/// Cannot reach a built-in: `lisa guard unprotect /etc` removes nothing
+/// and permits nothing, because `fs.system_write` never consulted this
+/// set. Saying so out loud matters — a person who runs it and sees
+/// "nothing to change" should not be left wondering whether they have
+/// just opened /etc.
+pub(crate) fn unprotect_cmd(path: &std::path::Path) -> Result<()> {
+    let (file, mut protections) = load_protections()?;
+    if !protections.remove(path) {
+        println!("{} was not one of your protections", path.display());
+        println!("  nothing changed. Built-in rules are not stored here and");
+        println!("  cannot be removed — see `lisa guard list`.");
+        return Ok(());
+    }
+    protections
+        .save(&file)
+        .with_context(|| format!("writing {}", file.display()))?;
+    println!(
+        "{} is no longer protected by your own rules",
+        path.display()
+    );
+    println!("  built-in rules still apply to it");
+    Ok(())
+}
+
+fn load_protections() -> Result<(std::path::PathBuf, lisa_guard::Protections)> {
+    let path = lisa_guard::protections_path()
+        .context("no HOME or XDG_CONFIG_HOME — cannot locate the guard config")?;
+    let protections = lisa_guard::Protections::load(&path);
+    Ok((path, protections))
 }
 
 fn load() -> Result<(std::path::PathBuf, Overrides)> {
@@ -275,6 +370,58 @@ mod tests {
                 "`{shared}` is refused on both surfaces and named on only one"
             );
         }
+    }
+
+    /// #253's central claim, as a test rather than a paragraph: this
+    /// verb can only ever ADD refusals.
+    ///
+    /// `Protections` holds nothing but paths the owner put in, so
+    /// `unprotect` has no representation of a built-in rule to reach.
+    /// Removing `/etc` from the set does not make `/etc` writable — the
+    /// built-in `fs.system_write` never consulted the set in the first
+    /// place. If someone later gives this type a way to hold built-ins,
+    /// this test is what notices.
+    #[test]
+    fn unprotecting_a_builtin_path_removes_nothing_and_permits_nothing() {
+        let mut p = lisa_guard::Protections::default();
+        // Never added, so it cannot be taken away.
+        assert!(!p.remove(std::path::Path::new("/etc")));
+        assert!(p.is_empty());
+        // And the guard's own refusal for /etc is unaffected either way:
+        // it is a rule id in the catalog, not an entry in this set.
+        assert!(CATALOG.iter().any(|(id, _)| *id == "fs.system_write"));
+
+        // What CAN be removed is exactly what was added, and nothing else.
+        assert!(p.add("/home/me/Legal"));
+        assert!(!p.remove(std::path::Path::new("/home/me/Leg")));
+        assert!(p.remove(std::path::Path::new("/home/me/Legal")));
+        assert!(p.is_empty());
+    }
+
+    /// A relative path names a different folder depending on where the
+    /// process started, so it is refused rather than resolved — a
+    /// protection that moves is worse than none, because it reads like
+    /// one.
+    #[test]
+    fn a_relative_protection_is_refused_not_resolved() {
+        let mut p = lisa_guard::Protections::default();
+        assert!(!p.add("Documents/Legal"));
+        assert!(!p.add("./Legal"));
+        assert!(p.is_empty());
+        assert!(p.add("/home/me/Documents/Legal"));
+    }
+
+    /// Protection is by path COMPONENT, so a protected `Legal` does not
+    /// silently cover a sibling whose name merely starts the same way.
+    /// The opposite — `Legalese` inheriting a refusal nobody asked for —
+    /// is the kind of surprise that makes people switch a guard off.
+    #[test]
+    fn protection_covers_a_subtree_but_not_a_name_that_merely_shares_a_prefix() {
+        let p = lisa_guard::Protections::from_paths(["/home/me/Legal"]);
+        assert!(p.covers("/home/me/Legal"));
+        assert!(p.covers("/home/me/Legal/2026/contract.pdf"));
+        assert!(!p.covers("/home/me/Legalese"));
+        assert!(!p.covers("/home/me"));
     }
 
     #[test]
