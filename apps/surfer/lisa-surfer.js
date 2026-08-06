@@ -55,6 +55,9 @@ import {
     restoreEnabled, selectedIndex, sessionSnapshot, tabsToRestore,
 } from './lib/session.js';
 import {MAX_MATCH_COUNT, findOptions, matchLabel, searchable} from './lib/find.js';
+// The shared dark/light path and the design tokens (ADR-0056, #282).
+import {onScheme, groundColor} from '../lisa_ui/ui/theme.js';
+import {TOKENS} from '../lisa_ui/ui/tokens.js';
 import {zoomIn, zoomLabel, zoomOut, zoomReset} from './lib/zoom.js';
 import {
     KEYRING_SCHEMA, SUBMIT_HANDLER, autofillScript, autofillVerdict,
@@ -808,11 +811,21 @@ function attachTab(view, focus = true) {
     // is opaque WHITE — dark pages flash bright for a frame (owner saw
     // it as flicker on collapse/expand). Painting the backdrop in the
     // scheme's own tone makes those frames invisible.
-    const rgba = new Gdk.RGBA();
-    rgba.parse(Adw.StyleManager.get_default().dark
-        ? '#1B1917'   /* token: dark-base */
-        : '#FFFFFF'); /* token: surface */
-    view.set_background_color(rgba);
+    //
+    // FOLLOWS the scheme rather than reading it once (#282). This used
+    // to be a single `styleMgr.dark ? … : …` at tab creation, so a tab
+    // opened in light and then switched to dark kept a white backdrop
+    // for the rest of its life — the flash this code exists to prevent,
+    // permanently, in every already-open tab. `onScheme` fires now AND
+    // on every change, which is why it is the shorter thing to write.
+    const stopTheming = onScheme((dark) => {
+        const rgba = new Gdk.RGBA();
+        rgba.parse(groundColor(dark));
+        view.set_background_color(rgba);
+    });
+    // Unhook when the view goes, or the callback repaints a WebView
+    // that is not there any more on the next theme change.
+    view.connect('destroy', () => stopTheming());
     const page = tabView.append(view);
     page.set_title('New Tab');
     view.connect('notify::title', () => {
@@ -1948,9 +1961,14 @@ function buildWindow() {
     // the gate in os/repo-tools/check-tokens.py sanctions every hex
     // here).
     const css = new Gtk.CssProvider();
-    const styleMgr = Adw.StyleManager.get_default();
-    const loadCss = () => css.load_from_string(`
-        window { background: mix(#4F378B, #1B1917, 0.72); } /* tokens: violet-700 into dark-base */
+    // The window tone follows the scheme (#282). It used to be the
+    // violet-into-dark mix UNCONDITIONALLY, so in a light session
+    // Surfer stayed dark while Mail, Preview and the Assistant went
+    // light — the single most visible reason the apps did not read as
+    // one system. The dark mix is unchanged; light gets the same
+    // violet, mixed into the light ground instead.
+    const loadCss = (dark) => css.load_from_string(`
+        window { background: mix(${TOKENS['violet-700']}, ${dark ? TOKENS['base'] : TOKENS['warm-white']}, 0.72); }
         .lisa-sidebar { background: transparent; }
         .lisa-urlbar {
             border-radius: 10px;
@@ -1972,12 +1990,14 @@ function buildWindow() {
             /* tokens: dark-base / surface — the card follows the
                scheme; a white card in a dark session was the bug the
                owner saw as "opens white". */
-            background: ${styleMgr.dark ? '#1B1917' : '#FFFFFF'};
+            background: ${groundColor(dark)};
             border-radius: 14px;
         }
     `);
-    loadCss();
-    styleMgr.connect('notify::dark', loadCss);
+    // One registration, and it both paints now and follows later —
+    // replacing a `loadCss(); connect('notify::dark', loadCss)` pair
+    // where forgetting either line was silent.
+    onScheme(loadCss);
     Gtk.StyleContext.add_provider_for_display(
         win.get_display(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
 

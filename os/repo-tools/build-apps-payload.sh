@@ -90,16 +90,24 @@ test -f "$ap_dest/assistant/lisa-assistant.js" || {
 # module added to lisa_ui tomorrow is covered with no edit here, and an
 # app that imports something the library does not have fails HERE
 # instead of on somebody's machine.
+# Any depth, and EVERY import in a file, not just the first. An app
+# entry point sits one level below the tree root and reaches
+# `../lisa_ui/`; a file under its lib/ reaches `../../lisa_ui/`. The
+# first version of this check matched only the two-level form and only
+# the first match per file, so the very next import written — Surfer's
+# theme import, one level up — would have been invisible to it. A guard
+# with a blind spot is the thing it is guarding against.
 missing=0
 while IFS= read -r importer; do
-    spec=$(sed -n "s:.*from '\.\./\.\./lisa_ui/\([^']*\)'.*:\1:p" "$importer" | head -1)
-    [ -n "$spec" ] || continue
-    if [ ! -f "$ap_dest/lisa_ui/$spec" ]; then
-        echo "build-apps-payload.sh: $(basename "$(dirname "$(dirname "$importer")")")" \
-             "imports lisa_ui/$spec, which is not in the staged tree" >&2
-        missing=1
-    fi
-done < <(grep -rl "from '\.\./\.\./lisa_ui/" "$ap_dest" --include='*.js' || true)
+    while IFS= read -r spec; do
+        [ -n "$spec" ] || continue
+        if [ ! -f "$ap_dest/lisa_ui/$spec" ]; then
+            echo "build-apps-payload.sh: ${importer#"$ap_dest"/}" \
+                 "imports lisa_ui/$spec, which is not in the staged tree" >&2
+            missing=1
+        fi
+    done < <(sed -n "s:.*from '\(\.\./\)\{1,\}lisa_ui/\([^']*\)'.*:\2:p" "$importer")
+done < <(grep -rl "lisa_ui/" "$ap_dest" --include='*.js' || true)
 [ "$missing" -eq 0 ] || exit 1
 
 if [ -n "$ap_tarball" ]; then
