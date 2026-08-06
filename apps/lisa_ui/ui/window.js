@@ -69,6 +69,70 @@ export function lisaWindow({app, title, width = 900, height = 640, content = nul
     return {window, header, view};
 }
 
+/// A two-pane window: a list on the left, the selected thing on the
+/// right. Mail, Notes and a Files browser are all this shape.
+///
+/// Extracted when a second caller needed it, not invented up front —
+/// ADR-0056 step 4. Notes is that caller: a list-and-editor app cannot
+/// use `lisaWindow` because a split view has TWO header bars, one per
+/// pane, and a single-header primitive would have forced Notes to build
+/// its own chrome. That is exactly how #282 happened the first time.
+///
+/// Adwaita collapses this to one pane on a narrow window by itself, so
+/// the app gets small-screen behaviour without asking.
+///
+/// Returns the two headers as well as the pages, because what an app
+/// puts IN a header is the only part of the chrome it should decide.
+export function lisaSplitWindow({
+    app, title, width = 900, height = 640,
+    sidebarTitle = title, sidebarWidth = 300,
+}) {
+    if (!app)
+        throw new Error('lisa_ui/window: an Adw.Application is required');
+    if (typeof title !== 'string' || !title)
+        throw new Error('lisa_ui/window: a window needs a title');
+
+    const window = new Adw.ApplicationWindow({
+        application: app,
+        title,
+        default_width: width,
+        default_height: height,
+    });
+
+    const sidebarHeader = new Adw.HeaderBar();
+    const sidebarView = new Adw.ToolbarView();
+    sidebarView.add_top_bar(sidebarHeader);
+    const sidebarPage = new Adw.NavigationPage({
+        title: sidebarTitle, child: sidebarView,
+    });
+
+    const contentHeader = new Adw.HeaderBar();
+    const contentView = new Adw.ToolbarView();
+    contentView.add_top_bar(contentHeader);
+    const contentPage = new Adw.NavigationPage({
+        title, child: contentView,
+    });
+
+    const split = new Adw.NavigationSplitView({
+        sidebar: sidebarPage,
+        content: contentPage,
+        min_sidebar_width: 220,
+        sidebar_width_fraction: 0.34,
+        max_sidebar_width: sidebarWidth,
+    });
+    window.content = split;
+
+    return {
+        window, split, sidebarHeader, contentHeader,
+        setSidebar: (w) => { sidebarView.content = w; },
+        setContent: (w) => { contentView.content = w; },
+        /// On a collapsed (narrow) window, bring the content pane
+        /// forward — what selecting a row should do on a phone-width
+        /// window and a no-op on a wide one.
+        showContent: () => { split.set_show_content(true); },
+    };
+}
+
 /// A window control an app adds itself, with the tooltip that makes it
 /// legible. Sugar, but the kind that stops six apps spelling the same
 /// three lines six ways.
