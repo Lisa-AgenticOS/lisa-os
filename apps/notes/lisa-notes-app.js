@@ -267,10 +267,21 @@ class NotesApp {
         // keeps the editor and selects nothing.
         if (this._selected && this._selected.id != null) {
             const row = this._rowsById.get(String(this._selected.id));
-            if (row)
+            if (row) {
                 this._list.select_row(row);
-            else
+            } else if (this._editorDirty()) {
+                // The note went away underneath us — an agent deleted
+                // it, say — while the editor holds unsaved words. Those
+                // words outrank the vanished row (#321): the note is
+                // demoted to a DRAFT, so the next save re-creates it
+                // instead of the editor being blanked mid-thought.
+                this._selected = {...this._selected, id: null};
+                this._dateLabel.label = 'New note';
+                this._deleteBtn.sensitive = false;
+                this._list.select_row(null);
+            } else {
                 this._clearSelection();
+            }
         }
     }
 
@@ -307,7 +318,7 @@ class NotesApp {
             // the one place it certainly survives. The list selection
             // already moved on click, so it is put back.
             this._toast(`Could not save — staying here: ${e.message ?? e}`);
-            const back = this._selected.id != null
+            const back = this._selected?.id != null
                 ? this._rowsById.get(String(this._selected.id)) ?? null
                 : null;
             this._list.select_row(back);
@@ -423,6 +434,16 @@ class NotesApp {
         } finally {
             this._saving = null;
         }
+    }
+
+    /// Does the editor hold anything the backend has not seen?
+    _editorDirty() {
+        const s = this._selected;
+        if (!s || s._unreadable)
+            return false;
+        const buf = this._bodyView.buffer;
+        const body = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), false);
+        return this._titleEntry.text !== (s.title ?? '') || body !== (s.body ?? '');
     }
 
     async _writeEditorState() {

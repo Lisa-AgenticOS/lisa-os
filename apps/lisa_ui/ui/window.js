@@ -175,6 +175,11 @@ export function lisaSplitWindow({
         // by the fix for it.
         sidebarHeader.set_show_start_title_buttons(false);
         sidebarHeader.set_show_end_title_buttons(false);
+        // ...and on a buttons-at-start layout the content header would
+        // draw them at x=sidebarWidth, mid-window, because the floating
+        // pane is invisible to Adwaita's placement (#320). No change on
+        // the default layout, where the start side is empty.
+        contentHeader.set_show_start_title_buttons(false);
 
         // A floating panel, not a full-height slab: margins on every
         // side and a radius, so it reads as a layer above the content
@@ -219,9 +224,13 @@ export function lisaSplitWindow({
 /// The glass rules are lisaSplitWindow's, applied to the leftmost pane
 /// only: the sidebar is see-through and flush to the frame, the list
 /// and content keep their own opaque ground. One window shape, one
-/// place for the window controls (the content header carries them; the
-/// list header's are suppressed by Adwaita inside the inner split, the
-/// floating sidebar's explicitly here).
+/// place for the window controls: the content header carries them.
+/// Adwaita only suppresses the list header's END buttons (as the inner
+/// split's sidebar) — its START side, and both sides of the floating
+/// glass pane, are suppressed explicitly here, because a floating
+/// Gtk.Overlay child is invisible to Adwaita's placement and a
+/// buttons-at-start layout would otherwise draw window controls in the
+/// middle of the window (#320, the exact shape of #282).
 export function lisaTripleWindow({
     app, title, width = 1280, height = 820,
     sidebarWidth = 280, overlay = true,
@@ -275,6 +284,11 @@ export function lisaTripleWindow({
 
         sidebarHeader.set_show_start_title_buttons(false);
         sidebarHeader.set_show_end_title_buttons(false);
+        // The list header is the leftmost pane Adwaita can SEE, so on a
+        // buttons-at-start layout it would grow window controls at
+        // x=280 while the true left edge (the floating pane) has none.
+        // Pixel-identical on the default layout, where start is empty.
+        listHeader.set_show_start_title_buttons(false);
         sidebarView.set_halign(Gtk.Align.START);
         sidebarView.set_size_request(sidebarWidth, -1);
         window.add_css_class('lisa-see-through');
