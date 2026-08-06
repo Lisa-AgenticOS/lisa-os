@@ -319,3 +319,50 @@ if command -v pacman >/dev/null 2>&1 && [ -d /var/lib/pacman/local ]; then
     install -d /usr/lib/lisa
     pacman -Q > /usr/lib/lisa/packages.manifest
 fi
+
+# --- One session in the greeter, and it is ours (#284) ---------------
+#
+# `gnome-session` stays in the image (ADR-0048 keeps it as foundation),
+# and it ships /usr/share/wayland-sessions/gnome.desktop. So the greeter
+# listed TWO sessions: "GNOME" and "Lisa Desktop". Both run
+# /usr/bin/gnome-shell, which IS Lisa Desktop (the fork installs at
+# /usr), so the GNOME entry started our shell *without* Lisa's session
+# drop-in — the dock, the overlay and the semantic launcher missing, and
+# no error anywhere to say why. A person picking the entry named after
+# the desktop they recognise got a half-configured Lisa.
+#
+# This is the image being deliberate about what it contains: an entry we
+# do not want offered does not go in. It is NOT a patch to gnome-session
+# (rule 11 — the package is installed unmodified; only this image's copy
+# of one .desktop is dropped).
+#
+# TRACK I ONLY, deliberately. Track L layers onto somebody's existing
+# Arch/Omarchy, where GNOME may be the desktop they actually use;
+# deleting their session entry would be exactly the "between a person
+# and their own machine" move ADR-0029 forbids.
+#
+# SAFE because GDM does not require the name it falls back to. Its
+# hardcoded default is the string "gnome" (daemon/gdm-session.c,
+# get_fallback_session_name); when that does not resolve it enumerates
+# every .desktop under the system session dirs, sorts them, and takes
+# the first. Read from gdm's source on 2026-08-06, not assumed. With
+# stock's entry gone ours is the only one, so it is both the listed
+# session and the fallback — belt and braces with the accountsservice
+# factory record, which already names it.
+#
+# Order matters: assert OURS is present BEFORE removing anything. A
+# build that dropped the stock entry and shipped no replacement would
+# produce an image that cannot start a session at all.
+_ours=/usr/share/wayland-sessions/lisa-desktop.desktop
+if [ ! -e "$_ours" ]; then
+    echo "postinst: $_ours is missing — refusing to drop stock's session" >&2
+    echo "          entries, which would leave the image with no session." >&2
+    exit 1
+fi
+for _s in /usr/share/wayland-sessions/gnome*.desktop \
+          /usr/share/xsessions/gnome*.desktop; do
+    [ -e "$_s" ] || continue
+    echo "postinst: dropping stock session entry $_s (#284)"
+    rm -f "$_s"
+done
+unset _ours _s

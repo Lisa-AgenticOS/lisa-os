@@ -579,6 +579,20 @@ jobs:
             [ -e "$R/$f" ] || say "missing $f — the session cannot be selected or cannot start."
           done
 
+          # ...and it is the ONLY session offered (#284). gnome-session
+          # ships gnome.desktop; that entry runs the same
+          # /usr/bin/gnome-shell without Lisa's session drop-in, so it
+          # starts a half-configured Lisa with no error to explain it.
+          # mkosi.postinst.chroot drops it; this proves the drop reached
+          # the artifact rather than trusting the build log.
+          for d in usr/share/wayland-sessions usr/share/xsessions; do
+            stock=$(sudo find "$R/$d" -maxdepth 1 -name 'gnome*.desktop' 2>/dev/null || true)
+            [ -z "$stock" ] || say "stock session entries survive in $d: $stock"
+          done
+          n=$(sudo find "$R/usr/share/wayland-sessions" -maxdepth 1 -name '*.desktop' 2>/dev/null | wc -l)
+          [ "$n" -eq 1 ] \
+            || say "$n wayland sessions in the greeter; exactly one (ours) is the design."
+
           # -- 3. It is the DEFAULT session ---------------------------
           # GDM has no default-session setting; its fallback is the
           # hardcoded string "gnome" (gdm-session.c). The only lever is

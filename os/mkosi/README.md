@@ -104,9 +104,29 @@ the real path would be shadowed — the same trap `lisa-home-factory.conf`
 exists for). It is a default, not a lock: GDM rewrites that file with
 whatever the user last picked at the greeter.
 
-`gnome-session` still ships its own `gnome.desktop`, so "GNOME" remains
-in the greeter's list. Selecting it runs `/usr/bin/gnome-shell`, which
-is Lisa Desktop — the same shell, without Lisa's session drop-in.
+`gnome-session` ships its own `gnome.desktop`, so "GNOME" used to remain
+in the greeter's list — and selecting it ran `/usr/bin/gnome-shell`,
+which *is* Lisa Desktop, but without Lisa's session drop-in: the dock,
+the overlay and the semantic launcher missing, with nothing to say why.
+An entry named after the desktop people recognise, which quietly gives
+them a broken one, is worse than no second entry. Since #284
+`mkosi.postinst.chroot` drops `gnome*.desktop` from the image's
+`wayland-sessions`/`xsessions`, so the greeter lists exactly one
+session. gnome-session itself is installed unmodified (rule 11); it is
+this image that declines to offer the entry.
+
+That is safe because GDM does not need the name it falls back to:
+`get_fallback_session_name` (daemon/gdm-session.c) tries the hardcoded
+`"gnome"`, and when it does not resolve, enumerates the session dirs,
+sorts, and takes the first — read from gdm's source, not assumed. Ours
+is then both the only listed session and the fallback. `release.yml`
+asserts on the mounted artifact that no `gnome*.desktop` survived and
+that exactly one wayland session ships, because a build-time `rm` that
+silently stopped matching is the same defect wearing a different hat.
+
+Track L does **not** do this: it layers onto somebody's existing
+Arch/Omarchy where GNOME may be the desktop they actually use, and
+deleting their session entry is the move ADR-0029 forbids.
 
 The release build folds in `lisa-shell` (os/packages/lisa), which
 installs and default-enables the assistant overlay + semantic launcher
