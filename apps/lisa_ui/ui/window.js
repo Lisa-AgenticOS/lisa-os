@@ -85,9 +85,15 @@ export function lisaWindow({app, title, width = 900, height = 640, content = nul
 ///
 /// Returns the two headers as well as the pages, because what an app
 /// puts IN a header is the only part of the chrome it should decide.
+/// `overlay: true` floats the sidebar OVER the content instead of
+/// beside it. That is what makes glass mean anything: `backdrop-filter`
+/// blurs what is behind a pane, and beside-content there is nothing
+/// behind it but a flat window background — blurring a flat colour
+/// returns the same flat colour. Content under the pane is the whole
+/// trick, and it is how Safari and macOS Notes do it too.
 export function lisaSplitWindow({
     app, title, width = 900, height = 640,
-    sidebarTitle = title, sidebarWidth = 300,
+    sidebarTitle = title, sidebarWidth = 300, overlay = false,
 }) {
     if (!app)
         throw new Error('lisa_ui/window: an Adw.Application is required');
@@ -104,16 +110,17 @@ export function lisaSplitWindow({
     const sidebarHeader = new Adw.HeaderBar();
     const sidebarView = new Adw.ToolbarView();
     sidebarView.add_top_bar(sidebarHeader);
-    const sidebarPage = new Adw.NavigationPage({
-        title: sidebarTitle, child: sidebarView,
-    });
 
     const contentHeader = new Adw.HeaderBar();
     const contentView = new Adw.ToolbarView();
     contentView.add_top_bar(contentHeader);
-    const contentPage = new Adw.NavigationPage({
-        title, child: contentView,
-    });
+
+    // The NavigationPages are built ONLY in the split branch. Wrapping
+    // the views in pages and then also adding those views to a
+    // Gtk.Overlay gives each one two parents, which GTK refuses — the
+    // first version of overlay mode died at startup with no message at
+    // all, because a widget with two parents is not a runtime warning,
+    // it is the end of the process.
 
     // The Lisa sheet, installed by the primitive rather than by each
     // app: an app should not have to opt in to looking like the system
@@ -122,14 +129,48 @@ export function lisaSplitWindow({
     sidebarView.add_css_class('lisa-glass');
     sidebarView.add_css_class('lisa-glass-edge-end');
 
-    const split = new Adw.NavigationSplitView({
-        sidebar: sidebarPage,
-        content: contentPage,
-        min_sidebar_width: 220,
-        sidebar_width_fraction: 0.34,
-        max_sidebar_width: sidebarWidth,
-    });
-    window.content = split;
+    let split;
+    if (overlay) {
+        // Content fills the window; the sidebar floats over its left
+        // edge, so the blur has something to work on.
+        split = new Gtk.Overlay();
+
+        // The content is INSET past the pane. Without this the editor
+        // sits underneath the sidebar and the app looks like two
+        // windows stacked — which is exactly what the first attempt
+        // looked like.
+        const gap = 12;
+        contentView.set_margin_start(sidebarWidth + gap);
+        split.set_child(contentView);
+
+        // ONE set of window controls. Both header bars drew their own,
+        // so a floating sidebar produced two close buttons in one
+        // window — the precise complaint #282 opened with, reintroduced
+        // by the fix for it.
+        sidebarHeader.set_show_start_title_buttons(false);
+        sidebarHeader.set_show_end_title_buttons(false);
+
+        // A floating panel, not a full-height slab: margins on every
+        // side and a radius, so it reads as a layer above the content
+        // rather than a region of the window.
+        sidebarView.set_halign(Gtk.Align.START);
+        sidebarView.set_size_request(sidebarWidth, -1);
+        sidebarView.set_margin_top(gap);
+        sidebarView.set_margin_bottom(gap);
+        sidebarView.set_margin_start(gap);
+        sidebarView.add_css_class('lisa-glass-floating');
+        split.add_overlay(sidebarView);
+        window.content = split;
+    } else {
+        split = new Adw.NavigationSplitView({
+            sidebar: new Adw.NavigationPage({title: sidebarTitle, child: sidebarView}),
+            content: new Adw.NavigationPage({title, child: contentView}),
+            min_sidebar_width: 220,
+            sidebar_width_fraction: 0.34,
+            max_sidebar_width: sidebarWidth,
+        });
+        window.content = split;
+    }
 
     return {
         window, split, sidebarHeader, contentHeader,
@@ -138,7 +179,7 @@ export function lisaSplitWindow({
         /// On a collapsed (narrow) window, bring the content pane
         /// forward — what selecting a row should do on a phone-width
         /// window and a no-op on a wide one.
-        showContent: () => { split.set_show_content(true); },
+        showContent: () => { if (split.set_show_content) split.set_show_content(true); },
     };
 }
 

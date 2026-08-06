@@ -44,35 +44,53 @@ function alpha(hex, a) {
 function sheet(dark) {
     const ground = dark ? TOKENS['base'] : TOKENS['warm-white'];
     const tint = dark ? TOKENS['violet-300'] : TOKENS['violet-700'];
-    const edge = dark ? alpha(TOKENS['warm-white'], 0.10) : alpha(TOKENS['ink-900'], 0.09);
+    const edge = dark ? alpha(TOKENS['warm-white'], 0.14) : alpha(TOKENS['ink-900'], 0.12);
     const highlight = dark ? alpha(TOKENS['warm-white'], 0.09) : alpha('#FFFFFF', 0.75);
-    // The pane itself: a wash of the brand tint over the ground, kept
-    // low so text contrast is Adwaita's problem and not ours.
-    const pane = dark ? alpha(tint, 0.16) : alpha(tint, 0.10);
+
+    // TWO layers, and the first one is the lesson.
+    //
+    // `wash` shifts LUMINANCE relative to whatever is behind the pane —
+    // darker in light, lighter in dark. `pane` adds the brand hue.
+    // The first version had only the hue, and it disappeared completely
+    // in Surfer: measured on the device, sidebar srgb(219,217,227) over
+    // a window ground of srgb(219,217,227), because Surfer's ground is
+    // already violet-tinted lavender and a violet wash on lavender is
+    // lavender. It looked right in Notes purely because Notes' ground
+    // happens to be near-white.
+    //
+    // Glass has to separate from ANY ground it is put on, or it is a
+    // class name that works in one app.
+    // Translucent enough to see through, opaque enough to read on.
+    // css.glass lands around 0.2 for white-on-photo; ours sits lower
+    // because the blur plus the token hue is already doing the work.
+    const pane = dark ? alpha(TOKENS['base'], 0.55) : alpha(TOKENS['warm-white'], 0.55);
+    const shadow = dark ? alpha(TOKENS['base'], 0.45) : alpha(TOKENS['ink-900'], 0.10);
+    const blur = 24;
 
     return `
 /* GENERATED AT RUNTIME by lisa_ui/ui/style.js from branding/tokens.json.
    Nothing here is hand-typed colour. */
 
 .lisa-glass {
-    background-image: linear-gradient(to bottom, ${highlight}, transparent 180px);
+    /* The glassmorphism recipe (css.glass), in Lisa's tokens:
+       translucent fill + backdrop blur + hairline border + soft shadow.
+       The blur is the part that makes it glass rather than tint, and it
+       only SHOWS where the pane overlaps something — blurring a flat
+       window background produces the same flat colour. */
     background-color: ${pane};
+    background-image: linear-gradient(to bottom, ${highlight}, transparent 180px);
+    backdrop-filter: blur(${blur}px);
+    box-shadow: 0 4px 30px ${shadow};
 }
 
-/* Adwaita's own sidebar styling paints an opaque background, which sat
-   ON TOP of the glass and made the first attempt almost invisible in a
-   screenshot. The pane below has to show through the widgets inside it,
-   or there is no pane — only a class name. */
-.lisa-glass .navigation-sidebar,
-.lisa-glass scrolledwindow,
-.lisa-glass viewport,
-.lisa-glass list,
-.lisa-glass headerbar { background: transparent; background-image: none; }
-
-/* The header over a glass pane keeps the seam and loses its own fill,
-   so the glass runs the full height of the pane rather than starting
-   below the toolbar. */
-.lisa-glass headerbar { box-shadow: none; }
+/* A pane that floats over content: rounded, edged all round, and it
+   keeps its own shadow. The full-height variant uses the seam below
+   instead, because a radius on a pane flush to the window edge shows
+   the window's corner through the gap. */
+.lisa-glass-floating {
+    border-radius: 14px;
+    border: 1px solid ${edge};
+}
 
 /* The seam between a glass pane and the content beside it. A hairline,
    not a border: a 1px line at full contrast is what makes a translucent
