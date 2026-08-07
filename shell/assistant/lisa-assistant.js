@@ -19,6 +19,7 @@
 // (conversationMarkdown, #8).
 
 import Adw from 'gi://Adw?version=1';
+import {lisaSplitWindow} from '../lisa.sdk/ui/window.js';
 import Gdk from 'gi://Gdk?version=4.0';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -85,6 +86,13 @@ function boolValue(b) {
     return value;
 }
 
+function intValue(n) {
+    const value = new GObject.Value();
+    value.init(GObject.TYPE_INT);
+    value.set_int(n);
+    return value;
+}
+
 
 /// Put text into a turn's label as rendered Markdown.
 ///
@@ -134,17 +142,20 @@ class AssistantWindow {
         this._attachments = [];
 
         this._http = new Soup.Session();
-        this.window = new Adw.ApplicationWindow({
-            application: app,
-            title: 'Lisa Assistant',
-            default_width: 980,
-            default_height: 760,
+        // The shared chrome (#282, ADR-0056): the LAST surface with its
+        // own window moves onto the sdk — glass sidebar, slate ground,
+        // one close-button position, one dark/light path.
+        const ui = lisaSplitWindow({
+            app, title: 'Lisa Assistant',
+            width: 980, height: 760, sidebarWidth: 280,
         });
+        this.window = ui.window;
+        this._ui = ui;
         // The action handler reaches the controller through the window
         // GTK hands it back (app.activeWindow is a GtkWindow, not this).
         this.window.__lisa = this;
 
-        const header = new Adw.HeaderBar();
+        const header = ui.contentHeader;
         this._title = new Adw.WindowTitle({
             title: 'Lisa Assistant', subtitle: UNTITLED,
         });
@@ -159,6 +170,8 @@ class AssistantWindow {
             tooltip_text: 'Conversations',
             active: true,
         });
+        this._sidebarBtn.connect('toggled', () =>
+            ui.setSidebarVisible(this._sidebarBtn.active));
         header.pack_start(this._sidebarBtn);
         header.pack_start(this._modelDrop);
         // Signing in to a provider happens in Settings, in another
@@ -286,27 +299,17 @@ class AssistantWindow {
         box.append(this._attachBar);
         box.append(composer);
 
-        const view = new Adw.ToolbarView({content: box});
-        view.add_top_bar(header);
-
-        this._split = new Adw.OverlaySplitView({
-            sidebar: this._buildSidebar(),
-            content: view,
-            show_sidebar: true,
-            min_sidebar_width: 200,
-            max_sidebar_width: 280,
-        });
-        this._sidebarBtn.bind_property('active', this._split, 'show-sidebar',
-            GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE);
-        // Narrow window: the list overlays the conversation instead of
-        // squeezing it — the composer needs the width more than the list.
+        ui.setContent(box);
+        this._buildSidebar(ui);
+        // Narrow window: the conversation outranks the list — the
+        // composer needs the width. The sdk pane and inset are plain
+        // GObject properties, so the breakpoint drives them directly.
         const narrow = new Adw.Breakpoint({
             condition: Adw.BreakpointCondition.parse('max-width: 680px'),
         });
-        narrow.add_setter(this._split, 'collapsed', boolValue(true));
-        narrow.add_setter(this._split, 'show-sidebar', boolValue(false));
+        narrow.add_setter(ui.sidebarPane, 'visible', boolValue(false));
+        narrow.add_setter(ui.contentPane, 'margin-start', intValue(0));
         this.window.add_breakpoint(narrow);
-        this.window.set_content(this._split);
 
         this._connectBackend();
         this._systemNote('Ask a local model, or sign in to a cloud provider ' +
@@ -322,11 +325,9 @@ class AssistantWindow {
 
     // ---- conversation list ----------------------------------------------
 
-    _buildSidebar() {
-        const header = new Adw.HeaderBar({
-            title_widget: new Adw.WindowTitle({title: 'Conversations'}),
-            show_end_title_buttons: false,
-        });
+    _buildSidebar(ui) {
+        const header = ui.sidebarHeader;
+        header.set_title_widget(new Adw.WindowTitle({title: 'Conversations'}));
         const add = Gtk.Button.new_from_icon_name('document-new-symbolic');
         add.tooltip_text = 'New conversation';
         add.connect('clicked', () => this._newSession());
@@ -344,11 +345,7 @@ class AssistantWindow {
                 this._openSession(info.id).catch(e => logError(e, 'open session'));
         });
 
-        const sidebar = new Adw.ToolbarView({
-            content: new Gtk.ScrolledWindow({vexpand: true, child: this._list}),
-        });
-        sidebar.add_top_bar(header);
-        return sidebar;
+        ui.setSidebar(new Gtk.ScrolledWindow({vexpand: true, child: this._list}));
     }
 
     /// Rebuild the list from the stored index plus the open conversation.

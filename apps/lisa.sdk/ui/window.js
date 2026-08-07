@@ -205,10 +205,27 @@ export function lisaSplitWindow({
         window.content = split;
     }
 
+    /// Show or hide the sidebar at runtime — the Assistant's
+    /// conversations toggle is why this exists (#162). In overlay mode
+    /// the pane is a floating layer, so hiding it must ALSO release
+    /// the content inset or the app keeps a blank strip where the
+    /// pane was; in split mode the NavigationSplitView collapses on
+    /// its own and this maps to show_content.
+    const setSidebarVisible = (visible) => {
+        if (overlay) {
+            sidebarView.visible = visible;
+            contentView.set_margin_start(visible ? sidebarWidth : 0);
+        } else if (split.set_show_content) {
+            split.set_show_content(!visible);
+        }
+    };
+
     return {
         window, split, sidebarHeader, contentHeader,
+        sidebarPane: sidebarView, contentPane: contentView,
         setSidebar: (w) => { sidebarView.content = w; },
         setContent: (w) => { contentView.content = w; },
+        setSidebarVisible,
         /// On a collapsed (narrow) window, bring the content pane
         /// forward — what selecting a row should do on a phone-width
         /// window and a no-op on a wide one.

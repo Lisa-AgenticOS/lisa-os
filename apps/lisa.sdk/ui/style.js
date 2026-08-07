@@ -69,7 +69,11 @@ function sheet(dark) {
     // Translucent enough to see through, opaque enough to read on.
     // css.glass lands around 0.2 for white-on-photo; ours sits lower
     // because the blur plus the token hue is already doing the work.
-    const pane = dark ? alpha(TOKENS['base'], 0.55) : alpha(TOKENS['warm-white'], 0.55);
+    // 0.68, up from 0.55 (owner, 2026-08-07, judged seated with the
+    // real-backdrop frost live: 'a bit less transparence on glass') —
+    // with windows now blurring through, the thinner fill read as too
+    // busy behind list text.
+    const pane = dark ? alpha(TOKENS['base'], 0.68) : alpha(TOKENS['warm-white'], 0.68);
     const shadow = dark ? alpha(TOKENS['base'], 0.45) : alpha(TOKENS['ink-900'], 0.10);
     const blur = 24;
 
