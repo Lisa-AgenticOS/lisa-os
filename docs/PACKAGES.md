@@ -34,7 +34,7 @@ valid. Status is honest.
 | Preview | `apps/preview` | GJS/libadwaita | document/image preview + its MCP tools | live (packaged) |
 | Notes | `apps/notes` | GJS/libadwaita | AI-native notes (reference app) | seed (M6) |
 | Recorder | `apps/recorder` | GJS/libadwaita | audio capture + on-device transcribe | seed (M6) |
-| Forge / LisaCode | `forge/app` | forge-harness | writes + installs apps locally (§5.12.1) | seed; the loop works via `lisa forge` |
+| Forge / LisaCode | *(no window yet — ADR-0061)* | forge-harness | writes + installs apps locally (§5.12.1) | the loop works via `lisa forge`; the window is future work |
 | Ledger | `shell/ledger-app` | GJS/libadwaita | the append-only audit log viewer | live (packaged) |
 | Lisa Settings | `shell/settings` | GJS/libadwaita | AI settings: local models + providers | **not shipped** — merged into GNOME Settings as the Intelligence panel (ADR-0012); source kept as reference + tests |
 
@@ -89,7 +89,7 @@ repo (like the lisa packages).
 | Package | Why | Source | Where |
 |---|---|---|---|
 | `llama.cpp` | local inference engine (llama-server) for inferenced | from source (b10093, MIT) — AUR-only | `os/packages/llama.cpp` → release repo |
-| `dart` | `dart analyze`/`dart test` for pubspec projects the forge loop may sit over; the forge lane itself uses `lisa dev check` and needs no toolchain — issue #48 tracks re-scoping this | Arch `extra` | `mkosi.conf` Packages |
+| `dart` | `dart analyze`/`dart test` for pubspec projects the forge loop may sit over; the forge lane itself uses `lisa dev check` and needs no toolchain — issue #327 tracks re-scoping this | Arch `extra` | `mkosi.conf` Packages |
 | **Flutter** | nothing — the lane was removed 2026-08-07 (ADR-0047 amendment) | **not bundled, not needed** | — |
 
 **Flutter is not in the image, and no longer on the app road** (ADR-0047
