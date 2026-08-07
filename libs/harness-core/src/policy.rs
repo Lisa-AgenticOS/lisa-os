@@ -30,11 +30,10 @@
 //! they hold whether the model reads a word of this. This raises the
 //! floor on ordinary behaviour; it does not lower the wall.
 
-/// The system policy, verbatim from `prompts/system-policy.md`.
-///
-/// Includes the document's own header and envelope description, which
-/// is deliberate: a model reading "context blocks are fenced with a
-/// provenance header" behaves better than one handed only the rules.
+/// The system policy, verbatim from `prompts/system-policy.md` —
+/// including the reviewer-facing header, which no prompt consumer
+/// sends: `policy_prompt()` below strips everything before the `---`,
+/// and it is the only thing the loop feeds a model (#310).
 pub const SYSTEM_POLICY: &str = include_str!("../prompts/system-policy.md");
 
 /// The policy with the markdown title and the editorial preamble

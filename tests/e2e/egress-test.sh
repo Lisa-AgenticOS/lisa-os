@@ -25,11 +25,14 @@
 # Only lisa-inferenced additionally gets its DAEMON run under the
 # sandbox and asked to serve loopback, and the reason is practical
 # rather than principled: it is the only no-egress daemon that answers
-# over HTTP. contextd, agentd, harnessd and notes are D-Bus/unix-socket
-# daemons needing a session bus and a populated $XDG_RUNTIME_DIR to
-# reach a state worth probing, neither of which a system-scope
-# `systemd-run` in CI has. Their sandbox is proven; their liveness under
-# it is not. That gap wants a session-scope harness, not a comment here
+# over HTTP. The rest of the population — ask `--list no-egress`, it is
+# deliberately not enumerated here, because the two enumerations this
+# file used to carry both drifted (#295, twice) — are D-Bus/unix-socket
+# daemons and portals needing a session bus and a populated
+# $XDG_RUNTIME_DIR to reach a state worth probing, neither of which a
+# system-scope `systemd-run` in CI has. Their sandbox is proven; their
+# liveness under it is not. That gap wants a session-scope harness, not
+# a comment here
 # claiming more than the code does.
 #
 # The suite is bracketed by two positive controls, because a test that
@@ -227,10 +230,10 @@ mapfile -t EXEMPT_UNITS < <(python3 "$CLASSIFY" --list exempt)
 if [ "${#EXEMPT_UNITS[@]}" -gt 0 ]; then
     note "NOT tested: units classified no-egress whose shipped file has no egress sandbox yet"
     for rel in "${EXEMPT_UNITS[@]}"; do
-        echo "-- $rel: exempt in check-egress-units.py. Running it here would"
-        echo "   only re-report a debt that gate already fails on the day it is"
-        echo "   paid. Verified by hand on 2026-08-05: a process under this"
-        echo "   unit's sandbox DOES reach the internet."
+        echo "-- $rel: exempt in check-egress-units.py — its shipped file has"
+        echo "   no egress sandbox, so there is no fence to test. The gate"
+        echo "   carries the debt and fails the day the unit is hardened;"
+        echo "   until then assume a process under it reaches the internet."
     done
 fi
 

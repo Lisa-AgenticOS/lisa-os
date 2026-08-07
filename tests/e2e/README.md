@@ -54,11 +54,13 @@ Its limits, because they are not obvious:
   `RestrictAddressFamilies` is a seccomp filter and behaves identically in
   both scopes; it is the only one of the three that confines a user unit,
   which is why `check-egress-units.py` asserts it by name.
-- What it does NOT assert, contrary to what `os/packages/README.md` still
-  says: it never checks a named directive. `DynamicUser`,
-  `IPAddressAllow=localhost` and the filesystem/kernel lockdown are applied
-  by being lifted wholesale out of the unit, not verified. Only
-  `IPAddressDeny=any` is checked by name, and only in the static gate.
+- What this RUNTIME test does NOT assert: any named directive.
+  `DynamicUser`, `IPAddressAllow=localhost` and the filesystem/kernel
+  lockdown are applied by being lifted wholesale out of the unit, not
+  verified. By-name checks live only in the static gate, and there are
+  exactly two of them: `IPAddressDeny=any`, and
+  `RestrictAddressFamilies=AF_UNIX` for user-scope no-egress units that
+  permit AF_INET — where IPAddressDeny is a no-op (#288).
 
 **`layer-test.sh`** — the Track L install/uninstall e2e (M0 acceptance),
 run in an Arch systemd container.
