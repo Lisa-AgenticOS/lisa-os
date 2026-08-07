@@ -174,11 +174,25 @@ export default class LisaGlass {
             };
             place();
             entry.bg.add_child(clone);
+            // This source's handlers, grouped, so its own destroy can
+            // retire exactly them (#340): a window closing under a
+            // glass pane must not leave handlers on a disposed actor
+            // or a dead-source clone in the frost until the next
+            // restack happens to rebuild.
+            const mine = [];
             for (const sig of ['notify::x', 'notify::y', 'notify::width', 'notify::height'])
-                entry.lowerIds.push([lower, lower.connect(sig, place)]);
-            entry.lowerIds.push([lower, lower.connect('notify::visible', () => {
+                mine.push(lower.connect(sig, place));
+            mine.push(lower.connect('notify::visible', () => {
                 clone.visible = lower.visible;
-            })]);
+            }));
+            mine.push(lower.connect('destroy', () => {
+                for (const id of mine)
+                    lower.disconnect(id);
+                entry.lowerIds = entry.lowerIds.filter(([o]) => o !== lower);
+                clone.destroy();
+            }));
+            for (const id of mine)
+                entry.lowerIds.push([lower, id]);
         }
     }
 

@@ -326,8 +326,8 @@ enum Command {
         #[arg(long)]
         byo: Option<String>,
         /// Arguments passed to the --byo program before the task
-        /// (repeatable), e.g. --byo claude --byo-arg -p
-        #[arg(long = "byo-arg")]
+        /// (repeatable), e.g. --byo claude --byo-arg=-p
+        #[arg(long = "byo-arg", allow_hyphen_values = true)]
         byo_args: Vec<String>,
     },
     /// Developer tooling for building on Lisa (ADR-0050).
@@ -1383,16 +1383,40 @@ fn forge_byo(
         Some(note) => eprintln!("!! {program} runs UNCONFINED: {note}"),
     }
 
-    let status = cmd
-        .status()
-        .map_err(|e| anyhow::anyhow!("running `{program}`: {e} — is it installed and on PATH?"))?;
+    // The end event is written on EVERY exit (#337): "in the Ledger
+    // either way" has to include the ways that go wrong — a spawn
+    // failure and a verifier error are exactly the runs an audit trail
+    // is for.
+    let end = |status: &str, detail: String| {
+        let _ = ledger.append(&lisa_ledger::Event {
+            kind: "forge.byo.end".into(),
+            app_id: "host".into(),
+            input_hash: blake3::hash(started.as_bytes()).to_hex().to_string(),
+            status: status.into(),
+            detail,
+            ..Default::default()
+        });
+    };
+    let status = match cmd.status() {
+        Ok(s) => s,
+        Err(e) => {
+            end("error", format!("spawn failed: {e}"));
+            anyhow::bail!("running `{program}`: {e} — is it installed and on PATH?");
+        }
+    };
 
     // The gate is not optional and not the foreign agent's opinion:
     // the same verifier the native loop answers to decides whether
     // this run produced a valid result (gauntlet discipline — a
     // foreign agent's own "done" is a DoneClaimed, not a verdict).
     let verifier = default_verifier();
-    let findings = verifier.check(project)?;
+    let findings = match verifier.check(project) {
+        Ok(f) => f,
+        Err(e) => {
+            end("error", format!("verifier error after exit {status}: {e}"));
+            return Err(e.into());
+        }
+    };
     let outcome = match (&status.success(), &findings) {
         (true, None) => "clean".to_string(),
         (true, Some(f)) => format!("exited ok, verifier findings: {}", truncate_str(f, 400)),
@@ -1402,18 +1426,10 @@ fn forge_byo(
             truncate_str(f, 400)
         ),
     };
-    ledger.append(&lisa_ledger::Event {
-        kind: "forge.byo.end".into(),
-        app_id: "host".into(),
-        input_hash: blake3::hash(started.as_bytes()).to_hex().to_string(),
-        status: if status.success() && findings.is_none() {
-            "ok".into()
-        } else {
-            "findings".into()
-        },
-        detail: outcome.clone(),
-        ..Default::default()
-    })?;
+    end(
+        if status.success() && findings.is_none() { "ok" } else { "findings" },
+        outcome.clone(),
+    );
     match findings {
         None if status.success() => {
             println!(

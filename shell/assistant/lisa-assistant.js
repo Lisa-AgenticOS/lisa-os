@@ -77,21 +77,7 @@ const HarnessProxy = Gio.DBusProxy.makeProxyWrapper(HARNESS_IFACE_XML);
 // pane with more reach than its job.
 const MemoryProxy = Gio.DBusProxy.makeProxyWrapper(MEMORY_IFACE_XML);
 
-/// Breakpoint setters take a GValue; box it here rather than lean on
-/// GJS's implicit conversion, which is not the same across versions.
-function boolValue(b) {
-    const value = new GObject.Value();
-    value.init(GObject.TYPE_BOOLEAN);
-    value.set_boolean(b);
-    return value;
-}
 
-function intValue(n) {
-    const value = new GObject.Value();
-    value.init(GObject.TYPE_INT);
-    value.set_int(n);
-    return value;
-}
 
 
 /// Put text into a turn's label as rendered Markdown.
@@ -170,8 +156,7 @@ class AssistantWindow {
             tooltip_text: 'Conversations',
             active: true,
         });
-        this._sidebarBtn.connect('toggled', () =>
-            ui.setSidebarVisible(this._sidebarBtn.active));
+        this._sidebarBtn.connect('toggled', () => this._applySidebar());
         header.pack_start(this._sidebarBtn);
         header.pack_start(this._modelDrop);
         // Signing in to a provider happens in Settings, in another
@@ -302,13 +287,27 @@ class AssistantWindow {
         ui.setContent(box);
         this._buildSidebar(ui);
         // Narrow window: the conversation outranks the list — the
-        // composer needs the width. The sdk pane and inset are plain
-        // GObject properties, so the breakpoint drives them directly.
+        // composer needs the width. Signals rather than setters (#339):
+        // setters apply one way and their unapply-restore clobbers any
+        // toggle made while narrow; a single _applySidebar() owns the
+        // whole (toggle x narrow) truth table instead — including the
+        // narrow+shown case, where the pane floats OVER the content
+        // (margin 0) rather than squeezing it.
+        this._narrow = false;
         const narrow = new Adw.Breakpoint({
             condition: Adw.BreakpointCondition.parse('max-width: 680px'),
         });
-        narrow.add_setter(ui.sidebarPane, 'visible', boolValue(false));
-        narrow.add_setter(ui.contentPane, 'margin-start', intValue(0));
+        narrow.connect('apply', () => {
+            this._narrow = true;
+            // Entering narrow starts with the list put away — the old
+            // collapsed-split behaviour; the toggle can bring it back.
+            this._sidebarBtn.active = false;
+            this._applySidebar();
+        });
+        narrow.connect('unapply', () => {
+            this._narrow = false;
+            this._applySidebar();
+        });
         this.window.add_breakpoint(narrow);
 
         this._connectBackend();
@@ -321,6 +320,16 @@ class AssistantWindow {
             .catch(e => logError(e, 'model list'))
             .then(() => this._restoreSessions())
             .catch(e => logError(e, 'restore sessions'));
+    }
+
+    /// The one owner of sidebar state: visible follows the toggle,
+    /// and the content inset follows (visible x narrow) — wide keeps
+    /// the side-by-side inset, narrow floats the pane over the
+    /// conversation, hidden releases the strip entirely (#339).
+    _applySidebar() {
+        const show = this._sidebarBtn.active;
+        this._ui.sidebarPane.visible = show;
+        this._ui.contentPane.set_margin_start(show && !this._narrow ? 280 : 0);
     }
 
     // ---- conversation list ----------------------------------------------
