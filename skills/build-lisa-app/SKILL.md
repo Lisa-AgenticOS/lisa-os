@@ -7,10 +7,10 @@ tools: read_file, list_dir, grep, write_file, edit_file, run_command, run_tests,
 # Build a Lisa app
 
 An app on Lisa is a directory under `apps/` that publishes tools to the
-model over MCP. **GJS + GTK4/Adwaita is the default toolkit** (ADR-0047);
-Flutter is parked — `libs/lisa_flutter` is four `.dart` files that have
-never run on the reference hardware, and #37 is closed won't-do. Do not
-scaffold a Flutter app.
+model over MCP. **GJS + GTK4/Adwaita is the one toolkit** (ADR-0047);
+the Flutter lane was REMOVED on 2026-08-07 (ADR-0047 amendment) — no
+Flutter SDK, no `--flutter` verb, nothing to scaffold. Do not write a
+Flutter app.
 
 **The reference is `docs/ANATOMY-OF-AN-APP.md`.** It is derived from the
 apps that exist, every claim cites a file, and its worked example was
