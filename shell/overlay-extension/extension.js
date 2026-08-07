@@ -656,10 +656,54 @@ export default class LisaOverlayExtension extends Extension {
     }
 
     _toggle() {
+        // One summon surface (#167, owner call — ADR-0062): the typed
+        // ask lives in Spotlight, so the keyboard summon opens the
+        // overview with search focused instead of a second prompt box.
+        // If the popup is up (a consent question, a voice session), the
+        // toggle still dismisses it — Escape-by-keybinding must keep
+        // working for the surfaces the popup still owns.
         if (this._overlay)
             this._hide();
         else
-            this._show();
+            this._summonSpotlight();
+    }
+
+    /// Spotlight, summoned: the overview with the search entry focused
+    /// — the same landing the launcher's own summon gives. Mirrors the
+    /// launcher's focus dance: ask immediately (the entry takes keys
+    /// before the animation ends) and again once the overview reports
+    /// shown.
+    _summonSpotlight() {
+        if (Main.overview.visible) {
+            Main.overview.searchEntry.grab_key_focus();
+            return;
+        }
+        const shownId = Main.overview.connect('shown', () => {
+            Main.overview.disconnect(shownId);
+            Main.overview.searchEntry.grab_key_focus();
+        });
+        Main.overview.show();
+        Main.overview.searchEntry.grab_key_focus();
+    }
+
+    /// A typed prompt goes to the CONVERSATION, not a one-shot box —
+    /// the same GAction handoff the launcher's Ask-Lisa row uses
+    /// (#210), so both routes land in the identical place.
+    _askAssistant(prompt) {
+        Gio.DBus.session.call(
+            'app.lisaos.Assistant', '/app/lisaos/Assistant',
+            'org.gtk.Actions', 'Activate',
+            new GLib.Variant('(sava{sv})',
+                ['ask', [new GLib.Variant('s', prompt)], {}]),
+            null, Gio.DBusCallFlags.NONE, 5000, null, (conn, res) => {
+                try {
+                    Gio.DBus.session.call_finish(res);
+                } catch (e) {
+                    logError(e, 'assistant handoff failed');
+                    Main.notify('Lisa Assistant unavailable',
+                        'Could not open a conversation — is the assistant installed?');
+                }
+            });
     }
 
     // dev.lisaos.Overlay1.UI.Summon: show the layer (if hidden), preset
@@ -667,30 +711,39 @@ export default class LisaOverlayExtension extends Extension {
     // prompt straight away — a live stream is replaced, matching the
     // launcher's "new query wins" behavior. Empty prompt = plain show.
     _summon(prompt, options) {
-        if (!this._overlay)
-            this._show();
-        const chips = {};
-        for (const key of ['my_stuff', 'window', 'selection']) {
-            const v = options?.[key];
-            if (v === undefined)
-                continue;
-            chips[key] = v instanceof GLib.Variant ? v.recursiveUnpack() : Boolean(v);
-        }
-        this._overlay.applyChips(chips);
-        this._overlay.setPrompt(prompt);
-        if (prompt.trim() !== '') {
-            this._overlay.cancelActive();
-            this._overlay.submit();
-        }
-        // Hands-free lane (§5.7.5): summon AND open the microphone, the
-        // shape people know from Siri. Double-tap-Shift asks for this;
-        // the launcher's "Ask Lisa" hand-off does not, so it stays opt-in
-        // per call rather than becoming what Summon always does.
+        // Hands-free lane (§5.7.5) keeps the popup: voice needs its mic
+        // OSD and a place to stream, and Spotlight has neither (yet).
+        // Double-tap-Shift asks for this explicitly.
         const listen = options?.listen;
-        const wants = listen instanceof GLib.Variant
+        const wantsVoice = listen instanceof GLib.Variant
             ? listen.recursiveUnpack() : Boolean(listen);
-        if (wants)
+        if (wantsVoice) {
+            if (!this._overlay)
+                this._show();
+            const chips = {};
+            for (const key of ['my_stuff', 'window', 'selection']) {
+                const v = options?.[key];
+                if (v === undefined)
+                    continue;
+                chips[key] = v instanceof GLib.Variant ? v.recursiveUnpack() : Boolean(v);
+            }
+            this._overlay.applyChips(chips);
+            this._overlay.setPrompt(prompt);
+            if (prompt.trim() !== '') {
+                this._overlay.cancelActive();
+                this._overlay.submit();
+            }
             this._listenHandsFree();
+            return;
+        }
+        // Typed paths merged into ONE surface (#167, ADR-0062): a
+        // prompt goes to the Assistant conversation, an empty summon
+        // opens Spotlight. The popup no longer opens for typing — it
+        // remains the consent and voice surface only.
+        if (prompt.trim() !== '')
+            this._askAssistant(prompt);
+        else
+            this._summonSpotlight();
     }
 
     // Listening without a key held down. Push-to-talk ends when the key
