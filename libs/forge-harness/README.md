@@ -3,7 +3,8 @@
 Spec: docs/PLAN.md §5.12.1. Milestone: M6. Governance: ADR-0047 (GJS +
 GTK4 is the one toolkit), ADR-0050 (`lisa dev check` is the checker),
 ADR-0029 (guardrails), ADR-0025 (one agent loop). ADR-0004/ADR-0027
-describe the Flutter lane, which is parked.
+describe the Flutter lane, which was removed on 2026-08-07 (ADR-0047
+amendment).
 
 plan → edit files (jailed to project dir) → run the verifier → feed its
 findings back → iterate. Pluggable backends: local coder models, a
@@ -94,7 +95,7 @@ Nobody is watching it, so the boundaries are deterministic and live in
   approving; `ShellRequest::confinement` carries it.
 
 **The limit, stated plainly:** none of that confines a *subprocess*.
-`run_tests` invokes `cargo test` (or the parked lane's `flutter test`)
+`run_tests` invokes `cargo test`
 over source the model just wrote, which executes `build.rs` and test
 bodies as the user, outside every guard above. Landlock closes this on
 Linux (ADR-0029 phase 3, below); elsewhere the subprocess runs
@@ -113,10 +114,11 @@ Driven from the CLI (`cli/lisa`, `lisa forge`):
 
 | verb | what it does |
 |---|---|
-| `lisa forge "a notes app"` | the default lane: write a GJS + GTK4/Adwaita app, verified each turn by `lisa dev check`. No scaffold and no toolchain — the source is interpreted, so an empty directory is a legitimate start and the checker says "no sources" until the model writes some |
-| `lisa forge --flutter "…"` | **the parked lane** (ADR-0047): scaffold a `lisa_ui` Flutter app and verify with `flutter analyze`. Needs an SDK; nothing user-facing has ever been built this way |
-| `lisa forge --setup` | fetch the pinned Flutter SDK for that lane into the user's own data dir — sha256-pinned tarball on x86_64, commit-pinned checkout on aarch64 (ADR-0027). Never needs `sudo` (#243) |
-| `lisa forge --build` / `--run` | Flutter only: `flutter build linux --release`, install the bundle under the forge apps dir, write the `.desktop` entry, optionally launch |
+| `lisa forge "a notes app"` | write a GJS + GTK4/Adwaita app, verified each turn by `lisa dev check`. No scaffold and no toolchain — the source is interpreted, so an empty directory is a legitimate start and the checker says "no sources" until the model writes some |
+
+(The Flutter lane — `--flutter`, `--setup`, `--build`, `--run` — was
+parked by ADR-0047 and removed on 2026-08-07; nothing user-facing was
+ever built with it.)
 
 The workflow itself is a skill (`skills/build-lisa-app/SKILL.md`,
 ADR-0025), not hardcoded prose.

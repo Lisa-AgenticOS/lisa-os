@@ -39,8 +39,8 @@ pub const ALLOWED_COMMANDS: &[&str] = &[
     // `lisa_verb_that_changes_the_machine` is an ALLOWLIST of verbs, so
     // a verb added next week is refused until somebody decides it is
     // safe — the opposite of a denylist, which admits every new one.
-    "lisa", "gjs", "node", "dart", "flutter", "cargo", "ls", "cat", "grep", "find", "echo", "pwd",
-    "mkdir", "touch",
+    "lisa", "gjs", "node", "dart", "cargo", "ls", "cat", "grep", "find", "echo", "pwd", "mkdir",
+    "touch",
 ];
 
 /// What one allowlisted program is allowed to do with its own arguments.
@@ -169,14 +169,6 @@ fn policy_for(program: &str) -> ProgramPolicy {
             subcommands: &[
                 "analyze", "format", "test", "pub", "compile", "fix", "doc", "run", "info",
                 "create",
-            ],
-            denied_operands: &[&["pub", "global"]],
-            ..DEFAULT_POLICY
-        },
-        "flutter" => ProgramPolicy {
-            subcommands: &[
-                "analyze", "test", "build", "pub", "create", "doctor", "config", "clean",
-                "gen-l10n", "format", "run", "devices", "precache",
             ],
             denied_operands: &[&["pub", "global"]],
             ..DEFAULT_POLICY
@@ -531,7 +523,6 @@ mod tests {
             check_command("cargo", &["evil-plugin"]).rule(),
             Some("command.unknown_subcommand")
         );
-        assert!(check_command("flutter", &["not-a-verb"]).is_denied());
         assert!(check_command("dart", &["nonsense"]).is_denied());
         // The real ones keep working, flags before the verb included.
         assert!(check_command("cargo", &["--offline", "test"]).is_allowed());
@@ -540,7 +531,12 @@ mod tests {
 
     #[test]
     fn only_allowlisted_programs_run() {
-        for program in ["sh", "bash", "rm", "ln", "curl", "sudo", "python3", "rustc"] {
+        // `flutter` is in this list deliberately: it left the allowlist
+        // when the lane was removed (ADR-0047 amendment, 2026-08-07),
+        // and this is the assertion that would catch it drifting back.
+        for program in [
+            "sh", "bash", "rm", "ln", "curl", "sudo", "python3", "rustc", "flutter",
+        ] {
             let v = check_command(program, &[]);
             assert_eq!(
                 v.rule(),
@@ -603,13 +599,11 @@ mod tests {
     /// fetched packages and ran an executable that wrote outside the root.
     #[test]
     fn pub_global_is_refused() {
-        for program in ["dart", "flutter"] {
-            let v = check_command(program, &["pub", "global", "activate", "dart_style"]);
-            assert_eq!(v.rule(), Some("command.denied_subcommand"), "{program}");
-            assert!(check_command(program, &["pub", "global", "run", "x"]).is_denied());
-            // Ordinary pub work is untouched.
-            assert!(check_command(program, &["pub", "get"]).is_allowed());
-        }
+        let v = check_command("dart", &["pub", "global", "activate", "dart_style"]);
+        assert_eq!(v.rule(), Some("command.denied_subcommand"));
+        assert!(check_command("dart", &["pub", "global", "run", "x"]).is_denied());
+        // Ordinary pub work is untouched.
+        assert!(check_command("dart", &["pub", "get"]).is_allowed());
     }
 
     /// Review round 2 (#76): these were all refused as unknown
@@ -675,8 +669,6 @@ mod tests {
             ("cargo", &["test"][..]),
             ("cargo", &["test", "--", "--test-threads=1"][..]),
             ("cargo", &["build", "--release"][..]),
-            ("flutter", &["analyze", "--no-pub"][..]),
-            ("flutter", &["build", "linux", "--release"][..]),
             ("dart", &["format", "lib"][..]),
             ("grep", &["-rn", "needle", "src"][..]),
             ("mkdir", &["-p", "lib/src"][..]),

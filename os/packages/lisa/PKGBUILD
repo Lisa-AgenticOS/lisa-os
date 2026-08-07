@@ -254,9 +254,9 @@ package_lisa-cli() {
     # lane. A Lisa app is GJS + GTK4/Adwaita: interpreted source with no
     # build step, so the app road needs none of them, and listing them
     # here told every reader of `pacman -Si lisa-cli` that Flutter is how
-    # you build for this system. Anyone using the parked lane installs
-    # its toolchain themselves; `lisa forge --setup` no longer touches
-    # /var and no longer needs sudo (#243).
+    # you build for this system. The lane itself was removed on
+    # 2026-08-07 (ADR-0047 amendment) — `lisa forge --setup` no longer
+    # exists at all.
     cd "$pkgbase-$pkgver"
     # The CLI itself lives under /usr/lib (the image's floor copy) and
     # /usr/bin/lisa is a resolver that prefers the runtime channel, so a
@@ -328,9 +328,9 @@ package_lisa-cli() {
     # parked `.dart` files to /usr/share/lisa/lisa_ui on every device so
     # that `lisa forge --flutter` could scaffold against them. #37 —
     # ship the Flutter lane on-device — is closed WON'T-DO, and shipping
-    # a kit for a lane with no app is payload nobody uses. `--flutter`
-    # still works for anyone who wants it: set LISA_UI_PATH to a
-    # checkout.
+    # a kit for a lane with no app is payload nobody uses. The lane —
+    # `--flutter` included — was removed on 2026-08-07 (ADR-0047
+    # amendment).
     # Skills: SKILL.md workflows the harness loads on demand (ADR-0025).
     # `lisa skills` resolves $LISA_SKILLS_DIR → ~/.local/share/lisa/skills →
     # here, so a user skill shadows a packaged one.

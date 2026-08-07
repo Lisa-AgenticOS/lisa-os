@@ -9,6 +9,15 @@
   `libs/lisa_ui` and `libs/lisa_flutter` "in the tree" and they were
   deleted on 2026-08-06 (`d1bdc18`); the name is reserved and the directory
   does not exist. ADR-0056 is what it becomes.
+- **Amended 2026-08-07 (owner call): the Flutter lane went from parked to
+  REMOVED.** §2's "parked, not deleted" no longer holds. Deleted:
+  `lisa forge --flutter`/`--setup`/`--build`/`--run` and the pinned-SDK
+  provisioning in `cli/lisa`, the harness's flutter tooling (`flutter
+  test` dispatch, the SDK `PATH` dirs, the Landlock read grant on
+  `/var/lib/lisa/flutter`), the guard's `flutter` allowlist entry and
+  policy with their corpus rows (a deny row now proves the reverse), and
+  the `forge/app` scaffold placeholder. Nothing user-facing was ever
+  built with the lane; its history stays in git and in ADR-0004/0014/0027.
 - **Date:** 2026-08-04
 - **Supersedes:** ADR-0004's "Flutter lane" as the *default* for
   user-facing apps and for Forge output. PLAN §5.12 and §314 need the same

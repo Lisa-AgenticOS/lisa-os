@@ -802,7 +802,7 @@ mod tests {
     fn ordinary_work_is_untouched() {
         for (program, args) in [
             ("cargo", &["test"][..]),
-            ("flutter", &["analyze", "--no-pub"][..]),
+            ("dart", &["analyze"][..]),
             ("git", &["status"][..]),
             ("git", &["commit", "-m", "fix"][..]),
             ("ls", &["-la", "lib"][..]),

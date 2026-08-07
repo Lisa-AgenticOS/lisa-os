@@ -32,7 +32,7 @@ const verbs = [
   ['listen', 'Record from the microphone and transcribe it (push-to-talk) — the capture half every other voice verb assumed.', '--seconds <n> (default 15, a ceiling), --model, --keep <file>'],
   ['say', 'Speak text with the local voice (piper / say) (TTS).', '—'],
   ['ambient', 'Lisa Ambient: the voice loop (ADR-0011). Subcommands: classify, once.', 'once: --speak, --classify, --model, --url'],
-  ['forge', 'LisaCode: talk an app into existence — the Forge harness drives a model to write + fix code until it passes analysis. The default lane is GJS, verified by lisa dev check; --flutter is the parked lane (ADR-0047).', '--project <dir> (default ./lisa-app), --model, --max-iters <n> (default 6), --url, --flutter, --setup, --build, --run'],
+  ['forge', 'LisaCode: talk an app into existence — the Forge harness drives a model to write + fix code until it passes analysis. The lane is GJS, verified by lisa dev check (ADR-0047).', '--project <dir> (default ./lisa-app), --model, --max-iters <n> (default 6), --url'],
   ['dev', 'Developer tooling for building on Lisa. check <path> is the single authority on what a valid Lisa app is (ADR-0050) and is the Forge\'s verifier; install / remove / list / shell / reset / doctor are the rootless dev box in your home (ADR-0034).', 'doctor: --needs <GiB>'],
   ['skills', 'Skills: the SKILL.md workflows Lisa loads on demand (ADR-0025). Subcommands: list, show <name>.', '—'],
   ['embed', 'Embed text into a vector (reads stdin when piped).', '--url'],

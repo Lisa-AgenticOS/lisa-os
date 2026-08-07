@@ -11,7 +11,7 @@
 //! model asks for. Each turn the backend either calls one tool or signals
 //! done; a [`Verifier`] decides whether "done" is believed — `lisa dev
 //! check` for the default GJS lane (ADR-0047, ADR-0050), any other
-//! command, `dart analyze` for the parked Flutter lane, or none for a
+//! command, `dart analyze` for a Dart project, or none for a
 //! surface with no project at all. Hot-reload preview + VLM
 //! self-inspection join the loop next (run-controller).
 

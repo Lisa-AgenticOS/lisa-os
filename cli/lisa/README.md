@@ -36,10 +36,10 @@ loop cannot converge on an empty directory or on an app the bus would
 reject. It does not run the app's own tests and makes no JavaScript
 syntax claim; `just shell-test` runs the suites.
 
-**The Flutter lane is parked** (ADR-0047): `lisa forge --flutter`,
-`--setup`, `--build` and `--run` still work and nothing user-facing has
-ever been built with them. `--setup` installs the pinned SDK into your
-own data directory and never asks for `sudo`.
+**The Flutter lane is removed** (ADR-0047, amended 2026-08-07):
+`lisa forge --flutter`, `--setup`, `--build` and `--run` no longer
+exist. Nothing user-facing was ever built with them; `lisa forge`
+writes GJS + GTK4/Adwaita only.
 
 **Voice verbs (PLAN §5.7.5, ADR-0011).**
 

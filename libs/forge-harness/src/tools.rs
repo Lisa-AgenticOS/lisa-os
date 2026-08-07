@@ -183,21 +183,6 @@ mod run_tests_tests {
         );
         assert!(out.text.contains("tests/*.test.js"), "{}", out.text);
     }
-
-    /// The parked lane's SDK is looked for where `lisa forge --setup`
-    /// now puts it, not only on `/var` (#243).
-    #[test]
-    fn the_sdk_path_includes_the_users_own_dir() {
-        // SAFETY: env manipulation in a single-threaded test.
-        unsafe { std::env::set_var("LISA_FLUTTER_DIR", "/tmp/sdk") };
-        let dirs = flutter_bin_dirs();
-        unsafe { std::env::remove_var("LISA_FLUTTER_DIR") };
-        assert_eq!(dirs[0], "/tmp/sdk/bin");
-        assert!(
-            dirs.contains(&"/var/lib/lisa/flutter/bin".to_string()),
-            "a device that took the old install lost its SDK: {dirs:?}"
-        );
-    }
 }
 
 const MAX_FILE_CHARS: usize = 30_000;
@@ -289,9 +274,9 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ToolSpec::new(
             "run_tests",
             "Run the project's test suite. Recognises a Cargo project \
-             (`cargo test`) and a pubspec project (`dart test` / `flutter test`, \
-             the parked lane). A Lisa app's own `tests/*.test.js` suite is NOT \
-             runnable from here yet — run it outside the loop.",
+             (`cargo test`) and a pubspec project (`dart test`). A Lisa app's \
+             own `tests/*.test.js` suite is NOT runnable from here yet — run \
+             it outside the loop.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -461,15 +446,7 @@ fn has_js_suite(root: &std::path::Path) -> bool {
 fn run_tests(jail: &Jail) -> ToolOutcome {
     let root = jail.root();
     let (program, argv): (&str, &[&str]) = if root.join("pubspec.yaml").exists() {
-        // Flutter projects need `flutter test` — `dart test` cannot load
-        // dart:ui. A pubspec declaring the flutter sdk is the marker.
-        let is_flutter = std::fs::read_to_string(root.join("pubspec.yaml"))
-            .is_ok_and(|p| p.contains("sdk: flutter"));
-        if is_flutter {
-            ("flutter", &["test"])
-        } else {
-            ("dart", &["test"])
-        }
+        ("dart", &["test"])
     } else if root.join("Cargo.toml").exists() {
         ("cargo", &["test"])
     } else if has_js_suite(root) {
@@ -512,32 +489,6 @@ fn which(program: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
-/// Where the parked lane's SDK may be, most recent location first.
-///
-/// Spelled to match `cli/lisa`'s `flutter_dir()`; the legacy `/var` path
-/// stays because a device that already installed there keeps working.
-fn flutter_bin_dirs() -> Vec<String> {
-    let user = std::env::var_os("LISA_FLUTTER_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("XDG_DATA_HOME")
-                .map(std::path::PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .or_else(|| {
-                    std::env::var_os("HOME")
-                        .map(std::path::PathBuf::from)
-                        .map(|h| h.join(".local/share"))
-                })
-                .map(|d| d.join("lisa/flutter"))
-        });
-    let mut out: Vec<String> = user
-        .map(|p| p.join("bin").display().to_string())
-        .into_iter()
-        .collect();
-    out.push("/var/lib/lisa/flutter/bin".to_string());
-    out
-}
-
 fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
     // One policy point for every surface (ADR-0029). The previous check
     // here — reject absolute paths and `..` — let `find . -exec sh -c
@@ -552,16 +503,6 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
         Verdict::Allow => {}
         verdict => return ToolOutcome::err(verdict.to_string()),
     }
-    // The parked Flutter lane's SDK, wherever `lisa forge --setup` put
-    // it — the user's own data dir now, and `/var/lib/lisa/flutter` on a
-    // device that took the earlier install (#243: the `/var` location is
-    // what made that verb print a `sudo` instruction). Both are appended
-    // so `flutter`/`dart` resolve either way.
-    let extra = flutter_bin_dirs().join(":");
-    let path = match std::env::var("PATH") {
-        Ok(p) => format!("{p}:{extra}"),
-        Err(_) => extra,
-    };
     // Confine the CHILD, not us (ADR-0029 phase 3, #53). `cargo test`
     // compiles and runs build.rs and test bodies that the model just
     // wrote, as this user, outside every rule in lisa-guard — once
@@ -571,7 +512,7 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
     // `run_shell` needs the same one and a second copy is a second
     // policy (#307).
     let mut cmd = Command::new(program);
-    cmd.args(argv).env("PATH", path).current_dir(jail.root());
+    cmd.args(argv).current_dir(jail.root());
     let confinement =
         crate::confine::confine_command(&mut cmd, jail.root(), &crate::confine::user_home());
     match cmd.output() {

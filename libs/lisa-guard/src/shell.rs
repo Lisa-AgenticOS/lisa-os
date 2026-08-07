@@ -258,7 +258,6 @@ const KNOWN_LEAF_PROGRAMS: &[&str] = &[
     "podman",
     "kubectl",
     "dart",
-    "flutter",
     "rustc",
     "rustup",
     "go",

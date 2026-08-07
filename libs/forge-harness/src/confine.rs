@@ -85,15 +85,7 @@ mod imp {
     /// or in one of the `$HOME` lists below is invisible to the child.
     ///
     /// `/proc` and `/dev` are NOT here — see [`READ_WRITE_FILES`].
-    const READ_ONLY: &[&str] = &[
-        "/usr",
-        "/etc",
-        "/lib",
-        "/lib64",
-        "/bin",
-        "/sbin",
-        "/var/lib/lisa/flutter",
-    ];
+    const READ_ONLY: &[&str] = &["/usr", "/etc", "/lib", "/lib64", "/bin", "/sbin"];
 
     /// `/dev` and `/proc`: readable, and existing files WRITABLE.
     ///
@@ -199,8 +191,8 @@ mod imp {
         // holes in it and no sign that anything went wrong.
         //
         // A path that does not exist is a different matter and is
-        // skipped: `.pub-cache` on a machine with no Flutter, or
-        // `/var/lib/lisa/flutter` on a dev host, are simply absent.
+        // skipped: `.pub-cache` on a machine with no Dart toolchain
+        // is simply absent.
         // Not `mut`: the closure consumes and returns the ruleset rather
         // than mutating a capture. clippy's -D warnings catches this only
         // on Linux, since this whole module is cfg'd to it — a macOS dev

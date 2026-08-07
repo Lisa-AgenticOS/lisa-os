@@ -497,7 +497,6 @@ const MUST_ALLOW: &[&str] = &[
     "ls /var/log/*.log",
     "cargo test --workspace",
     "just lint && just test",
-    "flutter analyze --no-pub",
     "dart format lib",
     "git status",
     "git commit -m 'fix the thing'",
@@ -1541,7 +1540,10 @@ fn the_forge_tool_surface_cannot_reach_a_shell() {
         ("cargo", &["--config=x=1", "build"]),
         // An unknown subcommand resolves to `cargo-<name>` on PATH.
         ("cargo", &["evil-plugin"]),
-        ("flutter", &["not-a-verb"]),
+        // `flutter` left ALLOWED_COMMANDS when the lane was removed
+        // (ADR-0047 amendment, 2026-08-07): its once-canonical call is
+        // now refused, and this row is what notices it drifting back.
+        ("flutter", &["analyze", "--no-pub"]),
         // #59 — the allowlist is a set of bare names, not paths.
         ("/bin/sh", &["-c", "id"]),
         ("./cargo", &["test"]),
@@ -1579,7 +1581,6 @@ fn the_forge_tool_surface_cannot_reach_a_shell() {
 fn the_forge_tool_surface_still_does_its_job() {
     let work: &[(&str, &[&str])] = &[
         ("cargo", &["test"]),
-        ("flutter", &["analyze", "--no-pub"]),
         ("dart", &["format", "lib"]),
         ("find", &[".", "-name", "*.dart"]),
         ("grep", &["-rn", "needle", "lib"]),

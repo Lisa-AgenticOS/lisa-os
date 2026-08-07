@@ -89,17 +89,17 @@ repo (like the lisa packages).
 | Package | Why | Source | Where |
 |---|---|---|---|
 | `llama.cpp` | local inference engine (llama-server) for inferenced | from source (b10093, MIT) — AUR-only | `os/packages/llama.cpp` → release repo |
-| `dart` | the PARKED Flutter lane's `dart analyze` (ADR-0047); the default forge lane uses `lisa dev check` and needs no toolchain — issue #48 tracks re-scoping this | Arch `extra` | `mkosi.conf` Packages |
-| **Flutter** | the parked lane only (ADR-0047) | **not bundled, not needed** | `lisa forge --setup`, into your own home |
+| `dart` | `dart analyze`/`dart test` for pubspec projects the forge loop may sit over; the forge lane itself uses `lisa dev check` and needs no toolchain — issue #48 tracks re-scoping this | Arch `extra` | `mkosi.conf` Packages |
+| **Flutter** | nothing — the lane was removed 2026-08-07 (ADR-0047 amendment) | **not bundled, not needed** | — |
 
 **Flutter is not in the image, and no longer on the app road** (ADR-0047
-parked the lane; §3 closed #37 won't-do). It was excluded for size —
-~1.5 GiB carried by every A/B update — and is now excluded for a better
-reason: a Lisa app is interpreted source that needs no build toolchain at
-all. `lisa forge --setup` still fetches the pinned SDK for anyone using
-the parked lane, into `$XDG_DATA_HOME/lisa/flutter` rather than `/var`,
-so it never asks for `sudo` (#243). The lisa-cli package installs no
-`lisa.sdk` payload and declares no Flutter optdepends (#246).
+parked the lane; §3 closed #37 won't-do; the 2026-08-07 amendment removed
+it). It was excluded for size — ~1.5 GiB carried by every A/B update —
+and is now excluded for a better reason: a Lisa app is interpreted source
+that needs no build toolchain at all. `lisa forge --setup`, which fetched
+the pinned SDK for the parked lane, no longer exists. The lisa-cli
+package installs no `lisa.sdk` payload and declares no Flutter
+optdepends (#246).
 
 **The browser is no longer bundled third-party software.** Zen — a
 repackaged upstream tarball, 363 MiB of root payload and 726 MiB across

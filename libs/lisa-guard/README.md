@@ -215,8 +215,8 @@ user, so an agent acting as `lisa` cannot unlink `/home/alice/notes.txt`
 the kernel does not object: elevated contexts, shared group directories,
 network mounts, world-writable paths.
 
-It does not confine a subprocess. `run_tests` invokes `cargo test` /
-`flutter test` over source the model just wrote, and that code executes
+It does not confine a subprocess. `run_tests` invokes `cargo test`
+over source the model just wrote, and that code executes
 `build.rs` and test bodies as the user, outside every rule here. No
 Rust-level policy can fix that; it needs an OS mechanism, and the plan is
 Landlock (ADR-0029 phase 3). Until then the honest description of the

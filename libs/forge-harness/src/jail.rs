@@ -10,7 +10,7 @@
 //!
 //! Scope, stated plainly: this jail confines the harness's own file
 //! tools. It does **not** confine a subprocess — `run_tests` invokes
-//! `cargo test`/`flutter test` over source the model just wrote, and that
+//! `cargo test` over source the model just wrote, and that
 //! code runs unrestricted. Closing that needs Landlock, which is ADR-0029
 //! phase 3.
 
