@@ -438,6 +438,17 @@ package_lisa-shell() {
     # not a CSS property in the apps).
     ln -s /usr/share/lisa/shell/glass \
         "$pkgdir/usr/share/gnome-shell/extensions/lisa-glass@lisa-os.org"
+    # The sdk, reachable FROM the extension symlinks. GJS resolves a
+    # relative import against the path a module was imported AS — the
+    # symlink path, not its target — so an extension's
+    # `../../lisa.sdk/...` lands HERE, beside the uuid links, and
+    # without this link the overlay extension dies at import on a
+    # shipped image (found live on v20260807.85: the assistant was
+    # unavailable on the desktop it shipped with). GNOME's scanner logs
+    # one "no metadata.json" line for it, which is the cost of the
+    # extensions dir being both a namespace and an import root.
+    ln -s /usr/share/lisa/shell/lisa.sdk \
+        "$pkgdir/usr/share/gnome-shell/extensions/lisa.sdk"
 
     # D-Bus activation for the headless overlay backend (§5.7.1) and for
     # push-to-talk capture (§5.7.5). The same process owns both names,
