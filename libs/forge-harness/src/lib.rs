@@ -32,7 +32,7 @@ pub use agent::{
 pub use openai::{OpenAiBackend, backend_refusal, streaming_request_body};
 pub use shell_tool::{ShellRequest, ShellTool};
 pub use skills::{READ_SKILL, SkillTools};
-pub use tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
+pub use tools::{RefusalMemory, ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 
 use serde::Deserialize;
 use std::path::Path;

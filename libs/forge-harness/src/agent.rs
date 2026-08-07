@@ -6,7 +6,7 @@
 //! budget runs out.
 
 use crate::jail::Jail;
-use crate::tools::{ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
+use crate::tools::{RefusalMemory, ToolCall, ToolOutcome, ToolSpec, execute_tool, tool_specs};
 use crate::{Backend, ForgeError, analyze};
 use lisa_ledger::{Event, Ledger, preview_of};
 use serde_json::Value;
@@ -429,12 +429,17 @@ pub trait ToolProvider {
 /// project directory, path traversal impossible by construction.
 pub struct WorkspaceTools {
     jail: Jail,
+    /// Per-run refusal memory (ADR-0061 steal 2): identical refused
+    /// commands cost more each time and mute at three. Run-scoped by
+    /// construction — a fresh WorkspaceTools starts clean.
+    refusals: RefusalMemory,
 }
 
 impl WorkspaceTools {
     pub fn new(project: &Path) -> Result<Self, ForgeError> {
         Ok(Self {
             jail: Jail::new(project)?,
+            refusals: RefusalMemory::default(),
         })
     }
 }
@@ -445,7 +450,7 @@ impl ToolProvider for WorkspaceTools {
     }
 
     fn execute(&self, call: &ToolCall) -> ToolOutcome {
-        execute_tool(&self.jail, call)
+        execute_tool(&self.jail, &self.refusals, call)
     }
 }
 

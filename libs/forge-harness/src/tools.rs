@@ -115,6 +115,103 @@ impl ToolOutcome {
 }
 
 #[cfg(test)]
+mod refusal_reflection_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn call_shellish(jail: &Jail, mem: &RefusalMemory) -> ToolOutcome {
+        let call = ToolCall {
+            id: "t".into(),
+            name: "run_command".into(),
+            args: json!({"program": "bash", "args": ["-c", "id"]}),
+        };
+        execute_tool(jail, mem, &call)
+    }
+
+    /// The reflection ladder (ADR-0061 steal 2): a first refusal
+    /// redirects, an identical retry is named as a loop, the third
+    /// mutes — and none of it changes any verdict, because there is
+    /// nothing here a model could say to change one (rule 6a).
+    #[test]
+    fn identical_refusals_cost_more_each_time_and_mute_at_three() {
+        let dir = tempfile::tempdir().unwrap();
+        let jail = crate::jail::Jail::new(dir.path()).unwrap();
+        let mem = RefusalMemory::default();
+
+        let first = call_shellish(&jail, &mem);
+        assert!(first.is_err());
+        assert!(first.text.contains("OUTCOME"), "{}", first.text);
+        assert!(first.text.contains("not negotiable"), "{}", first.text);
+
+        let second = call_shellish(&jail, &mem);
+        assert!(second.text.contains("attempt 2"), "{}", second.text);
+        assert!(
+            second.text.contains("loop, not progress"),
+            "{}",
+            second.text
+        );
+
+        let third = call_shellish(&jail, &mem);
+        assert!(third.text.contains("muted"), "{}", third.text);
+
+        // The fourth never reaches the guard: the mute answers first.
+        let fourth = call_shellish(&jail, &mem);
+        assert!(
+            fourth.text.contains("muted for the rest of this run"),
+            "{}",
+            fourth.text
+        );
+    }
+
+    /// Refusal memory is per-COMMAND: a different refused command gets
+    /// the full first-refusal redirect, not a stale count.
+    #[test]
+    fn a_different_command_starts_its_own_ladder() {
+        let dir = tempfile::tempdir().unwrap();
+        let jail = crate::jail::Jail::new(dir.path()).unwrap();
+        let mem = RefusalMemory::default();
+        call_shellish(&jail, &mem);
+        call_shellish(&jail, &mem);
+
+        let other = execute_tool(
+            &jail,
+            &mem,
+            &ToolCall {
+                id: "t".into(),
+                name: "run_command".into(),
+                args: json!({"program": "sh", "args": ["-c", "id"]}),
+            },
+        );
+        assert!(other.text.contains("not negotiable"), "{}", other.text);
+        assert!(!other.text.contains("attempt 2"), "{}", other.text);
+    }
+
+    /// An ALLOWED command is untouched by any amount of refusal
+    /// history — the memory shapes wasted attempts, never verdicts.
+    #[test]
+    fn refusal_history_never_leaks_into_allowed_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let jail = crate::jail::Jail::new(dir.path()).unwrap();
+        let mem = RefusalMemory::default();
+        for _ in 0..4 {
+            call_shellish(&jail, &mem);
+        }
+        let ok = execute_tool(
+            &jail,
+            &mem,
+            &ToolCall {
+                id: "t".into(),
+                name: "run_command".into(),
+                args: json!({"program": "cat", "args": ["a.txt"]}),
+            },
+        );
+        assert!(!ok.is_err(), "{}", ok.text);
+        assert!(ok.text.contains("hello"), "{}", ok.text);
+    }
+}
+
+#[cfg(test)]
 mod run_tests_tests {
     use super::*;
 
@@ -137,7 +234,7 @@ mod run_tests_tests {
         assert!(has_js_suite(dir.path()));
 
         let jail = crate::jail::Jail::new(dir.path()).unwrap();
-        let out = run_tests(&jail);
+        let out = run_tests(&jail, &RefusalMemory::default());
         // Whatever the runtime says, it must not be the guard refusing
         // the spawn or the tool calling a real suite unrecognised.
         assert!(
@@ -175,7 +272,7 @@ mod run_tests_tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(!has_js_suite(dir.path()));
         let jail = crate::jail::Jail::new(dir.path()).unwrap();
-        let out = run_tests(&jail);
+        let out = run_tests(&jail, &RefusalMemory::default());
         assert!(
             out.text.contains("no recognized test setup"),
             "{}",
@@ -285,9 +382,46 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
+/// What a run remembers about its own refusals (ADR-0061 steal 2).
+///
+/// Keyed by the exact program + argv. Interior mutability because the
+/// provider trait hands out `&self`, and a `Mutex` rather than a
+/// `RefCell` because harnessd may drive a run from more than one
+/// thread. This is loop hygiene, not policy: the guard's verdicts are
+/// identical with or without it — only the cost of ignoring them
+/// changes.
+#[derive(Default)]
+pub struct RefusalMemory(std::sync::Mutex<std::collections::HashMap<String, u32>>);
+
+/// The third identical refusal mutes that exact command for the run.
+const MUTE_AFTER: u32 = 3;
+
+impl RefusalMemory {
+    /// Record one refusal; returns how many came BEFORE it.
+    fn note(&self, key: &str) -> u32 {
+        let mut m = self.0.lock().unwrap();
+        let n = m.entry(key.to_string()).or_insert(0);
+        let prior = *n;
+        *n += 1;
+        prior
+    }
+
+    fn muted(&self, key: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .get(key)
+            .is_some_and(|n| *n >= MUTE_AFTER)
+    }
+}
+
+fn refusal_key(program: &str, argv: &[&str]) -> String {
+    format!("{program}\u{1f}{}", argv.join("\u{1f}"))
+}
+
 /// Execute one tool call against the jail. Never fails fatally: every
 /// error is reported back as result text for the model to act on.
-pub fn execute_tool(jail: &Jail, call: &ToolCall) -> ToolOutcome {
+pub fn execute_tool(jail: &Jail, mem: &RefusalMemory, call: &ToolCall) -> ToolOutcome {
     match call.name.as_str() {
         "read_file" => match arg_str(&call.args, "path") {
             Ok(path) => match jail.read(path) {
@@ -329,8 +463,8 @@ pub fn execute_tool(jail: &Jail, call: &ToolCall) -> ToolOutcome {
             Err(e) => ToolOutcome::err(format!("bad write_file arguments: {e}")),
         },
         "edit_file" => edit_file(jail, &call.args),
-        "run_command" => run_command(jail, &call.args),
-        "run_tests" => run_tests(jail),
+        "run_command" => run_command(jail, mem, &call.args),
+        "run_tests" => run_tests(jail, mem),
         other => ToolOutcome::err(format!(
             "unknown tool `{other}`; available: {}",
             tool_specs()
@@ -421,7 +555,7 @@ fn grep(jail: &Jail, args: &Value) -> ToolOutcome {
     }
 }
 
-fn run_command(jail: &Jail, args: &Value) -> ToolOutcome {
+fn run_command(jail: &Jail, mem: &RefusalMemory, args: &Value) -> ToolOutcome {
     let program = match arg_str(args, "program") {
         Ok(p) => p,
         Err(e) => return ToolOutcome::err(e),
@@ -430,7 +564,7 @@ fn run_command(jail: &Jail, args: &Value) -> ToolOutcome {
         .as_array()
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    run_program(jail, program, &argv)
+    run_program(jail, mem, program, &argv)
 }
 
 /// Does this tree carry a Lisa app's own suite — `tests/*.test.js`, the
@@ -443,7 +577,7 @@ fn has_js_suite(root: &std::path::Path) -> bool {
         .any(|e| e.file_name().to_string_lossy().ends_with(".test.js"))
 }
 
-fn run_tests(jail: &Jail) -> ToolOutcome {
+fn run_tests(jail: &Jail, mem: &RefusalMemory) -> ToolOutcome {
     let root = jail.root();
     let (program, argv): (&str, &[&str]) = if root.join("pubspec.yaml").exists() {
         ("dart", &["test"])
@@ -476,7 +610,7 @@ fn run_tests(jail: &Jail) -> ToolOutcome {
              pubspec.yaml and Cargo.toml)",
         );
     };
-    run_program(jail, program, argv)
+    run_program(jail, mem, program, argv)
 }
 
 /// Is this program on `PATH`?
@@ -489,7 +623,7 @@ fn which(program: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
-fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
+fn run_program(jail: &Jail, mem: &RefusalMemory, program: &str, argv: &[&str]) -> ToolOutcome {
     // One policy point for every surface (ADR-0029). The previous check
     // here — reject absolute paths and `..` — let `find . -exec sh -c
     // '<anything>' \;` through, because every token in it is a plain
@@ -499,9 +633,46 @@ fn run_program(jail: &Jail, program: &str, argv: &[&str]) -> ToolOutcome {
     // is refused rather than assumed: `Confirm` needs consent that does
     // not exist here. The reason goes back as tool output so the model
     // can pick another route instead of retrying blind.
+    //
+    // And blind is the word (ADR-0061 steal 2, jcode's reflection gate
+    // made 6a-safe): a refusal comes back with a REDIRECT the retry has
+    // to have read, an identical retry is named as the loop it is, and
+    // the third one mutes that exact command for the rest of the run.
+    // Nothing here is an approval path — no wording the model produces
+    // changes any verdict; the memory only shapes what wasted attempts
+    // cost.
+    let key = refusal_key(program, argv);
+    if mem.muted(&key) {
+        return ToolOutcome::err(format!(
+            "`{program}` with these arguments is muted for the rest of this run: \
+             it was refused {MUTE_AFTER} times and the verdict cannot change. \
+             State the OUTCOME you need in your summary if no allowed route exists."
+        ));
+    }
     match check_command(program, argv) {
         Verdict::Allow => {}
-        verdict => return ToolOutcome::err(verdict.to_string()),
+        verdict => {
+            let prior = mem.note(&key);
+            return ToolOutcome::err(match prior {
+                0 => format!(
+                    "{verdict}\nBefore another attempt: state what OUTCOME you need \
+                     — not the command — and pick a route the catalogue allows. \
+                     The guard is not negotiable from inside this loop."
+                ),
+                n if n + 1 >= MUTE_AFTER => format!(
+                    "{verdict}\nThis identical command has now been refused {} times \
+                     and is muted for the rest of the run. Change the approach, or \
+                     record the limitation honestly in your summary.",
+                    n + 1
+                ),
+                n => format!(
+                    "{verdict}\nIdentical command, attempt {}: the verdict cannot \
+                     change, so repeating it is a loop, not progress. What OUTCOME \
+                     does this command serve? Reach it another way.",
+                    n + 1
+                ),
+            });
+        }
     }
     // Confine the CHILD, not us (ADR-0029 phase 3, #53). `cargo test`
     // compiles and runs build.rs and test bodies that the model just
@@ -582,6 +753,7 @@ mod tests {
         let (_dir, jail) = jail();
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "write_file",
                 json!({"path": "lib/a.dart", "content": "void main() { broken(); }\n"}),
@@ -589,11 +761,16 @@ mod tests {
         );
         assert!(out.mutated, "{out:?}");
 
-        let out = execute_tool(&jail, &call("read_file", json!({"path": "lib/a.dart"})));
+        let out = execute_tool(
+            &jail,
+            &RefusalMemory::default(),
+            &call("read_file", json!({"path": "lib/a.dart"})),
+        );
         assert!(out.text.contains("broken();"));
 
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "edit_file",
                 json!({"path": "lib/a.dart", "old_string": "broken();", "new_string": "print('ok');"}),
@@ -612,6 +789,7 @@ mod tests {
         jail.write("a.txt", "x x").unwrap();
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "edit_file",
                 json!({"path": "a.txt", "old_string": "x", "new_string": "y"}),
@@ -623,6 +801,7 @@ mod tests {
         );
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "edit_file",
                 json!({"path": "a.txt", "old_string": "x", "new_string": "y", "replace_all": true}),
@@ -638,6 +817,7 @@ mod tests {
         jail.write("a.txt", "hello").unwrap();
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "edit_file",
                 json!({"path": "nope.txt", "old_string": "x", "new_string": "y"}),
@@ -646,6 +826,7 @@ mod tests {
         assert!(out.text.starts_with("error:"));
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "edit_file",
                 json!({"path": "a.txt", "old_string": "zzz", "new_string": "y"}),
@@ -660,6 +841,7 @@ mod tests {
         for bad in ["../outside.txt", "/etc/passwd", "ok/../../x"] {
             let out = execute_tool(
                 &jail,
+                &RefusalMemory::default(),
                 &call("write_file", json!({"path": bad, "content": "x"})),
             );
             assert!(!out.mutated);
@@ -668,7 +850,11 @@ mod tests {
                 "{bad}: {out:?}"
             );
         }
-        let out = execute_tool(&jail, &call("read_file", json!({"path": ".."})));
+        let out = execute_tool(
+            &jail,
+            &RefusalMemory::default(),
+            &call("read_file", json!({"path": ".."})),
+        );
         assert!(out.text.contains("escapes the project jail"));
     }
 
@@ -681,10 +867,18 @@ mod tests {
             .unwrap();
         jail.write(".git/hidden", "needle").unwrap();
 
-        let out = execute_tool(&jail, &call("list_dir", json!({"path": "."})));
+        let out = execute_tool(
+            &jail,
+            &RefusalMemory::default(),
+            &call("list_dir", json!({"path": "."})),
+        );
         assert!(out.text.contains("lib/"), "{out:?}");
 
-        let out = execute_tool(&jail, &call("grep", json!({"pattern": "needle"})));
+        let out = execute_tool(
+            &jail,
+            &RefusalMemory::default(),
+            &call("grep", json!({"pattern": "needle"})),
+        );
         assert!(out.text.contains("lib/main.dart:1:"), "{out:?}");
         assert!(out.text.contains("lib/src/util.dart:1:"), "{out:?}");
         assert!(
@@ -694,10 +888,15 @@ mod tests {
 
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call("grep", json!({"pattern": "comment", "path": "lib/src"})),
         );
         assert!(out.text.contains("util.dart"), "{out:?}");
-        let out = execute_tool(&jail, &call("grep", json!({"pattern": "absent"})));
+        let out = execute_tool(
+            &jail,
+            &RefusalMemory::default(),
+            &call("grep", json!({"pattern": "absent"})),
+        );
         assert!(out.text.contains("no matches"));
     }
 
@@ -706,6 +905,7 @@ mod tests {
         let (_dir, jail) = jail();
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "run_command",
                 json!({"program": "sh", "args": ["-c", "id"]}),
@@ -715,6 +915,7 @@ mod tests {
         for escaping in ["../../etc/passwd", "/etc/passwd"] {
             let out = execute_tool(
                 &jail,
+                &RefusalMemory::default(),
                 &call("run_command", json!({"program": "cat", "args": [escaping]})),
             );
             assert!(out.text.contains("command.path_escape"), "{}", out.text);
@@ -729,6 +930,7 @@ mod tests {
         let (_dir, jail) = jail();
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "run_command",
                 json!({"program": "find", "args": [".", "-exec", "sh", "-c", "id", ";"]}),
@@ -740,6 +942,7 @@ mod tests {
         jail.write("lib/a.dart", "void main() {}").unwrap();
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "run_command",
                 json!({"program": "find", "args": [".", "-delete"]}),
@@ -758,6 +961,7 @@ mod tests {
         let (_dir, jail) = jail();
         let out = execute_tool(
             &jail,
+            &RefusalMemory::default(),
             &call(
                 "run_command",
                 json!({"program": "echo", "args": ["forged"]}),
@@ -770,14 +974,22 @@ mod tests {
     #[test]
     fn run_tests_reports_unconfigured_projects() {
         let (_dir, jail) = jail();
-        let out = execute_tool(&jail, &call("run_tests", json!({})));
+        let out = execute_tool(
+            &jail,
+            &RefusalMemory::default(),
+            &call("run_tests", json!({})),
+        );
         assert!(out.text.contains("no recognized test setup"), "{out:?}");
     }
 
     #[test]
     fn unknown_tool_is_a_tool_error() {
         let (_dir, jail) = jail();
-        let out = execute_tool(&jail, &call("delete_everything", json!({})));
+        let out = execute_tool(
+            &jail,
+            &RefusalMemory::default(),
+            &call("delete_everything", json!({})),
+        );
         assert!(out.text.contains("unknown tool"));
     }
 }
