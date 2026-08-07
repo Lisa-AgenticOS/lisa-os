@@ -318,6 +318,17 @@ enum Command {
         /// Max plan→edit→check iterations before giving up.
         #[arg(long, default_value_t = 6)]
         max_iters: usize,
+        /// Bring your own agent (PLAN §5.12.1, ADR-0061): run this
+        /// program as the builder instead of the native loop — inside
+        /// the same filesystem jail, with the same verifier gate after
+        /// it exits, and the run in the Ledger either way. The task
+        /// is appended as the final argument.
+        #[arg(long)]
+        byo: Option<String>,
+        /// Arguments passed to the --byo program before the task
+        /// (repeatable), e.g. --byo claude --byo-arg -p
+        #[arg(long = "byo-arg")]
+        byo_args: Vec<String>,
     },
     /// Developer tooling for building on Lisa (ADR-0050).
     Dev {
@@ -819,7 +830,12 @@ fn run() -> anyhow::Result<()> {
             model,
             url,
             max_iters,
-        } => forge_cmd(&task.join(" "), &project, model, &url, max_iters),
+            byo,
+            byo_args,
+        } => match byo {
+            Some(program) => forge_byo(&task.join(" "), &project, &program, &byo_args),
+            None => forge_cmd(&task.join(" "), &project, model, &url, max_iters),
+        },
         Command::Dev { cmd } => match cmd {
             DevCmd::Check { path } => dev::check_cmd(path),
             DevCmd::Doctor { needs } => dev::doctor_cmd(needs),
@@ -1305,6 +1321,125 @@ fn default_verifier() -> forge_harness::Verifier {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "lisa".into()),
         args: vec!["dev".into(), "check".into()],
+    }
+}
+
+/// PLAN §5.12.1's bring-your-own agent, made real (ADR-0061): any
+/// agent CLI as the builder, inside Lisa's rails. The rails are the
+/// point — the foreign agent gets the same Landlock jail as the native
+/// loop's children (project read-write, caches read-only, nothing
+/// else), the same verifier gate decides whether the result counts,
+/// and the run is in the Ledger either way. What it does NOT get is
+/// puppeteered: it runs its own loop, interactively if it wants —
+/// stdio is inherited so a TUI works.
+///
+/// The program comes from the OWNER's flag, never from a model — this
+/// is a capability handed in from outside the loop (ADR-0030), which
+/// is why it may name programs the guard's allowlist would refuse.
+/// Its network is its own: on a dev host that is the owner's business;
+/// the on-device story routes through the broker or not at all, and
+/// shipping this as a device default would need that answer first.
+fn forge_byo(
+    task: &str,
+    project: &PathBuf,
+    program: &str,
+    byo_args: &[String],
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(project)?;
+    // Ledger-mandatory, exactly like the native loop (#54): a machine
+    // with an unwritable Ledger refuses to run an agent off the record.
+    let ledger = lisa_ledger::Ledger::open(lisa_ledger::Ledger::default_path())?;
+    let started = format!(
+        "byo={program} args={byo_args:?} project={} task={task}",
+        project.display()
+    );
+    ledger.append(&lisa_ledger::Event {
+        kind: "forge.byo.start".into(),
+        app_id: "host".into(),
+        input_hash: blake3::hash(started.as_bytes()).to_hex().to_string(),
+        status: "ok".into(),
+        detail: started.clone(),
+        ..Default::default()
+    })?;
+
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(byo_args);
+    if !task.is_empty() {
+        cmd.arg(task);
+    }
+    cmd.current_dir(project);
+    let confinement = forge_harness::confine::confine_command(
+        &mut cmd,
+        project,
+        &forge_harness::confine::user_home(),
+    );
+    // Said before the child runs, not after: whoever is watching the
+    // terminal decides with this line in view.
+    match confinement.note() {
+        None => eprintln!(
+            ">> {program} runs jailed to {} (filesystem; its network is its own)",
+            project.display()
+        ),
+        Some(note) => eprintln!("!! {program} runs UNCONFINED: {note}"),
+    }
+
+    let status = cmd
+        .status()
+        .map_err(|e| anyhow::anyhow!("running `{program}`: {e} — is it installed and on PATH?"))?;
+
+    // The gate is not optional and not the foreign agent's opinion:
+    // the same verifier the native loop answers to decides whether
+    // this run produced a valid result (gauntlet discipline — a
+    // foreign agent's own "done" is a DoneClaimed, not a verdict).
+    let verifier = default_verifier();
+    let findings = verifier.check(project)?;
+    let outcome = match (&status.success(), &findings) {
+        (true, None) => "clean".to_string(),
+        (true, Some(f)) => format!("exited ok, verifier findings: {}", truncate_str(f, 400)),
+        (false, None) => format!("exit status {status}, verifier clean"),
+        (false, Some(f)) => format!(
+            "exit status {status}, verifier findings: {}",
+            truncate_str(f, 400)
+        ),
+    };
+    ledger.append(&lisa_ledger::Event {
+        kind: "forge.byo.end".into(),
+        app_id: "host".into(),
+        input_hash: blake3::hash(started.as_bytes()).to_hex().to_string(),
+        status: if status.success() && findings.is_none() {
+            "ok".into()
+        } else {
+            "findings".into()
+        },
+        detail: outcome.clone(),
+        ..Default::default()
+    })?;
+    match findings {
+        None if status.success() => {
+            println!(
+                "byo run clean — verifier agrees. Source in {}",
+                project.display()
+            );
+            Ok(())
+        }
+        None => {
+            println!("byo agent exited {status}; verifier found nothing to flag.");
+            Ok(())
+        }
+        Some(f) => {
+            println!("byo run finished, but the verifier disagrees:\n{f}");
+            anyhow::bail!("verifier findings — the run is not clean")
+        }
+    }
+}
+
+/// First `n` chars, honestly marked when cut.
+fn truncate_str(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(n).collect();
+        format!("{cut}… [truncated]")
     }
 }
 
