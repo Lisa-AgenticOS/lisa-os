@@ -24,26 +24,17 @@
 // a run that read one). Showing the tag is what lets a person recognise
 // the note that should not be there.
 
-/// Its own interface XML rather than the shared one in
-/// `shell/overlay-extension/lib/iface.js`, which describes what the
-/// OVERLAY needs from the harness. Memory is this window's business:
-/// putting it in the shared node would offer it to a surface with no
-/// list to show it in.
-export const MEMORY_IFACE_XML = `
-<node>
-  <interface name="dev.lisaos.Harness1">
-    <method name="MemoryList">
-      <arg type="s" direction="out" name="notes_json"/>
-    </method>
-    <method name="MemoryForget">
-      <arg type="x" direction="in" name="note_id"/>
-      <arg type="b" direction="out" name="forgotten"/>
-    </method>
-    <method name="MemoryForgetAll">
-      <arg type="u" direction="out" name="count"/>
-    </method>
-  </interface>
-</node>`;
+/// A NARROW view, deliberately: the full Harness1 node would offer Run
+/// and Cancel to a pane whose whole job is showing and forgetting
+/// notes. Cut from the sdk's one introspected copy (ADR-0060/0061)
+/// rather than hand-typed here — the last hand copy in the tree lived
+/// in this file, kept alive by exactly this good reason, and drifted
+/// from the daemon the day Memory* landed. Now a member the daemon
+/// stops serving throws at import, in CI, not on a device.
+import {narrowIface} from '../../lisa.sdk/bus/narrow.js';
+
+export const MEMORY_IFACE_XML = narrowIface('Harness1',
+    ['MemoryList', 'MemoryForget', 'MemoryForgetAll']);
 
 /// `MemoryList()`'s payload → rows to render.
 ///

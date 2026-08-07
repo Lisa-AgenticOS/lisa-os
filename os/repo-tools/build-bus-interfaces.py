@@ -32,9 +32,10 @@ OUT = ROOT / "apps/lisa.sdk/bus/interfaces.js"
 # Files still carrying their own declarations, awaiting migration to
 # `../lisa.sdk/bus/`. REMOVE entries as they migrate; adding one is the
 # defect this gate exists to block.
-ALLOWLIST = {
-    "shell/assistant/lib/memory.js",
-}
+# EMPTY since 2026-08-07 — every surface takes the seven from
+# apps/lisa.sdk/bus (narrowIface for deliberate subsets). Stays here so
+# the day someone needs an exception they find the shrink-only rule.
+ALLOWLIST: set[str] = set()
 
 HEADER = """\
 // GENERATED from apps/lisa.sdk/bus/xml/ — edit those (or re-introspect

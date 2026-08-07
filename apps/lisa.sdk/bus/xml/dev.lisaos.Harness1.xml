@@ -1,5 +1,6 @@
 <!-- Introspected from the running daemon on the reference device,
-     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+     2026-08-07 (v20260807.85 — the first daemon serving Memory*).
+     Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
 <node>
 <interface name="dev.lisaos.Harness1">
     <method name="Ping">
@@ -13,6 +14,45 @@
       <arg name="prompt" type="s" direction="in"/>
       <arg name="options" type="a{sv}" direction="in"/>
       <arg type="t" direction="out"/>
+    </method>
+    <!--
+     Everything the assistant remembers about this person, as JSON
+     (`[{id, ts, text, provenance, trusted, recalls}]`).
+
+     Memory a person cannot see is not a feature, it is a dossier, so
+     this is not optional and it is not paginated away: the whole
+     scope, newest first, with the provenance of every note.
+
+     **Only the person's own prompt surface may ask.** Same authority
+     as `Run`'s trigger ceiling — the caller must be this uid AND hold
+     a prompt surface's well-known name (`caller::ceiling`), which is
+     the strongest thing the transport can tell us in a daemon that
+     cannot read `/proc` (#161). Anything else is refused with a
+     refusal that names no note and no count: a listing is exactly the
+     thing that must not leak, and "there are 4 things I know about
+     you" is already a leak.
+     -->
+    <method name="MemoryList">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Forget one note. `false` when there was no such note — which is
+     also the answer a caller gets for somebody else's, because the
+     two must be indistinguishable (ADR-0033: a refusal must not
+     reveal what exists). In practice there is only one scope per
+     daemon and one daemon per user, so this is the same statement
+     twice; it is written down because the day a second scope arrives
+     is the day the distinction starts mattering.
+     -->
+    <method name="MemoryForget">
+      <arg name="note_id" type="x" direction="in"/>
+      <arg type="b" direction="out"/>
+    </method>
+    <!--
+     Forget everything, returning how many notes went.
+     -->
+    <method name="MemoryForgetAll">
+      <arg type="u" direction="out"/>
     </method>
     <!--
      Ask a run to stop. It finishes the turn already in flight — a
