@@ -549,6 +549,14 @@ impl Harness1 {
                 .workspace
                 .as_ref()
                 .and_then(|dir| forge_harness::WorkspaceTools::new(dir).ok());
+            // Wrapped, never bare (#300): a file-tool result is tree
+            // content, and tree content taints the run like web or mail
+            // does — otherwise a hostile document in the granted folder
+            // is read at full trust and whatever the model remembers
+            // from it is stamped prov:user.
+            let workspace_tainting = workspace_tools
+                .as_ref()
+                .map(|w| crate::workspace::TaintingWorkspace::new(w, taint.clone()));
             let skill_tools = crate::skills::SkillTools::new(skills);
             let memory_tools = memory
                 .map(|m| crate::memory::MemoryTools::new(m, trigger.provenance(), taint.clone()));
@@ -560,7 +568,7 @@ impl Harness1 {
             if let Some(m) = memory_tools.as_ref() {
                 providers.push(m);
             }
-            if let Some(w) = workspace_tools.as_ref() {
+            if let Some(w) = workspace_tainting.as_ref() {
                 providers.push(w);
             }
             if !skill_tools.is_empty() {

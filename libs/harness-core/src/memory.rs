@@ -186,32 +186,19 @@ impl Memory {
         budget_chars: usize,
         trusted_tag: &str,
     ) -> Result<String, Error> {
-        if budget_chars == 0 {
-            return Ok(String::new());
-        }
-        let candidates = self.candidates(scope, None)?;
-        if candidates.is_empty() {
-            return Ok(String::new());
-        }
-        // The trusted pool is queried separately rather than filtered
-        // out of `candidates`: the point is that a trusted note is
-        // reachable even when the newest-64 window is entirely somebody
-        // else's, which is exactly the state #300 was demonstrated in.
-        let trusted = self.candidates(scope, Some(trusted_tag))?;
-
+        let notes = self.digest_notes(scope, budget_chars, trusted_tag)?;
         let mut out = String::new();
-        let mut taken: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
-        // Pass one spends the reserve, trusted notes only. Pass two
-        // spends the rest on everything, the trusted notes it already
-        // placed included — so an unclaimed reserve costs nothing.
-        let reserve = budget_chars * TRUSTED_RESERVE.0 / TRUSTED_RESERVE.1;
-        pack(&rank(&trusted), reserve, &mut out, &mut taken);
-        pack(&rank(&candidates), budget_chars, &mut out, &mut taken);
-
-        if out.is_empty() {
-            // Even the best note doesn't fit whole: truncate it to the cap.
-            let best = rank(&candidates);
-            let text = one_line(&best[0].1.text);
+        for note in &notes {
+            let line = format!("- {}", one_line(&note.text));
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&line);
+        }
+        // A single note that could not fit whole arrives alone from
+        // digest_notes; render it truncated to the cap, as before.
+        if out.chars().count() > budget_chars {
+            let text = one_line(&notes[0].text);
             let room = budget_chars.saturating_sub(3); // "- " + '…'
             let truncated: String = text.chars().take(room).collect();
             out = format!("- {truncated}…")
@@ -220,6 +207,69 @@ impl Memory {
                 .collect();
         }
         Ok(out)
+    }
+
+    /// [`Memory::digest`]'s selection, as NOTES rather than a string.
+    ///
+    /// This exists because the string form forced its caller to match
+    /// lines BACK to notes to recover the tags — and the match-back had
+    /// a failure lane: a note past the caller's list window rendered as
+    /// `[unattributed]` and cost the whole conversation an `unknown`
+    /// taint, owner's notes included (#300, third finding). The tags
+    /// travel with the selection now; there is nothing to match back.
+    ///
+    /// Returned in packed order. Every note fits `budget_chars` when
+    /// rendered as `- <one line>` — except the one case where nothing
+    /// fits at all, which returns the single best note and leaves
+    /// truncation to the renderer, exactly as the string form does.
+    pub fn digest_notes(
+        &self,
+        scope: &str,
+        budget_chars: usize,
+        trusted_tag: &str,
+    ) -> Result<Vec<Note>, Error> {
+        if budget_chars == 0 {
+            return Ok(Vec::new());
+        }
+        let candidates = self.candidates(scope, None)?;
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The trusted pool is queried separately rather than filtered
+        // out of `candidates`: the point is that a trusted note is
+        // reachable even when the newest window is entirely somebody
+        // else's, which is exactly the state #300 was demonstrated in.
+        let trusted = self.candidates(scope, Some(trusted_tag))?;
+
+        let mut picked: Vec<Note> = Vec::new();
+        let mut taken: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        let mut spent = 0usize;
+        // Pass one spends the reserve, trusted notes only. Pass two
+        // spends the rest on everything, the trusted notes it already
+        // placed included — so an unclaimed reserve costs nothing.
+        let reserve = budget_chars * TRUSTED_RESERVE.0 / TRUSTED_RESERVE.1;
+        pack_notes(
+            &rank(&trusted),
+            reserve,
+            &mut picked,
+            &mut taken,
+            &mut spent,
+        );
+        pack_notes(
+            &rank(&candidates),
+            budget_chars,
+            &mut picked,
+            &mut taken,
+            &mut spent,
+        );
+
+        if picked.is_empty() {
+            // Even the best note doesn't fit whole: hand it over alone
+            // and let the renderer truncate.
+            let best = rank(&candidates);
+            picked.push(best[0].1.clone());
+        }
+        Ok(picked)
     }
 
     /// Every note in `scope`, newest first — what a person is shown when
@@ -289,24 +339,58 @@ impl Memory {
     /// wrong direction to be loose in.
     fn candidates(&self, scope: &str, only_tag: Option<&str>) -> Result<Vec<Note>, Error> {
         let conn = self.conn.lock().expect("memory lock");
-        let Some(tag) = only_tag else {
-            let mut stmt = conn.prepare(
-                "SELECT id, ts, scope, text, tags, recalls FROM notes
-                 WHERE scope = ?1 ORDER BY id DESC LIMIT ?2",
-            )?;
-            let rows = stmt.query_map(params![scope, DIGEST_CANDIDATES], map_note)?;
-            return Ok(rows.collect::<Result<_, _>>()?);
+        // Two arms, unioned (#300 second half): the newest window, PLUS
+        // the most-reinforced notes regardless of age. With the newest
+        // window alone, the pool itself was `ORDER BY id DESC LIMIT 64`
+        // — so a run of newer notes evicted a 20×-reinforced older one
+        // before `rank` ever saw it, and rank's reinforcement weighting
+        // was scoring a pool the eviction had already decided. The
+        // reinforced arm guarantees a note the person keeps recalling a
+        // seat at the table; `rank` still decides where it sits.
+        let (newest_sql, reinforced_sql, tag_param): (String, String, Option<String>) =
+            match only_tag {
+                None => (
+                    "SELECT id, ts, scope, text, tags, recalls FROM notes
+                     WHERE scope = ?1 ORDER BY id DESC LIMIT ?2"
+                        .into(),
+                    "SELECT id, ts, scope, text, tags, recalls FROM notes
+                     WHERE scope = ?1 AND recalls > 0
+                     ORDER BY recalls DESC, id DESC LIMIT ?2"
+                        .into(),
+                    None,
+                ),
+                Some(tag) => (
+                    "SELECT id, ts, scope, text, tags, recalls FROM notes
+                     WHERE scope = ?1 AND ',' || tags || ',' LIKE ?3 ESCAPE '\\'
+                     ORDER BY id DESC LIMIT ?2"
+                        .into(),
+                    "SELECT id, ts, scope, text, tags, recalls FROM notes
+                     WHERE scope = ?1 AND ',' || tags || ',' LIKE ?3 ESCAPE '\\'
+                     AND recalls > 0
+                     ORDER BY recalls DESC, id DESC LIMIT ?2"
+                        .into(),
+                    Some(tag_pattern(tag)),
+                ),
+            };
+        let run = |sql: &str| -> Result<Vec<Note>, Error> {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = match tag_param.as_ref() {
+                None => stmt.query_map(params![scope, DIGEST_CANDIDATES], map_note)?,
+                Some(p) => stmt.query_map(params![scope, DIGEST_CANDIDATES, p], map_note)?,
+            };
+            Ok(rows.collect::<Result<_, _>>()?)
         };
-        let mut stmt = conn.prepare(
-            "SELECT id, ts, scope, text, tags, recalls FROM notes
-             WHERE scope = ?1 AND ',' || tags || ',' LIKE ?3 ESCAPE '\\'
-             ORDER BY id DESC LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(
-            params![scope, DIGEST_CANDIDATES, tag_pattern(tag)],
-            map_note,
-        )?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut notes = run(&newest_sql)?;
+        let seen: std::collections::BTreeSet<i64> = notes.iter().map(|n| n.id).collect();
+        for note in run(&reinforced_sql)? {
+            if !seen.contains(&note.id) {
+                notes.push(note);
+            }
+        }
+        // Newest-first overall, so `rank`'s positional recency term
+        // keeps meaning what it says for the merged pool.
+        notes.sort_by_key(|n| std::cmp::Reverse(n.id));
+        Ok(notes)
     }
 }
 
@@ -328,23 +412,22 @@ fn rank(notes: &[Note]) -> Vec<(i64, &Note)> {
 /// already placed. A note that does not fit is skipped rather than
 /// ending the pass, so a long note does not block every shorter one
 /// behind it — which is what the single-pass packer did too.
-fn pack(
+fn pack_notes(
     ranked: &[(i64, &Note)],
     cap: usize,
-    out: &mut String,
+    picked: &mut Vec<Note>,
     taken: &mut std::collections::BTreeSet<i64>,
+    spent: &mut usize,
 ) {
     for (_, note) in ranked {
         if taken.contains(&note.id) {
             continue;
         }
         let line = format!("- {}", one_line(&note.text));
-        let extra = line.chars().count() + usize::from(!out.is_empty());
-        if out.chars().count() + extra <= cap {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(&line);
+        let extra = line.chars().count() + usize::from(!picked.is_empty());
+        if *spent + extra <= cap {
+            *spent += extra;
+            picked.push((*note).clone());
             taken.insert(note.id);
         }
     }
@@ -538,6 +621,35 @@ mod tests {
         mem.fts = false;
         assert!(mem.forget("user", id).unwrap());
         assert!(mem.recall("user", "remember", 10).unwrap().is_empty());
+    }
+
+    /// #300, second round: the eviction also lived INSIDE the trusted
+    /// class. Both candidate pools were the newest 64 rows of their
+    /// class, so a hundred newer `prov:user` notes pushed the person's
+    /// most-reinforced `prov:user` note out of the pool before `rank`
+    /// ever scored it — the reserve protected the CLASS, not the notes.
+    /// The reinforced arm of `candidates` guarantees a note the person
+    /// keeps recalling a seat at the table, whatever else was written
+    /// since.
+    #[test]
+    fn a_flood_of_same_class_notes_cannot_evict_a_reinforced_one() {
+        let (_dir, mem) = test_memory();
+        mem.remember("user", "the deploy box is nuc-01", &["prov:user"])
+            .unwrap();
+        for _ in 0..20 {
+            mem.recall("user", "deploy box", 10).unwrap();
+        }
+        // A busy month, all of it the person's own writing.
+        for i in 0..100 {
+            mem.remember("user", &format!("note {i} of a busy month"), &["prov:user"])
+                .unwrap();
+        }
+        let digest = mem.digest("user", 800, TRUSTED).unwrap();
+        assert!(
+            digest.contains("the deploy box is nuc-01"),
+            "a same-class flood evicted the 20x-reinforced note — the pool \
+             decided before rank could (#300): {digest}"
+        );
     }
 
     /// #300: 64 untrusted notes evicted every trusted note from the

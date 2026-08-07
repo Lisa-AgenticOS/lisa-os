@@ -182,40 +182,25 @@ fn digest_line(text: &str, tags: &[String]) -> String {
 /// content enters the conversation, so it is the moment the chain has
 /// to change.
 pub fn digest(mem: &Memory, taint: &bus_tools::Taint) -> String {
-    let notes = match mem.list(USER_SCOPE, LIST_LIMIT) {
+    // The selection arrives as NOTES, tags included (#300 third
+    // finding). The string form forced a match-back from rendered lines
+    // to notes, and the match-back had a failure lane: a note past the
+    // list window became `[unattributed]` and cost the conversation an
+    // `unknown` taint — the OWNER'S OWN notes included, once the store
+    // grew past the window. There is nothing to match back now.
+    let notes = match mem.digest_notes(USER_SCOPE, DIGEST_BUDGET, TRUSTED_TAG) {
         Ok(n) => n,
         Err(e) => {
             eprintln!("harnessd: could not read memory: {e}");
             return String::new();
         }
     };
-    if notes.is_empty() {
-        return String::new();
-    }
-    // Ranking stays `Memory::digest`'s job — recency blended with
-    // reinforcement — so this does not grow a second, divergent one.
-    // What is needed from `list` is the TAGS, which the digest string
-    // does not carry.
-    let ranked = mem
-        .digest(USER_SCOPE, DIGEST_BUDGET, TRUSTED_TAG)
-        .unwrap_or_default();
     let mut out = Vec::new();
-    for line in ranked.lines() {
-        let body = line.trim_start_matches("- ");
-        if let Some(note) = notes
-            .iter()
-            .find(|n| n.text.replace(['\n', '\r'], " ") == body)
-        {
-            if !is_trusted(&note.tags) {
-                taint.add(provenance_of(&note.tags));
-            }
-            out.push(digest_line(&note.text, &note.tags));
-        } else {
-            // A line we cannot match back to a note (truncated by the
-            // budget). Untrusted by default: we cannot show it is safe.
-            taint.add("unknown");
-            out.push(format!("- [unattributed] {body}"));
+    for note in &notes {
+        if !is_trusted(&note.tags) {
+            taint.add(provenance_of(&note.tags));
         }
+        out.push(digest_line(&note.text, &note.tags));
     }
     out.join("\n")
 }
