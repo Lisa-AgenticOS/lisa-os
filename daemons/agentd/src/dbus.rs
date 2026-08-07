@@ -940,7 +940,9 @@ pub async fn name_lost(conn: &zbus::Connection) -> String {
             _ => continue,
         }
     }
-    format!("the bus connection is gone (the {BUS_NAME} signal stream ended)")
+    // MUTATION #347 (throwaway branch): idle forever, as the pre-fix
+    // daemon did. CI must go RED on name_watch.
+    std::future::pending().await
 }
 
 #[cfg(test)]
