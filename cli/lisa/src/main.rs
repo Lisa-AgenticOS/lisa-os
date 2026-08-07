@@ -1373,6 +1373,7 @@ fn forge_cmd(
             E::VerifierFindings { chars } => eprintln!("  ! verifier findings ({chars} chars)"),
             E::VerifierClean => eprintln!("  ✓ verifier clean"),
             E::DoneClaimed => eprintln!("  ∴ model claims done — checking"),
+            E::Ambient { chars } => eprintln!("  + ambient context joined ({chars} chars)"),
             // forge narrates turns, not prose: a build loop printing the
             // model's thinking token by token buries the tool calls that
             // matter. The chat surfaces render these.

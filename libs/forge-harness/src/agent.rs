@@ -186,6 +186,21 @@ fn has_dart_sources(project: &Path) -> bool {
     walk(project)
 }
 
+/// Ambient context that arrives BETWEEN turns (ADR-0061 steal 1).
+///
+/// The producer — harnessd's Context1 search task, or anything else —
+/// runs on its own clock and queues fenced text; the loop drains the
+/// queue at each turn boundary and never waits. Retrieval kicked off
+/// during turn N surfaces at turn N+1, and a turn with nothing arrived
+/// costs nothing. The LOOP stays ignorant of sources: provenance
+/// fencing and taint are the producer's obligation (rule 6), because
+/// the producer is the one that knows where the text came from.
+pub trait AmbientSource: Send + Sync {
+    /// Everything queued since the last call, already fenced.
+    /// MUST return immediately — blocking here stalls the whole run.
+    fn take(&self) -> Option<String>;
+}
+
 pub struct AgentConfig {
     /// Hard cap on backend turns (one tool call or done-signal each), so
     /// read/inspect turns don't consume the edit budget but the loop can
@@ -211,6 +226,11 @@ pub struct AgentConfig {
     /// invariant. There is no `Default` for this struct for the same
     /// reason: constructing one requires deciding where the record goes.
     pub ledger: Arc<Ledger>,
+    /// Between-turn ambient context, if any surface feeds one. `None`
+    /// means turns see only the prompt, tools and their own history —
+    /// the pre-ADR-0061 behaviour, and still the default everywhere a
+    /// person has not asked for retrieval.
+    pub ambient: Option<Arc<dyn AmbientSource>>,
     /// The skills this run may load — the set `read_skill` serves and
     /// the system prompt's catalog advertises.
     ///
@@ -293,6 +313,7 @@ impl AgentConfig {
             skills: Vec::new(),
             attachments: Vec::new(),
             cancel: crate::Cancel::default(),
+            ambient: None,
         }
     }
 }
@@ -373,6 +394,12 @@ pub enum AgentEvent {
     },
     /// A fragment of assistant text, as it arrives.
     Delta(String),
+    /// Ambient context joined the conversation at a turn boundary
+    /// (ADR-0061 steal 1) — surfaced so no transcript ever contains
+    /// influence nobody saw arrive.
+    Ambient {
+        chars: usize,
+    },
     Call {
         name: String,
         detail: String,
@@ -605,6 +632,18 @@ pub fn forge_agent_with_tools(
             return Err(ForgeError::Cancelled);
         }
         elide_stale_tool_results(&mut history, config.history_char_budget, 4);
+        // Ambient context queued since the last boundary joins the
+        // conversation HERE — visibly (the event keeps the transcript
+        // honest) and as a system message, so the backend reads it as
+        // situation rather than as something the person just said.
+        if let Some(src) = &config.ambient
+            && let Some(block) = src.take()
+        {
+            observe(AgentEvent::Ambient {
+                chars: block.chars().count(),
+            });
+            history.push(Message::system(block));
+        }
         observe(AgentEvent::Turn {
             n: turn,
             max: config.max_turns,
@@ -927,6 +966,88 @@ mod prompt_tests {
 
 #[cfg(test)]
 mod tests {
+    mod ambient_seam {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+
+        /// A source that hands out queued blocks one per take().
+        struct Queued(Mutex<Vec<String>>);
+        impl AmbientSource for Queued {
+            fn take(&self) -> Option<String> {
+                let mut q = self.0.lock().unwrap();
+                if q.is_empty() {
+                    None
+                } else {
+                    Some(q.remove(0))
+                }
+            }
+        }
+
+        /// Ambient text queued before a turn is IN the history the
+        /// backend reads at that turn, as a system message, and the
+        /// event announces it — influence never joins silently
+        /// (ADR-0061 steal 1).
+        #[test]
+        fn queued_ambient_context_surfaces_at_the_next_turn_boundary() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut backend = ScriptedBackend::new(vec![AgentAction::Done("done".into())]);
+            let src = Arc::new(Queued(Mutex::new(vec!["[ambient] AMBIENT-42".into()])));
+            let mut events = Vec::new();
+            let config = AgentConfig {
+                max_turns: 2,
+                verifier: Verifier::None,
+                ambient: Some(src),
+                ..AgentConfig::new(scratch_ledger(dir.path()))
+            };
+            forge_agent_with_tools("go", dir.path(), &mut backend, &config, &[], &mut |e| {
+                if let AgentEvent::Ambient { chars } = e {
+                    events.push(chars);
+                }
+            })
+            .unwrap();
+            let hits: Vec<_> = backend
+                .last_history
+                .iter()
+                .filter(|m| m.content.contains("AMBIENT-42"))
+                .collect();
+            assert_eq!(hits.len(), 1, "the backend saw the block exactly once");
+            assert!(
+                matches!(hits[0].role, Role::System),
+                "joined as SYSTEM, not as the person"
+            );
+            assert_eq!(events, vec!["[ambient] AMBIENT-42".chars().count()]);
+        }
+
+        /// No block queued: nothing is injected and no event fires —
+        /// the pre-seam behaviour, bit for bit.
+        #[test]
+        fn a_dry_source_changes_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut backend = ScriptedBackend::new(vec![AgentAction::Done("done".into())]);
+            let src = Arc::new(Queued(Mutex::new(Vec::new())));
+            let mut fired = false;
+            let config = AgentConfig {
+                max_turns: 2,
+                verifier: Verifier::None,
+                ambient: Some(src),
+                ..AgentConfig::new(scratch_ledger(dir.path()))
+            };
+            forge_agent_with_tools("go", dir.path(), &mut backend, &config, &[], &mut |e| {
+                if matches!(e, AgentEvent::Ambient { .. }) {
+                    fired = true;
+                }
+            })
+            .unwrap();
+            assert!(!fired);
+            assert!(
+                !backend
+                    .last_history
+                    .iter()
+                    .any(|m| m.content.contains("ambient"))
+            );
+        }
+    }
+
     use super::*;
     use serde_json::json;
 
