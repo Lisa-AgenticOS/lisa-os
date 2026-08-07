@@ -69,6 +69,19 @@ impl Confinement {
             Confinement::Unavailable(why) => Some(format!("subprocess ran UNCONFINED: {why}")),
         }
     }
+
+    /// The same fact, phrased for BEFORE consent: "run this?" and "run
+    /// this UNCONFINED, as you?" are different questions, and the
+    /// difference has to be part of the question, not a note in the
+    /// output after the human already said yes (#307).
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            Confinement::Enforced => None,
+            Confinement::Unavailable(why) => Some(format!(
+                "this will run UNCONFINED — nothing bounds it to the project ({why})"
+            )),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

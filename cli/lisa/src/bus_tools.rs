@@ -88,13 +88,7 @@ pub fn assist_cmd(
     // callback is a constructor argument rather than a config flag.
     let project = std::env::current_dir()?;
     let shell = forge_harness::ShellTool::new(&project, |req| {
-        eprintln!();
-        eprintln!("  the assistant wants to run a shell command:");
-        eprintln!("      {}", req.command);
-        eprintln!("  in: {}", req.cwd.display());
-        if let Some(reason) = req.verdict.reason() {
-            eprintln!("  ! {reason}");
-        }
+        eprint!("{}", shell_consent_text(req));
         crate::agent::prompt_yes("  run it? [y/N] ").unwrap_or(false)
     })?;
     let skill_tools = forge_harness::SkillTools::new(skills);
@@ -112,6 +106,28 @@ pub fn assist_cmd(
     )?;
     println!("{}", report.summary);
     Ok(())
+}
+
+/// The consent question for a shell command, as one block of text.
+///
+/// A function rather than inline eprintlns so a test can pin what the
+/// human is actually asked. The confinement line is part of the QUESTION
+/// (#307): on a host without Landlock the command runs as the user with
+/// the whole filesystem in reach, and consent given without knowing that
+/// is not consent to it — the note in the tool output arrives after yes.
+fn shell_consent_text(req: &forge_harness::shell_tool::ShellRequest) -> String {
+    let mut s = String::new();
+    s.push('\n');
+    s.push_str("  the assistant wants to run a shell command:\n");
+    s.push_str(&format!("      {}\n", req.command));
+    s.push_str(&format!("  in: {}\n", req.cwd.display()));
+    if let Some(reason) = req.verdict.reason() {
+        s.push_str(&format!("  ! {reason}\n"));
+    }
+    if let Some(warning) = req.confinement.warning() {
+        s.push_str(&format!("  !! {warning}\n"));
+    }
+    s
 }
 
 /// Append the skill catalog to a system prompt, or leave it alone.
@@ -145,5 +161,39 @@ mod tests {
         let p = with_skill_catalog("base.", "- demo: a demo");
         assert!(p.starts_with("base.\n\nSkills"), "{p}");
         assert!(p.ends_with("- demo: a demo"), "{p}");
+    }
+
+    /// #307: the question the human answers must carry the confinement
+    /// state. "run this?" and "run this UNCONFINED, as you?" are
+    /// different questions, and the difference cannot arrive in the
+    /// tool output after they already said yes.
+    #[test]
+    fn the_consent_question_says_when_the_command_would_run_unconfined() {
+        use forge_harness::confine::Confinement;
+        use forge_harness::shell_tool::ShellRequest;
+        let cwd = std::path::PathBuf::from("/tmp/project");
+        let verdict = lisa_guard::check_command("echo", &["ok"]);
+        let unconfined = Confinement::Unavailable("this is macOS".into());
+        let text = shell_consent_text(&ShellRequest {
+            command: "echo ok",
+            cwd: &cwd,
+            verdict: &verdict,
+            confinement: &unconfined,
+        });
+        assert!(text.contains("echo ok"), "{text}");
+        assert!(
+            text.contains("UNCONFINED") && text.contains("this is macOS"),
+            "the unconfined warning is not part of the question: {text}"
+        );
+
+        // And the warning must NOT appear when the jail closes — a
+        // warning that is always there is one nobody reads.
+        let enforced = shell_consent_text(&ShellRequest {
+            command: "echo ok",
+            cwd: &cwd,
+            verdict: &verdict,
+            confinement: &Confinement::Enforced,
+        });
+        assert!(!enforced.contains("UNCONFINED"), "{enforced}");
     }
 }
