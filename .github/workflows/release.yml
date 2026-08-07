@@ -393,14 +393,17 @@ jobs:
                    # shared mkosi.conf: only lanes with the package
                    # available can name it (see the note there).
                    lisa-desktop-control-center
-                   # Online Accounts with the verified Lisa Google
-                   # OAuth client (#276) — the consent screen names the
-                   # OS that is asking, and the mbsync token path keeps
-                   # working because provides= satisfies every
-                   # gnome-online-accounts dependency. NEEDS a seated
-                   # device check after first shipping: sign-in shows
+                   # Online Accounts stays STOCK for now — the honest
+                   # interim of rule 11. The lisa-desktop-online-accounts
+                   # fork (#276) cannot exist yet: its PKGBUILD refuses
+                   # to build while the Google OAuth _client_secret is a
+                   # placeholder, so it is in no repo, and naming it
+                   # here broke the first post-outage release with
+                   # target-not-found. One secret, one ports build,
+                   # one ports.lock line — THEN this uncomments, and
+                   # the seated device check follows: sign-in shows
                    # Lisa OS, existing accounts survive, mail syncs.
-                   lisa-desktop-online-accounts
+                   # lisa-desktop-online-accounts
                    llama.cpp
                    # Voice (PLAN §5.7.5): the ear and the mouth. Neither
                    # is in Arch — see the build steps above. piper pulls
