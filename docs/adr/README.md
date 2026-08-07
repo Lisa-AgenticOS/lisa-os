@@ -74,9 +74,9 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**62 records** — 5 superseded in part, 27 accepted and partly executed, 2 accepted with no code yet, 25 accepted and done, 3 proposed.
+**63 records** — 5 superseded in part, 27 accepted and partly executed, 3 accepted with no code yet, 25 accepted and done, 3 proposed.
 
-**164 machine-checked claims across 58 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
+**166 machine-checked claims across 59 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
 
 | ADR | Decision | Status | Checks | Where it actually stands |
 |---|---|---|---|---|
@@ -142,6 +142,7 @@ grep.
 | [0060](0060-the-app-bundle-lisa-framework-lisa-sdk.md) | the app bundle, `lisa.framework` and `lisa.sdk` | accepted, not implemented | 4 | this record fixes the shape before the code exists, because the alternative is seven more surfaces hand-rolling the same proxies while the shape stays folklore. |
 | [0061](0061-lisa-coder-grows-from-forge-harness.md) | Lisa Coder grows from forge-harness; other harnesses are quarries | accepted | 2 | — |
 | [0062](0062-one-summon-surface.md) | one summon surface: the typed ask lives in Spotlight | accepted | 2 | — |
+| [0063](0063-settings-is-a-lisa-app.md) | Settings is a Lisa app; the g-c-c fork retires | accepted, not implemented | 2 | — |
 
 <!-- END GENERATED INDEX -->
 
