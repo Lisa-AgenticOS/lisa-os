@@ -10,5 +10,10 @@
 # asked for must not own the sound card.
 disable fluidsynth.service
 
-# Everything else keeps the distribution default.
-enable *
+# NO catch-all here, deliberately (#336). Presets are first-match-wins
+# in lexicographic FILE order, so an `enable *` in a 00- file preempts
+# every later 01-lisa-*.preset — the first preset-all would have
+# re-enabled the podman REST socket that #130/#161 closed. Units no
+# file mentions fall through to systemd's own default, which for user
+# units is enable; anything that must stay off gets its own explicit
+# line, here or in a later file.
