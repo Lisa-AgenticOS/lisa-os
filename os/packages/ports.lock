@@ -19,9 +19,9 @@
 #
 # Seeded 2026-08-05 from v20260804.77's release assets, after checking
 # each PKGBUILD's pkgver-pkgrel still matches the built artifact.
-llama.cpp-b10093-2-x86_64.pkg.tar.zst  d01ba6c9efb2d3539042fc2dd34b49add7bb99d72cb1414293a4494adf3676e0
-whisper.cpp-v1.9.1-2-x86_64.pkg.tar.zst  f450c8bea7f376cc070995303c21a5b52b8eef01287ee3f1053195177a585e08
-piper-v1.6.0-1-x86_64.pkg.tar.zst  60b75a18a854bbef9ade09b5d4af596d5aa3a399d2a7f4a38dc4f7e28ee58293
+llama.cpp-b10093-2-x86_64.pkg.tar.zst  a439c0332562f4801a2c2bd2b527a2d54fb44c44b36e611f7d8ba1a5bd7e446d
+whisper.cpp-v1.9.1-2-x86_64.pkg.tar.zst  359ee12f7c414a310cd78855b35ebe5eba95f62c1d9ac813f7a10d45e1c197fd
+piper-v1.6.0-1-x86_64.pkg.tar.zst  39b2b0b0514928d66092364ca4c233d5b25cbae59d2485cd30e017375d9798b3
 # Renamed 2026-08-05 (was gnome-control-center / gnome-keybindings, which
 # TOOK the stock names and won only by pkgrel — a race lost the moment
 # Arch ships a higher version, as it did with 50.4 the day before). These
