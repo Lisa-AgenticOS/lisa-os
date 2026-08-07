@@ -82,11 +82,12 @@ mod tests {
         // body is the expensive part and only loads on demand.
         assert!(build.catalog_line().len() < 200);
         let body = build.body().expect("body reads");
-        // ADR-0047: GJS + GTK4/Adwaita is the default and Flutter is
-        // parked. This assertion is the reason the skill cannot quietly
-        // drift back — it used to open "Apps on Lisa are Flutter apps".
+        // ADR-0047 (amended 2026-08-07): GJS + GTK4/Adwaita is the ONE
+        // toolkit — the Flutter lane is removed, not parked. This
+        // assertion is the reason the skill cannot quietly drift back —
+        // it used to open "Apps on Lisa are Flutter apps".
         assert!(
-            body.contains("GJS + GTK4/Adwaita is the default toolkit"),
+            body.contains("GJS + GTK4/Adwaita is the one toolkit"),
             "the toolkit is the point"
         );
         assert!(body.contains("/usr/share/lisa/manifests/"), "trap #241");
