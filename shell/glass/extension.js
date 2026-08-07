@@ -60,6 +60,9 @@ export default class LisaGlass {
                 const parent = actor.get_parent();
                 if (parent && entry.bg.get_parent() === parent)
                     parent.set_child_below_sibling(entry.bg, actor);
+                // Stacking changed, so "which windows are below" did
+                // too — the clone set follows (#334).
+                this._rebuildLower(actor, entry);
             }
         })]);
         log('lisa-glass: enabled');
@@ -114,7 +117,14 @@ export default class LisaGlass {
             const source = Main.layoutManager._backgroundGroup;
             if (!source)
                 return;
-            const bg = new Clutter.Clone({source, reactive: false});
+            // The backer is a CONTAINER: the wallpaper clone plus a
+            // clone of every window stacked below this one, with ONE
+            // blur over the composite (#334). Frost that only blurred
+            // the wallpaper let any window underneath show through
+            // sharp — 'I can read New Tab under it' is the owner's
+            // exact report, and it read as broken glass, not design.
+            const bg = new Clutter.Actor({reactive: false});
+            bg.add_child(new Clutter.Clone({source, reactive: false}));
             bg.add_effect(new Shell.BlurEffect({
                 radius: RADIUS,
                 brightness: BRIGHTNESS,
@@ -126,10 +136,49 @@ export default class LisaGlass {
                 return;
             }
             parent.insert_child_below(bg, actor);
-            this._backers.set(actor, {bg, ids: this._track(actor, bg)});
+            const entry = {bg, ids: this._track(actor, bg), lowerIds: []};
+            this._backers.set(actor, entry);
+            this._rebuildLower(actor, entry);
             this._fit(actor);
         } catch (e) {
             logError(e, 'lisa-glass: could not back this window');
+        }
+    }
+
+    /// Rebuild the clones of the windows stacked BELOW `actor`.
+    ///
+    /// Called at add and on every restack. get_window_actors() is
+    /// bottom-to-top and enumerates only MetaWindowActors, so the
+    /// backers themselves can never recurse into the clone set. Each
+    /// cloned source's move/resize is tracked so the frost under a
+    /// glass pane stays where the window behind it actually is; the
+    /// handlers are dropped on every rebuild, keeping one set live.
+    _rebuildLower(actor, entry) {
+        for (const [obj, id] of entry.lowerIds)
+            obj.disconnect(id);
+        entry.lowerIds = [];
+        // Child 0 is the wallpaper clone; everything after is windows.
+        for (const child of entry.bg.get_children().slice(1))
+            child.destroy();
+        const actors = global.get_window_actors();
+        const idx = actors.indexOf(actor);
+        if (idx <= 0)
+            return;
+        for (const lower of actors.slice(0, idx)) {
+            if (!lower.visible)
+                continue;
+            const clone = new Clutter.Clone({source: lower, reactive: false});
+            const place = () => {
+                clone.set_position(lower.x, lower.y);
+                clone.set_size(lower.width, lower.height);
+            };
+            place();
+            entry.bg.add_child(clone);
+            for (const sig of ['notify::x', 'notify::y', 'notify::width', 'notify::height'])
+                entry.lowerIds.push([lower, lower.connect(sig, place)]);
+            entry.lowerIds.push([lower, lower.connect('notify::visible', () => {
+                clone.visible = lower.visible;
+            })]);
         }
     }
 
@@ -150,6 +199,8 @@ export default class LisaGlass {
         if (!entry)
             return;
         for (const [obj, id] of entry.ids)
+            obj.disconnect(id);
+        for (const [obj, id] of entry.lowerIds)
             obj.disconnect(id);
         entry.bg.get_parent()?.remove_child(entry.bg);
         entry.bg.destroy();
