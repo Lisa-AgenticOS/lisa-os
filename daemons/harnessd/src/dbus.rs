@@ -298,7 +298,10 @@ impl Harness1 {
             next_id: AtomicU64::new(1),
             running: Arc::new(Mutex::new(HashMap::new())),
             memory: crate::memory::open(),
-            taints: Arc::new(crate::conversation::TaintStore::default()),
+            taints: Arc::new(match crate::conversation::store_path() {
+                Some(path) => crate::conversation::TaintStore::open_at(path),
+                None => crate::conversation::TaintStore::default(),
+            }),
         }
     }
 
@@ -461,9 +464,7 @@ impl Harness1 {
         // set is loaded from the conversation this run continues, and
         // attachments contribute their class on arrival rather than
         // travelling to the model for free.
-        let convo = crate::caller::owner_of(conn, &header)
-            .await
-            .map(|owner| crate::conversation::key_for(&owner, &history, &prompt));
+        let convo = Some(crate::conversation::key_for(&history, &prompt));
         let taint = self.taints.open(convo.as_ref(), &attachments);
 
         // Memory, and the provenance it costs (#157, ADR-0025 phase 4).
@@ -758,17 +759,12 @@ mod tests {
     /// would restore the defect with every test still green.
     #[test]
     fn the_conversation_key_survives_the_history_option_the_assistant_sends() {
-        const OWNER: &str = ":1.42";
         // Turn 1: `historyPayload` runs BEFORE the new user turn is
         // appended, so the first run's history is empty.
-        let turn1 = crate::conversation::key_for(
-            OWNER,
-            &parse_history(Some("[]")),
-            "what does this page say?",
-        );
+        let turn1 =
+            crate::conversation::key_for(&parse_history(Some("[]")), "what does this page say?");
         // Turn 2: the same window replays both completed turns.
         let turn2 = crate::conversation::key_for(
-            OWNER,
             &parse_history(Some(
                 r#"[{"role":"user","content":"what does this page say?"},
                     {"role":"assistant","content":"It says to wire the invoice."}]"#,
@@ -782,7 +778,6 @@ mod tests {
         );
         // …and a third turn, once the transcript is longer still.
         let turn3 = crate::conversation::key_for(
-            OWNER,
             &parse_history(Some(
                 r#"[{"role":"user","content":"what does this page say?"},
                     {"role":"assistant","content":"It says to wire the invoice."},
@@ -794,11 +789,8 @@ mod tests {
         assert_eq!(turn1, turn3);
         // A different chat is a different conversation, or the fix
         // would just be "everything is tainted forever".
-        let other = crate::conversation::key_for(
-            OWNER,
-            &parse_history(Some("[]")),
-            "how do I resize a photo?",
-        );
+        let other =
+            crate::conversation::key_for(&parse_history(Some("[]")), "how do I resize a photo?");
         assert_ne!(turn1, other);
     }
 

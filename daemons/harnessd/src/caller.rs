@@ -196,26 +196,6 @@ pub async fn facts_of(conn: &zbus::Connection, header: &zbus::message::Header<'_
     }
 }
 
-/// The broker-assigned unique name of this caller — the Owner anything
-/// a LATER call can act on is stored under (ADR-0033, CLAUDE.md rule 6b).
-///
-/// Used by [`crate::conversation`] to key a conversation's accumulated
-/// taint, so one peer's conversation can never read or extend another's.
-/// `None` for a caller the transport could not place: a p2p connection
-/// (no broker, no production caller here) or a header with no sender.
-/// The consequence is a run with no conversation identity, whose ceiling
-/// is `Trigger::Event` in any case.
-pub async fn owner_of(
-    conn: &zbus::Connection,
-    header: &zbus::message::Header<'_>,
-) -> Option<String> {
-    let peer = lisa_peer::resolve(conn, header).await.ok()?;
-    match peer.id {
-        lisa_peer::PeerId::Bus(name) => Some(name),
-        lisa_peer::PeerId::Direct => None,
-    }
-}
-
 /// How long agentd gets to answer before the caller is classed as an
 /// event source.
 ///
