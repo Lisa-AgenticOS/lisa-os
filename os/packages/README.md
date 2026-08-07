@@ -7,7 +7,13 @@ Spec: docs/PLAN.md §6, §5.10. Milestone: M0→M1.
 `lisa-inferenced.service` — the hardened unit whose sandbox *is* the
 egress guarantee: `DynamicUser`, `IPAddressDeny=any` +
 `IPAddressAllow=localhost`, full filesystem/kernel lockdown.
-`tests/e2e/egress-test.sh` verifies those exact directives in CI;
+Two tests stand behind that, each proving a different thing:
+`tests/e2e/egress-test.sh` builds the sandbox from the shipped unit and
+proves the *property* — a process inside it cannot reach the internet —
+without attributing the block to any named directive, while the static
+gate (`check-egress-units.py`) checks `IPAddressDeny=any` by name. The
+remaining directives (`DynamicUser`, the filesystem/kernel lockdown)
+are shipped but not individually asserted anywhere (#295).
 `tests/e2e/layer-test.sh` proves install/uninstall on vanilla Arch.
 
 `lisa-shell` (arch=any, pure GJS) ships the M4 surfaces (PLAN §5.7):
