@@ -1427,7 +1427,11 @@ fn forge_byo(
         ),
     };
     end(
-        if status.success() && findings.is_none() { "ok" } else { "findings" },
+        if status.success() && findings.is_none() {
+            "ok"
+        } else {
+            "findings"
+        },
         outcome.clone(),
     );
     match findings {
