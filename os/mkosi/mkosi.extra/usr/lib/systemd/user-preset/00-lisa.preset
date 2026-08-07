@@ -1,0 +1,14 @@
+# User-unit presets for the Lisa image.
+#
+# systemd's DEFAULT preset policy for user units is "enable", so any
+# package that ships a user service quietly starts it for every user —
+# the dependency-installed-surfaces trap (#161's podman.socket, and now
+# fluidsynth). fluidsynth arrives as a codec dependency, its user
+# service opens the CS8409 PCM raw at login, and whichever of it and
+# WirePlumber loses the device race leaves the desktop on Dummy
+# Output — speakers dead with everything "active". A synth nobody
+# asked for must not own the sound card.
+disable fluidsynth.service
+
+# Everything else keeps the distribution default.
+enable *
