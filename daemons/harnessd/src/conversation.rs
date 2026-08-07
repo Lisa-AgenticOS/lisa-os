@@ -109,17 +109,25 @@
 use bus_tools::Taint;
 use forge_harness::{Message, Role};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
-/// How many conversations keep a taint set at once.
+/// How many conversations may hold their own taint set before the store
+/// stops keeping them apart.
 ///
-/// Eviction LOSES taint, so this is generous rather than tight: the cost
-/// of a big map is a few hundred short strings, and the cost of a small
-/// one is a conversation that quietly gets its trust back. Forcing an
-/// eviction means driving the surface into 256 fresh conversations,
-/// which is a person's act, not a page's.
-pub const MAX_CONVERSATIONS: usize = 256;
+/// **Nothing is ever evicted.** The first version bounded the map by
+/// evicting the oldest set, and the close-replay of #305 turned that
+/// into a laundering primitive: with the key content-scoped and the
+/// store persisted, any same-user peer could drive 256 fresh
+/// conversations and evict a TARGETED victim's taint — under-escalation,
+/// surviving restart, contradicting this module's own "no operation
+/// removes a tag" claim. So at the cap the store degrades the other way:
+/// new tags join a global overflow set that every conversation inherits.
+/// Over-escalation for everyone — including whoever caused it — which is
+/// loud, safe, and worthless as an attack. A person recovers by pruning
+/// the store file from outside the loop (rule 6a: that door belongs to
+/// the person, not the model).
+pub const MAX_CONVERSATIONS: usize = 4096;
 
 /// The identity of the conversation a run belongs to.
 ///
@@ -214,10 +222,11 @@ pub struct TaintStore {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Inner {
     tags: HashMap<ConversationKey, BTreeSet<String>>,
-    /// Insertion order, for the bound. A conversation re-entered is not
-    /// re-queued: the bound is on how many conversations are remembered,
-    /// not on how busy they are.
-    order: VecDeque<ConversationKey>,
+    /// Tags that arrived after the map hit [`MAX_CONVERSATIONS`]. Never
+    /// emptied by anything in this process; applied to EVERY
+    /// conversation while non-empty. The degraded mode, not a feature.
+    #[serde(default)]
+    overflow: BTreeSet<String>,
 }
 
 impl TaintStore {
@@ -293,6 +302,12 @@ impl TaintStore {
                     taint.add(tag);
                 }
             }
+            // Degraded mode: past the cap, unattributable tags belong
+            // to everyone. Over-escalation is the only safe reading of
+            // "we no longer know whose this was".
+            for tag in &inner.overflow {
+                taint.add(tag);
+            }
         }
         for part in attachments {
             taint.add(attachment_provenance(part));
@@ -314,14 +329,23 @@ impl TaintStore {
             return;
         }
         let mut inner = self.inner.lock().expect("taint store lock");
-        if !inner.tags.contains_key(key) {
-            inner.order.push_back(key.clone());
-        }
-        inner.tags.entry(key.clone()).or_default().extend(tags);
-        while inner.order.len() > MAX_CONVERSATIONS {
-            if let Some(oldest) = inner.order.pop_front() {
-                inner.tags.remove(&oldest);
-            }
+        if inner.tags.contains_key(key) || inner.tags.len() < MAX_CONVERSATIONS {
+            inner.tags.entry(key.clone()).or_default().extend(tags);
+        } else {
+            // The cap. Nothing is evicted — eviction was a laundering
+            // primitive (#305 replay) — so the new tags go global and
+            // every conversation pays until a person prunes the store.
+            eprintln!(
+                "harnessd: conversation-taint store is at its cap of \
+                 {MAX_CONVERSATIONS}; new conversations now escalate \
+                 EVERY conversation. Prune {} (from outside the agent) \
+                 to restore per-conversation taint.",
+                self.path
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "the in-memory store".into())
+            );
+            inner.overflow.extend(tags);
         }
         // Under the lock on purpose: a write that races another run's
         // write could otherwise persist the older map and drop a tag.
@@ -605,22 +629,37 @@ mod tests {
         assert!(store.is_empty());
     }
 
-    /// The bound holds, and it evicts the oldest conversation rather
-    /// than the busiest.
+    /// The #305 replay's laundering attack, refused: a same-user peer
+    /// floods the store past its cap trying to evict a targeted
+    /// conversation's taint. NOTHING is evicted — the victim keeps its
+    /// tags — and the flood buys the degraded mode instead: overflow
+    /// tags that every conversation inherits, the flooder's included.
+    /// Under-escalation is the failure this store exists to prevent;
+    /// over-escalation is the only acceptable shape for its limit.
     #[test]
-    fn the_store_is_bounded() {
+    fn a_flood_cannot_evict_a_victims_taint_it_only_escalates_everyone() {
         let store = TaintStore::default();
-        let first = key_for(&[], "conversation 0");
+        let victim = key_for(&[], "conversation 0");
         for i in 0..MAX_CONVERSATIONS + 10 {
             let k = key_for(&[], &format!("conversation {i}"));
             let t = Taint::new();
-            t.add("web");
+            t.add(if i == 0 { "web" } else { "screen" });
             store.close(Some(&k), &t);
         }
-        assert_eq!(store.len(), MAX_CONVERSATIONS);
+        // The victim's own tag survived the flood…
         assert!(
-            store.tags_of(&first).is_empty(),
-            "the oldest conversation should have been the one evicted"
+            store.tags_of(&victim).contains(&"web".to_string()),
+            "the flood evicted the victim's taint — the laundering \
+             primitive is back"
+        );
+        assert!(chain_of(&store.open(Some(&victim), &[])).contains(&"web".to_string()));
+        // …and past the cap, a NEW conversation is not clean either:
+        // the overflow tags reach it, so the flood bought escalation
+        // for everyone rather than trust for anyone.
+        let fresh = key_for(&[], "a genuinely new chat after the flood");
+        assert!(
+            !store.open(Some(&fresh), &[]).is_clean(),
+            "past the cap, an unattributable conversation opened clean"
         );
     }
 
