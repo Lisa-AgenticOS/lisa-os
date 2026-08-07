@@ -236,9 +236,12 @@ if command -v glib-compile-schemas >/dev/null 2>&1 &&
     glib-compile-schemas /usr/share/glib-2.0/schemas || true
 fi
 
-# Podman ships four user units and its own pacman install ENABLES them:
-# podman.service, podman.socket, podman-auto-update.timer and
-# podman-clean-transient.service. None of them was asked for.
+# Podman ships six user units. Its own pacman install ENABLES four
+# (podman.service, podman.socket, podman-auto-update.timer,
+# podman-clean-transient.service) and systemd's default enable-all
+# user-preset policy catches the other two (podman-restart.service,
+# podman-auto-update.service — still globally enabled on image
+# 20260807.85, found by the #335 replay). None of them was asked for.
 #
 # podman.socket is the one that matters. It exposes podman's REST API on
 # $XDG_RUNTIME_DIR/podman/podman.sock — a socket that can create,
@@ -264,10 +267,17 @@ if [ -e /usr/lib/systemd/user/podman.socket ]; then
 disable podman.service
 disable podman.socket
 disable podman-auto-update.timer
+disable podman-auto-update.service
 disable podman-clean-transient.service
+disable podman-restart.service
 EOF
+    # podman-restart and podman-auto-update.service were missed by the
+    # first version of this preset and stayed globally enabled on image
+    # 20260807.85 — found by the #335 close replay. The intent-list gate
+    # (#342) exists so this class stops being found by hand.
     for u in podman.service podman.socket podman-auto-update.timer \
-        podman-clean-transient.service; do
+        podman-auto-update.service podman-clean-transient.service \
+        podman-restart.service; do
         rm -f "/etc/systemd/user/default.target.wants/$u" \
             "/etc/systemd/user/sockets.target.wants/$u" \
             "/etc/systemd/user/timers.target.wants/$u"
