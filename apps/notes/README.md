@@ -16,7 +16,7 @@ to it; it was the first real tool on the Agent Bus, which is why it
 existed for months before its window did.
 
 **The window** (`lisa-notes-app.js`, GJS) landed 2026-08-06 as the first
-consumer of `apps/lisa_ui` — ADR-0056's rule that a shared library is
+consumer of `apps/lisa.sdk` — ADR-0056's rule that a shared library is
 extracted from a real caller rather than designed for an imagined one.
 It does **not** open the SQLite store. It works through the same tool
 surface the agent calls (six of the seven — the sidebar filters

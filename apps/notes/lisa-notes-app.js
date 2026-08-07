@@ -19,8 +19,8 @@ import Adw from 'gi://Adw';
 import Gtk from 'gi://Gtk';
 import Gio from 'gi://Gio';
 
-import {lisaSplitWindow, headerButton} from '../lisa_ui/ui/window.js';
-import {McpClient} from '../lisa_ui/mcp/client.js';
+import {lisaSplitWindow, headerButton} from '../lisa.sdk/ui/window.js';
+import {McpClient} from '../lisa.sdk/mcp/client.js';
 import {
     groupByPeriod, preview, displayTitle, isWorthSaving, matches, timeOf,
 } from './lib/model.js';

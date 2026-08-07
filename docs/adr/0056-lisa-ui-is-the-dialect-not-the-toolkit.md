@@ -11,7 +11,7 @@
 - **Amended 2026-08-06:** the library lives at `apps/lisa_ui`, not
   `libs/lisa_ui` — see "Where it actually lives" below.
 - **Claims:**
-  - `path:apps/lisa_ui/mcp/protocol.js` — step 1: one copy of the Agent Bus edge
+  - `path:apps/lisa.sdk/mcp/protocol.js` — step 1: one copy of the Agent Bus edge
   - `absent:libs/lisa_ui` — the `libs/` path this ADR originally named is still unused, deliberately; see the amendment
 
 ## Context

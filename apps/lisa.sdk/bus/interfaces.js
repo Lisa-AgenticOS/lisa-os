@@ -1,4 +1,4 @@
-// GENERATED from apps/lisa_ui/bus/xml/ — edit those (or re-introspect
+// GENERATED from apps/lisa.sdk/bus/xml/ — edit those (or re-introspect
 // the daemons), then run python3 os/repo-tools/build-bus-interfaces.py.
 // Hand edits are overwritten.
 //

@@ -115,7 +115,7 @@ downloads, find, deletable history, bookmarks, session restore and
 keyring-backed passwords, with an agent refused at the credential field
 by construction; zen-browser retired; three packaging collisions across
 **94 paths** found and held apart by `conflicts=` (ADR-0057); the Dart
-lane deleted so `lisa_ui` is free for the GJS library (ADR-0056).
+lane deleted so `lisa.sdk` is free for the GJS library (ADR-0056).
 
 **Confirmed on the device, read-only:** the session really is Lisa
 Desktop (`DESKTOP_SESSION=lisa-desktop`, no stock `gnome-shell` package

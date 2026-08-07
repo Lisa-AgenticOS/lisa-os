@@ -154,7 +154,7 @@ def main():
     #
     # Generated rather than imported, so there is still exactly one
     # source: edit tokens.json, regenerate, or `--check` fails.
-    lisa_ui = repo / "apps" / "lisa_ui" / "ui"
+    lisa_ui = repo / "apps" / "lisa.sdk" / "ui"
     if lisa_ui.parent.is_dir():
         want[lisa_ui / "tokens.js"] = js(tokens)
 

@@ -9,9 +9,9 @@
 // The protocol itself used to live here. Surfer's copy was the one that
 // inlined the tag as a bare string rather than naming it, and the one
 // whose tag was lost entirely on its first on-device run (#313) — see
-// apps/lisa_ui/mcp/protocol.js.
+// apps/lisa.sdk/mcp/protocol.js.
 
-import {makeHandler} from '../../lisa_ui/mcp/protocol.js';
+import {makeHandler} from '../../lisa.sdk/mcp/protocol.js';
 
 export const APP_ID = 'app.lisaos.Surfer';
 

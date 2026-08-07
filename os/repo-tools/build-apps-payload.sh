@@ -40,10 +40,10 @@ ap_apps=(surfer mail preview notes)
 # tree, beside the apps, because that is the only place a relative
 # import can mean the same thing in this repo and in the shipped tree:
 # `apps/mail/lib/x.js` is three levels from the repo root and
-# `mail/lib/x.js` is two from the payload root, so `../../lisa_ui/...`
-# resolves in both only if lisa_ui sits beside the app in each. That is
-# why it lives at apps/lisa_ui and not libs/lisa_ui.
-ap_shared=(lisa_ui)
+# `mail/lib/x.js` is two from the payload root, so `../../lisa.sdk/...`
+# resolves in both only if the sdk sits beside the app in each. That is
+# why it lives at apps/lisa.sdk and not libs/.
+ap_shared=(lisa.sdk)
 
 mkdir -p "$ap_dest"
 for s in "${ap_surfaces[@]}"; do
@@ -80,19 +80,19 @@ test -f "$ap_dest/assistant/lisa-assistant.js" || {
     exit 1
 }
 
-# ...and a tree with no lisa_ui is one where Mail, Surfer and Preview
+# ...and a tree with no lisa.sdk is one where Mail, Surfer and Preview
 # each fail at their first `import` — at LAUNCH, on a desktop, with no
 # build error anywhere before it. The apps stopped carrying their own
 # copy of the MCP edge in ADR-0056 step 1, so this is now load-bearing
 # in a way it was not the day before.
 #
 # Checked by walking the imports rather than by naming files: a second
-# module added to lisa_ui tomorrow is covered with no edit here, and an
+# module added to the sdk tomorrow is covered with no edit here, and an
 # app that imports something the library does not have fails HERE
 # instead of on somebody's machine.
 # Any depth, and EVERY import in a file, not just the first. An app
 # entry point sits one level below the tree root and reaches
-# `../lisa_ui/`; a file under its lib/ reaches `../../lisa_ui/`. The
+# `../lisa.sdk/`; a file under its lib/ reaches `../../lisa.sdk/`. The
 # first version of this check matched only the two-level form and only
 # the first match per file, so the very next import written — Surfer's
 # theme import, one level up — would have been invisible to it. A guard
@@ -101,13 +101,13 @@ missing=0
 while IFS= read -r importer; do
     while IFS= read -r spec; do
         [ -n "$spec" ] || continue
-        if [ ! -f "$ap_dest/lisa_ui/$spec" ]; then
+        if [ ! -f "$ap_dest/lisa.sdk/$spec" ]; then
             echo "build-apps-payload.sh: ${importer#"$ap_dest"/}" \
-                 "imports lisa_ui/$spec, which is not in the staged tree" >&2
+                 "imports lisa.sdk/$spec, which is not in the staged tree" >&2
             missing=1
         fi
-    done < <(sed -n "s:.*from '\(\.\./\)\{1,\}lisa_ui/\([^']*\)'.*:\2:p" "$importer")
-done < <(grep -rl "lisa_ui/" "$ap_dest" --include='*.js' || true)
+    done < <(sed -n "s:.*from '\(\.\./\)\{1,\}lisa\.sdk/\([^']*\)'.*:\2:p" "$importer")
+done < <(grep -rl "lisa.sdk/" "$ap_dest" --include='*.js' || true)
 [ "$missing" -eq 0 ] || exit 1
 
 if [ -n "$ap_tarball" ]; then

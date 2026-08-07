@@ -37,7 +37,7 @@ import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
-import {lisaTripleWindow} from '../lisa_ui/ui/window.js';
+import {lisaTripleWindow} from '../lisa.sdk/ui/window.js';
 import {
     messageText, parseAddress, parseHeaders, readableBody, splitMessage,
 } from './lib/rfc822.js';

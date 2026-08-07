@@ -8,12 +8,12 @@
     {
       "file": "notes.md",
       "about": "Notes: a daemon and a window sharing one tool surface",
-      "sha256": "5a1301ae7c9027f6146e26ffc4f8e9a7ca3ed3a404b1a58f4f3920f0deec7fba"
+      "sha256": "dc133af2b2f8bbb0fc7bcc6ed5c30d232c3d93f9b36a1395cf76846b114e38fc"
     },
     {
-      "file": "lisa-ui.md",
-      "about": "lisa_ui: the shared GJS library every Lisa window is built on",
-      "sha256": "a295728d71017122bc9654bc47742ace697efd28bd8eb9ff1dae5c56e7741085"
+      "file": "lisa-sdk.md",
+      "about": "lisa.sdk: the shared GJS library every Lisa window is built on",
+      "sha256": "4812f77607a4f8fb5e228a8c582c5bc89d86d7f61cea1e45dce0cb7d43dad8f5"
     },
     {
       "file": "surfer.md",

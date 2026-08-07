@@ -38,8 +38,8 @@
 // external call a query id. Cancel() on a query awaiting consent
 // answers "deny".
 
-import {IFACE_XML} from '../../lisa_ui/bus/interfaces.js';
-import {BUS} from '../../lisa_ui/bus/addresses.js';
+import {IFACE_XML} from '../../lisa.sdk/bus/interfaces.js';
+import {BUS} from '../../lisa.sdk/bus/addresses.js';
 
 // The three SYSTEM interfaces this surface speaks come from the sdk's
 // one copy (ADR-0060, introspected from the running daemons) — the XML

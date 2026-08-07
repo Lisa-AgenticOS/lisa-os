@@ -56,9 +56,9 @@ import {
 } from './lib/session.js';
 import {MAX_MATCH_COUNT, findOptions, matchLabel, searchable} from './lib/find.js';
 // The shared dark/light path and the design tokens (ADR-0056, #282).
-import {onScheme, groundColor} from '../lisa_ui/ui/theme.js';
-import {installStyle} from '../lisa_ui/ui/style.js';
-import {TOKENS} from '../lisa_ui/ui/tokens.js';
+import {onScheme, groundColor} from '../lisa.sdk/ui/theme.js';
+import {installStyle} from '../lisa.sdk/ui/style.js';
+import {TOKENS} from '../lisa.sdk/ui/tokens.js';
 import {zoomIn, zoomLabel, zoomOut, zoomReset} from './lib/zoom.js';
 import {
     KEYRING_SCHEMA, SUBMIT_HANDLER, autofillScript, autofillVerdict,

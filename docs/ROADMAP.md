@@ -40,7 +40,7 @@ with automatic rollback.
 | **M5** Agent Bus | 🟠 landed | lisa-agentd on main: MCP manifests, registry, tier enforcement at the bus, undo journal, injection gate ✅; MCP wire transport + `lisa tools/call/undo` verbs left |
 | **§5.11** Remote providers | 🟠 landed | lisa-remoted broker ✅ (openai/anthropic/hf/tinker/together/fireworks + custom), routing ✅, `lisa remote` CLI ✅, hardware-aware fit ✅; image packaging + socket bridge left (Linux-verify) |
 | **§5.7.5** Voice / Ambient | 🟠 loop works | STT (whisper) + wake-word ("Hey Lisa") + answer + TTS verified end-to-end (`lisa ambient once`); live-mic capture + on-image packaging left (ADR-0011) |
-| **M6** Apps + Forge | 🟠 loop works | **LisaCode** (`lisa forge`) drives the model→jailed-edit→`lisa dev check` loop end to end (§5.12.1), targeting **GJS/GTK4** (ADR-0047); Mail, Surfer, Preview and the shell surfaces ship; GUI Forge + `lisa_ui` as the shared GJS library (not written; the Dart kit that held the name was deleted 2026-08-06) + hot-reload left |
+| **M6** Apps + Forge | 🟠 loop works | **LisaCode** (`lisa forge`) drives the model→jailed-edit→`lisa dev check` loop end to end (§5.12.1), targeting **GJS/GTK4** (ADR-0047); Mail, Surfer, Preview and the shell surfaces ship; GUI Forge + `lisa.sdk` as the shared GJS library (not written; the Dart kit that held the name was deleted 2026-08-06) + hot-reload left |
 | **M7** Personal node + installer | 🟡 groundwork | remote broker = PCN groundwork; `lisa install` proto-installer; OOBE + WireGuard pairing left |
 | **M8** Public alpha ISO | 🟡 channel exists | releases publish; docs site + eval dashboard + security review left |
 

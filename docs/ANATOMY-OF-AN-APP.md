@@ -1190,7 +1190,7 @@ rule 11).
 
 **`libs/lisa_flutter` was the Flutter lane and is deleted.** ADR-0047
 §2 parked it: four `.dart` files, no runtime on the reference hardware,
-#37 closed won't-do. Removed 2026-08-06 along with the Dart `lisa_ui`;
+#37 closed won't-do. Removed 2026-08-06 along with the Dart `lisa.sdk`;
 the ADRs keep their text.
 
 ---

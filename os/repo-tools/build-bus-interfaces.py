@@ -8,15 +8,15 @@ Agent1 x8, Inference1 x6, Voice1 x6, Remote1 x6). Sixty copies of an
 interface is sixty places a signature change becomes a runtime error no
 build caught — #218 is the recorded cost of the pattern.
 
-Source of truth: `apps/lisa_ui/bus/xml/*.xml`, INTROSPECTED from the
+Source of truth: `apps/lisa.sdk/bus/xml/*.xml`, INTROSPECTED from the
 running daemons on the reference device (not copied from another hand
 copy). The Rust daemons declare the interfaces with #[zbus::interface],
 so live introspection is the only machine-readable form of what they
 actually serve.
 
-  (default)   regenerate apps/lisa_ui/bus/interfaces.js from the xml/
+  (default)   regenerate apps/lisa.sdk/bus/interfaces.js from the xml/
   --check     lint gate: (a) interfaces.js in sync with xml/;
-              (b) the RATCHET — a file outside apps/lisa_ui/bus that
+              (b) the RATCHET — a file outside apps/lisa.sdk/bus that
               declares `interface name="dev.lisaos..."` must be on the
               allowlist below, and the allowlist only ever shrinks.
 """
@@ -26,18 +26,18 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-XML_DIR = ROOT / "apps/lisa_ui/bus/xml"
-OUT = ROOT / "apps/lisa_ui/bus/interfaces.js"
+XML_DIR = ROOT / "apps/lisa.sdk/bus/xml"
+OUT = ROOT / "apps/lisa.sdk/bus/interfaces.js"
 
 # Files still carrying their own declarations, awaiting migration to
-# `../lisa_ui/bus/`. REMOVE entries as they migrate; adding one is the
+# `../lisa.sdk/bus/`. REMOVE entries as they migrate; adding one is the
 # defect this gate exists to block.
 ALLOWLIST = {
     "shell/assistant/lib/memory.js",
 }
 
 HEADER = """\
-// GENERATED from apps/lisa_ui/bus/xml/ — edit those (or re-introspect
+// GENERATED from apps/lisa.sdk/bus/xml/ — edit those (or re-introspect
 // the daemons), then run python3 os/repo-tools/build-bus-interfaces.py.
 // Hand edits are overwritten.
 //
@@ -81,7 +81,7 @@ def check_ratchet() -> list[str]:
             if d not in (".git", "target", "node_modules", ".output", ".nuxt")
         ]
         rel_dir = Path(dirpath).relative_to(ROOT).as_posix()
-        if rel_dir.startswith(("apps/lisa_ui/bus", "web")):
+        if rel_dir.startswith(("apps/lisa.sdk/bus", "web")):
             dirnames[:] = []
             continue
         for f in filenames:
@@ -96,7 +96,7 @@ def check_ratchet() -> list[str]:
             if pat.search(text) and rel not in ALLOWLIST:
                 errors.append(
                     f"{rel}: hand-rolled dev.lisaos interface — import "
-                    f"../lisa_ui/bus/interfaces.js instead (ADR-0060)"
+                    f"../lisa.sdk/bus/interfaces.js instead (ADR-0060)"
                 )
     for rel in sorted(ALLOWLIST):
         if not (ROOT / rel).exists():

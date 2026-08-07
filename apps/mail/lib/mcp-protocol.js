@@ -10,10 +10,10 @@
 // deletes.
 //
 // The protocol itself used to live here, in a copy that had drifted from
-// Surfer's and Preview's — see apps/lisa_ui/mcp/protocol.js for what the
+// Surfer's and Preview's — see apps/lisa.sdk/mcp/protocol.js for what the
 // drift turned out to be.
 
-import {makeHandler} from '../../lisa_ui/mcp/protocol.js';
+import {makeHandler} from '../../lisa.sdk/mcp/protocol.js';
 
 export const APP_ID = 'app.lisaos.Mail';
 

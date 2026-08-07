@@ -8,7 +8,7 @@
 // and replied to notifications the spec says a server must not answer.
 // Reading side by side is not a mechanism; one file is.
 
-import {makeHandler} from '../../lisa_ui/mcp/protocol.js';
+import {makeHandler} from '../../lisa.sdk/mcp/protocol.js';
 
 export const APP_ID = 'app.lisaos.Preview';
 

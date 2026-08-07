@@ -392,7 +392,7 @@ liblisa's C ABI has Rust, Python, JS and Vala bindings plus an
 OpenAI-compatible endpoint.
 
 - **The one lane:** GJS + GTK4/libadwaita via `liblisa` (§5.6) for the shell, portals, Settings, apps and Forge output. Qt bindings remain for third parties who want them.
-- **Flutter (deleted 2026-08-06):** `libs/lisa_flutter` and the Dart `libs/lisa_ui` were removed. They were the first idea — build the apps in Flutter — and ADR-0047 chose GJS instead; keeping two kits one underscore apart was a trap, not an option (CLAUDE.md warned against importing the wrong one). ADR-0014 and ADR-0047 keep their text: they record what was true when written. **`lisa_ui` is now a reserved name for the GJS/GTK4 shared library, and the directory does not exist yet** — first job, the Agent Bus edge (`mcp-protocol.js` / `mcp.js`), which exists in triplicate today and is why #218 had to be fixed three times.
+- **Flutter (deleted 2026-08-06):** `libs/lisa_flutter` and the Dart `libs/lisa_ui` were removed. They were the first idea — build the apps in Flutter — and ADR-0047 chose GJS instead; keeping two kits one underscore apart was a trap, not an option (CLAUDE.md warned against importing the wrong one). ADR-0014 and ADR-0047 keep their text: they record what was true when written. **`lisa.sdk` is now a reserved name for the GJS/GTK4 shared library, and the directory does not exist yet** — first job, the Agent Bus edge (`mcp-protocol.js` / `mcp.js`), which exists in triplicate today and is why #218 had to be fixed three times.
 
 **What the Forge may produce is a security boundary, not a feature list (ADR-0031 §5).** Sequenced by blast radius, because the capability that makes Lisa able to build anything is the same fact that makes it dangerous:
 1. **GUI apps** — user session, bounded by the tool jail and the command allowlist. Shipping.
@@ -410,7 +410,7 @@ step to amortise. It also composes with ADR-0046 Amendment 1's "source in,
 source out": when the artifact *is* the source, a reviewer reads what
 runs.
 
-**`lisa_ui` — the shared GJS/GTK4 library.** Not a widget set invented up
+**`lisa.sdk` — the shared GJS/GTK4 library.** Not a widget set invented up
 front. Its scope, in the order the evidence justifies (ADR-0047): the
 Agent Bus edge first (`mcp-protocol.js`/`mcp.js` — a security boundary
 that exists in triplicate, which is how #218 and #219 each had to be
@@ -422,7 +422,7 @@ per-module, when someone is already touching the file.
 **`lisa_flutter` — deleted 2026-08-06.** Four `.dart` files mirroring
 `liblisa`'s API over D-Bus. ADR-0047 §2 parked the lane; it was never
 shipped, never proven on hardware, and nothing planned against it, so
-the directory has been removed along with the Dart `lisa_ui` beside it.
+the directory has been removed along with the Dart `lisa.sdk` beside it.
 The decision records stay (ADR-0014, ADR-0047) — a parked lane that no
 longer exists is still a lane somebody chose not to take, and deleting
 that reasoning would leave the next reader unable to see why.
@@ -432,12 +432,12 @@ that reasoning would leave the next reader unable to see why.
 **Purpose:** the OS ships the workshop. A first-party agentic harness (think Claude Code, native to the desktop) that takes "make me a…" to an installed, sandboxed app — with the user watching it happen.
 
 **Design:**
-- **Harness core (`libs/forge-harness`):** the agentic loop — plan → edit files → lint/validate → restart the live preview → capture a screenshot of the preview for VLM self-inspection → iterate. Tools: project FS (jailed to the project dir), analyzer, run-controller, previewer, `lisa_ui` docs retriever (RAG over our own SDK docs — the harness's knowledge of our platform is *ours to curate*, not frozen in model weights).
+- **Harness core (`libs/forge-harness`):** the agentic loop — plan → edit files → lint/validate → restart the live preview → capture a screenshot of the preview for VLM self-inspection → iterate. Tools: project FS (jailed to the project dir), analyzer, run-controller, previewer, `lisa.sdk` docs retriever (RAG over our own SDK docs — the harness's knowledge of our platform is *ours to curate*, not frozen in model weights).
 - **Pluggable model backends:** (a) local coder models from the catalog (Qwen-coder-class at Tier 2+, §7 gains a `code` row); (b) **bring-your-own agent: Claude Code (or any agent CLI) slots in as a backend** — it's a CLI, the harness drives it with the same tool jail. Local-first default, frontier-model option, user's key, rendered in the Ledger like everything else.
-- **Forge app (planned):** split view — conversation left, live preview right; template gallery (`lisa_ui` starter, MCP-tool app, dashboard, game); diff review pane (the user can always see what changed); **Install** → packages with a *generated capability manifest the user approves* → appears in the launcher. **`forge/app/` is a README.** The Forge today is `libs/forge-harness` driven by `lisa forge` from the terminal — the loop is real, the window is not.
+- **Forge app (planned):** split view — conversation left, live preview right; template gallery (`lisa.sdk` starter, MCP-tool app, dashboard, game); diff review pane (the user can always see what changed); **Install** → packages with a *generated capability manifest the user approves* → appears in the launcher. **`forge/app/` is a README.** The Forge today is `libs/forge-harness` driven by `lisa forge` from the terminal — the loop is real, the window is not.
 - **Forged apps are normal citizens, sandbox-first (planned):** zero permissions at birth (no network, no scopes); requesting context/inference goes through the same portal consent as any app; MCP manifest and app-memory namespace generated from templates; provenance-labeled "user-forged" in the Ledger and app info; source always retained, inspectable, re-openable in the Forge. This depends on app sandboxing, which does not exist (§3, Apps), and on ADR-0049's install-time registration, which does not exist either (#240).
 
-**Repo:** `forge/{app}` (README only), `libs/{forge-harness, lisa_ui}`.
+**Repo:** `forge/{app}` (README only), `libs/{forge-harness, lisa.sdk}`.
 
 **Acceptance (M6):** "make me a tip calculator with a big friendly button" → running live preview in < 2 min on reference-16GB with the local coder model; Install → sandboxed Flatpak in the launcher; the forged app calling `summarize()` triggers a normal portal grant; re-open in Forge → "make the button glow" round-trips in < 30 s; full session visible in the Ledger.
 
@@ -493,8 +493,8 @@ lisa-os/
 ├── portals/xdg-desktop-portal-lisa/
 ├── libs/{liblisa, liblisa-gtk†, liblisa-qt†, mcp-bus, harness-core,
 │         forge-harness, bus-tools, lisa-guard, lisa-ledger, lisa-peer}/
-│         # lisa_ui/ and lisa_flutter/ were the Dart lane, deleted 2026-08-06;
-│         # `lisa_ui` is reserved for the GJS library and is not written yet
+│         # lisa.sdk/ and lisa_flutter/ were the Dart lane, deleted 2026-08-06;
+│         # `lisa.sdk` is reserved for the GJS library and is not written yet
 ├── forge/{app†}/              # the harness is libs/forge-harness + `lisa forge`
 ├── shell/{overlay-extension, launcher, ledger-app, assistant, consent,
 │          settings, desktop, testing}/
@@ -517,7 +517,7 @@ lisa-os/
 - **M3 — Context fabric:** files+mail+calendar sources, hybrid retrieval, per-app memory, Settings panel v1. *Accept:* §5.3 block.
 - **M4 — Surfaces:** assistant overlay, semantic launcher, Writing Tools layers 1–2, voice v1, Ledger app. *Accept:* §5.7 budgets.
 - **M5 — Agent Bus:** MCP manifests, `agentd`, confirmation tiers, undo, first-party apps expose tools, injection suite green. *Accept:* §5.4 block.
-- **M6 — Apps, Forge alpha & polish:** §5.8 app set (all GJS/GTK4 — ADR-0047, ADR-0048), screen context, model adapters (LoRA) trained + shipped, `lisa_ui` v0 as the shared GJS library, **Forge alpha meeting the §5.12.1 acceptance block**.
+- **M6 — Apps, Forge alpha & polish:** §5.8 app set (all GJS/GTK4 — ADR-0047, ADR-0048), screen context, model adapters (LoRA) trained + shipped, `lisa.sdk` v0 as the shared GJS library, **Forge alpha meeting the §5.12.1 acceptance block**.
 - **M7 — Personal Compute Node** + nonfree image variant + installer OOBE, which now also chooses **server or desktop** and, for server, which network edge (ADR-0031, as re-decided by ADR-0052 — mode is an image lineage, never a package toggle — and ADR-0053, which makes Lisa Server a product on the shared core rather than a flavour). Server mode is close to free in *content* — same daemons, no desktop package set — but no minimal no-desktop image is built anywhere yet: every workflow runs a plain `mkosi build` of the one full-desktop definition (the nightly's checks are already implication-shaped so a minimal flavor can join without turning them red).
 - **M8 — Public alpha ISO:** docs site, SDK quickstarts, eval dashboard, security review pass.
 

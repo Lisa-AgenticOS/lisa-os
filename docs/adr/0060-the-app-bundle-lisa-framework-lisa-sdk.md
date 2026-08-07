@@ -12,7 +12,7 @@
   state); the location amendment in ADR-0056 gains its exit criterion.
 - **Claims:**
   - `path:apps/notes/icon.svg` — the first bundle-shaped fact: the icon lives inside the app, and the `.desktop` points at it by absolute path
-  - `path:apps/lisa_ui/ui/window.js` — the sdk's UI half growing by extraction
+  - `path:apps/lisa.sdk/ui/window.js` — the sdk's UI half growing by extraction
   - `absent:libs/lisa-framework` — the runtime bundle does not exist yet
   - `absent:libs/lisa-sdk` — the GJS binding does not exist yet
 

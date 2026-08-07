@@ -188,7 +188,7 @@ FOUNDATION = {
     ),
     "libadwaita": (
         "The widget layer. Same rule, same sentence — and ADR-0056 is "
-        "explicit that lisa_ui is a DIALECT on top of libadwaita, not a "
+        "explicit that lisa.sdk is a DIALECT on top of libadwaita, not a "
         "replacement for it."
     ),
     "gjs": (

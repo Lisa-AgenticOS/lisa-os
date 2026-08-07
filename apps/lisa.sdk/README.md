@@ -1,4 +1,4 @@
-# `lisa_ui` — the shared GJS library for Lisa surfaces
+# `lisa.sdk` — the shared GJS library for Lisa surfaces
 
 ADR-0056, ADR-0047 §6. **Steps 1–4 underway**: the widget set grows by
 extraction — a widget joins once a real caller needs it, because one
@@ -41,7 +41,7 @@ the rest of the system is something each app must remember, you get
 
 |  | comes from | needs |
 |---|---|---|
-| **transparency** | `lisa_ui` — the window paints nothing behind the pane | any GNOME |
+| **transparency** | `lisa.sdk` — the window paints nothing behind the pane | any GNOME |
 | **frost** | `shell/glass` — the compositor clones the wallpaper, blurs it, slides it under the window | our Shell fork |
 
 Without the extension an app is transparent but **sharp**. That is a
@@ -56,7 +56,7 @@ answers tool calls with, and the one place a result gets its
 **provenance tag**. `makeHandler({appId, provenance})` returns the pure
 `handleRequest(req, tools)`; the two constants are all an app supplies.
 
-    import {makeHandler} from '../../lisa_ui/mcp/protocol.js';
+    import {makeHandler} from '../../lisa.sdk/mcp/protocol.js';
 
     export const APP_ID = 'app.lisaos.Mail';
     export const handleRequest = makeHandler({appId: APP_ID, provenance: 'mail'});
@@ -106,7 +106,7 @@ watched go red against a mutation restoring the old behaviour.
 
 Add a module under a namespace (`mcp/`, and later `ui/`), export it,
 import it by the same relative path. Consumers are staged beside the
-library, so `../../lisa_ui/<module>` resolves identically in this repo
+library, so `../../lisa.sdk/<module>` resolves identically in this repo
 and on a device.
 
 ## Limits
@@ -115,9 +115,9 @@ and on a device.
   `build-apps-payload.sh` flattens `apps/<app>` and `shell/<surface>`
   into one tree, so a relative import means the same thing in both
   trees only if the library sits beside the consumer in each. For apps
-  that is literal. For `shell/` surfaces it is the `shell/lisa_ui`
-  symlink (→ `../apps/lisa_ui`, the ADR-0060 pattern in miniature):
-  `../lisa_ui/…` resolves through it in the repo and against the real
+  that is literal. For `shell/` surfaces it is the `shell/lisa.sdk`
+  symlink (→ `../apps/lisa.sdk`, the ADR-0060 pattern in miniature):
+  `../lisa.sdk/…` resolves through it in the repo and against the real
   directory at the payload root — verified both sides, and GJS yields
   ONE module instance through a symlink. The symlink is repo plumbing;
   the payload never carries it.
