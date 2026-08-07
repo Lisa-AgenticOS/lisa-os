@@ -364,14 +364,14 @@ mod tests {
         );
         let err = client.call_tool("search_notes", &json!({})).unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("missing required argument")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("missing required argument")),
             "{err:?}"
         );
         let err = client
             .call_tool("search_notes", &json!({"query": "x", "limit": 0}))
             .unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("at least 1")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("at least 1")),
             "{err:?}"
         );
 
@@ -386,7 +386,7 @@ mod tests {
             .call_tool("delete_note", &json!({"id": id}))
             .unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("no active note")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("no active note")),
             "{err:?}"
         );
 
@@ -399,7 +399,7 @@ mod tests {
             .call_tool("restore_note", &json!({"id": id}))
             .unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("no deleted note")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("no deleted note")),
             "{err:?}"
         );
         assert_eq!(
@@ -415,7 +415,7 @@ mod tests {
             .call_tool("create_note", &json!({"body": "no title"}))
             .unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("missing required argument")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("missing required argument")),
             "{err:?}"
         );
         let long = "x".repeat(MAX_TITLE_CHARS + 1);
@@ -423,7 +423,7 @@ mod tests {
             .call_tool("create_note", &json!({"title": long}))
             .unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("exceeds")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("exceeds")),
             "{err:?}"
         );
 
@@ -435,7 +435,7 @@ mod tests {
             .call_tool("update_note", &json!({"id": id, "title": "renamed"}))
             .unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("missing required argument")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("missing required argument")),
             "{err:?}"
         );
         let err = client
@@ -445,14 +445,14 @@ mod tests {
             )
             .unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("must be a string")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("must be a string")),
             "{err:?}"
         );
 
         // unknown tool → isError, surfaced as McpError::Tool
         let err = client.call_tool("burn_note", &json!({})).unwrap_err();
         assert!(
-            matches!(err, McpError::Tool(ref msg) if msg.contains("unknown tool: burn_note")),
+            matches!(err, McpError::Tool { message: ref msg, .. } if msg.contains("unknown tool: burn_note")),
             "{err:?}"
         );
 

@@ -323,6 +323,11 @@ pub enum Outcome {
         call_id: u64,
         ledger_ref: i64,
         error: String,
+        /// The failing app's envelope tag, when one arrived. An error
+        /// message quotes what the tool saw — attacker-chosen content —
+        /// so the consumer must be able to taint on failure exactly as
+        /// on success (#313). `None` for transport failures.
+        provenance: Option<String>,
     },
     /// Parked; the user must answer via `confirm()`. `spec` is the
     /// typed-diff material for the chip/modal.
@@ -384,18 +389,24 @@ pub enum UndoReport {
 /// server and return its result. The real per-app unix-socket client
 /// (with D-Bus-activation-style spawn-on-demand) is the next M5 slice.
 pub trait Dispatcher: Send + Sync {
-    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, String>;
+    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, DispatchFailure>;
 }
+
+/// A failed dispatch. Re-exported from `mcp-bus` rather than mirrored:
+/// the type exists so the app envelope's `provenance` tag survives the
+/// error door (#313), and two copies of that shape would be the same
+/// double-tagging workaround the issue was filed about.
+pub use mcp_bus::DispatchFailure;
 
 /// Production placeholder until the MCP wire client lands: every
 /// dispatch fails cleanly (and is ledgered as failed).
 pub struct NullDispatcher;
 
 impl Dispatcher for NullDispatcher {
-    fn dispatch(&self, app_id: &str, tool: &str, _args: &Value) -> Result<Value, String> {
-        Err(format!(
+    fn dispatch(&self, app_id: &str, tool: &str, _args: &Value) -> Result<Value, DispatchFailure> {
+        Err(DispatchFailure::transport(format!(
             "no MCP transport wired for {app_id}/{tool} yet (PLAN §5.4 next slice)"
-        ))
+        )))
     }
 }
 
@@ -406,7 +417,7 @@ impl Dispatcher for NullDispatcher {
 // is defined in this crate — the orphan rule allows a local trait on a
 // foreign type. See ADR-0013.
 impl Dispatcher for mcp_bus::McpDispatcher {
-    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, String> {
+    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, DispatchFailure> {
         mcp_bus::Dispatcher::dispatch(self, app_id, tool, args)
     }
 }
@@ -433,7 +444,7 @@ impl RecordingDispatcher {
 }
 
 impl Dispatcher for RecordingDispatcher {
-    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, String> {
+    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, DispatchFailure> {
         self.calls.lock().expect("calls lock").push((
             app_id.to_string(),
             tool.to_string(),
@@ -1053,20 +1064,20 @@ impl AgentBus {
                     result,
                 })
             }
-            Err(error) => {
+            Err(failure) => {
                 self.ledger.append(&Event {
                     kind: "tool.complete".into(),
                     app_id: actor.to_string(),
-                    preview: preview_of(&error),
+                    preview: preview_of(&failure.error),
                     status: "error".into(),
-                    detail: error.clone(),
+                    detail: failure.error.clone(),
                     ref_id: Some(start_ref),
                     ..Default::default()
                 })?;
                 Ok(UndoReport::Failed {
                     app_id: entry.app_id,
                     undo_tool: undo_tool.clone(),
-                    error,
+                    error: failure.error,
                 })
             }
         }
@@ -1166,20 +1177,21 @@ impl AgentBus {
                     result,
                 }
             }
-            Err(error) => {
+            Err(failure) => {
                 let _ = self.ledger.append(&Event {
                     kind: "tool.complete".into(),
                     app_id: req.actor.clone(),
-                    preview: preview_of(&error),
+                    preview: preview_of(&failure.error),
                     status: "error".into(),
-                    detail: error.clone(),
+                    detail: failure.error.clone(),
                     ref_id: Some(start_ref),
                     ..Default::default()
                 });
                 Outcome::Failed {
                     call_id,
                     ledger_ref: start_ref,
-                    error,
+                    error: failure.error,
+                    provenance: failure.provenance,
                 }
             }
         }

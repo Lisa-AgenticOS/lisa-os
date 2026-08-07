@@ -13,7 +13,7 @@ mod client;
 mod dispatcher;
 
 pub use client::{McpClient, McpError, PROTOCOL_VERSION};
-pub use dispatcher::{DEFAULT_TIMEOUT, Dispatcher, McpDispatcher};
+pub use dispatcher::{DEFAULT_TIMEOUT, DispatchFailure, Dispatcher, McpDispatcher};
 
 /// Default directory holding per-app MCP sockets.
 pub const DEFAULT_SOCKET_DIR: &str = "/run/lisa/mcp";

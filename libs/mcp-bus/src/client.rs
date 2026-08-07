@@ -27,8 +27,15 @@ pub enum McpError {
     Rpc { code: i64, message: String },
     #[error("malformed response: {0}")]
     Protocol(String),
-    #[error("tool failed: {0}")]
-    Tool(String),
+    #[error("tool failed: {message}")]
+    Tool {
+        message: String,
+        /// The envelope's `provenance` tag, when the failing app sent
+        /// one. An error message quotes what the tool saw — a filename,
+        /// a subject line, a page title an attacker chose — so the tag
+        /// matters on this branch exactly as much as on success (#313).
+        provenance: Option<String>,
+    },
 }
 
 /// Map socket timeout errors to [`McpError::Timeout`].
@@ -218,7 +225,16 @@ fn carry_envelope(payload: Value, envelope: &Value) -> Value {
 /// text shortcut did, and both are fixed here.
 fn extract_tool_result(result: Value) -> Result<Value, McpError> {
     if result.get("isError").and_then(Value::as_bool) == Some(true) {
-        return Err(McpError::Tool(content_text(&result)));
+        // The error door gets the same #313 treatment as the success
+        // branches: the ENVELOPE's tag (the app edge's claim), never
+        // anything parsed out of the message text.
+        return Err(McpError::Tool {
+            message: content_text(&result),
+            provenance: result
+                .get("provenance")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        });
     }
     if let Some(structured) = result.get("structuredContent") {
         return Ok(carry_envelope(structured.clone(), &result));

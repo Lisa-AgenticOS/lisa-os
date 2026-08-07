@@ -14,11 +14,40 @@ use std::time::Duration;
 /// fails — one hung app must not wedge the bus.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A failed dispatch, typed so the envelope's provenance tag survives
+/// the error door (#313). A plain `String` here was how a `provenance`
+/// an app put on its error reply vanished before any caller saw it —
+/// and an error message quotes exactly the attacker-chosen content
+/// (filenames, subject lines, page titles) the tag exists to mark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchFailure {
+    pub error: String,
+    /// The app edge's own claim from the reply envelope; `None` for
+    /// transport failures, where no app spoke at all.
+    pub provenance: Option<String>,
+}
+
+impl DispatchFailure {
+    /// A failure with no app behind it (connect, handshake, transport).
+    pub fn transport(error: impl Into<String>) -> DispatchFailure {
+        DispatchFailure {
+            error: error.into(),
+            provenance: None,
+        }
+    }
+}
+
+impl std::fmt::Display for DispatchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.error)
+    }
+}
+
 /// The transport seam the Agent Bus dispatches through. Same signature
 /// as agentd's `bus::Dispatcher`; kept crate-local so `mcp-bus` does not
 /// depend on the daemon.
 pub trait Dispatcher: Send + Sync {
-    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, String>;
+    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, DispatchFailure>;
 }
 
 /// Per-app unix-socket MCP dispatcher: connects to
@@ -58,16 +87,24 @@ impl Default for McpDispatcher {
 }
 
 impl Dispatcher for McpDispatcher {
-    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, String> {
+    fn dispatch(&self, app_id: &str, tool: &str, args: &Value) -> Result<Value, DispatchFailure> {
         let path = self.socket_path(app_id);
-        let mut client = McpClient::connect(&path, self.timeout)
-            .map_err(|e| format!("{app_id}: connect {}: {e}", path.display()))?;
+        let mut client = McpClient::connect(&path, self.timeout).map_err(|e| {
+            DispatchFailure::transport(format!("{app_id}: connect {}: {e}", path.display()))
+        })?;
         client
             .initialize()
-            .map_err(|e| format!("{app_id}: initialize: {e}"))?;
-        client
-            .call_tool(tool, args)
-            .map_err(|e| format!("{app_id}/{tool}: {e}"))
+            .map_err(|e| DispatchFailure::transport(format!("{app_id}: initialize: {e}")))?;
+        client.call_tool(tool, args).map_err(|e| match e {
+            // The one error an APP produced: its envelope tag rides
+            // along, so the consumer can taint on a failed call whose
+            // message quotes untrusted content (#313).
+            crate::McpError::Tool { ref provenance, .. } => DispatchFailure {
+                error: format!("{app_id}/{tool}: {e}"),
+                provenance: provenance.clone(),
+            },
+            other => DispatchFailure::transport(format!("{app_id}/{tool}: {other}")),
+        })
     }
 }
 
@@ -205,9 +242,9 @@ mod tests {
             .dispatcher
             .dispatch(APP, "add_event", &json!({}))
             .unwrap_err();
-        assert!(err.contains("bad args"), "{err}");
-        assert!(err.contains("-32602"), "{err}");
-        assert!(err.contains(APP), "{err}");
+        assert!(err.error.contains("bad args"), "{err}");
+        assert!(err.error.contains("-32602"), "{err}");
+        assert!(err.error.contains(APP), "{err}");
         server.join().unwrap();
     }
 
@@ -224,7 +261,7 @@ mod tests {
             .dispatcher
             .dispatch(APP, "add_event", &json!({}))
             .unwrap_err();
-        assert!(err.contains("calendar is read-only"), "{err}");
+        assert!(err.error.contains("calendar is read-only"), "{err}");
         server.join().unwrap();
     }
 
@@ -235,8 +272,8 @@ mod tests {
         let err = dispatcher
             .dispatch("org.gnome.Calendar", "list_events", &json!({}))
             .unwrap_err();
-        assert!(err.contains("org.gnome.Calendar"), "{err}");
-        assert!(err.contains("connect"), "{err}");
+        assert!(err.error.contains("org.gnome.Calendar"), "{err}");
+        assert!(err.error.contains("connect"), "{err}");
     }
 
     #[test]
@@ -251,7 +288,7 @@ mod tests {
         let err = dispatcher
             .dispatch(APP, "list_events", &json!({}))
             .unwrap_err();
-        assert!(err.contains("timed out"), "{err}");
+        assert!(err.error.contains("timed out"), "{err}");
         drop(server); // detached; the sleeping thread exits with the test process
     }
 }

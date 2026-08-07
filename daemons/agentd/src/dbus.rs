@@ -581,10 +581,19 @@ fn outcome_reply(outcome: &Outcome) -> (u64, String, String) {
             call_id,
             ledger_ref,
             error,
+            provenance,
         } => (
             *call_id,
             "failed".into(),
-            serde_json::json!({"error": error, "ledger_ref": ledger_ref}).to_string(),
+            // `provenance` rides the failed reply for the same reason it
+            // rides the executed one: the error text quotes what the
+            // tool saw, and the consumer taints on the tag (#313).
+            serde_json::json!({
+                "error": error,
+                "ledger_ref": ledger_ref,
+                "provenance": provenance,
+            })
+            .to_string(),
         ),
         Outcome::AwaitingConfirmation {
             call_id,
