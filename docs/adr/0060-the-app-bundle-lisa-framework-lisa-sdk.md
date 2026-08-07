@@ -13,8 +13,8 @@
 - **Claims:**
   - `path:apps/notes/icon.svg` — the first bundle-shaped fact: the icon lives inside the app, and the `.desktop` points at it by absolute path
   - `path:apps/lisa.sdk/ui/window.js` — the sdk's UI half growing by extraction
-  - `absent:libs/lisa-framework` — the runtime bundle does not exist yet
-  - `absent:libs/lisa-sdk` — the GJS binding does not exist yet
+  - `absent:libs/lisa.framework` — the runtime's named home does not exist yet (spelling fixed 2026-08-07, owner call: dotted, matching the bundle symlink)
+  - `path:apps/lisa.sdk/bus/proxy.js` — the sdk exists under its decided name; bus/ was its first generated slice (2026-08-07)
 
 ## Context
 
