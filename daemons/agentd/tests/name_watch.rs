@@ -14,11 +14,10 @@
 //! **Where it runs.** Linux, and CI is the proof: the `bus-identity`
 //! job installs dbus and sets `LISA_REQUIRE_BUS_TESTS=1`, which turns a
 //! skip into a failure, so this cannot quietly stop running. On macOS
-//! dev hosts the homebrew daemon never becomes usable under a test
-//! runner — its stock config listens on a `launchd:` socket, and a
-//! hand-written config left the daemon listening but not accepting —
-//! so the fixture skips there LOUDLY rather than pretending. Same
-//! contract, same reasons, as `daemons/remoted/tests/bus.rs`.
+//! dev hosts the homebrew daemon prints no address under a test runner
+//! (its stock config listens on a `launchd:` socket), so the fixture
+//! skips there LOUDLY rather than pretending. Same fixture, same
+//! contract, same reasons as `daemons/remoted/tests/bus.rs`.
 
 const BUS_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LOSS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -26,7 +25,6 @@ const LOSS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 struct Bus {
     child: std::process::Child,
     address: String,
-    _dir: tempfile::TempDir,
 }
 
 impl Drop for Bus {
@@ -36,62 +34,40 @@ impl Drop for Bus {
     }
 }
 
+/// Byte-for-byte the fixture `daemons/remoted/tests/bus.rs` uses, and
+/// deliberately so: that one demonstrably works in the CI job this test
+/// runs in. A config-file variant of this fixture looked equivalent,
+/// listened on its socket — and never accepted a connection, on Linux
+/// as well as macOS. It failed CI for the fixture's reason rather than
+/// the test's, which is the shape of a proof that proves nothing.
 fn start_bus() -> Option<Bus> {
-    let dir = match tempfile::tempdir() {
-        Ok(d) => d,
-        Err(e) => return require_or_skip(&format!("no tempdir: {e}")),
-    };
-    let sock = dir.path().join("bus.sock");
-    let conf = dir.path().join("bus.conf");
-    if std::fs::write(
-        &conf,
-        format!(
-            "<busconfig>\n  <type>session</type>\n  <listen>unix:path={}</listen>\n  \
-             <policy context=\"default\">\n    <allow send_destination=\"*\"/>\n    \
-             <allow own=\"*\"/>\n    <allow user=\"*\"/>\n  </policy>\n</busconfig>\n",
-            sock.display()
-        ),
-    )
-    .is_err()
-    {
-        return require_or_skip("cannot write the bus config");
-    }
-    // Through `sh` for one reason: `ulimit -n 256`. dbus-daemon closes
-    // every descriptor up to RLIMIT_NOFILE at startup, and a test
-    // runner can hand it a limit in the millions — minutes of spinning
-    // with no socket, no output and no error. Cheap insurance; the
-    // daemon needs a handful of descriptors.
-    let child = match std::process::Command::new("sh")
-        .arg("-c")
-        .arg(r#"ulimit -n 256 2>/dev/null; exec "$0" "$@""#)
-        .arg("dbus-daemon")
-        .arg(format!("--config-file={}", conf.display()))
-        .arg("--nofork")
-        .stdout(std::process::Stdio::null())
+    let mut child = match std::process::Command::new("dbus-daemon")
+        .args(["--session", "--print-address", "--nofork"])
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
     {
         Ok(c) => c,
         Err(_) => return require_or_skip("dbus-daemon is not installed"),
     };
-    let mut bus = Bus {
-        child,
-        address: format!("unix:path={}", sock.display()),
-        _dir: dir,
-    };
-    // The daemon is up when its socket exists; a daemon that died
-    // (bad config, unsupported option) never produces it.
-    let deadline = std::time::Instant::now() + BUS_START_TIMEOUT;
-    while !sock.exists() {
-        if let Ok(Some(status)) = bus.child.try_wait() {
-            return require_or_skip(&format!("dbus-daemon exited at startup: {status}"));
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let got = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(got.ok().map(|_| line));
+    });
+    match rx.recv_timeout(BUS_START_TIMEOUT) {
+        Ok(Some(line)) if !line.trim().is_empty() => Some(Bus {
+            child,
+            address: line.trim().to_string(),
+        }),
+        _ => {
+            let _ = child.kill();
+            require_or_skip("dbus-daemon did not print an address in time")
         }
-        if std::time::Instant::now() > deadline {
-            return require_or_skip("dbus-daemon did not create its socket in time");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    Some(bus)
 }
 
 fn require_or_skip(why: &str) -> Option<Bus> {
