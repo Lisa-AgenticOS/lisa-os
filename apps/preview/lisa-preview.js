@@ -23,6 +23,7 @@ import Gdk from 'gi://Gdk?version=4.0';
 import GdkPixbuf from 'gi://GdkPixbuf?version=2.0';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import {lisaWindow} from '../lisa.sdk/ui/window.js';
 
 import {kindOf, siblings} from './lib/formats.js';
 import {zoomStep, fitScale, fitWidthScale, step, rotate} from './lib/view.js';
@@ -1055,11 +1056,15 @@ function afterSave(target, annotsAtSave) {
 }
 
 function buildWindow() {
-    win = new Adw.ApplicationWindow({application: app, default_width: 1000, default_height: 720});
+    // The shared chrome (#282): one window shape, one style/theme path.
+    // No glass pane here on purpose — Preview's rail is page thumbnails
+    // over a document, and frost under thumbnails fights the content.
+    const ui = lisaWindow({app, title: 'Preview', width: 1000, height: 720});
+    win = ui.window;
     const toasts = new Adw.ToastOverlay();
     win.__toasts = toasts;
 
-    const header = new Adw.HeaderBar();
+    const header = ui.header;
     titleLabel = new Adw.WindowTitle({title: 'Preview'});
     header.set_title_widget(titleLabel);
 
@@ -1479,9 +1484,11 @@ function buildWindow() {
     const split = new Gtk.Box({orientation: Gtk.Orientation.HORIZONTAL});
     split.append(sidebar);
     split.append(scroller);
-    const view = new Adw.ToolbarView({content: split});
-    view.add_top_bar(header);
-    toasts.set_child(view);
+    ui.view.content = split;
+    // The ToolbarView already carries the header; the toast overlay
+    // wraps it so messages float over the whole window.
+    win.content = null;
+    toasts.set_child(ui.view);
     win.set_content(toasts);
     refreshEditUi();
 
