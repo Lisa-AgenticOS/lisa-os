@@ -983,6 +983,22 @@ fn best_body(mail: &mailparse::ParsedMail) -> Option<String> {
     html
 }
 
+/// ASCII-case-insensitive `starts_with`, on bytes. Tag names are ASCII;
+/// the CONTENT around them is not, which is why this exists — see the
+/// #312 note in [`strip_tags`].
+fn ascii_ci_starts_with(hay: &[u8], needle: &[u8]) -> bool {
+    hay.len() >= needle.len() && hay[..needle.len()].eq_ignore_ascii_case(needle)
+}
+
+/// ASCII-case-insensitive substring search, on bytes.
+fn ascii_ci_find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
+}
+
 fn strip_tags(html: &str) -> String {
     // Review (#184) caught the first version twice: it kept the TEXT
     // of <style>/<script> elements — CSS selectors and JS landing in
@@ -991,7 +1007,15 @@ fn strip_tags(html: &str) -> String {
     // treated every bare `<` as a tag opener, so "if (x < 2) buy now"
     // lost everything to the next `>`. A `<` opens a tag only when
     // what follows could be one.
-    let lower = html.to_lowercase();
+    //
+    // And the device caught the second version (#312): it indexed a
+    // `to_lowercase()` COPY with byte offsets computed on the original.
+    // Lowercasing changes byte lengths ('İ' becomes "i\u{307}"), the
+    // offsets drift, and the first message whose drifted index landed
+    // inside a multi-byte character — a zero-width space, here —
+    // panicked the whole sync, every run. Case-insensitive matching is
+    // done on the ORIGINAL bytes instead; tag names are ASCII, so
+    // ASCII-case folding is exactly enough and never moves an offset.
     let bytes = html.as_bytes();
     let mut out = String::with_capacity(html.len() / 2);
     let mut last_space = true;
@@ -1003,8 +1027,9 @@ fn strip_tags(html: &str) -> String {
                 // A real tag. If it opens style/script, skip to the
                 // matching close tag — their content is not prose.
                 for elt in ["style", "script"] {
-                    if lower[i + 1..].starts_with(elt) {
-                        if let Some(end) = lower[i..].find(&format!("</{elt}")) {
+                    if ascii_ci_starts_with(&bytes[i + 1..], elt.as_bytes()) {
+                        let close = format!("</{elt}");
+                        if let Some(end) = ascii_ci_find(&bytes[i..], close.as_bytes()) {
                             i += end;
                         } else {
                             return out; // unterminated: nothing after is prose
@@ -1526,6 +1551,36 @@ mod tests {
         );
         assert!(s.contains("ok"));
         assert!(!s.contains("<b>"));
+    }
+
+    /// #312, from the reference device: the first version lowercased a
+    /// COPY and indexed it with the original's byte offsets. Lowercasing
+    /// changes byte lengths ('İ' → "i\u{307}"), so the offsets drift,
+    /// and the first mail whose drifted index landed inside a multi-byte
+    /// character panicked the whole sync — every run, exit 101, ten
+    /// mailboxes held hostage by one zero-width space.
+    #[test]
+    fn strip_tags_survives_case_folding_that_changes_byte_lengths() {
+        // Two 'İ' put the lowercased copy two bytes AHEAD of the
+        // original, so the old code's `lower[i + 1..]` landed inside the
+        // second combining mark and panicked. The fix never touches a
+        // lowercased copy, so this must both not panic AND still strip.
+        let s = strip_tags("İİ<style>.a{x}</style>sale ends friday");
+        assert!(s.contains("sale ends friday"), "prose lost: {s}");
+        assert!(!s.contains(".a{x}"), "CSS leaked: {s}");
+        assert!(s.contains('İ'), "the prose before the tag was lost: {s}");
+
+        // Uppercase tags still match — the case-insensitivity the
+        // lowercased copy existed for, kept without the copy.
+        let s = strip_tags("İ<STYLE>.b{y}</STYLE><P>ok</P>");
+        assert!(!s.contains(".b{y}"), "an uppercase STYLE leaked: {s}");
+        assert!(s.contains("ok"));
+
+        // And the device's exact character: a zero-width space adjacent
+        // to markup, in a body whose earlier content shifted offsets.
+        let s = strip_tags("İ\u{200b}<script>bad()</script>\u{200b}renew now");
+        assert!(!s.contains("bad()"), "JS leaked: {s}");
+        assert!(s.contains("renew now"), "prose lost: {s}");
     }
 
     #[test]
