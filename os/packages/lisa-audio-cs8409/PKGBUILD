@@ -41,7 +41,8 @@ pkgname=lisa-audio-cs8409
 pkgver=0.1.20260504
 # 2: re-pinned to linux 7.1.5.arch1-2 (same upstream commit, new kernel
 # build). depends= changed, so the version must change with it.
-pkgrel=2
+# 3: re-pinned to linux 7.1.6.arch1-1 — Arch moved, same dance (#153).
+pkgrel=3
 pkgdesc="Apple CS8409/CS42L83 HD-audio codec override — internal speakers on iMac18,x and MacBookPro13,1/14,x (out-of-tree, kernel-pinned)"
 arch=(x86_64)
 url="https://github.com/davidjo/snd_hda_macbookpro"
@@ -54,15 +55,15 @@ install=$pkgname.install
 # ---------------------------------------------------------------------
 # davidjo/snd_hda_macbookpro master @ 2026-05-04 ("fix(dkms): prevent
 # uname -r from overriding target kernel flag"). Verified: both diffs
-# apply cleanly to linux-7.1.5's sound/hda tree.
+# apply cleanly to linux-7.1.6's sound/hda tree.
 _commit=cb27cc483f4fe98be03a4f4bef466c00aa7d244b
 # Mainline tarball the codec sources come from — upstream's build needs
 # the real sound/hda/*.c, which linux-headers does not ship.
-_kernver=7.1.5
+_kernver=7.1.6
 # `pacman -Q linux` output for that kernel.
-_archkernver=7.1.5.arch1-2
+_archkernver=7.1.6.arch1-1
 # /usr/lib/modules/<this> — i.e. `uname -r` on the booted image.
-_modrel=7.1.5-arch1-2
+_modrel=7.1.6-arch1-1
 
 depends=("linux=${_archkernver}")
 makedepends=("linux-headers=${_archkernver}" bc git kmod xz zstd)
@@ -76,7 +77,7 @@ source=(
 # one we computed ourselves. Cross-checked against
 # https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc.
 sha256sums=('SKIP'
-            '22a0196b3cbcdf34dc27b77561f4d040585fd3447edc9ab3531a1ac79e3041e7')
+            '995dd7188d924662b94b48fd6fb783587267590e5b8bb33dade2c771e7d855c1')
 # The tarball is ~150 MB and expands to ~1.5 GB; the release runner has
 # ~14 GB total. prepare() unpacks only sound/hda (a few hundred KB).
 noextract=("linux-${_kernver}.tar.xz")
