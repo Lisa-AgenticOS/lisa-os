@@ -117,12 +117,25 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(dispatcher),
     ));
 
-    let _connection = dbus::serve(bus).await?;
-    info!("dev.lisaos.Agent1 up on the session bus");
+    let connection = dbus::serve(bus).await?;
+    info!("{} up on the session bus", dbus::BUS_NAME);
 
-    tokio::signal::ctrl_c().await?;
-    info!("shutting down");
-    Ok(())
+    // Losing the name — or the connection under it — is FATAL, not a
+    // log line (#347). This daemon's sole purpose is serving that name:
+    // idling on without it holds the unit `active` so Restart= never
+    // fires, leaves the name squattable (#306), and silently strips the
+    // Assistant of its prompt-class tools. Exit nonzero and let systemd
+    // bring back a daemon that owns what it claims to.
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("shutting down");
+            Ok(())
+        }
+        why = dbus::name_lost(&connection) => {
+            tracing::error!("{why} — exiting so systemd restarts a working daemon");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]

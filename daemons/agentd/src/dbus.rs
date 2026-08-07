@@ -899,12 +899,48 @@ impl Agent1 {
 }
 
 /// Register on the session bus (real systems; tests use p2p).
+/// The one name this daemon exists to serve.
+pub const BUS_NAME: &str = "dev.lisaos.Agent1";
+
 pub async fn serve(bus: Arc<AgentBus>) -> zbus::Result<zbus::Connection> {
     zbus::connection::Builder::session()?
-        .name("dev.lisaos.Agent1")?
+        .name(BUS_NAME)?
         .serve_at("/dev/lisaos/Agent1", Agent1::new(bus))?
         .build()
         .await
+}
+
+/// Resolves only when [`BUS_NAME`] is no longer ours — the broker said
+/// so (`NameLost`), or the connection died and the signal stream ended
+/// with it. Either way this daemon has nothing left to do, and the
+/// caller must EXIT so systemd's `Restart=` brings a working one back.
+///
+/// #347 is why this exists: the connection dropped its socket, zbus's
+/// internal name monitor logged one WARN, and the process idled on
+/// `active (running)` for hours — `Restart=on-failure` never fired,
+/// `dev.lisaos.Agent1` sat unowned (the #306 squat window), and the
+/// Assistant silently ran without its prompt-class tools.
+pub async fn name_lost(conn: &zbus::Connection) -> String {
+    use futures::StreamExt;
+    let proxy = match zbus::fdo::DBusProxy::new(conn).await {
+        Ok(p) => p,
+        Err(e) => return format!("cannot watch {BUS_NAME}: {e}"),
+    };
+    let mut stream = match proxy.receive_name_lost().await {
+        Ok(s) => s,
+        Err(e) => return format!("cannot watch {BUS_NAME}: {e}"),
+    };
+    while let Some(sig) = stream.next().await {
+        match sig.args() {
+            Ok(args) if args.name.as_str() == BUS_NAME => {
+                return format!("the broker took {BUS_NAME} back (NameLost)");
+            }
+            // A NameLost for some other name, or one we could not
+            // parse: neither means OUR name is gone, keep watching.
+            _ => continue,
+        }
+    }
+    format!("the bus connection is gone (the {BUS_NAME} signal stream ended)")
 }
 
 #[cfg(test)]
