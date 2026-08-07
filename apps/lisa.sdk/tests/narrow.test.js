@@ -36,6 +36,19 @@ test('signals narrow too, since a listener is also a capability', () => {
     assert.doesNotMatch(xml, /name="Ask"/);
 });
 
+test('a prefix member does not smuggle its longer sibling', () => {
+    const xml = narrowIface('Harness1', ['MemoryForget']);
+    assert.match(xml, /<method name="MemoryForget">/);
+    assert.doesNotMatch(xml, /MemoryForgetAll/);
+});
+
+test('a member name is data, not pattern — metacharacters are refused', () => {
+    assert.throws(() => narrowIface('Harness1', ['Memory.orget']),
+        /not a plain member name/);
+    assert.throws(() => narrowIface('Harness1', ['Memory|Run']),
+        /not a plain member name/);
+});
+
 test('the sdk copy this narrows from is the introspected one', () => {
     // Guard the guard: if Memory* ever leaves the snapshot, the pane
     // test above would fail too — but this failure names the real

@@ -78,8 +78,8 @@ const tokens: [string, string, string, string][] = [
     </section>
 
     <section class="sec anchor">
-      <h2>The lisa_ui widget kit — parked</h2>
-      <p><strong>This is not how you build a Lisa app.</strong> <code>libs/lisa_ui</code> is the Flutter kit ADR-0014 designed, and ADR-0047 parked it: unshipped, unproven on hardware, not the default. Every shipped surface is GJS + GTK4/Adwaita. The kit is kept, not deleted, and the name is reserved for the shared GJS library ADR-0047 §6 asks for. Recorded here because the token vocabulary below is the same one every surface reads. From <a :href="`${repo}/blob/main/libs/lisa_ui/lib/lisa_ui.dart`">lisa_ui.dart</a>:</p>
+      <h2>The shared library is lisa.sdk</h2>
+      <p><strong>Every shipped surface is GJS + GTK4/Adwaita</strong> (ADR-0047), built on <a :href="`${repo}/tree/main/apps/lisa.sdk`">apps/lisa.sdk</a> — the window shapes, the runtime style sheet, and the MCP edge every app answers tool calls with. The Flutter kit ADR-0014 designed was parked by ADR-0047 and removed with the whole Flutter lane on 2026-08-07; the token vocabulary below survived it and is the same one every surface reads.</p>
       <div class="tbl"><table>
         <thead><tr><th>Export</th><th>What it is</th></tr></thead>
         <tbody>

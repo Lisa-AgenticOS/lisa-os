@@ -74,7 +74,7 @@ function sheet(dark) {
     const blur = 24;
 
     return `
-/* GENERATED AT RUNTIME by lisa_ui/ui/style.js from branding/tokens.json.
+/* GENERATED AT RUNTIME by lisa.sdk/ui/style.js from branding/tokens.json.
    Nothing here is hand-typed colour. */
 
 .lisa-glass {

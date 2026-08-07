@@ -93,4 +93,4 @@ test('a malformed request is refused without consulting the tools', async () => 
     assert(!called, 'nothing should run for a request that is not JSON-RPC 2.0');
 });
 
-finish('lisa_ui/mcp');
+finish('lisa.sdk/mcp');

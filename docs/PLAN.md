@@ -392,7 +392,7 @@ liblisa's C ABI has Rust, Python, JS and Vala bindings plus an
 OpenAI-compatible endpoint.
 
 - **The one lane:** GJS + GTK4/libadwaita via `liblisa` (§5.6) for the shell, portals, Settings, apps and Forge output. Qt bindings remain for third parties who want them.
-- **Flutter (deleted 2026-08-06):** `libs/lisa_flutter` and the Dart `libs/lisa_ui` were removed. They were the first idea — build the apps in Flutter — and ADR-0047 chose GJS instead; keeping two kits one underscore apart was a trap, not an option (CLAUDE.md warned against importing the wrong one). ADR-0014 and ADR-0047 keep their text: they record what was true when written. **`lisa.sdk` is now a reserved name for the GJS/GTK4 shared library, and the directory does not exist yet** — first job, the Agent Bus edge (`mcp-protocol.js` / `mcp.js`), which exists in triplicate today and is why #218 had to be fixed three times.
+- **Flutter (deleted 2026-08-06):** `libs/lisa_flutter` and the Dart `libs/lisa_ui` were removed. They were the first idea — build the apps in Flutter — and ADR-0047 chose GJS instead; keeping two kits one underscore apart was a trap, not an option (CLAUDE.md warned against importing the wrong one). ADR-0014 and ADR-0047 keep their text: they record what was true when written. **`lisa.sdk` exists at `apps/lisa.sdk`** (renamed from the interim `lisa_ui`, 2026-08-07): the Agent Bus edge, the window shapes, the token sheets, and the one introspected copy of the system D-Bus interfaces (ADR-0060/0061).
 
 **What the Forge may produce is a security boundary, not a feature list (ADR-0031 §5).** Sequenced by blast radius, because the capability that makes Lisa able to build anything is the same fact that makes it dangerous:
 1. **GUI apps** — user session, bounded by the tool jail and the command allowlist. Shipping.
@@ -594,7 +594,7 @@ Role-separated envelope: system policy → user turn → context blocks, each fe
 - [ ] `os/layer/`: pacman repo tooling + `install.sh`/`uninstall.sh` for Track L; CI job installs the layer on vanilla-Arch and Omarchy VMs and runs the daemon smoke tests on both.
 - [ ] `os/layer/snapper/`: pre-update snapshot hook (`/` only, quotas off) + Limine sync config for Track L rollback.
 - [x] ~~Spike: Flutter-on-Lisa~~ — dropped by ADR-0047; the lane is parked and #37 closed won't-do.
-- [ ] `libs/lisa_ui` seed (GJS, ADR-0047): the shared `mcp-protocol.js`/`mcp.js` edge first, then the generated token sheet.
+- [x] the shared GJS library — shipped as `apps/lisa.sdk` (ADR-0056/0060): the MCP edge, window shapes, tokens and the bus module all landed 2026-08-06/07.
 - [ ] `libs/forge-harness` walking skeleton: plan→edit→validate→reload loop against a template project, backend = any OpenAI-compat endpoint (so it works off `inferenced` *and* a BYO agent from day one).
 
 ## Appendix E — Omarchy: what we adopt, what we skip (ADR-0003 rationale)

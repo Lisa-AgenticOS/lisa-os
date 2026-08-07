@@ -33,7 +33,7 @@
 // shipped and three when in the repo. A relative import can only mean
 // the same thing in both trees if the library sits beside the apps, so
 // it does. Every consumer of THIS module is an app; the day a shell
-// surface needs `lisa_ui`, that depth question has to be answered
+// surface needs the sdk, that depth question has to be answered
 // properly rather than papered over, and this comment is the warning.
 //
 // # What is app-specific, and what is not
@@ -54,14 +54,14 @@
 /// async handler.
 export function makeHandler({appId, provenance}) {
     if (typeof appId !== 'string' || !appId)
-        throw new Error('lisa_ui/mcp: appId is required');
+        throw new Error('lisa.sdk/mcp: appId is required');
     // A missing tag must not silently mean "untagged". An app whose
     // output reaches the model with no provenance is an app whose
     // output is treated as trusted, which is the failure this whole
     // edge exists to prevent — so it is a construction-time error, not
     // a runtime surprise on somebody's desktop.
     if (typeof provenance !== 'string' || !provenance)
-        throw new Error(`lisa_ui/mcp: ${appId} must declare a provenance tag`);
+        throw new Error(`lisa.sdk/mcp: ${appId} must declare a provenance tag`);
 
     return async function handleRequest(req, tools) {
         if (!req || req.jsonrpc !== '2.0') {

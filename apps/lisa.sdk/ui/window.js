@@ -38,9 +38,9 @@ import {installStyle} from './style.js';
 /// the chrome an app should be deciding.
 export function lisaWindow({app, title, width = 900, height = 640, content = null}) {
     if (!app)
-        throw new Error('lisa_ui/window: an Adw.Application is required');
+        throw new Error('lisa.sdk/window: an Adw.Application is required');
     if (typeof title !== 'string' || !title)
-        throw new Error('lisa_ui/window: a window needs a title');
+        throw new Error('lisa.sdk/window: a window needs a title');
 
     const window = new Adw.ApplicationWindow({
         application: app,
@@ -108,9 +108,9 @@ export function lisaSplitWindow({
     sidebarTitle = title, sidebarWidth = 300, overlay = true,
 }) {
     if (!app)
-        throw new Error('lisa_ui/window: an Adw.Application is required');
+        throw new Error('lisa.sdk/window: an Adw.Application is required');
     if (typeof title !== 'string' || !title)
-        throw new Error('lisa_ui/window: a window needs a title');
+        throw new Error('lisa.sdk/window: a window needs a title');
 
     const window = new Adw.ApplicationWindow({
         application: app,
@@ -236,9 +236,9 @@ export function lisaTripleWindow({
     sidebarWidth = 280, overlay = true,
 }) {
     if (!app)
-        throw new Error('lisa_ui/window: an Adw.Application is required');
+        throw new Error('lisa.sdk/window: an Adw.Application is required');
     if (typeof title !== 'string' || !title)
-        throw new Error('lisa_ui/window: a window needs a title');
+        throw new Error('lisa.sdk/window: a window needs a title');
 
     const window = new Adw.ApplicationWindow({
         application: app,

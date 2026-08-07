@@ -30,6 +30,14 @@ export function narrowIface(iface, members) {
     const ifaceMatch = full.match(/<interface name="([^"]+)">/);
     const kept = [];
     for (const name of members) {
+        // A member name is data, not pattern: escape it, or a name
+        // like `Memory.orget` would MATCH MemoryForget instead of
+        // throwing — the exact silent-drift this helper exists to
+        // refuse (#332).
+        if (!/^[A-Za-z][A-Za-z0-9]*$/.test(name))
+            throw new Error(
+                `lisa.sdk/bus: ${JSON.stringify(name)} is not a plain ` +
+                'member name');
         // A member is a <method> or <signal> element; args live inside,
         // so the match runs to the matching close tag. Self-closing
         // members (`<method name="Hide"/>`) match the second arm.

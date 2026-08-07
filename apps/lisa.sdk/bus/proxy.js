@@ -5,7 +5,7 @@
 // name/path constants — the drift machine #218 documents. A surface now
 // writes:
 //
-//     import {proxy} from '../lisa_ui/bus/proxy.js';
+//     import {proxy} from '../lisa.sdk/bus/proxy.js';
 //     const overlay = proxy('Overlay1');
 //     const qid = overlay.AskSync('hello', {})[0];
 //
@@ -24,7 +24,7 @@ const wrappers = new Map();
 /// The makeProxyWrapper class for an interface, built once per process.
 export function proxyClass(iface) {
     if (!IFACE_XML[iface])
-        throw new Error(`lisa_ui/bus: unknown interface ${iface}`);
+        throw new Error(`lisa.sdk/bus: unknown interface ${iface}`);
     if (!wrappers.has(iface))
         wrappers.set(iface, Gio.DBusProxy.makeProxyWrapper(IFACE_XML[iface]));
     return wrappers.get(iface);

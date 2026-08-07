@@ -65,10 +65,10 @@ README. (`apps/notes` was the example of a windowless app until
 a daemon and a window sharing one tool surface.)
 
 **If you do build a window, do not build it by hand.** Use
-`apps/lisa_ui`:
+`apps/lisa.sdk`:
 
-    import {lisaSplitWindow, headerButton} from '../lisa_ui/ui/window.js';
-    import {McpClient} from '../lisa_ui/mcp/client.js';
+    import {lisaSplitWindow, headerButton} from '../lisa.sdk/ui/window.js';
+    import {McpClient} from '../lisa.sdk/mcp/client.js';
 
     const ui = lisaSplitWindow({app, title: 'Notes', sidebarWidth: 320});
 
@@ -77,9 +77,9 @@ the glass pane every Lisa app shares — and it is glass by DEFAULT, so an
 app opts out rather than in. Hand-rolling `Adw.ApplicationWindow` +
 `Adw.HeaderBar` is what produced #282: eight surfaces, three answers to
 where the window controls go. `apps/notes/lisa-notes-app.js` is the
-worked example; `apps/lisa_ui/README.md` is the reference.
+worked example; `apps/lisa.sdk/README.md` is the reference.
 
-Speak to your own backend through `lisa_ui/mcp/client.js`, not by
+Speak to your own backend through `lisa.sdk/mcp/client.js`, not by
 opening its database. Notes' window calls the same five tools the model
 calls, so what the person sees and what the model sees are the same list
 by construction rather than by two pieces of code agreeing.

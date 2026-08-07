@@ -45,7 +45,7 @@ export function isDark() {
 /// paints something that no longer exists.
 export function onScheme(fn) {
     if (typeof fn !== 'function')
-        throw new Error('lisa_ui/theme: onScheme needs a function');
+        throw new Error('lisa.sdk/theme: onScheme needs a function');
     const mgr = Adw.StyleManager.get_default();
     const id = mgr.connect('notify::dark', () => fn(mgr.dark));
     // Immediately, not on the next change: a caller that only painted
