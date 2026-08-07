@@ -1,0 +1,42 @@
+<!-- Introspected from the running daemon on the reference device,
+     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+<node>
+<interface name="dev.lisaos.Voice1">
+    <method name="StartListening">
+      <arg type="t" name="session_id" direction="out">
+      </arg>
+    </method>
+    <method name="StopListening">
+      <arg type="t" name="session_id" direction="in">
+      </arg>
+    </method>
+    <method name="Cancel">
+      <arg type="t" name="session_id" direction="in">
+      </arg>
+    </method>
+    <method name="GetState">
+      <arg type="a{sv}" name="state" direction="out">
+      </arg>
+    </method>
+    <signal name="ListeningStarted">
+      <arg type="t" name="session_id">
+      </arg>
+    </signal>
+    <signal name="Transcribing">
+      <arg type="t" name="session_id">
+      </arg>
+    </signal>
+    <signal name="Transcribed">
+      <arg type="t" name="session_id">
+      </arg>
+      <arg type="s" name="text">
+      </arg>
+    </signal>
+    <signal name="Failed">
+      <arg type="t" name="session_id">
+      </arg>
+      <arg type="s" name="reason">
+      </arg>
+    </signal>
+  </interface>
+</node>

@@ -1,0 +1,39 @@
+<!-- Introspected from the running daemon on the reference device,
+     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+<node>
+<interface name="dev.lisaos.Harness1">
+    <method name="Ping">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Start a run. Returns immediately with an id; progress arrives as
+     signals, so a frontend stays responsive and can Cancel.
+     -->
+    <method name="Run">
+      <arg name="prompt" type="s" direction="in"/>
+      <arg name="options" type="a{sv}" direction="in"/>
+      <arg type="t" direction="out"/>
+    </method>
+    <!--
+     Ask a run to stop. It finishes the turn already in flight — a
+     tool call killed halfway is how half-done actions happen.
+     -->
+    <method name="Cancel">
+      <arg name="run_id" type="t" direction="in"/>
+    </method>
+    <signal name="Tool">
+      <arg name="run_id" type="t"/>
+      <arg name="name" type="s"/>
+      <arg name="detail" type="s"/>
+    </signal>
+    <signal name="Token">
+      <arg name="run_id" type="t"/>
+      <arg name="delta" type="s"/>
+    </signal>
+    <signal name="Finished">
+      <arg name="run_id" type="t"/>
+      <arg name="ok" type="b"/>
+      <arg name="summary" type="s"/>
+    </signal>
+  </interface>
+</node>

@@ -1,0 +1,54 @@
+<!-- Introspected from the running daemon on the reference device,
+     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+<node>
+<interface name="dev.lisaos.Overlay1">
+    <method name="Ask">
+      <arg type="s" name="prompt" direction="in">
+      </arg>
+      <arg type="a{sv}" name="options" direction="in">
+      </arg>
+      <arg type="t" name="query_id" direction="out">
+      </arg>
+    </method>
+    <method name="Cancel">
+      <arg type="t" name="query_id" direction="in">
+      </arg>
+    </method>
+    <method name="Respond">
+      <arg type="t" name="query_id" direction="in">
+      </arg>
+      <arg type="b" name="approve" direction="in">
+      </arg>
+    </method>
+    <method name="GetStatus">
+      <arg type="a{sv}" name="status" direction="out">
+      </arg>
+    </method>
+    <signal name="Started">
+      <arg type="t" name="query_id">
+      </arg>
+      <arg type="s" name="meta_json">
+      </arg>
+    </signal>
+    <signal name="Token">
+      <arg type="t" name="query_id">
+      </arg>
+      <arg type="s" name="text">
+      </arg>
+    </signal>
+    <signal name="ConfirmationNeeded">
+      <arg type="t" name="query_id">
+      </arg>
+      <arg type="s" name="spec_json">
+      </arg>
+    </signal>
+    <signal name="Finished">
+      <arg type="t" name="query_id">
+      </arg>
+      <arg type="s" name="status">
+      </arg>
+      <arg type="s" name="detail">
+      </arg>
+    </signal>
+  </interface>
+</node>

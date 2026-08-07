@@ -12,9 +12,24 @@ Notes; `lisaTripleWindow` for Mail.
 | `ui/tokens.js` | the generated design tokens, in the payload at last | step 2 |
 | `ui/window.js` | `lisaWindow`, `lisaSplitWindow`, `lisaTripleWindow` — one window shape, glass by default | steps 3–4 |
 | `ui/style.js` | the Lisa stylesheet, built at runtime from the tokens | step 2 |
+| `bus/` | the ONE copy of the seven system D-Bus interfaces + proxy factory | ADR-0060 |
 
-Consumers: `apps/notes` (split window + `mcp/client.js`) and
-`apps/mail` (triple window — rail+folders | messages | reader).
+Consumers: `apps/notes` (split window + `mcp/client.js`), `apps/mail`
+(triple window — rail+folders | messages | reader), and the overlay
+stack (`shell/overlay-extension` serves and consumes `bus/`'s XML).
+
+## `bus/` — the sdk's D-Bus edge (ADR-0060)
+
+`bus/xml/*.xml` is INTROSPECTED from the running daemons on the
+reference device — not copied from another hand copy — and
+`bus/interfaces.js` is generated from it
+(`os/repo-tools/build-bus-interfaces.py`; `--check` runs in the lint
+gate). `bus/addresses.js` is the pure name/path table (node-importable,
+no `gi://`), and `bus/proxy.js` adds `proxy('Overlay1')` for clients.
+The same tool ratchets hand-rolled declarations of the seven out of the
+tree: a legacy site can only leave the allowlist, never join it. The
+count was ~60 declarations across the GJS surfaces when ADR-0060 was
+written; it is 1 (the Assistant's deliberately narrow memory proxy).
 
 ## Glass is the default, and it is two halves
 

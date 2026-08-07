@@ -1,0 +1,55 @@
+<!-- Introspected from the running daemon on the reference device,
+     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+<node>
+<interface name="dev.lisaos.Context1">
+    <!--
+     Liveness probe.
+     -->
+    <method name="Ping">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Retrieval over the user's index. Options: "limit" (u, default
+     3), "hybrid" (b, BM25×cosine blend), "scopes" (as — when
+     present, the ACL-scoped path: only provenance the granted
+     scopes permit is ever returned, deny-by-default). Returns a
+     JSON array of hits. The ledger entry is appended before the
+     store is touched; append failure refuses the search.
+     -->
+    <method name="Search">
+      <arg name="query" type="s" direction="in"/>
+      <arg name="options" type="a{sv}" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Read one key from an app's memory namespace. A missing key is
+     an error (mirrors `lisa memory get`).
+     -->
+    <method name="MemoryGet">
+      <arg name="app" type="s" direction="in"/>
+      <arg name="key" type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Upsert one key in an app's memory namespace.
+     -->
+    <method name="MemorySet">
+      <arg name="app" type="s" direction="in"/>
+      <arg name="key" type="s" direction="in"/>
+      <arg name="value" type="s" direction="in"/>
+    </method>
+    <!--
+     All keys in an app's namespace as a JSON object (key → value).
+     -->
+    <method name="MemoryList">
+      <arg name="app" type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Wipe an app's namespace entirely (zero residual rows, §5.3).
+     -->
+    <method name="MemoryWipe">
+      <arg name="app" type="s" direction="in"/>
+    </method>
+  </interface>
+</node>

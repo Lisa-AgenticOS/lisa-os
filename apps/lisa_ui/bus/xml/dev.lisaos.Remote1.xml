@@ -1,0 +1,88 @@
+<!-- Introspected from the running daemon on the reference device,
+     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+<node>
+<interface name="dev.lisaos.Remote1">
+    <!--
+     Liveness probe.
+     -->
+    <method name="Ping">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Providers + credential presence + consent, one JSON document —
+     the Settings page renders straight from this.
+     -->
+    <method name="State">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Register a user-supplied OpenAI-compatible endpoint (§5.11).
+
+     Public-internet rules only. An endpoint on this machine or this
+     LAN is a deliberate, explained choice (#92), and Settings has no
+     UI for that question — so it is made where the question can
+     actually be asked: `lisa remote add --allow-local`.
+     -->
+    <method name="AddProvider">
+      <arg name="id" type="s" direction="in"/>
+      <arg name="display_name" type="s" direction="in"/>
+      <arg name="base_url" type="s" direction="in"/>
+    </method>
+    <method name="RemoveProvider">
+      <arg name="id" type="s" direction="in"/>
+    </method>
+    <!--
+     Store a credential. Write-only: no method returns key material.
+     -->
+    <method name="SetKey">
+      <arg name="id" type="s" direction="in"/>
+      <arg name="key" type="s" direction="in"/>
+    </method>
+    <method name="ClearKey">
+      <arg name="id" type="s" direction="in"/>
+    </method>
+    <!--
+     Flip a per-scope "may offload" switch (default: nothing leaves).
+     -->
+    <method name="SetConsent">
+      <arg name="scope" type="s" direction="in"/>
+      <arg name="allowed" type="b" direction="in"/>
+    </method>
+    <!--
+     Begin "Sign in with …" for an OAuth-capable provider (`anthropic`
+     or `openai`); returns the authorize URL for the panel to open in
+     the browser. The broker binds a loopback callback server and does
+     the token exchange when the browser redirects back; completion
+     arrives asynchronously via the `LoginCompleted` signal. Fails for
+     key-only providers.
+     -->
+    <method name="BeginLogin">
+      <arg name="provider_id" type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Forget a stored OAuth session (idempotent).
+     -->
+    <method name="Logout">
+      <arg name="provider_id" type="s" direction="in"/>
+    </method>
+    <!--
+     The provider's live model list (its own `/models`), as a JSON array
+     of ids — for the Settings model dropdown. Requires a stored key.
+     -->
+    <method name="ListModels">
+      <arg name="provider" type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Emitted once a `BeginLogin` flow finishes: `ok` true on a stored
+     session, false on error/timeout; `detail` is a human-readable
+     status. No token material is ever carried.
+     -->
+    <signal name="LoginCompleted">
+      <arg name="provider_id" type="s"/>
+      <arg name="ok" type="b"/>
+      <arg name="detail" type="s"/>
+    </signal>
+  </interface>
+</node>

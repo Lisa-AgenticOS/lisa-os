@@ -54,6 +54,12 @@ lint:
     # stale committed copy would ship the model answers about last
     # month's OS.
     python3 os/repo-tools/build-knowledge.py --check
+
+    # The sdk's one copy of the system D-Bus interfaces (ADR-0060): the
+    # generated module must match the introspected xml/, and a surface
+    # declaring its own copy of the seven is the drift machine #218
+    # documents — the allowlist of legacy sites only ever shrinks.
+    python3 os/repo-tools/build-bus-interfaces.py --check
     # A boot splash pointed at a theme that no longer exists is a black
     # screen, and on hardware with no ACPI BGRT image a correct Lisa
     # splash is ALSO a black screen — so the two are indistinguishable

@@ -1,0 +1,83 @@
+<!-- Introspected from the running daemon on the reference device,
+     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+<node>
+<interface name="dev.lisaos.Agent1">
+    <!--
+     Liveness probe.
+     -->
+    <method name="Ping">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     All registered tools as a JSON array
+     (`[{app_id, name, tier, description, undoable}]`).
+     -->
+    <method name="ListTools">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Discovery: rank tools against a natural-language query.
+     -->
+    <method name="Discover">
+      <arg name="query" type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Request a tool call. Read-tier calls with a fully trusted chain
+     execute immediately; everything else parks and emits
+     ConfirmationRequested (answer via Confirm). Every path is
+     ledgered before anything happens.
+     -->
+    <method name="RequestCall">
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="tool" type="s" direction="in"/>
+      <arg name="args_json" type="s" direction="in"/>
+      <arg name="options" type="a{sv}" direction="in"/>
+      <arg type="t" direction="out"/>
+      <arg type="s" direction="out"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Answer a pending confirmation. Status: "executed" | "failed" |
+     "denied".
+     -->
+    <method name="Confirm">
+      <arg name="call_id" type="t" direction="in"/>
+      <arg name="approve" type="b" direction="in"/>
+      <arg type="s" direction="out"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Revert the caller's last agent action via its journaled
+     compensation.
+
+     The identity comes from the transport, never from the message
+     (ADR-0033). This method used to take no arguments at all and
+     hardcode the actor `"host"`, so any peer on the session bus could
+     revert any other peer's action and the Ledger would attribute it
+     to "host" (#94).
+     -->
+    <method name="Undo">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Emitted when a call parks for confirmation; `spec_json` carries
+     the typed-diff material (tool, args, tiers, escalation, chain).
+     -->
+    <signal name="ConfirmationRequested">
+      <arg name="call_id" type="t"/>
+      <arg name="spec_json" type="s"/>
+    </signal>
+    <!--
+     Emitted when a call is REFUSED (#251). There is no parked call
+     behind it and no `Confirm` that can answer it: `report_json` is
+     for a dialog that reports, with one button and no approving
+     control. It carries no arguments and no command, so nothing
+     downstream can rebuild the refused action from it.
+     -->
+    <signal name="RefusalReported">
+      <arg name="call_id" type="t"/>
+      <arg name="report_json" type="s"/>
+    </signal>
+  </interface>
+</node>

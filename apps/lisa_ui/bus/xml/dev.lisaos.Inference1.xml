@@ -1,0 +1,22 @@
+<!-- Introspected from the running daemon on the reference device,
+     2026-08-07. Regenerate: os/repo-tools/build-bus-interfaces.py --pull -->
+<node>
+<interface name="dev.lisaos.Inference1">
+    <!--
+     Liveness probe.
+     -->
+    <method name="Ping">
+      <arg type="s" direction="out"/>
+    </method>
+    <!--
+     Open a session. Returns the session object path and the read end
+     of the token pipe. Options: "model_hint" (s) selects a resident
+     model; memory_ns and scopes arrive with the portal (M2).
+     -->
+    <method name="OpenSession">
+      <arg name="options" type="a{sv}" direction="in"/>
+      <arg type="o" direction="out"/>
+      <arg type="h" direction="out"/>
+    </method>
+  </interface>
+</node>

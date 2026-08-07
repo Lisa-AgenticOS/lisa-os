@@ -38,46 +38,24 @@
 // external call a query id. Cancel() on a query awaiting consent
 // answers "deny".
 
-export const OVERLAY_IFACE_XML = `
-<node>
-  <interface name="dev.lisaos.Overlay1">
-    <method name="Ask">
-      <arg type="s" name="prompt" direction="in"/>
-      <arg type="a{sv}" name="options" direction="in"/>
-      <arg type="t" name="query_id" direction="out"/>
-    </method>
-    <method name="Cancel">
-      <arg type="t" name="query_id" direction="in"/>
-    </method>
-    <method name="Respond">
-      <arg type="t" name="query_id" direction="in"/>
-      <arg type="b" name="approve" direction="in"/>
-    </method>
-    <method name="GetStatus">
-      <arg type="a{sv}" name="status" direction="out"/>
-    </method>
-    <signal name="Started">
-      <arg type="t" name="query_id"/>
-      <arg type="s" name="meta_json"/>
-    </signal>
-    <signal name="Token">
-      <arg type="t" name="query_id"/>
-      <arg type="s" name="text"/>
-    </signal>
-    <signal name="ConfirmationNeeded">
-      <arg type="t" name="query_id"/>
-      <arg type="s" name="spec_json"/>
-    </signal>
-    <signal name="Finished">
-      <arg type="t" name="query_id"/>
-      <arg type="s" name="status"/>
-      <arg type="s" name="detail"/>
-    </signal>
-  </interface>
-</node>`;
+import {IFACE_XML} from '../../lisa_ui/bus/interfaces.js';
+import {BUS} from '../../lisa_ui/bus/addresses.js';
 
-export const OVERLAY_BUS_NAME = 'dev.lisaos.Overlay1';
-export const OVERLAY_OBJECT_PATH = '/dev/lisaos/Overlay1';
+// The three SYSTEM interfaces this surface speaks come from the sdk's
+// one copy (ADR-0060, introspected from the running daemons) — the XML
+// blocks that lived here are re-exports now, so the backend exports and
+// every frontend consumes the same node the daemons actually serve.
+export const OVERLAY_IFACE_XML = IFACE_XML.Overlay1;
+export const OVERLAY_BUS_NAME = BUS.Overlay1.name;
+export const OVERLAY_OBJECT_PATH = BUS.Overlay1.path;
+export const VOICE_IFACE_XML = IFACE_XML.Voice1;
+export const VOICE_BUS_NAME = BUS.Voice1.name;
+export const VOICE_OBJECT_PATH = BUS.Voice1.path;
+export const HARNESS_IFACE_XML = IFACE_XML.Harness1;
+export const HARNESS_BUS_NAME = BUS.Harness1.name;
+export const HARNESS_OBJECT_PATH = BUS.Harness1.path;
+
+
 
 // dev.lisaos.Voice1 — push-to-talk capture (PLAN §5.7.5).
 //
@@ -95,40 +73,7 @@ export const OVERLAY_OBJECT_PATH = '/dev/lisaos/Overlay1';
 // Transcribed carries the text rather than the audio path: the audio is
 // deleted as soon as it has been transcribed, and a surface that never
 // receives a path cannot accidentally keep one.
-export const VOICE_IFACE_XML = `
-<node>
-  <interface name="dev.lisaos.Voice1">
-    <method name="StartListening">
-      <arg type="t" name="session_id" direction="out"/>
-    </method>
-    <method name="StopListening">
-      <arg type="t" name="session_id" direction="in"/>
-    </method>
-    <method name="Cancel">
-      <arg type="t" name="session_id" direction="in"/>
-    </method>
-    <method name="GetState">
-      <arg type="a{sv}" name="state" direction="out"/>
-    </method>
-    <signal name="ListeningStarted">
-      <arg type="t" name="session_id"/>
-    </signal>
-    <signal name="Transcribing">
-      <arg type="t" name="session_id"/>
-    </signal>
-    <signal name="Transcribed">
-      <arg type="t" name="session_id"/>
-      <arg type="s" name="text"/>
-    </signal>
-    <signal name="Failed">
-      <arg type="t" name="session_id"/>
-      <arg type="s" name="reason"/>
-    </signal>
-  </interface>
-</node>`;
 
-export const VOICE_BUS_NAME = 'dev.lisaos.Voice1';
-export const VOICE_OBJECT_PATH = '/dev/lisaos/Voice1';
 
 // dev.lisaos.Overlay1.UI — UI-control surface owned by a *frontend*
 // (the GNOME Shell extension here; the wlr-layer-shell client can own
@@ -149,39 +94,7 @@ export const VOICE_OBJECT_PATH = '/dev/lisaos/Voice1';
 ///
 /// Deliberately shaped like Ask/Token/Finished, so adopting it was a
 /// change of destination rather than a rewrite of the rendering.
-export const HARNESS_IFACE_XML = `
-<node>
-  <interface name="dev.lisaos.Harness1">
-    <method name="Ping">
-      <arg type="s" direction="out" name="version"/>
-    </method>
-    <method name="Run">
-      <arg type="s" direction="in" name="prompt"/>
-      <arg type="a{sv}" direction="in" name="options"/>
-      <arg type="t" direction="out" name="run_id"/>
-    </method>
-    <method name="Cancel">
-      <arg type="t" direction="in" name="run_id"/>
-    </method>
-    <signal name="Tool">
-      <arg type="t" name="run_id"/>
-      <arg type="s" name="name"/>
-      <arg type="s" name="detail"/>
-    </signal>
-    <signal name="Token">
-      <arg type="t" name="run_id"/>
-      <arg type="s" name="delta"/>
-    </signal>
-    <signal name="Finished">
-      <arg type="t" name="run_id"/>
-      <arg type="b" name="ok"/>
-      <arg type="s" name="summary"/>
-    </signal>
-  </interface>
-</node>`;
 
-export const HARNESS_BUS_NAME = 'dev.lisaos.Harness1';
-export const HARNESS_OBJECT_PATH = '/dev/lisaos/Harness1';
 
 export const OVERLAY_UI_IFACE_XML = `
 <node>
