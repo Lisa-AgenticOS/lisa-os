@@ -42,6 +42,11 @@ lint:
     # favorite-apps in the wrong override stanza compiles to nothing: the
     # dock shipped a default that had never been applied (#263).
     python3 os/repo-tools/check-dock.py
+    # GJS resolves imports against the extension-farm symlink path, so a
+    # farm entry the PKGBUILD forgets kills an extension only on a
+    # shipped image — where v20260807.85 shipped the assistant dead
+    # while every other check was green (#333).
+    python3 os/repo-tools/check-extension-imports.py
     # docs/KEYBOARD.md is derived from the files that bind the keys, so
     # nobody has to trust a table (#257). A shortcut added, removed or
     # rebound without the map following fails here.
