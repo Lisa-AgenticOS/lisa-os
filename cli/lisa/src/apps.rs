@@ -602,23 +602,72 @@ pub fn update(only: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `lisa apps sync`: install auto-sync channels that have NO tree on /var
-/// yet, and leave everything already installed alone.
+/// A channel tree that lags `image` while that image bakes a floor copy
+/// beneath it. Resolution prefers the channel tree, so such a tree is not
+/// "a version the user chose to keep" — it is an old release's surfaces
+/// shadowing the new OS's own (#333: v20260807.85 booted with a
+/// 20260804.77 shell, and sync reported all-is-well).
+fn shadow_stale(ch: &Channel, image: &str) -> Option<String> {
+    if !ch.baked_is_floor || !ch.is_tree(&abs(ch.baked?)) {
+        return None;
+    }
+    if !ch.is_tree(&ch.current_link()) {
+        return None;
+    }
+    let cur = current_version(ch)?;
+    (ver_key(&cur) < ver_key(image)).then_some(cur)
+}
+
+/// Stop a stale tree from shadowing the image's newer baked copy: drop
+/// the `current` symlink so resolution falls through to the baked tree.
+/// This parks, it does not delete — the tree stays under `versions/` and
+/// `lisa apps update` reinstates the channel at a current version.
+fn unshadow(ch: &Channel) -> anyhow::Result<()> {
+    let link = ch.current_link();
+    std::fs::remove_file(&link).with_context(|| format!("unparking {}", link.display()))
+}
+
+/// `lisa apps sync`: bring /var payloads into step with the image, without
+/// ever moving an installed payload AHEAD of it behind the user's back.
 ///
-/// This is the "never lose a payload the image does not carry" path
-/// (ADR-0023 phase 1). It runs from lisa-apps-sync.timer once the machine is
-/// online, and from `lisa update` before a new root slot is staged — so a
-/// device about to boot a slimmer image already has what it needs on its
-/// persistent /var. Deliberately NOT an upgrade: a payload the user already
-/// has never moves version behind their back.
+/// Two shapes of work, not one (#333):
+///
+///  * a channel with NO tree whose payload the image does not carry
+///    (`auto_sync`) is fetched before the user reaches for it — the
+///    "never lose a payload the image does not carry" path (ADR-0023
+///    phase 1);
+///  * an installed tree that LAGS the booted image is parked, offline,
+///    so resolution falls through to the image's newer baked copy.
+///    "Leave installed payloads alone" was the old rule here, and it
+///    preserved nothing: the stale tree shadowed the new image's own
+///    surfaces while this function printed "already installed".
+///
+/// Runs from lisa-apps-sync.timer once the machine is online, and (via
+/// `sync_for_update`) from `lisa update` before a new root slot is
+/// staged. The timer still never *upgrades* an installed tree — parking
+/// falls back to the copy the user's chosen image carries, which is the
+/// opposite of moving a version behind their back.
 pub fn sync() -> anyhow::Result<()> {
     let arch = payload_arch();
+    if let Some(image) = crate::running_image_version() {
+        for ch in CHANNELS {
+            if let Some(v) = shadow_stale(ch, &image) {
+                println!(
+                    "{}: installed {v} lags image {image} and was shadowing the \
+                     image's newer copy — parking it (versions/{v} is kept; \
+                     `lisa apps update` reinstates the channel)",
+                    ch.name
+                );
+                unshadow(ch)?;
+            }
+        }
+    }
     let missing: Vec<&Channel> = CHANNELS
         .iter()
         .filter(|c| c.auto_sync && !c.is_tree(&c.current_link()))
         .collect();
     if missing.is_empty() {
-        println!("apps sync: every auto-synced payload is already installed");
+        println!("apps sync: payloads are in step with the image");
         return Ok(());
     }
     let mut rel = Release::latest()?;
@@ -639,6 +688,51 @@ pub fn sync() -> anyhow::Result<()> {
     }
     if failed > 0 {
         bail!("{failed} payload(s) could not be synced");
+    }
+    Ok(())
+}
+
+/// The pre-staging half of `lisa update`: everything `sync` does, PLUS
+/// move every channel with an installed tree to the release being staged.
+///
+/// The timer's `sync` never upgrades an installed tree — that would move
+/// a version behind the user's back. `lisa update` is the user asking
+/// for exactly that move: the GJS surfaces are part of the OS they are
+/// updating, and a channel tree left at the old version shadows the new
+/// image's own copy after the reboot (#333).
+pub fn sync_for_update() -> anyhow::Result<()> {
+    sync()?;
+    let installed: Vec<&Channel> = CHANNELS
+        .iter()
+        .filter(|c| c.is_tree(&c.current_link()))
+        .collect();
+    if installed.is_empty() {
+        return Ok(());
+    }
+    let arch = payload_arch();
+    let mut rel = Release::latest()?;
+    let mut failed = 0usize;
+    for ch in installed {
+        match install(ch, &mut rel, &arch) {
+            Ok(Outcome::Installed(v)) => {
+                println!(
+                    "{}: staged {v} to match the release being installed",
+                    ch.name
+                )
+            }
+            Ok(Outcome::AlreadyCurrent(v)) => println!("{}: {v} is already current", ch.name),
+            Ok(Outcome::NotPublished) => println!(
+                "{}: release {} publishes no payload for {arch} — the image copy applies",
+                ch.name, rel.tag
+            ),
+            Err(e) => {
+                eprintln!("!! {}: {e:#}", ch.name);
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} payload(s) could not be staged for the update");
     }
     Ok(())
 }
@@ -851,6 +945,62 @@ mod tests {
         rollback(Some("shell")).unwrap();
         assert!(base.join("current").read_link().is_err());
         unsafe { std::env::remove_var("LISA_APPS_STATE") };
+    }
+
+    /// #333: a channel tree older than the booted image shadows the
+    /// image's newer baked copy, because resolution prefers the channel
+    /// tree. sync parks it — symlink only — so resolution falls through
+    /// to baked; a tree at or ahead of the image, or one with no baked
+    /// floor beneath it, is left alone.
+    #[test]
+    fn a_tree_lagging_the_image_is_parked_and_resolution_falls_to_baked() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let state = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        // SAFETY: test-scoped env, serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("LISA_APPS_STATE", state.path());
+            std::env::set_var("LISA_APPS_ROOT", root.path());
+        }
+        let ch = chan("shell");
+        // The image's baked floor exists and is a real tree.
+        let baked = root.path().join("usr/share/lisa/shell").join(ch.probe);
+        std::fs::create_dir_all(baked.parent().unwrap()).unwrap();
+        std::fs::write(&baked, "// baked\n").unwrap();
+        make_tree(ch, "20260804.77");
+        flip_current(ch, "20260804.77").unwrap();
+
+        // At or ahead of the image: not stale. (Ahead is the state
+        // `lisa apps update` legitimately creates between releases.)
+        assert_eq!(shadow_stale(ch, "20260804.77"), None);
+        assert_eq!(shadow_stale(ch, "20260803.70"), None);
+        // Behind it: stale, and parking falls through to baked.
+        assert_eq!(
+            shadow_stale(ch, "20260807.85").as_deref(),
+            Some("20260804.77")
+        );
+        unshadow(ch).unwrap();
+        assert_eq!(shadow_stale(ch, "20260807.85"), None);
+        let got = ch.resolve().expect("the baked tree still resolves");
+        assert_eq!(got.source, Source::Baked);
+        // Parked, not deleted: the version tree survives for reinstall.
+        assert!(
+            state
+                .path()
+                .join("payloads/shell/versions/20260804.77")
+                .join(ch.probe)
+                .exists()
+        );
+
+        // Without a baked floor the same lag is NOT parked — parking
+        // would lose the only copy of the surface.
+        std::fs::remove_file(&baked).unwrap();
+        flip_current(ch, "20260804.77").unwrap();
+        assert_eq!(shadow_stale(ch, "20260807.85"), None);
+        unsafe {
+            std::env::remove_var("LISA_APPS_STATE");
+            std::env::remove_var("LISA_APPS_ROOT");
+        }
     }
 
     /// Every channel owns a directory under `payloads/`, and no channel

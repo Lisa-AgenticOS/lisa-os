@@ -240,6 +240,47 @@ fn status_says_plainly_when_the_recorded_version_does_not_launch() {
     );
 }
 
+/// #333: a base that is not absolute resolves against the launcher's own
+/// cwd — observed once on the reference device as gjs importing a surface
+/// relative to $HOME off a mid-sync channel. Wherever such a base comes
+/// from, it is never a payload tree: the launcher must skip it, even when
+/// the file it names happens to exist.
+#[test]
+fn a_relative_base_is_refused_even_when_its_file_exists() {
+    let w = World::new();
+    // A tree that WOULD resolve if the relative base were honored.
+    let cwd = w._dir.path().join("home");
+    std::fs::create_dir_all(cwd.join("reltree/assistant")).unwrap();
+    std::fs::write(
+        cwd.join("reltree/assistant/lisa-assistant.js"),
+        "// MARKER-333-relative\n",
+    )
+    .unwrap();
+    let run = Command::new("sh")
+        .arg(repo().join("os/packages/lisa/lisa-app"))
+        .arg("assistant/lisa-assistant.js")
+        .current_dir(&cwd)
+        .env("PATH", format!("{}:/usr/bin:/bin", w.bin.display()))
+        .env("LISA_APPS_STATE", &w.state)
+        .env("LISA_APPS_ROOT", &w.sysroot)
+        .env("LISA_APPS_DIR", "reltree")
+        .output()
+        .expect("running lisa-app");
+    assert!(
+        !stdout(&run).contains("MARKER-333-relative"),
+        "the launcher resolved a surface through a relative base: {:?}",
+        stdout(&run)
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(127),
+        "with no absolute tree anywhere, the launch must fail loudly, \
+         not fall back to guessing: {}{}",
+        stdout(&run),
+        stderr(&run)
+    );
+}
+
 /// The launcher must not carry a payload path of its own. One spelling
 /// lives in cli/lisa/src/apps.rs; a second one in a shell script is the
 /// defect, and a third would be a "fix" that reproduces it.

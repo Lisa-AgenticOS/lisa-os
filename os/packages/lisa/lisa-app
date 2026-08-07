@@ -29,6 +29,11 @@ IFS='
 found=
 for base in "${LISA_APPS_DIR:-}" $(lisa apps path shell 2>/dev/null || true); do
     [ -n "$base" ] || continue
+    # A base that is not absolute resolves against THIS process's cwd —
+    # observed once on 2026-08-07 as gjs importing overlay-extension
+    # relative to $HOME off a mid-sync channel (#333). Whatever produced
+    # it, a relative base is never a payload tree: refuse, don't guess.
+    case "$base" in /*) ;; *) continue ;; esac
     if [ -f "$base/$rel" ]; then found="$base/$rel"; break; fi
 done
 

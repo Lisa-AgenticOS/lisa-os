@@ -2403,11 +2403,13 @@ fn update_cmd(reboot: bool) -> anyhow::Result<()> {
     // payloads this one does. Pull what is missing onto the PERSISTENT
     // /var first, while the current slot's baked copy is still there to
     // fall back on, so the reboot never lands on a system missing a
-    // surface. Best-effort on purpose: an unreachable app channel must
-    // not block an OS security update, but it must be loud, because the
-    // silent version of this failure is a user who reboots into a
-    // desktop with something missing.
-    if let Err(e) = apps::sync() {
+    // surface — and move every INSTALLED channel tree to the release
+    // being staged, or it shadows the new image's own surfaces after
+    // the reboot (#333). Best-effort on purpose: an unreachable app
+    // channel must not block an OS security update, but it must be
+    // loud, because the silent version of this failure is a user who
+    // reboots into a desktop with something missing.
+    if let Err(e) = apps::sync_for_update() {
         // Two different failures wearing one message (#140).
         //
         // The payload tree lives on root-owned /var, so a desktop user
