@@ -74,7 +74,7 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**64 records** — 5 superseded in part, 27 accepted and partly executed, 3 accepted with no code yet, 25 accepted and done, 4 proposed.
+**64 records** — 5 superseded in part, 27 accepted and partly executed, 3 accepted with no code yet, 26 accepted and done, 3 proposed.
 
 **169 machine-checked claims across 60 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
 
@@ -143,7 +143,7 @@ grep.
 | [0061](0061-lisa-coder-grows-from-forge-harness.md) | Lisa Coder grows from forge-harness; other harnesses are quarries | accepted | 2 | — |
 | [0062](0062-one-summon-surface.md) | one summon surface: the typed ask lives in Spotlight | accepted | 2 | — |
 | [0063](0063-settings-is-a-lisa-app.md) | Settings is a Lisa app; the g-c-c fork retires | accepted, not implemented | 2 | — |
-| [0064](0064-identity-cannot-come-from-a-claimable-name.md) | identity cannot come from a claimable name: harnessd leaves the user namespace | proposed | 3 | — |
+| [0064](0064-identity-cannot-come-from-a-claimable-name.md) | identity cannot come from a claimable name: harnessd leaves the user namespace | accepted | 3 | — |
 
 <!-- END GENERATED INDEX -->
 

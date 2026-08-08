@@ -1,7 +1,12 @@
 # ADR-0064 — identity cannot come from a claimable name: harnessd leaves the user namespace
 
-- **Status:** proposed
-- **Date:** 2026-08-07
+- **Status:** accepted
+- **Date:** 2026-08-07 (accepted 2026-08-08)
+- **Owner decision:** accepted the sandbox trade explicitly — harnessd
+  drops its mount-class confinement to read `/proc/<peer>/exe` itself,
+  with the guardrails that bound the *model* (bus tiers, Landlock on
+  tools, `IPAddressDeny`) named as the ones that carry the weight.
+  Lands as one reviewed change on the next release cut.
 - **Trigger:** the adversarial close-replay of #306. The fix under
   review moved the trust root one hop instead of removing it, and the
   replacement root is squattable on the reference device *today*.

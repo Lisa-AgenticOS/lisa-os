@@ -63,14 +63,37 @@ RestrictAddressFamilies=AF_UNIX
 # longer exists.
 IPAddressDeny=any
 NoNewPrivileges=yes
-PrivateDevices=yes
-ProtectHome=read-only
-ProtectSystem=strict
+# NO mount-class sandboxing (PrivateDevices/ProtectHome/ProtectSystem) —
+# removed deliberately (#306, ADR-0064). A per-user unit can only apply
+# those through an implicit private user namespace, and inside one,
+# readlink /proc/<peer>/exe is EACCES for every peer (#161). That is
+# what forced harnessd to ask agentd "is this caller a prompt surface"
+# over dev.lisaos.Agent1 — a claimable name a squatter could own and
+# then answer about ITSELF, restoring the very #306 escalation the
+# delegation was meant to close.
+#
+# So harnessd reads /proc/<peer>/exe itself now, which means it may not
+# run in a namespace that hides it. The cost is real: this is the
+# process the model runs inside. It is accepted because the guardrails
+# that bound the MODEL are elsewhere and unaffected — the Agent Bus's
+# tier and provenance-escalation checks (ADR-0036 §3), Landlock on the
+# shell/command tools (#307, #309), and the two directives above that
+# DO apply unprivileged: NoNewPrivileges and the AF_UNIX-only socket
+# filter. The mount options bounded harnessd's own view of the disk,
+# not the model's reach, which runs through tools. See ADR-0064 for the
+# rejected alternatives and the full argument.
 # Per-user state. StateDirectory gives this unit its own directory
 # under the user's home, so two people on one machine never share an
 # assistant Ledger.
+#
+# ReadWritePaths is GONE with the Protect* options (#306, ADR-0064): it
+# exists only to re-grant write access to paths a ProtectHome/ProtectSystem
+# read-only mount took away, so it is meaningless without them — and it is
+# itself a mount-class option, so leaving it in would keep the private
+# user namespace that makes /proc/<peer>/exe EACCES, defeating the whole
+# point of dropping the others. With no read-only mount over the home, a
+# user unit writes ~/.local/share/lisa normally.
 StateDirectory=lisa
-ReadWritePaths=%h/.local/share/lisa
 
 [Install]
 WantedBy=default.target

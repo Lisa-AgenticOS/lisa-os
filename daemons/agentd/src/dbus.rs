@@ -274,98 +274,15 @@ async fn name_owner_is_a_consent_program(conn: &zbus::Connection, owner: &str) -
     )
 }
 
-/// Programs that run a model in-process, as absolute executable paths.
-///
-/// Two consequences follow from being on this list, and they pull in
-/// opposite directions on purpose:
-///
-/// 1. The program may assert `user` provenance (below), because it
-///    derives that class from *its own* caller's transport identity
-///    rather than believing a message — `lisa-harnessd` resolves the
-///    trigger class from `GetConnectionCredentials` + `GetNameOwner`
-///    (ADR-0036 §1, `harnessd/src/caller.rs`). Without this the
-///    Assistant's every read was downgraded to `app:` and escalated to
-///    a chip nobody could see: observed on the reference iMac on
-///    2026-08-05 as 3,000-odd `agent.provenance_downgrade` entries.
-/// 2. The program may **never approve a call it made**, at any tier
-///    (`lisa_guard::judge_approval`). It is the process the model is
-///    running inside, so its `Confirm` is the model's `Confirm`.
-///
-/// One list, because the two facts are the same fact: this is where the
-/// probabilistic system lives. Granting the trust without taking the
-/// approval right would be #145 again with a different process name.
-///
-/// # The honest limit
-///
-/// `lisa assist` runs the same loop inside `/usr/bin/lisa`, and the CLI
-/// is NOT here — because the same executable is also `lisa do`, which
-/// is a person typing at their own terminal and must keep answering its
-/// own chip (ADR-0030 §1). Program identity cannot tell those apart, so
-/// the CLI loop is not offered write-tier tools at all
-/// (`bus_tools::read_tier_tools`, and #216's option 1 for that surface).
-/// A `lisa-assistd` with its own executable is what would resolve it.
-pub const MODEL_HOSTS: [&str; 1] = ["/usr/bin/lisa-harnessd"];
-
-/// Programs that may be a surface a person types into, as absolute
-/// executable paths (#306).
-///
-/// The companion of `harnessd`'s `PROMPT_SURFACES`, which lists the
-/// well-known *names*. Same split as [`CONSENT_SURFACE_PROGRAMS`] and
-/// the same reason: the name says a peer asked for the role, this says
-/// what it is running. `app.lisaos.Assistant` is D-Bus-activatable and
-/// therefore usually unowned, so under `<allow own="*"/>` the name alone
-/// went to whoever called `RequestName` first — demonstrated on the
-/// reference device with an ordinary `python3` process (#306).
-///
-/// # Why the list lives here and the names live there
-///
-/// `lisa-harnessd.service` is a per-user unit carrying `ProtectHome`,
-/// `ProtectSystem=strict` and `PrivateDevices`, which a user manager can
-/// only deliver through an implicit private user namespace — and from
-/// inside one, `readlink /proc/<peer>/exe` is EACCES for every peer
-/// outside it (#161). Re-verified while writing this, with a positive
-/// control: the same command in an unsandboxed transient user unit
-/// resolves `/usr/bin/lisa-agentd` and `/usr/bin/gjs-console`, and
-/// inside the sandboxed one both are "Permission denied".
-///
-/// So harnessd cannot answer this question about anybody, and agentd —
-/// which runs in the initial user namespace (`uid_map` `0 0 4294967295`,
-/// verified on the device) — can. Hence `IsPromptSurface`.
-///
-/// # The same limit as the consent list
-///
-/// The Assistant is `Exec=/usr/bin/lisa-app assistant/lisa-assistant.js
-/// --gapplication-service`, so the kernel's answer for it is
-/// `/usr/bin/gjs-console`. This refuses every compiled squatter and the
-/// `python3` one that was actually demonstrated; it does not refuse a
-/// hostile GJS script. `/usr/bin/lisa-assistant` is listed for the day
-/// the Assistant has an executable of its own, which is what closes it.
-pub const PROMPT_SURFACE_PROGRAMS: [&str; 2] = ["/usr/bin/lisa-assistant", "/usr/bin/gjs"];
-
-/// Does this executable belong to a surface a person types into?
-///
-/// Fails CLOSED: an unreadable peer is not a prompt surface, and the
-/// cost of being wrong is that a run is classed `Trigger::Event`, whose
-/// content is never trusted — the safe direction.
-fn exe_is_prompt_program(same_user: bool, exe: Option<&std::path::Path>) -> bool {
-    let programs: Vec<std::path::PathBuf> = PROMPT_SURFACE_PROGRAMS
-        .iter()
-        .map(std::path::PathBuf::from)
-        .collect();
-    // A model host is never a prompt surface, whatever the allowlists
-    // say. Belt and braces over the disjointness test below: the two
-    // lists being edited apart is exactly the drift that would turn the
-    // loop into its own "human typed this" (#306's laundering chain).
-    if exe_hosts_a_model(same_user, exe) {
-        return false;
-    }
-    lisa_peer::manager::may_manage(
-        same_user,
-        exe,
-        &lisa_peer::manager::resolve_managers(&programs),
-    )
-    .is_ok()
-}
+// The model-host and prompt-surface identity policy is ONE shared
+// definition in lisa-peer (#306, ADR-0064): harnessd reads /proc
+// itself now, so both daemons must agree on "is a prompt surface"
+// or the two copies drift into a "human typed this" an attacker
+// controls. MODEL_HOSTS keeps the agentd trust rules it always had —
+// a model host is offered `user` provenance (resolved from its own
+// caller's transport identity, not a message) and may never approve a
+// call it made (#145) — enforced where those checks live below.
+use lisa_peer::prompt_surface::hosts_a_model as exe_hosts_a_model;
 
 /// Is this caller one of Lisa's own programs?
 ///
@@ -394,37 +311,6 @@ async fn caller_is_lisa_program(
         exe.as_deref(),
         &lisa_peer::manager::default_managers(),
     ) || exe_hosts_a_model(same_user, exe.as_deref())
-}
-
-/// Does this caller run a model in-process?
-///
-/// Same authority as everything else here: the kernel's answer for
-/// `/proc/<pid>/exe`, symlink-resolved on both sides (#215 — the
-/// allowlist compared as written never matched a payload behind a
-/// `current` symlink, and the failure looked like a security decision).
-///
-/// Fails CLOSED **towards being a model host is false**, which is the
-/// permissive direction for [`crate::bus::AgentBus::confirm`] — so it
-/// is deliberately paired with `caller_is_lisa_program` above, where
-/// the same unreadable peer fails closed towards *less* trust. A caller
-/// we cannot identify therefore gets neither the provenance nor a
-/// silent path: its `user` claim is downgraded, everything it asks for
-/// escalates, and the escalated tier is a modal only the dialog can
-/// answer.
-fn exe_hosts_a_model(same_user: bool, exe: Option<&std::path::Path>) -> bool {
-    if !same_user {
-        return false;
-    }
-    let Some(exe) = exe else {
-        return false;
-    };
-    let hosts: Vec<std::path::PathBuf> = MODEL_HOSTS.iter().map(std::path::PathBuf::from).collect();
-    lisa_peer::manager::may_manage(
-        same_user,
-        Some(exe),
-        &lisa_peer::manager::resolve_managers(&hosts),
-    )
-    .is_ok()
 }
 
 /// The transport's answer to "does this caller host a model", for the
@@ -803,59 +689,6 @@ impl Agent1 {
         Ok((status, detail))
     }
 
-    /// Is the connection `unique_name` running a prompt-surface program?
-    ///
-    /// The one question `lisa-harnessd` cannot answer for itself. Its
-    /// unit is sandboxed into a private user namespace, from which
-    /// `/proc/<peer>/exe` is EACCES for every peer (#161); agentd is in
-    /// the initial namespace and can read it. Without this, harnessd's
-    /// "a human typed this" ceiling rested entirely on who owned
-    /// `app.lisaos.Assistant`, and that name is activatable, ordinarily
-    /// unowned, and grantable to anybody under `<allow own="*"/>`
-    /// (#306).
-    ///
-    /// # This is an identity oracle, and the guard is the whole of its
-    /// safety
-    ///
-    /// It tells its caller something about a third connection, so it is
-    /// restricted to callers that are themselves model hosts by
-    /// `/proc/<pid>/exe` — the same list, and the same authority, that
-    /// decides who may claim `user` provenance. Everyone else gets
-    /// `AccessDenied` with a fixed string that says nothing about the
-    /// name they asked about, so it cannot be used to probe which
-    /// connections exist.
-    ///
-    /// It answers only about **unique** names (`:1.412`).
-    /// `lisa_peer::resolve_unique_name` refuses anything else, because a
-    /// well-known name's owner can change between the question and the
-    /// answer and the point of the exercise is to stop reasoning about
-    /// names.
-    async fn is_prompt_surface(
-        &self,
-        unique_name: String,
-        #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] conn: &zbus::Connection,
-    ) -> zbus::fdo::Result<bool> {
-        if !caller_hosts_a_model(conn, &header).await {
-            // One fixed string for every refusal: "you may not ask" must
-            // not be distinguishable from "there is no such connection".
-            return Err(zbus::fdo::Error::AccessDenied(
-                "only a program that hosts a model may ask about a peer's identity".into(),
-            ));
-        }
-        let Ok(peer) = lisa_peer::resolve_unique_name(conn, &unique_name).await else {
-            // Fails closed, and says so as a plain `false` rather than
-            // an error: "we could not place it" and "it is not a prompt
-            // surface" have the same consequence, and the caller must
-            // not be able to tell a live unique name from a dead one.
-            return Ok(false);
-        };
-        Ok(exe_is_prompt_program(
-            peer.is_same_user_as_us(),
-            lisa_peer::exe_of_peer(&peer).ok().as_deref(),
-        ))
-    }
-
     /// Revert the caller's last agent action via its journaled
     /// compensation.
     ///
@@ -946,6 +779,13 @@ pub async fn name_lost(conn: &zbus::Connection) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The disjointness/identity invariants these assert now live in
+    // lisa_peer::prompt_surface (#306); the constants and the surface
+    // check are imported here rather than crate-wide because the shipped
+    // paths reference only `exe_hosts_a_model`.
+    use lisa_peer::prompt_surface::{
+        MODEL_HOSTS, PROMPT_SURFACE_PROGRAMS, is_prompt_surface as exe_is_prompt_program,
+    };
 
     /// Issue #131. bus.rs makes `NotYours` and `UnknownCall` render as
     /// the same *string* so a sweep cannot map which call ids are live —

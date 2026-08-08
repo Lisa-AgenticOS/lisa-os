@@ -48,6 +48,7 @@ mod credentials;
 mod identity;
 pub mod manager;
 mod process;
+pub mod prompt_surface;
 #[cfg(unix)]
 pub mod unix;
 

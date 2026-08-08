@@ -9,57 +9,43 @@
 //! So the message says what the caller *wants*; this module says what
 //! the caller *may have*. `Trigger::resolve` takes the lower of the two.
 //!
-//! # Why the answer is a bus name AND a program, and why the program
-//! comes from another daemon
+//! # Why the answer is a bus name AND a program, both read here
 //!
-//! Everywhere else in Lisa, program identity is `/proc/<pid>/exe` via
-//! the broker's pidfd (`lisa_peer::exe_of_peer`) — never `comm`, never
-//! anything the message asserts. **That mechanism does not work in this
-//! daemon**, and shipping it here would be a check that silently never
-//! matches.
+//! Program identity everywhere in Lisa is `/proc/<pid>/exe` via the
+//! broker's pidfd (`lisa_peer::exe_of_peer`) — never `comm`, never
+//! anything the message asserts. This daemon now reads it directly, and
+//! that is the whole of ADR-0064.
 //!
-//! `lisa-harnessd.service` is a PER-USER unit carrying `ProtectHome`,
-//! `ProtectSystem=strict` and `PrivateDevices`. A user manager can only
-//! deliver those through an implicit private user namespace, and from
-//! inside one, ptrace-read of any process outside it is denied — so
-//! `readlink /proc/<peer>/exe` returns EACCES for every caller. That is
-//! issue #161, and it is why `os/repo-tools/check-user-units.py` lists
-//! this unit in ALLOWED. Verified again on the reference machine while
-//! writing this: harnessd's `uid_map` reads `1000 1000 1`, and
-//! `readlink /proc/<agentd>/exe` succeeds outside the namespace and
-//! fails inside it.
+//! It used to be unable to. `lisa-harnessd.service` carried `ProtectHome`,
+//! `ProtectSystem=strict` and `PrivateDevices`, which a user manager can
+//! only deliver through an implicit private user namespace — and from
+//! inside one, `readlink /proc/<peer>/exe` is EACCES for every peer
+//! outside it (#161). So the program half was fetched from **agentd**,
+//! which runs outside the namespace, over `dev.lisaos.Agent1.IsPromptSurface`.
 //!
-//! Two things a user manager's namespace does NOT break, because neither
-//! reads another process's `/proc`, are the broker's own answers:
+//! The #306 close-replay showed that was the bug one hop along:
+//! `dev.lisaos.Agent1` is itself a claimable well-known name, unowned
+//! whenever agentd is not up (it zombied once — #347), so under
+//! `<allow own="*"/>` a squatter could take Agent1, take
+//! `app.lisaos.Assistant`, and answer the identity question about
+//! *itself*. Delegating identity to a name a peer can claim is the same
+//! defect the delegation was meant to fix.
 //!
-//! - `GetConnectionCredentials` → the peer's uid (from `SO_PEERCRED`);
-//! - `GetNameOwner` → which connection currently owns a well-known name.
+//! ADR-0064's fix: drop the mount-class sandbox from the unit so this
+//! daemon can read `/proc` itself, and delete the oracle. The sandbox
+//! loss is real — harnessd is the process the model runs inside — and it
+//! is accepted because the guardrails that bound the *model* live in the
+//! bus (tiers and provenance escalation, ADR-0036 §3) and on the tools
+//! (Landlock, #307/#309), not in harnessd's own filesystem view;
+//! `NoNewPrivileges`, `IPAddressDeny=any` and `RestrictAddressFamilies`
+//! stay. `os/repo-tools/check-user-units.py` no longer lists this unit
+//! in ALLOWED — the gate now enforces the decision.
 //!
-//! Both are assigned by the broker and unforgeable by the sender, which
-//! is the ADR-0033 property that matters.
-//!
-//! **They are not enough** (#306). A well-known name is owned by whoever
-//! asks for it first, and `app.lisaos.Assistant` is D-Bus-activatable and
-//! therefore not running most of the time. Demonstrated on the reference
-//! device from an ordinary `python3` process: `RequestName` returned
-//! `1` — PRIMARY_OWNER — for the name that buys `Trigger::Prompt`, and
-//! `Prompt` buys the file and `run_command` family, write-tier bus
-//! tools, `user` provenance that **agentd accepts** because
-//! `/usr/bin/lisa-harnessd` is on its `MODEL_HOSTS`, and the owner-only
-//! memory methods. No prompt injection and no model required: just
-//! `RequestName` first.
-//!
-//! This file argued that the squat is "a far louder place to be
-//! standing". It is not: a squatter can hold the name for the seconds a
-//! `Run` takes and release it, and the next launch works normally.
-//!
-//! So the missing half is program identity, and it is fetched from
-//! **agentd**, which is not in a user namespace and can read
-//! `/proc/<peer>/exe` (`dev.lisaos.Agent1.IsPromptSurface`, and
-//! `agentd/src/dbus.rs::PROMPT_SURFACE_PROGRAMS` for the allowlist and
-//! its limits). Fetched, not trusted-by-assertion: agentd answers about
-//! a **unique** bus name this daemon learned from the broker, and the
-//! answer is a boolean about the kernel's view of that connection.
+//! The two broker answers this leans on are unforgeable by the sender:
+//! `GetConnectionCredentials` → the peer's uid, and `GetNameOwner` →
+//! which connection owns a well-known name. The exe read is the third,
+//! and [`lisa_peer::prompt_surface`] holds the one shared definition of
+//! "is a prompt surface" both daemons must agree on.
 //!
 //! # The honest limit that remains
 //!
@@ -69,11 +55,6 @@
 //! refuse a hostile GJS script. An Assistant with an executable of its
 //! own is what closes that, and `PROMPT_SURFACE_PROGRAMS` already lists
 //! the path it would have.
-//!
-//! And if agentd cannot be reached, the answer is `false` and the
-//! ceiling is `Trigger::Event`. That is fail-closed and it is a real
-//! availability coupling: a harness whose agentd is down loses the
-//! prompt class rather than silently keeping it.
 
 use crate::dbus::Trigger;
 
@@ -101,10 +82,11 @@ pub struct CallerFacts {
     /// `RequestName` first, which under `<allow own="*"/>` anybody may
     /// do (#306).
     pub owns_prompt_surface: bool,
-    /// agentd says the program behind this connection is one of its
-    /// `PROMPT_SURFACE_PROGRAMS` — `/proc/<pid>/exe` through the
-    /// broker's pidfd, read by a daemon that is not inside a user
-    /// namespace and can therefore read it at all (#161, #306).
+    /// The program behind this connection is a prompt surface — its
+    /// `/proc/<pid>/exe` (through the broker's pidfd) is on
+    /// [`lisa_peer::prompt_surface::PROMPT_SURFACE_PROGRAMS`]. Read here
+    /// directly now that this daemon is out of the user namespace that
+    /// made `/proc/<peer>/exe` EACCES (#161, #306, ADR-0064).
     pub runs_a_prompt_program: bool,
 }
 
@@ -182,92 +164,24 @@ pub async fn facts_of(conn: &zbus::Connection, header: &zbus::message::Header<'_
             break;
         }
     }
-    // Only asked when the name says it might matter. agentd's answer is
-    // an identity disclosure guarded by an exe check on us, so there is
-    // no reason to make it about peers whose ceiling is `Event` either
-    // way — and it keeps the cross-daemon round trip off the path of
-    // every ordinary `Run`.
-    let runs_a_prompt_program =
-        owns_prompt_surface && agentd_says_prompt_surface(conn, caller_name).await;
+    // The third fact, read HERE rather than asked of agentd (#306,
+    // ADR-0064). Only computed when the name says it might matter — a
+    // peer that does not own a prompt surface is `Event` whatever it is
+    // running, so there is no reason to read its exe. `exe_of_peer`
+    // works now because this daemon left the user namespace that made
+    // `/proc/<peer>/exe` EACCES (#161): the mount-class sandbox options
+    // are gone from lisa-harnessd.service, and the guardrails that bound
+    // the model live in the bus and the tools, not in harnessd's own
+    // filesystem view (ADR-0064).
+    let runs_a_prompt_program = owns_prompt_surface
+        && lisa_peer::prompt_surface::is_prompt_surface(
+            same_user,
+            lisa_peer::exe_of_peer(&peer).ok().as_deref(),
+        );
     CallerFacts {
         same_user,
         owns_prompt_surface,
         runs_a_prompt_program,
-    }
-}
-
-/// How long agentd gets to answer before the caller is classed as an
-/// event source.
-///
-/// Generous, because the answer costs one `GetConnectionCredentials` and
-/// one `readlink`, and because timing out costs the person their file
-/// tools. Bounded, because the alternative is a `Run` that never
-/// returns.
-const AGENTD_IDENTITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// agentd's answer to "is `unique_name` running a prompt-surface
-/// program".
-///
-/// This daemon cannot read `/proc/<peer>/exe` from inside its own user
-/// namespace (#161) and agentd can, so the question goes over the bus to
-/// a daemon in the initial namespace. What travels is a **unique** bus
-/// name this process learned from the broker, not a claim; what comes
-/// back is a boolean about the kernel's view of that connection.
-///
-/// Fails towards `false` on every error — an unreachable agentd, a
-/// refusal, a reply of the wrong type. The consequence is
-/// [`Trigger::Event`], which is the least trusted class, so the failure
-/// direction is the safe one (and a loud one: the Assistant loses the
-/// prompt class rather than quietly keeping it).
-async fn agentd_says_prompt_surface(conn: &zbus::Connection, unique_name: &str) -> bool {
-    agentd_says_prompt_surface_within(conn, unique_name, AGENTD_IDENTITY_TIMEOUT).await
-}
-
-/// The same question with the deadline named, so a test can watch the
-/// deadline work without waiting out the shipped one.
-///
-/// Bounded at all because a peer that never answers is otherwise a `Run`
-/// that never returns. On a session bus an absent agentd is an immediate
-/// `NameHasNoOwner` from the broker, so this deadline is for the other
-/// case: a live agentd that has stopped replying. Caught by
-/// `an_unreachable_agentd_is_not_a_prompt_surface`, which hung forever
-/// before the deadline existed.
-async fn agentd_says_prompt_surface_within(
-    conn: &zbus::Connection,
-    unique_name: &str,
-    deadline: std::time::Duration,
-) -> bool {
-    let args = (unique_name,);
-    let call = conn.call_method(
-        Some("dev.lisaos.Agent1"),
-        "/dev/lisaos/Agent1",
-        Some("dev.lisaos.Agent1"),
-        "IsPromptSurface",
-        &args,
-    );
-    let reply = match tokio::time::timeout(deadline, call).await {
-        Ok(reply) => reply,
-        Err(_) => {
-            eprintln!(
-                "harnessd: agentd did not answer within {deadline:?} about {unique_name}; \
-                 this run is classed as an event, not a prompt"
-            );
-            return false;
-        }
-    };
-    match reply {
-        Ok(msg) => msg.body().deserialize::<bool>().unwrap_or(false),
-        Err(e) => {
-            // Worth a journal line: this is the difference between "the
-            // Assistant is not trusted today" and "agentd is down", and
-            // from the user's side both look like the assistant having
-            // forgotten how to open a file.
-            eprintln!(
-                "harnessd: agentd could not identify {unique_name} ({e}); \
-                 this run is classed as an event, not a prompt"
-            );
-            false
-        }
     }
 }
 
@@ -383,84 +297,6 @@ mod tests {
         ] {
             assert_ne!(ceiling(facts), Trigger::Schedule, "{facts:?}");
         }
-    }
-
-    /// A stand-in for agentd, so the round trip that supplies the third
-    /// fact can be exercised without a message broker.
-    ///
-    /// p2p carries method calls with a destination field the peer simply
-    /// ignores, which is exactly what is wanted here: what is under test
-    /// is that this daemon **asks** and believes the reply, not how the
-    /// broker routes it.
-    struct StubAgentd {
-        answer: bool,
-    }
-
-    #[zbus::interface(name = "dev.lisaos.Agent1")]
-    impl StubAgentd {
-        fn is_prompt_surface(&self, _unique_name: String) -> bool {
-            self.answer
-        }
-    }
-
-    async fn agentd_stub(serve: Option<bool>) -> (zbus::Connection, zbus::Connection) {
-        let (client_sock, server_sock) = tokio::net::UnixStream::pair().unwrap();
-        let guid = zbus::Guid::generate();
-        let mut server = zbus::connection::Builder::unix_stream(server_sock)
-            .server(guid)
-            .unwrap()
-            .p2p();
-        if let Some(answer) = serve {
-            server = server
-                .serve_at("/dev/lisaos/Agent1", StubAgentd { answer })
-                .unwrap();
-        }
-        let client = zbus::connection::Builder::unix_stream(client_sock).p2p();
-        tokio::try_join!(server.build(), client.build()).unwrap()
-    }
-
-    /// The third fact is agentd's, and it is *fetched* — the whole point
-    /// of #306 is that this daemon cannot compute it and must not
-    /// substitute the name check for it.
-    #[tokio::test]
-    async fn the_program_fact_is_whatever_agentd_answers() {
-        for answer in [true, false] {
-            let (_server, client) = agentd_stub(Some(answer)).await;
-            assert_eq!(
-                agentd_says_prompt_surface(&client, ":1.412").await,
-                answer,
-                "harnessd did not take agentd's answer for {answer}"
-            );
-        }
-    }
-
-    /// And an agentd that never answers answers `false`, not `true`, and
-    /// answers it *eventually* — this test hung forever before the
-    /// deadline existed, which is what a `Run` would have done on a live
-    /// agentd that had stopped replying. The consequence of the `false`
-    /// is `Trigger::Event`, the least trusted class, so the failure
-    /// costs capability rather than granting it.
-    #[tokio::test]
-    async fn an_unreachable_agentd_is_not_a_prompt_surface() {
-        let (_server, client) = agentd_stub(None).await;
-        assert!(
-            !agentd_says_prompt_surface_within(
-                &client,
-                ":1.412",
-                std::time::Duration::from_millis(200)
-            )
-            .await,
-            "a peer nobody could identify was treated as a prompt surface"
-        );
-    }
-
-    /// The shipped deadline is the one production uses, and a zero or
-    /// absent one would turn the check into "agentd is never a source of
-    /// truth" or "a `Run` may hang".
-    #[test]
-    fn the_shipped_deadline_is_bounded_and_not_zero() {
-        assert!(!AGENTD_IDENTITY_TIMEOUT.is_zero());
-        assert!(AGENTD_IDENTITY_TIMEOUT <= std::time::Duration::from_secs(30));
     }
 
     /// Adding a surface here is a decision about who may claim "a human

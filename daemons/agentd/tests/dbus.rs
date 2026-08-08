@@ -275,33 +275,3 @@ async fn deny_refuses_and_bad_args_are_invalid() {
         .await;
     assert!(err.is_err(), "malformed args_json must be rejected");
 }
-
-/// `IsPromptSurface` is an identity oracle for `harnessd` (#306), so the
-/// guard on it is the whole of its safety: only a caller that is itself
-/// a model host by `/proc/<pid>/exe` may ask what a third connection is
-/// running.
-///
-/// Over p2p there is no broker, no credentials and no executable, so
-/// nothing can satisfy that check — which is exactly the state a
-/// fail-closed guard has to refuse in. A version that answered here
-/// would be one that answers for any peer that can reach the daemon.
-#[tokio::test]
-async fn only_a_model_host_may_ask_what_a_peer_is_running() {
-    let f = fixture().await;
-    let p = proxy(&f.client).await;
-
-    let err = p
-        .call_method("IsPromptSurface", &(":1.412",))
-        .await
-        .expect_err("an unidentified caller was told what another connection runs");
-    let zbus::Error::MethodError(name, _, _) = &err else {
-        panic!("expected a D-Bus error, got {err:?}");
-    };
-    assert_eq!(name.as_str(), "org.freedesktop.DBus.Error.AccessDenied");
-    // The refusal must say nothing about the name that was asked about,
-    // or it becomes the reconnaissance for the next attempt.
-    assert!(
-        !err.to_string().contains(":1.412"),
-        "the refusal echoed the name back: {err}"
-    );
-}
