@@ -74,9 +74,9 @@ grep.
 
 <!-- BEGIN GENERATED INDEX — os/repo-tools/build-adr-index.py; edit the ADRs, not this table -->
 
-**64 records** — 5 superseded in part, 27 accepted and partly executed, 3 accepted with no code yet, 26 accepted and done, 3 proposed.
+**69 records** — 5 superseded in part, 27 accepted and partly executed, 3 accepted with no code yet, 26 accepted and done, 8 proposed.
 
-**169 machine-checked claims across 60 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
+**179 machine-checked claims across 65 records.** The `Checks` column is how many artifacts each ADR names that must exist (or must still be absent) for its status to be true; `build-adr-index.py --check` verifies every one of them, and a status that asserts implementation without any is a red build.
 
 | ADR | Decision | Status | Checks | Where it actually stands |
 |---|---|---|---|---|
@@ -144,6 +144,11 @@ grep.
 | [0062](0062-one-summon-surface.md) | one summon surface: the typed ask lives in Spotlight | accepted | 2 | — |
 | [0063](0063-settings-is-a-lisa-app.md) | Settings is a Lisa app; the g-c-c fork retires | accepted, not implemented | 2 | — |
 | [0064](0064-identity-cannot-come-from-a-claimable-name.md) | identity cannot come from a claimable name: harnessd leaves the user namespace | accepted | 3 | — |
+| [0065](0065-best-of-n-by-deterministic-verifier.md) | best-of-N trajectories, selected by a verifier the trajectory cannot weaken | proposed | 3 | — |
+| [0066](0066-localization-regex-and-a-symbol-map.md) | localization: regex, a deterministically-ranked repo map, and steerable lookup tools | proposed | 2 | — |
+| [0067](0067-a-scored-eval-harness.md) | a scored eval harness: a regression gate and a sized improvement measure | proposed | 2 | — |
+| [0068](0068-compaction-summarize-not-stub.md) | context compaction: condense elided history instead of stubbing it | proposed | 1 | — |
+| [0069](0069-reflection-on-failed-edits-and-tests.md) | reflection on failed edits and failing verifier runs | proposed | 2 | — |
 
 <!-- END GENERATED INDEX -->
 
