@@ -279,6 +279,24 @@ pub fn build_upstream(
                     }
                     _ => {}
                 }
+                // `parallel_tool_calls: false` — which forge-harness
+                // sets on every request, because the loop runs one call
+                // at a time — is spelled `disable_parallel_tool_use`
+                // inside Anthropic's tool_choice. Dropping it (as this
+                // did) let Claude answer with two tool_use blocks in
+                // one turn, which the device run for #180 hit as a dead
+                // run: both calls' argument strings concatenated in the
+                // streaming client into JSON that parses never.
+                if body["parallel_tool_calls"].as_bool() == Some(false)
+                    && out.get("tools").is_some()
+                {
+                    let mut choice = out
+                        .get("tool_choice")
+                        .cloned()
+                        .unwrap_or_else(|| json!({"type": "auto"}));
+                    choice["disable_parallel_tool_use"] = json!(true);
+                    out["tool_choice"] = choice;
+                }
             }
             // Streaming requests stream upstream too (ADR-0010 update):
             // the OpenAI-compat dialect passes the flag through verbatim;
@@ -329,8 +347,16 @@ pub fn translate_response(dialect: Dialect, upstream: &Value) -> Value {
                     blocks
                         .iter()
                         .filter(|b| b["type"] == "tool_use")
-                        .map(|b| {
+                        .enumerate()
+                        .map(|(i, b)| {
                             json!({
+                                // The per-call index is what lets a
+                                // streaming client keep parallel calls
+                                // apart once inferenced re-chunks this
+                                // message verbatim into a delta —
+                                // without it, two calls' argument
+                                // strings concatenate downstream.
+                                "index": i,
                                 "id": b["id"].as_str().unwrap_or("call_1"),
                                 "type": "function",
                                 "function": {
@@ -556,6 +582,79 @@ mod tool_translation_tests {
         // OpenAI wants arguments as a string.
         assert_eq!(call["function"]["arguments"], r#"{"q":"x"}"#);
         assert_eq!(norm["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    /// A model that answers with TWO tool_use blocks must translate to
+    /// two indexed tool_calls — inferenced re-chunks this message
+    /// verbatim into one streaming delta, and the per-call `index` is
+    /// what lets the client keep the calls apart there. The device run
+    /// for #180 hit the un-indexed version as a dead run (arguments
+    /// concatenated into JSON that never parses).
+    #[test]
+    fn parallel_tool_use_blocks_translate_indexed_and_apart() {
+        let norm = translate_response(
+            Dialect::AnthropicMessages,
+            &json!({
+                "stop_reason": "tool_use",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "list_dir",
+                     "input": {"path": "."}},
+                    {"type": "tool_use", "id": "toolu_2", "name": "read_file",
+                     "input": {"path": "lib/model.js"}},
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+        );
+        let calls = norm["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .expect("both calls survive");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["index"], 0);
+        assert_eq!(calls[1]["index"], 1);
+        assert_eq!(calls[0]["function"]["arguments"], r#"{"path":"."}"#);
+        assert_eq!(
+            calls[1]["function"]["arguments"],
+            r#"{"path":"lib/model.js"}"#
+        );
+    }
+
+    /// `parallel_tool_calls: false` — on every forge-harness request —
+    /// must reach Anthropic as `disable_parallel_tool_use`, or Claude
+    /// is never told the loop runs one call at a time.
+    #[test]
+    fn one_call_at_a_time_reaches_anthropic() {
+        let out = anthropic(json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"function": {"name": "t", "description": "d",
+                        "parameters": {"type": "object"}}}],
+            "parallel_tool_calls": false,
+        }));
+        assert_eq!(out["tool_choice"]["disable_parallel_tool_use"], true);
+        assert_eq!(out["tool_choice"]["type"], "auto");
+
+        // And a forced choice keeps its type while gaining the flag.
+        let forced = anthropic(json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"function": {"name": "t", "description": "d",
+                        "parameters": {"type": "object"}}}],
+            "tool_choice": "required",
+            "parallel_tool_calls": false,
+        }));
+        assert_eq!(forced["tool_choice"]["type"], "any");
+        assert_eq!(forced["tool_choice"]["disable_parallel_tool_use"], true);
+
+        // Without the flag nothing is added — Anthropic's default
+        // behaviour is left alone.
+        let without = anthropic(json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"function": {"name": "t", "description": "d",
+                        "parameters": {"type": "object"}}}],
+        }));
+        assert!(
+            without["tool_choice"]
+                .get("disable_parallel_tool_use")
+                .is_none()
+        );
     }
 
     #[test]

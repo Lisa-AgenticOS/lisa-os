@@ -167,16 +167,32 @@ fn request_body(model: Option<&str>, messages: &[Message], tools: &[ToolSpec]) -
     })
 }
 
+/// One tool call, assembled from stream fragments.
+#[derive(Debug, Default, PartialEq)]
+pub struct PartialCall {
+    /// The stream's own call index, when the emitter sends one (OpenAI
+    /// and llama.cpp do; our re-chunked remote path does not).
+    pub index: Option<u64>,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    /// Arguments arrive as fragments across many frames and are only
+    /// valid JSON once concatenated — parsing early is the classic
+    /// streaming tool-call bug.
+    pub args: String,
+}
+
 /// What a stream added up to.
 #[derive(Debug, Default, PartialEq)]
 pub struct Accumulated {
     pub content: String,
-    pub call_id: Option<String>,
-    pub call_name: Option<String>,
-    /// Arguments arrive as fragments across many frames and are only
-    /// valid JSON once concatenated — parsing early is the classic
-    /// streaming tool-call bug.
-    pub call_args: String,
+    /// Tool calls in arrival order — PLURAL, and that is the second
+    /// classic streaming bug: a model that answers with two tool_use
+    /// blocks in one turn (Claude via remoted, which translates both)
+    /// used to have both calls' argument strings concatenated into one
+    /// field, which parses as JSON exactly never. Each call accumulates
+    /// separately; `action_from` then executes the first, because the
+    /// loop is one-call-at-a-time by design.
+    pub calls: Vec<PartialCall>,
     /// An error the SERVER reported inside the stream.
     ///
     /// lisa-inferenced signals a mid-stream failure as a frame carrying
@@ -186,6 +202,24 @@ pub struct Accumulated {
     /// engine that failed halfway arrived as an empty `Done("")` — the
     /// assistant printing nothing at all and calling it an answer.
     pub error: Option<String>,
+}
+
+/// The call a fragment belongs to. By `index` when the stream says;
+/// otherwise a fresh `id` announces a new call and a bare fragment
+/// continues the last one.
+fn target_call<'a>(calls: &'a mut Vec<PartialCall>, c: &Value) -> &'a mut PartialCall {
+    if let Some(i) = c["index"].as_u64() {
+        if let Some(pos) = calls.iter().position(|k| k.index == Some(i)) {
+            return &mut calls[pos];
+        }
+        calls.push(PartialCall {
+            index: Some(i),
+            ..PartialCall::default()
+        });
+    } else if c["id"].as_str().is_some() || calls.is_empty() {
+        calls.push(PartialCall::default());
+    }
+    calls.last_mut().expect("pushed above")
 }
 
 /// Fold one SSE `data:` payload into the running result.
@@ -222,16 +256,17 @@ pub fn fold_frame(acc: &mut Accumulated, frame: &str, on_delta: &mut dyn FnMut(&
     }
     if let Some(calls) = delta["tool_calls"].as_array() {
         for c in calls {
+            let call = target_call(&mut acc.calls, c);
             if let Some(id) = c["id"].as_str() {
-                acc.call_id = Some(id.to_string());
+                call.id = Some(id.to_string());
             }
             if let Some(name) = c["function"]["name"].as_str()
                 && !name.is_empty()
             {
-                acc.call_name = Some(name.to_string());
+                call.name = Some(name.to_string());
             }
             if let Some(args) = c["function"]["arguments"].as_str() {
-                acc.call_args.push_str(args);
+                call.args.push_str(args);
             }
         }
     }
@@ -239,22 +274,30 @@ pub fn fold_frame(acc: &mut Accumulated, frame: &str, on_delta: &mut dyn FnMut(&
 }
 
 /// Turn an accumulated stream into the loop's decision.
+///
+/// The FIRST named call is the one that runs. The loop is
+/// one-call-at-a-time by design (`parallel_tool_calls: false` on every
+/// request); an endpoint that answers with several anyway — Claude via
+/// remoted did — gets the first executed and the rest not: the model
+/// sees one result in its next turn and asks again for what it still
+/// wants, which is exactly what a conforming endpoint would have made
+/// it do in the first place.
 pub fn action_from(acc: Accumulated) -> Result<AgentAction, ForgeError> {
     if let Some(msg) = acc.error {
         return Err(ForgeError::Backend(msg));
     }
-    match acc.call_name {
-        Some(name) => {
-            let args = if acc.call_args.trim().is_empty() {
+    match acc.calls.into_iter().find(|c| c.name.is_some()) {
+        Some(call) => {
+            let args = if call.args.trim().is_empty() {
                 json!({})
             } else {
-                serde_json::from_str(&acc.call_args).map_err(|e| {
+                serde_json::from_str(&call.args).map_err(|e| {
                     ForgeError::Backend(format!("tool call arguments were not JSON: {e}"))
                 })?
             };
             Ok(AgentAction::Call(ToolCall {
-                id: acc.call_id.unwrap_or_else(|| "1".into()),
-                name,
+                id: call.id.unwrap_or_else(|| "1".into()),
+                name: call.name.expect("filtered on name"),
                 args,
             }))
         }
@@ -385,8 +428,9 @@ mod stream_tests {
             r#"data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":": \"x\"}"}}]}}]}"#,
             "data: [DONE]",
         ]);
-        assert_eq!(acc.call_name.as_deref(), Some("read_page"));
-        assert_eq!(acc.call_args, r#"{"q": "x"}"#);
+        assert_eq!(acc.calls.len(), 1, "fragments continue one call");
+        assert_eq!(acc.calls[0].name.as_deref(), Some("read_page"));
+        assert_eq!(acc.calls[0].args, r#"{"q": "x"}"#);
         assert_eq!(seen, "", "a tool call is not text to show the user");
 
         let action = action_from(acc).unwrap();
@@ -396,6 +440,57 @@ mod stream_tests {
                 assert_eq!(c.args["q"], "x");
                 assert_eq!(c.id, "c1");
             }
+            other => panic!("expected a call, got {other:?}"),
+        }
+    }
+
+    /// The bug the device found (Claude via remoted, task #180's mode
+    /// test): a model that ignores `parallel_tool_calls: false` answers
+    /// with TWO tool_use blocks, the translation forwards both in one
+    /// delta with no per-call `index`, and folding them into one
+    /// accumulator concatenated their argument strings —
+    /// `{"path":"."}{"path":"lib/model.js"}`, "trailing characters at
+    /// line 1 column 13", run dead. Each call must accumulate apart,
+    /// and the first one runs.
+    #[test]
+    fn two_complete_calls_in_one_delta_do_not_concatenate() {
+        let frame = format!(
+            "data: {}",
+            json!({"choices":[{"delta":{"tool_calls":[
+                {"id":"c1","function":{"name":"list_dir","arguments":"{\"path\":\".\"}"}},
+                {"id":"c2","function":{"name":"read_file","arguments":"{\"path\":\"lib/model.js\"}"}},
+            ]}}]})
+        );
+        let (acc, seen) = fold_all(&[&frame, "data: [DONE]"]);
+        assert_eq!(acc.calls.len(), 2, "two calls stay two calls");
+        assert_eq!(seen, "");
+        match action_from(acc).unwrap() {
+            AgentAction::Call(c) => {
+                assert_eq!(c.name, "list_dir", "the FIRST call runs");
+                assert_eq!(c.id, "c1");
+                assert_eq!(c.args["path"], ".", "its arguments parse alone");
+            }
+            other => panic!("expected a call, got {other:?}"),
+        }
+    }
+
+    /// Indexed fragment streams (OpenAI, llama.cpp) keep parallel calls
+    /// apart even when their fragments interleave.
+    #[test]
+    fn interleaved_indexed_fragments_stay_separate() {
+        let (acc, _) = fold_all(&[
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"read_file"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"list_dir"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\""}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"x\"}"}}]}}]}"#,
+            "data: [DONE]",
+        ]);
+        assert_eq!(acc.calls.len(), 2);
+        assert_eq!(acc.calls[0].args, r#"{"path":"x"}"#);
+        assert_eq!(acc.calls[1].args, "{}");
+        match action_from(acc).unwrap() {
+            AgentAction::Call(c) => assert_eq!(c.name, "read_file"),
             other => panic!("expected a call, got {other:?}"),
         }
     }
@@ -494,7 +589,10 @@ mod stream_tests {
     #[test]
     fn empty_arguments_become_an_empty_object_not_a_parse_error() {
         let acc = Accumulated {
-            call_name: Some("run_tests".into()),
+            calls: vec![PartialCall {
+                name: Some("run_tests".into()),
+                ..PartialCall::default()
+            }],
             ..Accumulated::default()
         };
         match action_from(acc).unwrap() {
