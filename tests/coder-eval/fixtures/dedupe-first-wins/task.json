@@ -1,0 +1,5 @@
+{
+  "prompt": "merge in src/lib.rs is documented as first-entry-wins: when a local and a cloud model share an id, the local entry (which comes first) must be kept. Right now the later cloud entry silently replaces it. Fix merge so the first entry for an id wins while insertion order is preserved, then make sure the tests pass with cargo test.",
+  "fail_to_pass": ["the_first_entry_wins_a_duplicate_id"],
+  "pass_to_pass": ["insertion_order_is_kept"]
+}

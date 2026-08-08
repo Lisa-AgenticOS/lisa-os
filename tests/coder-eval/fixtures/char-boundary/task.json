@@ -1,0 +1,5 @@
+{
+  "prompt": "clip_title in src/lib.rs panics on some titles: clipping the string 日本語のテスト to 10 bytes crashes with a char-boundary panic instead of returning a clipped title. Fix clip_title so clipping never panics on multibyte text and the clipped stem is always a prefix of the original, then make sure the tests pass with cargo test.",
+  "fail_to_pass": ["multibyte_titles_clip_without_panicking"],
+  "pass_to_pass": ["short_titles_pass_through_unchanged"]
+}

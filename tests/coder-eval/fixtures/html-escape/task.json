@@ -1,0 +1,5 @@
+{
+  "prompt": "escape in src/lib.rs double-escapes: escape(\"<a & b>\") returns \"&amp;lt;a &amp; b&amp;gt;\" instead of \"&lt;a &amp; b&gt;\", because the ampersand replacement runs last and rewrites the & inside the entities the earlier replacements just produced. Fix the escaping order so entities are produced exactly once, then make sure the tests pass with cargo test.",
+  "fail_to_pass": ["entities_are_not_double_escaped"],
+  "pass_to_pass": ["plain_text_is_unchanged"]
+}

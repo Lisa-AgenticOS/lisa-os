@@ -398,6 +398,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "coder-eval"
+version = "0.1.0"
+dependencies = [
+ "forge-harness",
+ "lisa-ledger",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

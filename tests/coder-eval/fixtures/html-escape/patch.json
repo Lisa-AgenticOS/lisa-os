@@ -1,0 +1,6 @@
+[
+  {
+    "path": "src/lib.rs",
+    "content": "//! Text → HTML escaping for rendered transcripts.\n\n/// Escape `text` for embedding into HTML. Ampersand FIRST, or the\n/// entities produced for the other characters get re-escaped.\npub fn escape(text: &str) -> String {\n    text.replace('&', \"&amp;\")\n        .replace('<', \"&lt;\")\n        .replace('>', \"&gt;\")\n}\n"
+  }
+]

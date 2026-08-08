@@ -19,6 +19,7 @@ members = [
     "shell/consent/daemon",
     "cli/lisa",
     "tests/acl-fuzz",
+    "tests/coder-eval",
     "tests/injection-suite",
     "apps/notes",
 ]

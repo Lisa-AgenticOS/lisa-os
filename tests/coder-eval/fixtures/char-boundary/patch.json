@@ -1,0 +1,6 @@
+[
+  {
+    "path": "src/lib.rs",
+    "content": "//! Listing titles for a conversation sidebar.\n\n/// Clip `text` to at most `max` bytes for a compact listing title,\n/// appending an ellipsis when something was cut.\npub fn clip_title(text: &str, max: usize) -> String {\n    if text.len() <= max {\n        return text.to_string();\n    }\n    let mut end = max;\n    while end > 0 && !text.is_char_boundary(end) {\n        end -= 1;\n    }\n    format!(\"{}…\", &text[..end])\n}\n"
+  }
+]

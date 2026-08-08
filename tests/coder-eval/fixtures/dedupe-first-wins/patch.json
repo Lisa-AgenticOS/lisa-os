@@ -1,0 +1,6 @@
+[
+  {
+    "path": "src/lib.rs",
+    "content": "//! Model-picker list merging.\n\n/// Merge local and cloud model entries `(id, label)` into picker order:\n/// local entries first, and the FIRST entry for an id wins — a cloud\n/// entry must never replace the local one that shadows it.\npub fn merge(local: &[(String, String)], cloud: &[(String, String)]) -> Vec<(String, String)> {\n    let mut out: Vec<(String, String)> = Vec::new();\n    for e in local.iter().chain(cloud.iter()) {\n        if !out.iter().any(|x| x.0 == e.0) {\n            out.push(e.clone());\n        }\n    }\n    out\n}\n"
+  }
+]

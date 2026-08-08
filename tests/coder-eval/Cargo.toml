@@ -1,0 +1,13 @@
+[package]
+name = "coder-eval"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+forge-harness = { path = "../../libs/forge-harness" }
+lisa-ledger = { path = "../../libs/lisa-ledger" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tempfile = "3.27.0"

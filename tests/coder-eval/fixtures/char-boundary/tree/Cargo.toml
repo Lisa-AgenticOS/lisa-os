@@ -1,0 +1,8 @@
+[package]
+name = "fixture-char-boundary"
+version = "0.1.0"
+edition = "2021"
+
+# Detached from any enclosing workspace: a fixture is its own tiny
+# world, staged into a temp directory and built there.
+[workspace]
