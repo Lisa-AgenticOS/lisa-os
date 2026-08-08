@@ -327,6 +327,15 @@ class AssistantWindow {
         this._connectBackend();
         this._systemNote('Ask a local model, or sign in to a cloud provider ' +
             'in Settings → Intelligence for Claude / GPT.');
+        // The dev lane's way of handing in the working-folder grant
+        // (a headless launch over ssh cannot click the chooser). Still a
+        // person outside the loop choosing — whoever set the environment
+        // launched the process — and the daemon still validates the path
+        // on every Run, so an invalid one is refused there, loudly,
+        // exactly like a chooser pick would be (#234's rules unchanged).
+        const presetWorkspace = GLib.getenv('LISA_ASSISTANT_WORKSPACE');
+        if (presetWorkspace)
+            this._setWorkspace(presetWorkspace);
         this._renderSessionList();
         // Models first so restored headings resolve to picker labels;
         // then the stored sessions from Context1 app memory.
