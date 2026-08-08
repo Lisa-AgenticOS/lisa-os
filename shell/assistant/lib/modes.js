@@ -20,8 +20,12 @@
 //                     sharpest real behavioural difference and it exists
 //                     today.
 //
-// Conversations are partitioned by mode: the sidebar shows only this
-// mode's chats, so a coding session and a research thread do not braid.
+// Conversations will be partitioned by mode — the sidebar showing only
+// this mode's chats, so a coding session and a research thread do not
+// braid — but that is the NEXT increment (it needs the session index to
+// carry a mode across reload). Today the list is shared; the rail
+// changes the composer, the wire, and Code's workspace, not yet which
+// chats show. Stated so the gap is known, not silent (rule 10).
 //
 // # What is client-side today, and what waits on the daemon
 //

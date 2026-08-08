@@ -19,7 +19,7 @@
 // (conversationMarkdown, #8).
 
 import Adw from 'gi://Adw?version=1';
-import {lisaSplitWindow} from '../lisa.sdk/ui/window.js';
+import {lisaTripleWindow} from '../lisa.sdk/ui/window.js';
 import Gdk from 'gi://Gdk?version=4.0';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -53,6 +53,9 @@ import {
     MEMORY_IFACE_XML, parseNotes, provenanceNote, emptyText, forgetAllBody,
     sortNotes,
 } from './lib/memory.js';
+import {
+    MODE_IDS, MODES, DEFAULT_MODE, modeById, wireMode, needsWorkspace,
+} from './lib/modes.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async');
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
@@ -128,15 +131,22 @@ class AssistantWindow {
         this._attachments = [];
 
         this._http = new Soup.Session();
-        // The shared chrome (#282, ADR-0056): the LAST surface with its
-        // own window moves onto the sdk — glass sidebar, slate ground,
-        // one close-button position, one dark/light path.
-        const ui = lisaSplitWindow({
+        // The mode the navrail is on. A mode is a real bundle of effects
+        // (lib/modes.js): composer placeholder, this mode's chat list,
+        // the `mode` on the wire, and Code's required working folder.
+        this._mode = DEFAULT_MODE;
+        this._modeButtons = {};   // id -> ToggleButton, for the rail
+        // The shared chrome (#282, ADR-0056), now the three-pane shape
+        // (ADR-0056 step 4, Mail's window): rail | this mode's chats |
+        // the chat screen. The rail is a narrow glass pane; conversations
+        // move to the middle list pane; the chat stays the content pane.
+        const ui = lisaTripleWindow({
             app, title: 'Lisa Assistant',
-            width: 980, height: 760, sidebarWidth: 280,
+            width: 1080, height: 760, sidebarWidth: 88,
         });
         this.window = ui.window;
         this._ui = ui;
+        this._buildRail(ui);
         // The action handler reaches the controller through the window
         // GTK hands it back (app.activeWindow is a GtkWindow, not this).
         this.window.__lisa = this;
@@ -286,6 +296,9 @@ class AssistantWindow {
 
         ui.setContent(box);
         this._buildSidebar(ui);
+        // Land the composer's placeholder and the rail selection on the
+        // opening mode before anything is shown.
+        this._entry.placeholder_text = modeById(this._mode).placeholder;
         // Narrow window: the conversation outranks the list — the
         // composer needs the width. Signals rather than setters (#339):
         // setters apply one way and their unapply-restore clobbers any
@@ -322,20 +335,90 @@ class AssistantWindow {
             .catch(e => logError(e, 'restore sessions'));
     }
 
-    /// The one owner of sidebar state: visible follows the toggle,
-    /// and the content inset follows (visible x narrow) — wide keeps
-    /// the side-by-side inset, narrow floats the pane over the
-    /// conversation, hidden releases the strip entirely (#339).
+    /// The one owner of the conversation-list toggle. The list is the
+    /// MIDDLE pane now (the rail is the leftmost), so the toggle drives
+    /// the inner split's sidebar. The rail itself is always visible —
+    /// switching modes is not something a toggle should hide.
     _applySidebar() {
-        const show = this._sidebarBtn.active;
-        this._ui.sidebarPane.visible = show;
-        this._ui.contentPane.set_margin_start(show && !this._narrow ? 280 : 0);
+        this._ui.inner.show_sidebar = this._sidebarBtn.active;
+    }
+
+    // ---- the mode navrail -----------------------------------------------
+
+    /// The rail: one button per mode (lib/modes.js), top-to-bottom in
+    /// MODE_IDS order, icon over label. A linked, single-select group —
+    /// exactly one mode is active, shown by the button's selected state
+    /// (no per-mode accent hue yet; that is a deferred design call).
+    _buildRail(ui) {
+        ui.sidebarHeader.set_title_widget(new Adw.WindowTitle({title: 'Lisa'}));
+        const rail = new Gtk.Box({
+            orientation: Gtk.Orientation.VERTICAL, spacing: 4,
+            margin_top: 8, margin_bottom: 8, margin_start: 6, margin_end: 6,
+        });
+        let group = null;
+        for (const id of MODE_IDS) {
+            const mode = MODES[id];
+            const inner = new Gtk.Box({
+                orientation: Gtk.Orientation.VERTICAL, spacing: 2,
+            });
+            inner.append(new Gtk.Image({icon_name: mode.icon, pixel_size: 20}));
+            inner.append(new Gtk.Label({
+                label: mode.label, css_classes: ['caption'],
+            }));
+            const btn = new Gtk.ToggleButton({
+                child: inner,
+                tooltip_text: mode.summary,
+                css_classes: ['flat'],
+                active: id === this._mode,
+            });
+            // One group: activating one releases the others, so the rail
+            // is single-select and the model never runs "in two modes".
+            if (group)
+                btn.set_group(group);
+            else
+                group = btn;
+            btn.connect('toggled', () => {
+                if (btn.active)
+                    this._setMode(id);
+            });
+            this._modeButtons[id] = btn;
+            rail.append(btn);
+        }
+        ui.setSidebar(rail);
+    }
+
+    /// Switch modes: update the composer's prompt to the mode's job, show
+    /// this mode's conversations, remember it for the wire, and — for
+    /// Code — make sure there is a working folder, since that is the
+    /// grant that turns on the file tools (ADR-0036 §6). A no-op if the
+    /// mode did not actually change.
+    _setMode(id) {
+        if (id === this._mode)
+            return;
+        this._mode = id;
+        const mode = modeById(id);
+        this._entry.placeholder_text = mode.placeholder;
+        if (this._modeButtons[id] && !this._modeButtons[id].active)
+            this._modeButtons[id].active = true;
+        // Per-mode conversation lists (a coding session and a research
+        // thread not braiding) is the next increment — it needs the
+        // session index to carry a mode non-lossily across reload. Today
+        // the list is shared across modes; the rail changes the composer,
+        // the wire, and the tools, not yet which chats show. Stated so
+        // this is a known gap, not a silent one (rule 10).
+        // Code needs a folder to be useful. Prompt when entering it with
+        // none — never silently, and never for the other modes.
+        if (needsWorkspace(id) && !this._workspace)
+            this._chooseWorkspace();
     }
 
     // ---- conversation list ----------------------------------------------
 
     _buildSidebar(ui) {
-        const header = ui.sidebarHeader;
+        // The conversations are the MIDDLE (list) pane now — the rail is
+        // the leftmost. So this builds into listHeader/setList, not the
+        // sidebar pane the rail now owns.
+        const header = ui.listHeader;
         header.set_title_widget(new Adw.WindowTitle({title: 'Conversations'}));
         const add = Gtk.Button.new_from_icon_name('document-new-symbolic');
         add.tooltip_text = 'New conversation';
@@ -354,7 +437,7 @@ class AssistantWindow {
                 this._openSession(info.id).catch(e => logError(e, 'open session'));
         });
 
-        ui.setSidebar(new Gtk.ScrolledWindow({vexpand: true, child: this._list}));
+        ui.setList(new Gtk.ScrolledWindow({vexpand: true, child: this._list}));
     }
 
     /// Rebuild the list from the stored index plus the open conversation.
@@ -1088,6 +1171,12 @@ class AssistantWindow {
             model: GLib.Variant.new_string(this._model),
             trigger: GLib.Variant.new_string('prompt'),
             history: GLib.Variant.new_string(JSON.stringify(history)),
+            // The navrail's mode (lib/modes.js). A validated known id, a
+            // hint for the daemon's tool/policy selection — harmless if
+            // harnessd ignores it today, and the contract the deeper
+            // per-mode behaviour (ADR-0065/0067/0069, retrieval, artifacts)
+            // will be built against rather than invented later.
+            mode: GLib.Variant.new_string(wireMode(this._mode)),
         };
         if (this._workspace)
             options.workspace = GLib.Variant.new_string(this._workspace);
