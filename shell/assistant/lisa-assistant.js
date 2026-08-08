@@ -1412,7 +1412,15 @@ class AssistantWindow {
             ? this._models.map(m => m.label)
             : ['No models — is lisa-inferenced running?'];
         this._modelDrop.set_model(Gtk.StringList.new(labels));
-        this._modelDrop.set_selected(0);
+        // The dev lane's preset, like LISA_ASSISTANT_WORKSPACE: a
+        // headless launch cannot click the picker. Matched against the
+        // REAL merged list — an id that is not offered falls back to
+        // the default, so this can never select a model the picker
+        // would not.
+        const preset = GLib.getenv('LISA_ASSISTANT_MODEL');
+        const wanted = preset
+            ? this._models.findIndex(m => m.id === preset) : -1;
+        this._modelDrop.set_selected(wanted >= 0 ? wanted : 0);
         this._onModelPicked();
     }
 
