@@ -9,7 +9,10 @@
 //!     options: "model" (s), "url" (s), "trigger" (s: prompt|schedule|event),
 //!              "history" (s: JSON [{role, content}]),
 //!              "workspace" (s: an absolute folder path),
-//!              "attachments" (s: JSON [content part, …])
+//!              "attachments" (s: JSON [content part, …]),
+//!              "mode" (s: chat|code|design|research — a HINT that shapes
+//!               the prompt and turn budget, never the tool set; unknown
+//!               reads as chat)
 //! Cancel(t run_id)
 //! signal Tool(t run_id, s name, s detail)
 //! signal Token(t run_id, s delta)
@@ -482,6 +485,12 @@ impl Harness1 {
             .map(|m| crate::memory::digest(m, &taint))
             .unwrap_or_default();
 
+        // The navrail mode (#180). A hint, parsed from a closed set —
+        // it shapes the prompt and the turn budget below, and is
+        // deliberately NOT in scope for the provider assembly further
+        // down: tools come from grants, not from options.
+        let mode = loop_runner::Mode::parse(opt_str(&options, "mode").as_deref());
+
         let req = Request {
             prompt,
             history,
@@ -492,7 +501,8 @@ impl Harness1 {
             memory_digest,
             url: opt_str(&options, "url").unwrap_or_else(default_url),
             model: opt_str(&options, "model"),
-            max_turns: 12,
+            max_turns: mode.max_turns(),
+            mode,
         };
 
         let cancel = Cancel::default();

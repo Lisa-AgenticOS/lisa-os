@@ -15,7 +15,13 @@ Run(s prompt, a{sv} options) → (t run_id)
     options: "model" (s), "url" (s), "trigger" (s: prompt|schedule|event),
              "history" (s: JSON [{role, content}]),
              "workspace" (s: an absolute folder path),
-             "attachments" (s: JSON [content part, …])
+             "attachments" (s: JSON [content part, …]),
+             "mode" (s: chat|code|design|research — the Assistant's
+              navrail mode, #180. A HINT: it shapes the system prompt
+              and the turn budget (code 24, research 16, chat/design 12)
+              and is consulted nowhere in tool assembly — tools come
+              from grants. Unknown reads as chat; Code's paragraph
+              appears only when a workspace is granted)
 Cancel(t run_id)
 signal Tool(t run_id, s name, s detail)
 signal Token(t run_id, s delta)
