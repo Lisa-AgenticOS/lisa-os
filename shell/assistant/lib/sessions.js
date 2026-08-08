@@ -15,8 +15,16 @@
 // delete — only a namespace-wide MemoryWipe — so a removed session is
 // tombstoned with the empty string, and readers treat empty exactly as
 // missing (KvStore::remove, libs/harness-core/src/store.rs).
+//
+// Every record carries a `mode` — which navrail surface the conversation
+// belongs to (lib/modes.js), so the sidebar can show only the active
+// mode's chats. It sits between `updated_ts` and `turns` on both sides
+// of the format; a record stored before modes existed reads as `chat`,
+// and an unknown stored mode collapses to `chat` too (`wireMode`), so a
+// renamed mode hides no one's conversation.
 
 import {normalizeTurns, deserializeConversation} from './model.js';
+import {DEFAULT_MODE, wireMode} from './modes.js';
 
 /// The index key: a JSON array of session info entries.
 export const INDEX_KEY = 'sessions';
@@ -58,23 +66,29 @@ export function newSessionId(now = Date.now()) {
  * conversation leaves nothing behind.
  * @param {string} [title]
  * @param {number} [now]  unix milliseconds
+ * @param {string} [mode]  the navrail mode this conversation belongs to
  * @returns {{id: string, title: string, created_ts: number,
- *            updated_ts: number, turns: object[]}}
+ *            updated_ts: number, mode: string, turns: object[]}}
  */
-export function newSession(title = UNTITLED, now = Date.now()) {
+export function newSession(title = UNTITLED, now = Date.now(), mode = DEFAULT_MODE) {
     return {
         id: newSessionId(now),
         title,
         created_ts: now,
         updated_ts: now,
+        mode: wireMode(mode),
         turns: [],
     };
 }
 
 /**
- * A session's listing entry — what the index stores.
+ * A session's listing entry — what the index stores. `mode` is
+ * validated on the way through: missing (a pre-mode record) and unknown
+ * both read as the default, so old and future data land in Chat rather
+ * than nowhere.
  * @param {object} session
- * @returns {{id: string, title: string, created_ts: number, updated_ts: number}}
+ * @returns {{id: string, title: string, created_ts: number,
+ *            updated_ts: number, mode: string}}
  */
 export function sessionInfo(session) {
     return {
@@ -83,6 +97,7 @@ export function sessionInfo(session) {
             ? session.title : UNTITLED,
         created_ts: Number(session?.created_ts ?? 0),
         updated_ts: Number(session?.updated_ts ?? 0),
+        mode: wireMode(session?.mode),
     };
 }
 
@@ -138,6 +153,7 @@ export function serializeSession(session) {
         title: info.title,
         created_ts: info.created_ts,
         updated_ts: info.updated_ts,
+        mode: info.mode,
         turns: normalizeTurns(session?.turns),
     });
 }
@@ -204,6 +220,21 @@ export function upsertIndex(index, info) {
  */
 export function removeFromIndex(index, id) {
     return (index ?? []).filter(e => e.id !== id);
+}
+
+/**
+ * The index entries belonging to navrail mode `mode` — what the sidebar
+ * shows while that mode is active, so a coding session and a research
+ * thread do not braid. Both sides go through `wireMode`, so a pre-mode
+ * entry (no field) and an unknown mode are both Chat's — every stored
+ * conversation is reachable from exactly one rail button.
+ * @param {object[]} index
+ * @param {string} mode
+ * @returns {object[]}  a new array
+ */
+export function indexForMode(index, mode) {
+    const want = wireMode(mode);
+    return (index ?? []).filter(e => wireMode(e?.mode) === want);
 }
 
 /**

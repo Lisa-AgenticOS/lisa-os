@@ -93,6 +93,15 @@ pub struct SessionTurn {
     pub model: Option<String>,
 }
 
+/// The mode a record stored before modes existed belongs to: Chat, the
+/// general surface. Also what an unknown stored mode falls back to on
+/// the GJS side (`modeById`), so both readers agree on old data.
+pub const DEFAULT_MODE: &str = "chat";
+
+fn default_mode() -> String {
+    DEFAULT_MODE.to_string()
+}
+
 /// A session's listing entry — what the index key stores, for pickers
 /// and `lisa sessions`-style listings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +111,14 @@ pub struct SessionInfo {
     /// Unix milliseconds.
     pub created_ts: i64,
     pub updated_ts: i64,
+    /// The Assistant navrail mode this conversation belongs to (`chat`,
+    /// `code`, `design`, `research` — shell/assistant/lib/modes.js).
+    /// Defaults to `chat` so pre-mode records parse, and a rewrite from
+    /// this side does not drop what the GJS side stored (that silent
+    /// drop is exactly why the field lives in BOTH copies of the
+    /// format). Opaque here: nothing in Rust branches on it.
+    #[serde(default = "default_mode")]
+    pub mode: String,
 }
 
 /// One conversation, loaded whole (a session is one KV value).
@@ -112,6 +129,9 @@ pub struct Session {
     /// Unix milliseconds.
     pub created_ts: i64,
     pub updated_ts: i64,
+    /// See [`SessionInfo::mode`].
+    #[serde(default = "default_mode")]
+    pub mode: String,
     #[serde(default)]
     pub turns: Vec<SessionTurn>,
 }
@@ -123,6 +143,7 @@ impl Session {
             title: self.title.clone(),
             created_ts: self.created_ts,
             updated_ts: self.updated_ts,
+            mode: self.mode.clone(),
         }
     }
 
@@ -161,6 +182,7 @@ impl<S: KvStore> SessionStore<S> {
             title: title.to_string(),
             created_ts: now,
             updated_ts: now,
+            mode: default_mode(),
             turns: Vec::new(),
         };
         self.write(&session)?;
@@ -332,7 +354,45 @@ mod tests {
             s.id, s.created_ts
         );
         assert!(raw.starts_with(&head), "field order changed: {raw}");
+        assert!(
+            raw.contains(",\"mode\":\"chat\",\"turns\":"),
+            "mode sits between updated_ts and turns: {raw}"
+        );
         assert!(raw.ends_with("]}"), "turns stays last: {raw}");
+    }
+
+    #[test]
+    fn mode_defaults_on_old_records_and_survives_a_rewrite() {
+        let store = store();
+        let s = store.create("demo").unwrap();
+
+        // A pre-mode record (what every device stored before this field
+        // existed) parses as Chat rather than failing or forgetting.
+        let old = format!(
+            "{{\"id\":\"{}\",\"title\":\"demo\",\"created_ts\":1,\"updated_ts\":1,\"turns\":[]}}",
+            s.id
+        );
+        store.kv().set(&session_key(&s.id), &old).unwrap();
+        assert_eq!(store.load(&s.id).unwrap().mode, DEFAULT_MODE);
+
+        // The GJS side's mode is not dropped by a rewrite from THIS side
+        // — the exact silent loss that putting the field in both copies
+        // of the format exists to prevent.
+        let stored = format!(
+            "{{\"id\":\"{}\",\"title\":\"demo\",\"created_ts\":1,\"updated_ts\":1,\"mode\":\"code\",\"turns\":[]}}",
+            s.id
+        );
+        store.kv().set(&session_key(&s.id), &stored).unwrap();
+        let after = store.append(&s.id, Role::User, "hi", None).unwrap();
+        assert_eq!(after.mode, "code");
+        let raw = store.kv().get(&session_key(&s.id)).unwrap().unwrap();
+        assert!(
+            raw.contains("\"mode\":\"code\""),
+            "rewrite kept the mode: {raw}"
+        );
+        // And the index entry the append rewrote carries it too.
+        let listed = store.list().unwrap();
+        assert_eq!(listed[0].mode, "code");
     }
 
     #[test]

@@ -8,8 +8,9 @@ import {
     sessionKey, newSessionId, newSession, sessionInfo,
     parseSessionIndex, serializeSessionIndex, parseSession, serializeSession,
     sessionWithTurns, upsertIndex, removeFromIndex, displayIndex,
-    titleFromTurns, migrateLegacyConversation, formatSessionTime,
-    indexFromRecords, mergeIndex, restorePlan, handoffPlan,
+    indexForMode, titleFromTurns, migrateLegacyConversation,
+    formatSessionTime, indexFromRecords, mergeIndex, restorePlan,
+    handoffPlan,
 } from '../lib/sessions.js';
 
 // ---- key layout (must match libs/harness-core/src/session.rs) -------
@@ -53,6 +54,7 @@ test('serializeSession writes the SessionStore record shape', () => {
     };
     assertEq(serializeSession(session), JSON.stringify({
         id: 's-1', title: 'theme this app', created_ts: 10, updated_ts: 20,
+        mode: 'chat',
         turns: [
             {role: 'user', text: 'hi', model: null},
             {role: 'assistant', text: 'hello', model: 'qwen3'},
@@ -62,10 +64,68 @@ test('serializeSession writes the SessionStore record shape', () => {
 
 test('session records round-trip', () => {
     const session = {
-        id: 's-1', title: 't', created_ts: 10, updated_ts: 20,
+        id: 's-1', title: 't', created_ts: 10, updated_ts: 20, mode: 'code',
         turns: [{role: 'user', text: 'q', model: null}],
     };
     assertEq(parseSession(serializeSession(session)), session);
+});
+
+// ---- the mode field (the navrail's partition) ----------------------
+
+test('a session is born into a mode, defaulting to chat', () => {
+    assertEq(newSession(undefined, 1000).mode, 'chat');
+    assertEq(newSession('t', 1000, 'research').mode, 'research');
+    assertEq(newSession('t', 1000, 'bogus').mode, 'chat',
+        'an unknown mode collapses to the safe general surface');
+});
+
+test('records from before modes existed read as chat', () => {
+    // What every device stored before the field existed — and what the
+    // Rust SessionStore's default reads it as too (session.rs).
+    const old = JSON.stringify(
+        {id: 's-1', title: 't', created_ts: 1, updated_ts: 2, turns: []});
+    assertEq(parseSession(old).mode, 'chat');
+    const index = JSON.stringify(
+        [{id: 's-1', title: 't', created_ts: 1, updated_ts: 2}]);
+    assertEq(parseSessionIndex(index)[0].mode, 'chat');
+});
+
+test('an unknown stored mode hides no conversation', () => {
+    const raw = JSON.stringify({
+        id: 's-1', title: 't', created_ts: 1, updated_ts: 2,
+        mode: 'renamed-away', turns: [],
+    });
+    assertEq(parseSession(raw).mode, 'chat',
+        'unknown collapses to chat, so the record stays reachable');
+});
+
+test('indexForMode shows exactly the active mode’s conversations', () => {
+    const index = [
+        {id: 'a', title: 'a', created_ts: 1, updated_ts: 10, mode: 'code'},
+        {id: 'b', title: 'b', created_ts: 2, updated_ts: 20},          // pre-mode
+        {id: 'c', title: 'c', created_ts: 3, updated_ts: 30, mode: 'chat'},
+        {id: 'd', title: 'd', created_ts: 4, updated_ts: 40, mode: 'weird'},
+    ];
+    assertEq(indexForMode(index, 'code').map(e => e.id), ['a']);
+    assertEq(indexForMode(index, 'chat').map(e => e.id),
+        ['b', 'c', 'd'], 'pre-mode and unknown entries are Chat’s');
+    assertEq(indexForMode(index, 'design'), []);
+    assertEq(indexForMode(null, 'chat'), []);
+    // Every entry lands in exactly one mode — none is orphaned.
+    const covered = ['chat', 'code', 'design', 'research']
+        .flatMap(m => indexForMode(index, m).map(e => e.id)).sort();
+    assertEq(covered, ['a', 'b', 'c', 'd']);
+});
+
+test('the mode survives the index and a turn rewrite', () => {
+    const s = newSession('t', 1000, 'design');
+    const listed = parseSessionIndex(serializeSessionIndex(
+        upsertIndex([], s)));
+    assertEq(listed[0].mode, 'design', 'the index carries it');
+    const rewritten = sessionWithTurns(sessionInfo(s),
+        [{role: 'user', text: 'make a poster'}], 2000);
+    assertEq(rewritten.mode, 'design', 'activity does not reset it');
+    assertEq(parseSession(serializeSession(rewritten)).mode, 'design');
 });
 
 test('parseSession refuses missing, tombstoned, and corrupt values', () => {
@@ -190,6 +250,7 @@ test('sessionWithTurns titles and bumps the record', () => {
     ], 99);
     assertEq(written, {
         id: 's-1', title: 'hello there', created_ts: 5, updated_ts: 99,
+        mode: 'chat',
         turns: [
             {role: 'user', text: 'hello there', model: null},
             {role: 'assistant', text: 'hi', model: 'qwen3'},

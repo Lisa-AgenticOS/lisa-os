@@ -40,7 +40,7 @@ import {
     INDEX_KEY, LEGACY_CONVERSATION_KEY, UNTITLED, sessionKey, newSession,
     sessionInfo, serializeSessionIndex, parseSession,
     serializeSession, sessionWithTurns, upsertIndex, removeFromIndex,
-    displayIndex, formatSessionTime, migrateLegacyConversation,
+    displayIndex, indexForMode, formatSessionTime, migrateLegacyConversation,
     restorePlan, handoffPlan,
 } from './lib/sessions.js';
 import {toPangoMarkup} from './lib/markdown.js';
@@ -109,10 +109,16 @@ class AssistantWindow {
         this._activeQid = null; // in-flight query id
         this._current = null;   // the streaming assistant turn
         this._persistWarned = false; // one note max when contextd is absent
+        // The mode the navrail is on. A mode is a real bundle of effects
+        // (lib/modes.js): composer placeholder, this mode's chat list,
+        // the `mode` on the wire, and Code's required working folder.
+        // Set before the first session, which is stamped with it.
+        this._mode = DEFAULT_MODE;
+        this._modeButtons = {};   // id -> ToggleButton, for the rail
         // The open conversation, and the stored index behind the list.
         // A new session lives only here until its first completed turn,
         // so abandoning one leaves nothing in app memory.
-        this._session = newSession();
+        this._session = this._blankSession();
         this._sessions = [];
         // Whether a read has authoritatively said what is stored. Until
         // it has, the index is never REWRITTEN — a failed read must not
@@ -131,11 +137,6 @@ class AssistantWindow {
         this._attachments = [];
 
         this._http = new Soup.Session();
-        // The mode the navrail is on. A mode is a real bundle of effects
-        // (lib/modes.js): composer placeholder, this mode's chat list,
-        // the `mode` on the wire, and Code's required working folder.
-        this._mode = DEFAULT_MODE;
-        this._modeButtons = {};   // id -> ToggleButton, for the rail
         // The shared chrome (#282, ADR-0056), now the three-pane shape
         // (ADR-0056 step 4, Mail's window): rail | this mode's chats |
         // the chat screen. The rail is a narrow glass pane; conversations
@@ -387,6 +388,26 @@ class AssistantWindow {
         ui.setSidebar(rail);
     }
 
+    /// A fresh conversation in the mode the rail is on — every new
+    /// session in this window is born into the active mode, which is the
+    /// invariant that keeps the open conversation always visible in the
+    /// filtered sidebar.
+    _blankSession() {
+        return newSession(UNTITLED, Date.now(), this._mode);
+    }
+
+    /// Make the composer and the rail agree with `this._mode`. Shared by
+    /// the rail click and by opening a conversation that belongs to
+    /// another mode (the startup restore) — deliberately WITHOUT Code's
+    /// workspace prompt, which only a person's own rail click should
+    /// raise (a chooser popping up unbidden at startup is noise).
+    _syncModeUi() {
+        this._entry.placeholder_text = modeById(this._mode).placeholder;
+        const btn = this._modeButtons[this._mode];
+        if (btn && !btn.active)
+            btn.active = true;
+    }
+
     /// Switch modes: update the composer's prompt to the mode's job, show
     /// this mode's conversations, remember it for the wire, and — for
     /// Code — make sure there is a working folder, since that is the
@@ -395,17 +416,27 @@ class AssistantWindow {
     _setMode(id) {
         if (id === this._mode)
             return;
+        if (this._activeQid !== null) {
+            // Mid-stream the reply belongs to the conversation on screen
+            // — same refusal as _openSession/_newSession. Put the rail's
+            // selection back where the conversation is.
+            this._syncModeUi();
+            return;
+        }
         this._mode = id;
-        const mode = modeById(id);
-        this._entry.placeholder_text = mode.placeholder;
-        if (this._modeButtons[id] && !this._modeButtons[id].active)
-            this._modeButtons[id].active = true;
-        // Per-mode conversation lists (a coding session and a research
-        // thread not braiding) is the next increment — it needs the
-        // session index to carry a mode non-lossily across reload. Today
-        // the list is shared across modes; the rail changes the composer,
-        // the wire, and the tools, not yet which chats show. Stated so
-        // this is a known gap, not a silent one (rule 10).
+        this._syncModeUi();
+        // The sidebar shows this mode's conversations now. The open one
+        // follows only if it is unwritten: a blank conversation simply
+        // adopts the new mode, while one with turns stays saved where it
+        // is (its own mode's list) and the window opens fresh — a coding
+        // session and a research thread must not braid.
+        if (wireMode(this._session.mode) !== id) {
+            if (this._turns.length === 0)
+                this._session = sessionInfo({...this._session, mode: id});
+            else
+                this._showSession(this._blankSession(), []);
+        }
+        this._renderSessionList();
         // Code needs a folder to be useful. Prompt when entering it with
         // none — never silently, and never for the other modes.
         if (needsWorkspace(id) && !this._workspace)
@@ -440,11 +471,16 @@ class AssistantWindow {
         ui.setList(new Gtk.ScrolledWindow({vexpand: true, child: this._list}));
     }
 
-    /// Rebuild the list from the stored index plus the open conversation.
-    /// Cheap enough to redo wholesale: the index is a handful of rows and
-    /// only activity, switching, and deletion touch it.
+    /// Rebuild the list from the stored index plus the open conversation
+    /// — the ACTIVE MODE's slice of it, so switching the rail switches
+    /// which history shows. Cheap enough to redo wholesale: the index is
+    /// a handful of rows and only activity, switching, and deletion
+    /// touch it. The open session is always in the active mode
+    /// (_setMode/_showSession keep that invariant), so pinning it never
+    /// leaks a row into another mode's list.
     _renderSessionList() {
-        this._rows = displayIndex(this._sessions, this._session);
+        this._rows = displayIndex(
+            indexForMode(this._sessions, this._mode), this._session);
         this._listUpdating = true;
         let child = this._list.get_first_child();
         while (child) {
@@ -500,7 +536,7 @@ class AssistantWindow {
             // silently opening an empty conversation.
             this._sessions = removeFromIndex(this._sessions, id);
             this._writeIndex();
-            this._showSession(newSession(), []);
+            this._showSession(this._blankSession(), []);
             this._systemNote('That conversation could not be read — it has ' +
                 'been removed from the list.');
             return;
@@ -513,7 +549,7 @@ class AssistantWindow {
             return;             // don't drop a stream mid-flight
         if (this._turns.length === 0)
             return;             // already on a blank conversation
-        this._showSession(newSession(), []);
+        this._showSession(this._blankSession(), []);
     }
 
     /// The Spotlight hand-off (#210): start a FRESH conversation and
@@ -548,7 +584,7 @@ class AssistantWindow {
             return;
         }
         if (plan.newSession)
-            this._showSession(newSession(), []);
+            this._showSession(this._blankSession(), []);
         // The send is deferred to an idle tick because the model list
         // may still be loading when the action arrives (a cold start
         // goes activate -> window -> action within the same frame), and
@@ -581,6 +617,14 @@ class AssistantWindow {
         if (carried > 0)
             this._clearAttachments();
         this._session = sessionInfo(info);
+        // The window follows the conversation's mode — the startup
+        // restore lands you exactly where you left off, rail included.
+        // (Rows opened from the sidebar are already the active mode's;
+        // this only moves the rail when a caller crosses modes.)
+        if (this._session.mode !== this._mode) {
+            this._mode = this._session.mode;
+            this._syncModeUi();
+        }
         this._turns = [];
         let child = this._log.get_first_child();
         while (child) {
@@ -792,8 +836,10 @@ class AssistantWindow {
             this._renderSessionList();
             return;
         }
-        const next = this._sessions[0];
-        this._showSession(newSession(), []);
+        // Stay in the active mode: the replacement conversation comes
+        // from this mode's list, not another surface's.
+        const next = indexForMode(this._sessions, this._mode)[0];
+        this._showSession(this._blankSession(), []);
         if (next)
             this._openSession(next.id).catch(e => logError(e, 'open session'));
     }
